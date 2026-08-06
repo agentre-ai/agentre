@@ -83,6 +83,17 @@ function walkSourceFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
+function walkProductionSourceFiles(): string[] {
+  const sourceRoot = path.resolve(process.cwd(), "src");
+  const mockupsRoot = `${path.join(sourceRoot, "mockups")}${path.sep}`;
+  // Mockups have standalone development entrypoints and are not reachable
+  // from the product application. Keep production guards exhaustive without
+  // treating those visual design fixtures as shipped UI.
+  return walkSourceFiles(sourceRoot).filter(
+    (file) => !file.startsWith(mockupsRoot),
+  );
+}
+
 function collectStaticCommonI18nKeys(): string[] {
   const sourceRoot = path.resolve(process.cwd(), "src");
   const keys = new Set<string>();
@@ -105,11 +116,10 @@ function collectStaticCommonI18nKeys(): string[] {
 }
 
 function collectProductionHanStringLiterals(): string[] {
-  const sourceRoot = path.resolve(process.cwd(), "src");
   const han = /\p{Script=Han}/u;
   const findings: string[] = [];
 
-  for (const file of walkSourceFiles(sourceRoot)) {
+  for (const file of walkProductionSourceFiles()) {
     const source = fs.readFileSync(file, "utf8");
     const sourceFile = ts.createSourceFile(
       file,
@@ -194,7 +204,6 @@ const disallowedProductUiLiterals = [
 ] as const;
 
 function collectProductionProductUiLiterals(): string[] {
-  const sourceRoot = path.resolve(process.cwd(), "src");
   const visibleAttributes = new Set([
     "alt",
     "aria-description",
@@ -206,7 +215,7 @@ function collectProductionProductUiLiterals(): string[] {
   ]);
   const findings: string[] = [];
 
-  for (const file of walkSourceFiles(sourceRoot).filter((sourceFile) =>
+  for (const file of walkProductionSourceFiles().filter((sourceFile) =>
     sourceFile.endsWith(".tsx"),
   )) {
     const source = fs.readFileSync(file, "utf8");
@@ -427,8 +436,7 @@ describe("i18n resources", () => {
   });
 
   it("Given dynamic content is rendered directly, When production sources are inspected, Then no auxiliary localization attributes remain", () => {
-    const sourceRoot = path.resolve(process.cwd(), "src");
-    const filesWithIgnore = walkSourceFiles(sourceRoot)
+    const filesWithIgnore = walkProductionSourceFiles()
       .filter((file) =>
         fs
           .readFileSync(file, "utf8")

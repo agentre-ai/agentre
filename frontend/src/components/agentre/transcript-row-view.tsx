@@ -34,6 +34,7 @@ import { CompactBoundaryDivider } from "./compact-boundary-divider";
 import { LocalCommandCard } from "./local-command/card";
 import { MarkdownText, StreamingMarkdown } from "./markdown-text";
 import { MessageRow, MessageCopyButton } from "./message-row";
+import { OpenClawExecApprovalCard } from "./openclaw-exec-approval/card";
 import { ToolApprovalCard } from "./tool-approval/card";
 import { ThinkingBlock } from "./thinking-block";
 import type { TranscriptRow, TranscriptRowItem } from "./transcript-rows";
@@ -157,19 +158,36 @@ function MessageMeta({
 }: MessageMetaProps) {
   const { t } = useTranslation();
   const durationLabel = `${(durationMs / 1000).toFixed(1)}s`;
+  // 后端一个 token 数都没上报时（如 OpenClaw 网关不发 usage 帧），渲染「↑0 ↓0」
+  // 等于把「没上报」说成「用了 0 个 token」。这种情况整块隐藏计数，只留耗时。
+  const hasUsage =
+    promptTokens > 0 ||
+    completionTokens > 0 ||
+    cachedTokens > 0 ||
+    cacheCreationTokens > 0 ||
+    reasoningTokens > 0;
 
   // tooltip 里需要拆分展示，所以这里给一个稳定的 row 渲染器避免重复。
   const rows: { label: string; value: string }[] = [
     { label: t("chat.meta.model"), value: model || "—" },
-    {
-      label: t("chat.meta.prompt"),
-      value: promptTokens.toLocaleString(),
-    },
-    {
-      label: t("chat.meta.completion"),
-      value: completionTokens.toLocaleString(),
-    },
   ];
+  if (hasUsage) {
+    rows.push(
+      {
+        label: t("chat.meta.prompt"),
+        value: promptTokens.toLocaleString(),
+      },
+      {
+        label: t("chat.meta.completion"),
+        value: completionTokens.toLocaleString(),
+      },
+    );
+  } else {
+    rows.push({
+      label: t("chat.meta.usage"),
+      value: t("chat.meta.usageUnavailable"),
+    });
+  }
   if (cachedTokens > 0) {
     rows.push({
       label: t("chat.meta.cacheHit"),
@@ -205,15 +223,22 @@ function MessageMeta({
                 <span className="text-border-strong">·</span>
               </>
             ) : null}
-            <span className="inline-flex items-center gap-0.5">
-              <ArrowUp className="size-2.5" aria-hidden="true" />
-              {promptTokens.toLocaleString()}
-            </span>
-            <span className="inline-flex items-center gap-0.5">
-              <ArrowDown className="size-2.5" aria-hidden="true" />
-              {completionTokens.toLocaleString()}
-            </span>
-            <span className="text-border-strong">·</span>
+            {hasUsage ? (
+              <span
+                data-testid="message-token-counts"
+                className="inline-flex items-center gap-1.5"
+              >
+                <span className="inline-flex items-center gap-0.5">
+                  <ArrowUp className="size-2.5" aria-hidden="true" />
+                  {promptTokens.toLocaleString()}
+                </span>
+                <span className="inline-flex items-center gap-0.5">
+                  <ArrowDown className="size-2.5" aria-hidden="true" />
+                  {completionTokens.toLocaleString()}
+                </span>
+                <span className="text-border-strong">·</span>
+              </span>
+            ) : null}
             <span>{durationLabel}</span>
           </button>
         </TooltipTrigger>
@@ -642,6 +667,13 @@ function RenderItemView({
       return item.block.toolApproval ? (
         <ToolApprovalCard
           approval={item.block.toolApproval}
+          sessionId={ctx?.sessionId ?? 0}
+        />
+      ) : null;
+    case "exec_approval":
+      return item.block.execApproval ? (
+        <OpenClawExecApprovalCard
+          approval={item.block.execApproval}
           sessionId={ctx?.sessionId ?? 0}
         />
       ) : null;

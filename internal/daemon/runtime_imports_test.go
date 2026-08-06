@@ -23,4 +23,6 @@ func TestBackendRuntimesRegistered(t *testing.T) {
 		assert.NotNil(t, agentruntime.RuntimeFor(bt),
 			"backend %q must be registered by runtime_imports.go", bt)
 	}
+	assert.Nil(t, agentruntime.RuntimeFor(agent_backend_entity.TypeOpenClaw),
+		"OpenClaw must remain unavailable in agentred until secret enrollment/reference is implemented")
 }

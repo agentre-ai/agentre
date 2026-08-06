@@ -92,6 +92,61 @@ describe("ChatStreamsHost", () => {
     ).toEqual([1, 42, 2]);
   });
 
+  it("Given an active OpenClaw turn, When exec approval requested and resolved events arrive, Then one card is updated without finishing the stream", async () => {
+    useChatStreamsStore.getState().openStream({
+      assistantMessageId: 1001,
+      name: "chat:event:42:1001",
+      sessionId: 42,
+      streamStartedAt: Date.now(),
+    });
+    render(<ChatStreamsHost />);
+    await waitFor(() => expect(runtimeMocks.EventsOn).toHaveBeenCalled());
+    const handler = registeredHandler();
+
+    act(() => {
+      handler({
+        kind: "exec_approval",
+        execApproval: {
+          id: "exec-1",
+          commandText: "git status --short",
+          allowedDecisions: ["allow-once", "deny"],
+          status: "pending",
+        },
+      } as ChatStreamEvent);
+    });
+    expect(
+      streamForMessage(useChatStreamsStore.getState(), 42, 1001)?.liveBlocks,
+    ).toEqual([
+      expect.objectContaining({
+        type: "exec_approval",
+        execApproval: expect.objectContaining({
+          id: "exec-1",
+          status: "pending",
+        }),
+      }),
+    ]);
+
+    act(() => {
+      handler({
+        kind: "exec_approval",
+        execApproval: {
+          id: "exec-1",
+          commandText: "git status --short",
+          status: "resolved",
+          decision: "allow-once",
+        },
+      } as ChatStreamEvent);
+    });
+
+    const stream = streamForMessage(useChatStreamsStore.getState(), 42, 1001);
+    expect(stream).toBeDefined();
+    expect(stream?.liveBlocks).toHaveLength(1);
+    expect(stream?.liveBlocks[0].execApproval).toMatchObject({
+      status: "resolved",
+      decision: "allow-once",
+    });
+  });
+
   it("applies contextWindow-only session_status patches to the live stream without clearing status", async () => {
     useChatStreamsStore.getState().openStream({
       assistantMessageId: 1001,

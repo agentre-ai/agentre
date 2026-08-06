@@ -53,6 +53,12 @@ Startup cleanup of stale `running` / `waiting` rows is split along the same line
 
 Replayed content has no live turn to flow into after a restart, so `remote.Runtime` synthesizes one: notifications that belong to no in-flight turn are delivered on the session's existing autonomous-turn channel with the trigger `catchup`, and `chat_svc.driveAutonomousTurn` persists them as an assistant message with no user row — the same path that already materializes CLI-initiated turns. Each journaled turn boundary (`runtime.runResultDone`) closes one synthesized turn, so a replayed range covering several daemon-side turns lands as several messages rather than one merged blob.
 
+## Provider Session Mapping
+
+When a runtime has its own provider-side session identity, the AgentRE `chat_sessions` row remains the UI/history source of truth and stores only the provider mapping in `ProviderSessionID`. A runtime must not replace AgentRE message history with provider history during ordinary resume.
+
+The OpenClaw backend uses the deterministic key `agentre:<backendID>:<chatSessionID>` when `ProviderSessionID` is empty, returns that key through `RunResult.ProviderSessionID`, and reuses the persisted value on later turns. Reconnect reconciles the active Gateway run; it does not import or overwrite chat history.
+
 ## Adding A New Session Purpose
 
 When adding a new feature that creates sessions:

@@ -279,6 +279,36 @@ func TestRegisterGatewayBeforeNewChatMakesCLIBackendsChattable(t *testing.T) {
 	}
 }
 
+func TestListAgentsOpenClawAvailability(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := context.Background()
+	m.agent.EXPECT().List(ctx).Return([]*agent_entity.Agent{
+		{ID: 31, Name: "Local Claw", AgentBackendID: 41, Status: consts.ACTIVE},
+		{ID: 32, Name: "Remote Claw", AgentBackendID: 42, Status: consts.ACTIVE},
+	}, nil)
+	m.backend.EXPECT().BatchFind(ctx, []int64{41, 42}).Return(map[int64]*agent_backend_entity.AgentBackend{
+		41: {ID: 41, Type: string(agent_backend_entity.TypeOpenClaw), OpenClawGatewayURL: "ws://127.0.0.1:18789", Status: consts.ACTIVE},
+		42: {ID: 42, Type: string(agent_backend_entity.TypeOpenClaw), OpenClawGatewayURL: "ws://127.0.0.1:18789", DeviceID: "9", Status: consts.ACTIVE},
+	}, nil)
+	m.provider.EXPECT().BatchFindByKey(ctx, []string{}).Return(map[string]*llm_provider_entity.LLMProvider{}, nil)
+	m.session.EXPECT().CountRunningByAgents(ctx, []int64{31, 32}).Return(map[int64]int{}, nil)
+	m.session.EXPECT().CountByAgentsIncludingGroups(ctx, []int64{31, 32}).Return(map[int64]int64{}, nil)
+	m.session.EXPECT().ListIDsByAgentsIncludingGroups(ctx, []int64{31, 32}).Return(map[int64][]int64{}, nil)
+	for _, id := range []int64{31, 32} {
+		m.session.EXPECT().ListByAgentIncludingGroups(ctx, id, 5).Return(nil, nil)
+		m.session.EXPECT().ListAttentionByAgentIncludingGroups(ctx, id, 20).Return(nil, nil)
+	}
+
+	response, err := m.svc.ListAgents(ctx, &chat_svc.ListAgentsRequest{})
+	assert.NoError(t, err)
+	if assert.Len(t, response.Agents, 2) {
+		assert.True(t, response.Agents[0].Chattable)
+		assert.Empty(t, response.Agents[0].ChattableHint)
+		assert.False(t, response.Agents[1].Chattable)
+		assert.NotEmpty(t, response.Agents[1].ChattableHint)
+	}
+}
+
 func TestListAgents(t *testing.T) {
 	convey.Convey("ListAgents", t, func() {
 		m := setupChatTest(t)
@@ -2817,6 +2847,14 @@ func TestSend_CodexPlanEmptyTurnPersistsFallbackText(t *testing.T) {
 	require.GreaterOrEqual(t, idleIdx, 0, "正常收尾缺 session_status(idle)")
 	require.GreaterOrEqual(t, doneIdx, 0, "正常收尾缺 StreamDone")
 	assert.Less(t, idleIdx, doneIdx, "session_status(idle) 必须先于 StreamDone")
+	var lastKind chat_svc.ChatStreamEventKind
+	for _, ev := range m.events {
+		if payload, ok := ev.Payload.(chat_svc.ChatStreamEvent); ok {
+			lastKind = payload.Kind
+		}
+	}
+	assert.Equal(t, chat_svc.StreamDone, lastKind,
+		"explicit terminal outcome must be the final frame; a redundant closed tail can hide it in the Wails bridge")
 }
 
 func TestSend_RuntimeErrorsStayVisibleAndPersistedWithoutEnteringLogs(t *testing.T) {

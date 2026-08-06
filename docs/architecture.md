@@ -20,8 +20,8 @@ internal/
   model/entity/<domain>_entity/(rich domain entity; GORM tag + business methods)
   pkg/                         (cross-cutting internal packages: agentprovider / agentruntime / agentskill / agenttool /
                                 agrctlinstall / ccoauth / claudecodehook / clienv / cliprober / cliprocess / code (i18n error
-                                codes) / ctlendpoint / diff / hookexec / httpgateway / jsonrpc / keychain / llmcatalog / paths /
-                                procattr / pty / remotefs / sysnotify)
+                                codes) / ctlendpoint / diff / hookexec / httpgateway / jsonrpc / keychain / llmcatalog /
+                                openclawgateway / paths / procattr / pty / remotefs / sysnotify)
   buildinfo/                   (CommitID ldflag target)
 migrations/                    (gormigrate sequential migrations, filename prefix YYYYMMDDNNNN)
 pkg/                           (externally reusable packages: claudecode / codex / piagent —— independently maintained CLI subprocess wrappers;
@@ -131,6 +131,7 @@ The table is the installed-app default. `wails dev` / `make dev` uses the siblin
 ```
 
 - **Business data** → SQLite, via `internal/repository/*_repo`.
+- **Backend credentials and device identity seeds** → `internal/pkg/keychain`; secret values are not modeled as Wails DTO or general `env_json` fields. OpenClaw stores only non-sensitive Gateway configuration in SQLite.
 - **cago runtime config** → in-memory source (`configs.WithSource(...)`), **not persisted to `config.json`**.
 - **Frontend experience preferences (theme, window size, etc.)** → browser localStorage. Existing keys include `agentre.theme`, `agentre.windowSize`, `agentre.lastPath`.
 - **agentred** uses a separate directory `agentred`, which can be overridden with `AGENTRED_DATA_DIR`.

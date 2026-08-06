@@ -240,6 +240,101 @@ describe("useChatSession", () => {
     expect(live?.liveBlocks).toHaveLength(1);
   });
 
+  it("Given a reattached OpenClaw turn, When LoadSession overlays a pending exec approval, Then it moves to the live stream exactly once", async () => {
+    loadChatSession.mockResolvedValueOnce({
+      session: {
+        id: 9,
+        agentId: 1,
+        agentName: "Eng",
+        title: "x",
+        agentStatus: "waiting",
+        activeStream: "chat:event:9:42",
+        lastMessageAt: 0,
+        createtime: 0,
+      },
+      messages: [
+        {
+          id: 42,
+          sessionId: 9,
+          role: "assistant",
+          blocks: [
+            { type: "text", text: "waiting for operator" },
+            {
+              type: "exec_approval",
+              execApproval: {
+                id: "exec-1",
+                commandText: "pwd",
+                allowedDecisions: ["allow-once", "deny"],
+                status: "pending",
+              },
+            },
+          ],
+          seq: 1,
+        },
+      ],
+    });
+
+    const { result } = renderHook(() => useChatSession(9));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(
+      (result.current.messages.at(-1)?.blocks ?? []).some(
+        (block) => block.type === "exec_approval",
+      ),
+    ).toBe(false);
+    const live = streamForMessage(useChatStreamsStore.getState(), 9, 42);
+    expect(live?.liveBlocks).toHaveLength(1);
+    expect(live?.liveBlocks[0]).toMatchObject({
+      type: "exec_approval",
+      execApproval: { id: "exec-1", status: "pending" },
+    });
+  });
+
+  it("Given resolved OpenClaw approval history, When the session reloads, Then it remains persisted and is not moved into live state", async () => {
+    loadChatSession.mockResolvedValueOnce({
+      session: {
+        id: 9,
+        agentId: 1,
+        agentName: "Eng",
+        title: "x",
+        agentStatus: "running",
+        activeStream: "chat:event:9:42",
+        lastMessageAt: 0,
+        createtime: 0,
+      },
+      messages: [
+        {
+          id: 42,
+          sessionId: 9,
+          role: "assistant",
+          blocks: [
+            {
+              type: "exec_approval",
+              execApproval: {
+                id: "exec-1",
+                commandText: "pwd",
+                status: "resolved",
+                decision: "allow-once",
+              },
+            },
+          ],
+          seq: 1,
+        },
+      ],
+    });
+
+    const { result } = renderHook(() => useChatSession(9));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.messages.at(-1)?.blocks?.[0]).toMatchObject({
+      type: "exec_approval",
+      execApproval: { id: "exec-1", status: "resolved" },
+    });
+    expect(
+      streamForMessage(useChatStreamsStore.getState(), 9, 42)?.liveBlocks,
+    ).toEqual([]);
+  });
+
   it("does not reattach when activeStream is absent", async () => {
     loadChatSession.mockResolvedValueOnce({
       session: {

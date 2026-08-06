@@ -32,6 +32,13 @@ type BackendItem struct {
 	// DefaultModel 仅 claudecode 使用；spawn claude 子进程下发的 --model 值。
 	// 走 CLI 登录态（未绑 provider）时填自定义模型（如 claude-fable-5）；空 = CLI 默认。
 	DefaultModel string `json:"defaultModel"`
+	// OpenClaw fields are non-sensitive Gateway configuration. Authentication
+	// tokens are deliberately absent from every Wails DTO.
+	OpenClawGatewayURL   string `json:"openClawGatewayUrl"`
+	OpenClawAgentID      string `json:"openClawAgentId"`
+	OpenClawDefaultModel string `json:"openClawDefaultModel"`
+	OpenClawSessionMode  string `json:"openClawSessionMode"`
+	HasToken             bool   `json:"hasToken"`
 	// DeviceID 关联的远端设备 ID（paired_agents.id 的字符串形式）。空串 = 本地。
 	DeviceID string `json:"deviceId"`
 	// DeviceName 关联远端设备的显示名；DeviceID 为空时为空串。
@@ -65,6 +72,10 @@ type CreateBackendRequest struct {
 	ReasoningEffort       string `json:"reasoningEffort"`
 	DefaultPermissionMode string `json:"defaultPermissionMode"`
 	DefaultModel          string `json:"defaultModel"`
+	OpenClawGatewayURL    string `json:"openClawGatewayUrl"`
+	OpenClawAgentID       string `json:"openClawAgentId"`
+	OpenClawDefaultModel  string `json:"openClawDefaultModel"`
+	OpenClawSessionMode   string `json:"openClawSessionMode"`
 	DeviceID              string `json:"deviceId"`
 }
 
@@ -86,6 +97,10 @@ type UpdateBackendRequest struct {
 	ReasoningEffort       string `json:"reasoningEffort"`
 	DefaultPermissionMode string `json:"defaultPermissionMode"`
 	DefaultModel          string `json:"defaultModel"`
+	OpenClawGatewayURL    string `json:"openClawGatewayUrl"`
+	OpenClawAgentID       string `json:"openClawAgentId"`
+	OpenClawDefaultModel  string `json:"openClawDefaultModel"`
+	OpenClawSessionMode   string `json:"openClawSessionMode"`
 	DeviceID              string `json:"deviceId"`
 }
 
@@ -123,6 +138,10 @@ type TestBackendRequest struct {
 	ReasoningEffort       string `json:"reasoningEffort"`
 	DefaultPermissionMode string `json:"defaultPermissionMode"`
 	DefaultModel          string `json:"defaultModel"`
+	OpenClawGatewayURL    string `json:"openClawGatewayUrl"`
+	OpenClawAgentID       string `json:"openClawAgentId"`
+	OpenClawDefaultModel  string `json:"openClawDefaultModel"`
+	OpenClawSessionMode   string `json:"openClawSessionMode"`
 	RequestID             string `json:"requestId"`
 }
 
@@ -130,9 +149,32 @@ type TestBackendRequest struct {
 //
 // Message 在 OK=true 时是模型回复文本,OK=false 时是人话错误。
 type TestBackendResponse struct {
-	OK        bool   `json:"ok"`
-	Message   string `json:"message"`
-	LatencyMs int64  `json:"latencyMs"`
+	OK             bool                  `json:"ok"`
+	Code           string                `json:"code"`
+	Message        string                `json:"message"`
+	LatencyMs      int64                 `json:"latencyMs"`
+	GatewayVersion string                `json:"gatewayVersion"`
+	Protocol       int                   `json:"protocol"`
+	GrantedScopes  []string              `json:"grantedScopes"`
+	Methods        []string              `json:"methods"`
+	Events         []string              `json:"events"`
+	OpenClawAgents []OpenClawAgentOption `json:"openClawAgents"`
+	OpenClawModels []OpenClawModelOption `json:"openClawModels"`
+}
+
+type OpenClawAgentOption struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	PrimaryModel string   `json:"primaryModel"`
+	Fallbacks    []string `json:"fallbacks"`
+	Default      bool     `json:"default"`
+}
+
+type OpenClawModelOption struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Provider  string `json:"provider"`
+	Available bool   `json:"available"`
 }
 
 // CancelTestBackendRequest 中断一个还在跑的 Test。

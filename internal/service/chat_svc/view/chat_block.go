@@ -28,6 +28,7 @@ type ChatBlock struct {
 	// 控制事件投影
 	UserAsk        *blocks.UserAskBlock        `json:"userAsk,omitempty"`
 	ToolPermission *blocks.ToolPermissionBlock `json:"toolPermission,omitempty"`
+	ExecApproval   *blocks.ExecApprovalBlock   `json:"execApproval,omitempty"`
 	Subagent       *blocks.SubagentStateBlock  `json:"subagent,omitempty"`
 }
 

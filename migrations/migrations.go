@@ -54,6 +54,8 @@ func migrationList() []*gormigrate.Migration {
 		migration202607090002(), // 待办清单表 orch_tasks(新语义)
 		migration202607090003(), // 刷新四内置流程正文:删死参 isolate/死概念 node + 织入待办清单
 		migration202607140001(), // 移除编排子系统:DROP 编排/流程库 4 表 + chat_sessions.run_id + 清 orchestrate/workflow 工具种子
+		migration202607240001(), // OpenClaw backend 非敏感 Gateway 配置（token/device key 仅存 keychain）
+		migration202607280001(), // Codex 0.145 移除 on-failure approval，旧值归一到 on-request
 		migration202608010001(), // 远端会话执行位置与游标:chat_sessions.exec_device_id/exec_daemon_fingerprint/event_cursor
 	}
 }

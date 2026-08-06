@@ -14,6 +14,7 @@ const (
 	CapSetPermission       Capability = "set_permission_mode"
 	CapAnswerUserAsk       Capability = "answer_user_ask"
 	CapToolPermission      Capability = "tool_permission_gate"
+	CapExecApproval        Capability = "exec_approval"
 	CapForkSession         Capability = "fork_session"
 	CapReportContextWindow Capability = "report_context_window"
 	CapCompact             Capability = "compact"

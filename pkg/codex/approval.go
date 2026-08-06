@@ -54,8 +54,11 @@ func (s *Stream) SubmitApproval(ctx context.Context, requestID string, allow, al
 		return errors.New("codex: empty approval request id")
 	}
 	s.userInputMu.Lock()
+	defer s.userInputMu.Unlock()
+	if s.state != nil && (s.state.Terminal() || s.state.State() == TurnStateInterrupting) {
+		return ErrNoActiveTurn
+	}
 	req := s.approvalRequests[requestID]
-	s.userInputMu.Unlock()
 	if len(req.rawID) == 0 {
 		return ErrNoActiveTurn
 	}
@@ -68,9 +71,8 @@ func (s *Stream) SubmitApproval(ctx context.Context, requestID string, allow, al
 	if err := app.Respond(ctx, req.rawID, approvalResponse(req, allow, alwaysAllowSession)); err != nil {
 		return err
 	}
-	s.userInputMu.Lock()
 	delete(s.approvalRequests, requestID)
-	s.userInputMu.Unlock()
+	s.updateWaitStateLocked()
 	return nil
 }
 
@@ -134,6 +136,7 @@ func (s *Stream) registerApprovalRequest(id json.RawMessage, method string, para
 		method: method,
 		params: append(json.RawMessage(nil), params...),
 	}
+	s.updateWaitStateLocked()
 	s.userInputMu.Unlock()
 	return key
 }

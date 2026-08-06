@@ -69,8 +69,10 @@ func TestStream_InterruptForwardsRPC(t *testing.T) {
 	case interruptReq := <-interruptCaptured:
 		var got map[string]any
 		require.NoError(t, json.Unmarshal(interruptReq.Params, &got))
-		assert.Equal(t, "thr-1", got["threadId"])
-		assert.Equal(t, "turn-1", got["turnId"])
+		assert.Equal(t, map[string]any{
+			"threadId": "thr-1",
+			"turnId":   "turn-1",
+		}, got, "codex-cli 0.145.0 TurnInterruptParams has exactly threadId + turnId")
 	case <-time.After(2 * time.Second):
 		t.Fatalf("turn/interrupt never captured")
 	}
