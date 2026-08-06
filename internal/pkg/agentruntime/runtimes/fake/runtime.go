@@ -53,6 +53,12 @@ const HookCreateDirectivePrefix = "e2e-hook-create:"
 // 到 AutonomousTurns(sessionID) 的 channel(详见 autoturn.go)。
 const BackgroundTaskDirectivePrefix = "e2e-bg-task:"
 
+// LongThinkingDirectivePrefix 触发「超长思考流」接缝的用户指令:e2e-long-thinking:<runes>。
+// emit <runes> 个思考字符(8 rune 一片,受 AGENTRE_E2E_FAKE_CHUNK_DELAY_MS 节奏控制)后
+// 接一段短文本再 Done。仅用于本地 e2e 验证:超长思考流时前端 streaming 视图是否还会
+// 卡死(thinking block 应只渲染有界尾巴,而非每个 chunk 重排整段文本)。仅 e2e 构建存在。
+const LongThinkingDirectivePrefix = "e2e-long-thinking:"
+
 // Runtime 实现 agentruntime.Runtime + agentruntime.AutonomousTurnSource(见 autoturn.go)。
 type Runtime struct {
 	// mu 保护 autoTurns。Run(每轮)与 AutonomousTurns(chat_svc 每会话订阅一次)
@@ -108,6 +114,29 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	go func() {
 		defer close(out)
 		defer r.leaveTurn(req.SessionID)
+		// 超长思考流接缝(e2e-long-thinking:<runes>):先流式发一大段 thinking,再发短文本
+		// 收尾,用于本地验证前端长思考流不再卡死。提前 return,跳过下面的回显/工具接缝。
+		if rawRunes, found := parseOnePartDirective(req.UserText, LongThinkingDirectivePrefix); found {
+			n, _ := strconv.Atoi(rawRunes)
+			if n > 0 {
+				if err := r.emitLongThinking(ctx, out, n, chunkDelay); err != nil {
+					return
+				}
+			}
+			for _, chunk := range splitChunks("e2e-fake-reply: long-thinking-done", 8) {
+				select {
+				case <-ctx.Done():
+					return
+				case out <- agentruntime.TextDelta{Text: chunk}:
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case out <- agentruntime.Done{}:
+			}
+			return
+		}
 		for i, chunk := range splitChunks(reply, 8) {
 			if i > 0 && chunkDelay > 0 {
 				timer := time.NewTimer(chunkDelay)
@@ -281,9 +310,35 @@ func configuredChunkDelay() time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
+// emitLongThinking 流式发送 runes 个思考字符(8 rune 一片),供长思考流压测。filler
+// 混入 CJK(宽字符,加重 whitespace-pre-wrap 重排成本)+ 空格 + 少量换行,贴近真实思考文本。
+func (r *Runtime) emitLongThinking(ctx context.Context, out chan<- agentruntime.Event, runes int, chunkDelay time.Duration) error {
+	filler := []rune("思考流压力测试 thinking stream padding text 持续输出用于触发前端重排 ")
+	var b []rune
+	for i := 0; i < runes; i++ {
+		b = append(b, filler[i%len(filler)])
+	}
+	for i, chunk := range splitChunks(string(b), 8) {
+		if i > 0 && chunkDelay > 0 {
+			timer := time.NewTimer(chunkDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case out <- agentruntime.ThinkingDelta{Text: chunk}:
+		}
+	}
+	return nil
+}
+
 // splitChunks 按 rune 边界把 s 切成最多 n 个 rune 的片段。
-func splitChunks(s string, n int) []string {
-	if n <= 0 || s == "" {
+func splitChunks(s string, n int) []string {	if n <= 0 || s == "" {
 		return nil
 	}
 	runes := []rune(s)
