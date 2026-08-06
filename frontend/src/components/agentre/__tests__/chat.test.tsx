@@ -479,6 +479,78 @@ describe("ChatTranscript image blocks", () => {
   });
 });
 
+describe("ChatTranscript source device pill (R17)", () => {
+  // 测试 mock 里 RemoteDeviceFingerprint 返回 "sha256:test-local-device"(wailsApp.ts)。
+  const LOCAL_FP = "sha256:test-local-device";
+
+  it("renders the source pill after the role label for a foreign user message", async () => {
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          {
+            ...textMessage(1, "user", "跑吧"),
+            sourceDevice: "sha256:other-device",
+            sourceDeviceName: "iPhone",
+          } as chat_svc.ChatMessage,
+          textMessage(2, "assistant", "已追加"),
+        ]}
+      />,
+    );
+    expect(await screen.findByText("From iPhone")).toBeTruthy();
+  });
+
+  it("falls back to the fingerprint when no device name is carried", async () => {
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          {
+            ...textMessage(1, "user", "跑吧"),
+            sourceDevice: "sha256:other-device",
+          } as chat_svc.ChatMessage,
+        ]}
+      />,
+    );
+    expect(await screen.findByText("From sha256:other-device")).toBeTruthy();
+  });
+
+  it("never renders the pill for this device's own messages (single-client zero change)", async () => {
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          {
+            ...textMessage(1, "user", "跑吧"),
+            sourceDevice: LOCAL_FP,
+            sourceDeviceName: "iPhone",
+          } as chat_svc.ChatMessage,
+          textMessage(2, "assistant", "已追加"),
+        ]}
+      />,
+    );
+    expect(screen.queryByText(/来自/)).toBeNull();
+    await act(async () => {}); // 等指纹 Promise 落定再确认一次没有药丸
+    expect(screen.queryByText(/来自/)).toBeNull();
+  });
+
+  it("renders no pill without any source (single-client default)", async () => {
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[textMessage(1, "user", "跑吧")]}
+      />,
+    );
+    expect(screen.queryByText(/来自/)).toBeNull();
+    await act(async () => {});
+    expect(screen.queryByText(/来自/)).toBeNull();
+  });
+});
+
 describe("ChatTranscript autonomous turn banner", () => {
   function msg(
     id: number,

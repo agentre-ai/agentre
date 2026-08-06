@@ -263,6 +263,11 @@ export const SetChatPermissionMode = windowBackedMock(
 export const RemoteDeviceList = windowBackedMock("RemoteDeviceList", () =>
   Promise.resolve([]),
 );
+// R17 本机指纹判定:测试默认给一个非空指纹,用例可改返回以验证本机/他端两种分支。
+export const RemoteDeviceFingerprint = windowBackedMock(
+  "RemoteDeviceFingerprint",
+  () => Promise.resolve("sha256:test-local-device"),
+);
 export const RemoteFsListDir = windowBackedMock("RemoteFsListDir", () =>
   Promise.resolve({ entries: [] }),
 );

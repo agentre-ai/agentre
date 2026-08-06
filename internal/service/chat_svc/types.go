@@ -427,6 +427,13 @@ type ChatMessage struct {
 	ErrorText        string `json:"errorText"`
 	Seq              int    `json:"seq"`
 	Createtime       int64  `json:"createtime"`
+	// SourceDevice 是 R17 的「来源设备标识」:非本机发出的用户消息才带(为空=本机/未知)。
+	// 携带的是提交方设备指纹;前端拿它与本机指纹比对,相等就不渲染来源标识(本机不带,
+	// 单客户端界面零变化)。
+	SourceDevice string `json:"sourceDevice,omitempty"`
+	// SourceDeviceName 是对应设备的显示名(auth.pair 时上报),渲染「来自 <设备名>」;
+	// 空 = 无可用名字,前端回退到来源指纹/通用文案。
+	SourceDeviceName string `json:"sourceDeviceName,omitempty"`
 }
 
 type ChatSessionLite struct {

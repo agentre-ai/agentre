@@ -697,6 +697,94 @@ func TestIntegration_RemoteRuntime_EventRoundTrip(t *testing.T) {
 	})
 }
 
+// steerAwareRunner 在收到 Steer RPC 时把那条 mid-turn 消息以 SteerConsumed 事件
+// 送回事件流,模拟 claudecode/codex 的 hook 消费队列。QueuedID 原样保留,让
+// TestIntegration_SteerConsumedCarriesSubmitterSource 能验证 daemon 把它对应的提交方
+// 对端指纹/名字盖回密封事件。
+//
+// runFn 返回的 live channel 是唯一的事件出口:Steer 可能在 Run 返回后任意时刻到达,
+// 而 fanout goroutine 从 Run 一返回就开始抽这个 channel,所以 Steer 往它上面写事件不会丢。
+type steerAwareRunner struct {
+	mu   sync.Mutex
+	live chan agentruntime.Event
+}
+
+func (*steerAwareRunner) Capabilities() capability.Capabilities { return capability.Capabilities{} }
+
+func (r *steerAwareRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	r.mu.Lock()
+	r.live = make(chan agentruntime.Event, 16)
+	r.mu.Unlock()
+	return r.live, &agentruntime.RunResult{}, nil
+}
+
+func (r *steerAwareRunner) Steer(_ context.Context, _ int64, queuedID, text string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.live != nil {
+		r.live <- agentruntime.SteerConsumed{Steers: []agentruntime.ConsumedSteer{{
+			QueuedID: queuedID,
+			Text:     text,
+		}}}
+	}
+	return nil
+}
+
+// bootSteerAwareRig 起一个 rig,把 backend 换成 steerAwareRunner(bootRemoteRig 里
+// 换的那次由 t.Cleanup LIFO 先还原,这里再换一次接管)。
+func bootSteerAwareRig(t *testing.T, r *steerAwareRunner) *pairedTestRig {
+	t.Helper()
+	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+	t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, r))
+	return rig
+}
+
+// TestIntegration_SteerConsumedCarriesSubmitterSource (R17):
+// 一台已配对设备(rigDeviceFingerprint / "test-mac")起一轮后发一条 mid-turn steer,
+// daemon 必须把**提交方**的对端指纹与设备名盖到 SteerConsumed 的 ConsumedSteer 上,
+// 并随密封 EventFrame 原样回到客户端 —— 桌面端靠它区分「本机发的(与本地指纹相等,不
+// 渲染来源标识)」与「他端发的(渲染 pill)」。
+//
+// 拒绝的错误实现:不盖;盖的是会话发起方而非提交方;SourcePeer 只存在于 EventFrame 外层
+// 字段(密封事件被远端原样传递,EventFrame 级字段会被丢弃,必须骑在事件内部)。
+func TestIntegration_SteerConsumedCarriesSubmitterSource(t *testing.T) {
+	rt := &steerAwareRunner{}
+	rig := bootSteerAwareRig(t, rt)
+
+	events, _ := rig.startRun(t, 700)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	require.NoError(t, rig.runner.Steer(ctx, 700, "q-1", "follow-up from this device"))
+
+	var consumed agentruntime.SteerConsumed
+	deadline := time.After(5 * time.Second)
+found:
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatal("events channel closed before SteerConsumed arrived")
+			}
+			if sc, isSteer := ev.(agentruntime.SteerConsumed); isSteer {
+				consumed = sc
+				break found
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for SteerConsumed to round-trip")
+		}
+	}
+
+	require.Len(t, consumed.Steers, 1, "SteerConsumed must carry exactly the consumed steer")
+	assert.Equal(t, "q-1", consumed.Steers[0].QueuedID)
+	assert.Equal(t, "follow-up from this device", consumed.Steers[0].Text)
+	// 提交方 = 发起 steers 的那台已配对设备(rig 里唯一的客户端)。
+	assert.Equal(t, rigDeviceFingerprint, consumed.Steers[0].SourcePeer,
+		"daemon must stamp the submitter peer fingerprint onto the consumed steer")
+	assert.Equal(t, "test-mac", consumed.Steers[0].SourceName,
+		"daemon must stamp the submitter device name onto the consumed steer")
+}
+
 // TestIntegration_StrayConnDoesNotStealSessionNotifications 回归:一条完成 WS 升级却
 // **从不认证**的连接(LAN 扫描器 / 鉴权失败的客户端 / 掉队的重连)接入时,已配对设备
 // 上正在跑的会话必须照常收到推送。

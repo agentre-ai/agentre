@@ -59,6 +59,9 @@ type RuntimeDeps struct {
 	// ClaimedAccountID returns the daemon account authorized to target a
 	// non-caller origin peer in control requests.
 	ClaimedAccountID func() string
+	// SteerSource 是「queuedID → 提交方对端」的映射(R17),Daemon 级共享(见
+	// SteerSourcePort 注释)。nil 时 NewRuntimeHandlers 兜成 no-op,单测/旧调用不炸。
+	SteerSource SteerSourcePort
 }
 
 // RuntimeHandlers groups the runtime.* JSON-RPC handlers and owns the
@@ -97,12 +100,23 @@ func NewRuntimeHandlers(deps RuntimeDeps) *RuntimeHandlers {
 	if deps.RuntimeFor == nil {
 		deps.RuntimeFor = agentruntime.RuntimeFor
 	}
+	if deps.SteerSource == nil {
+		deps.SteerSource = noopSteerSource{}
+	}
 	return &RuntimeHandlers{
 		deps:       deps,
 		sessions:   map[int64]runtimeSession{},
 		runtimeFor: deps.RuntimeFor,
 	}
 }
+
+// noopSteerSource 是未注入 SteerSourcePort 时的空实现:单测 / 旧调用不记录任何来源,
+// 被消费的 steer 保持 SourcePeer/SourceName 为空(本机路径,与今天行为一致)。
+type noopSteerSource struct{}
+
+func (noopSteerSource) Record(string, SteerSourceEntry)         {}
+func (noopSteerSource) Consume(string) (SteerSourceEntry, bool) { return SteerSourceEntry{}, false }
+func (noopSteerSource) Forget(string)                           {}
 
 // Adopt 让这条连接的 handler 认下一条**别处发起的**会话:它此后能像自己起的那样解出
 // 会话的 backend,控制 RPC(steer / abort / submitAnswer / submitToolPermission …)因此
@@ -309,6 +323,12 @@ func (h *RuntimeHandlers) fanout(em *sessionEmitter, ch <-chan agentruntime.Even
 	count := 0
 	kindHist := map[string]int{}
 	for ev := range ch {
+		// R17:SteerConsumed 里的每条 steer 都带着它的提交方来源 —— 实时消费路径
+		// 在这里把 Steer RPC 时记下的对端盖回去(轮末残留的走 DrainPending 同表消费)。
+		// 盖在**密封事件内部**:远端 runtime 把 EventFrame 原样传递、会丢外层字段。
+		if sc, ok := ev.(agentruntime.SteerConsumed); ok {
+			ev = stampSteerSources(h.deps.SteerSource, sc)
+		}
 		raw, err := json.Marshal(ev)
 		if err != nil {
 			log.Printf("runtime.event: marshal failed sid=%d kind=%T errClass=%T errBytes=%d",
@@ -342,6 +362,32 @@ func (h *RuntimeHandlers) fanout(em *sessionEmitter, ch <-chan agentruntime.Even
 	em.emit(wire.NotifyRunResultDone, &frame)
 	log.Printf("runtime.run: session ended sid=%d totalEvents=%d kinds=%v hasStopErr=%t stopErrBytes=%d stopErrCode=%d",
 		sid, count, kindHist, frame.StopErrMsg != "", len(frame.StopErrMsg), frame.StopErrCode)
+}
+
+// stampSteerSources 把 Steer RPC 时记下的提交方来源盖回被消费的 steer 上(R17)。
+// 每条 steer 按 QueuedID 取映射(取走即删);查不到的保持空(本机/未知)。返回新事件,
+// 不改 backend 侧 slice。
+func stampSteerSources(src SteerSourcePort, sc agentruntime.SteerConsumed) agentruntime.SteerConsumed {
+	if len(sc.Steers) == 0 || src == nil {
+		return sc
+	}
+	out := make([]agentruntime.ConsumedSteer, len(sc.Steers))
+	copied := false
+	for i, st := range sc.Steers {
+		if entry, ok := src.Consume(st.QueuedID); ok && (entry.Peer != "" || entry.Name != "") {
+			if !copied {
+				copy(out, sc.Steers)
+				copied = true
+			}
+			out[i].SourcePeer = entry.Peer
+			out[i].SourceName = entry.Name
+		}
+	}
+	if !copied {
+		return sc
+	}
+	sc.Steers = out
+	return sc
 }
 
 // startAutonomousFanout 每会话起一个 goroutine,把真实 runtime 的自主续轮转发到
@@ -498,6 +544,15 @@ func peerFingerprint(ctx context.Context) string {
 	return ""
 }
 
+// peerName 取发起这条 RPC 的对端设备名(auth.pair 时上报;auth.account 路径为空)。
+// 与 peerFingerprint 一样只在请求 ctx 上有,必须在 RPC 处理期间取。
+func peerName(ctx context.Context) string {
+	if c := rpc.ConnFromContext(ctx); c != nil {
+		return c.Auth().DeviceName
+	}
+	return ""
+}
+
 // ── backend 会话键(按对端隔离)──────────────────────────────────────────────
 
 // runtimeSID 是 runtimeSessionID 在请求 ctx 上的取用形式:对端指纹取自那条连接的鉴权
@@ -611,6 +666,15 @@ func (h *RuntimeHandlers) Steer(ctx context.Context, p wire.SteerParams) (wire.O
 	if err := s.Steer(ctx, rid, p.QueuedID, p.Text); err != nil {
 		return wire.OK{}, err
 	}
+	// R17:记下这条 steer 的**提交方**(调用连接自己的对端 —— 他端接管别人的会话时,
+	// 提交方 ≠ 会话发起方,而来源标识要标的是「谁发的」)。等 backend 把这条 steer
+	// 消费掉、SteerConsumed 事件经 fanout 流出时,盖回 ConsumedSteer.SourcePeer。
+	if p.QueuedID != "" {
+		h.deps.SteerSource.Record(p.QueuedID, SteerSourceEntry{
+			Peer: peerFingerprint(ctx),
+			Name: peerName(ctx),
+		})
+	}
 	return wire.OK{}, nil
 }
 
@@ -623,6 +687,11 @@ func (h *RuntimeHandlers) CancelSteer(ctx context.Context, p wire.CancelSteerPar
 	if err != nil {
 		return wire.CancelSteerResult{}, err
 	}
+	// 被撤回的 steer 不会再被消费,清掉它的来源映射避免无界增长。
+	h.deps.SteerSource.Forget(p.QueuedID)
+	for _, id := range removed {
+		h.deps.SteerSource.Forget(id)
+	}
 	return wire.CancelSteerResult{Removed: removed}, nil
 }
 
@@ -632,6 +701,14 @@ func (h *RuntimeHandlers) DrainPending(ctx context.Context, p wire.DrainParams) 
 		return wire.DrainResult{}, err
 	}
 	steers := d.DrainPending(ctx, rid)
+	// R17:轮末残留的 pending steer 同样带来源 —— 它们和实时消费的 SteerConsumed 走
+	// 同一个 SteerInbox,QueuedID 对得上同一张映射表。
+	for i := range steers {
+		if entry, ok := h.deps.SteerSource.Consume(steers[i].QueuedID); ok {
+			steers[i].SourcePeer = entry.Peer
+			steers[i].SourceName = entry.Name
+		}
+	}
 	return wire.DrainResult{Steers: steers}, nil
 }
 

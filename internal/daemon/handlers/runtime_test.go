@@ -1358,6 +1358,119 @@ func TestRuntime_DrainPending_ReturnsSteers(t *testing.T) {
 	assert.Equal(t, []agentruntime.ConsumedSteer{{QueuedID: "q1", Text: "a"}}, out.Steers)
 }
 
+// fakeSteerSource 是 handlers.SteerSourcePort 的内存实现,供单元测试直接注入来源映射。
+type fakeSteerSource struct {
+	mu sync.Mutex
+	m  map[string]handlers.SteerSourceEntry
+}
+
+func newFakeSteerSource() *fakeSteerSource {
+	return &fakeSteerSource{m: map[string]handlers.SteerSourceEntry{}}
+}
+
+func (f *fakeSteerSource) Record(id string, e handlers.SteerSourceEntry) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.m[id] = e
+}
+
+func (f *fakeSteerSource) Consume(id string) (handlers.SteerSourceEntry, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e, ok := f.m[id]
+	if ok {
+		delete(f.m, id)
+	}
+	return e, ok
+}
+
+func (f *fakeSteerSource) Forget(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.m, id)
+}
+
+func newRuntimeHandlersOnWithSource(t *testing.T, rt agentruntime.Runtime, src handlers.SteerSourcePort) (
+	context.Context,
+	*recordingOutbound,
+	*handlers.RuntimeHandlers,
+	chan agentruntime.Event,
+) {
+	t.Helper()
+	notif := newRecordingOutbound()
+	sess := newRecordingSessions()
+	h := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
+		NotifyFor:    notif.notifierFor,
+		Journal:      notif,
+		Sessions:     sess,
+		SessionQuery: sess,
+		SteerSource:  src,
+		RuntimeFor: func(_ agent_backend_entity.BackendType) agentruntime.Runtime {
+			return rt
+		},
+	})
+	live := make(chan agentruntime.Event)
+	rt.(*fullRT).runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		return live, &agentruntime.RunResult{}, nil
+	}
+	runWithRT(t, h, context.Background(), 2)
+	return context.Background(), notif, h, live
+}
+
+// TestRuntime_DrainPending_StampsSubmitterSource (R17):轮末残留的 pending steer
+// 必须带着提交方来源返回 —— 它们和实时消费的 SteerConsumed 共用同一张映射表。
+func TestRuntime_DrainPending_StampsSubmitterSource(t *testing.T) {
+	rt := &fullRT{drainFn: func(_ int64) []agentruntime.ConsumedSteer {
+		return []agentruntime.ConsumedSteer{{QueuedID: "q1", Text: "a"}, {QueuedID: "q2", Text: "b"}}
+	}}
+	src := newFakeSteerSource()
+	src.Record("q1", handlers.SteerSourceEntry{Peer: "sha256:other-device", Name: "iPhone"})
+	// q2 没进映射(本机/未知)→ 保持空。
+	ctx, _, h, live := newRuntimeHandlersOnWithSource(t, rt, src)
+	defer close(live)
+
+	out, err := h.DrainPending(ctx, wire.DrainParams{SessionID: 2})
+	require.NoError(t, err)
+	require.Len(t, out.Steers, 2)
+	assert.Equal(t, "sha256:other-device", out.Steers[0].SourcePeer)
+	assert.Equal(t, "iPhone", out.Steers[0].SourceName)
+	assert.Empty(t, out.Steers[1].SourcePeer)
+	// 消费即删:同一 queuedID 不会二次盖来源。
+	_, ok := src.Consume("q1")
+	assert.False(t, ok, "consumed source mapping must be removed")
+}
+
+// TestRuntime_Fanout_StampsSteerConsumedSource (R17):实时消费路径 —— fanout 把
+// Steer RPC 记下的提交方盖到 SteerConsumed 的每条 steer 上,并随密封 EventFrame 流出。
+func TestRuntime_Fanout_StampsSteerConsumedSource(t *testing.T) {
+	rt := &fullRT{}
+	src := newFakeSteerSource()
+	src.Record("q-live", handlers.SteerSourceEntry{Peer: "sha256:other-device", Name: "iPad"})
+	_, notif, _, live := newRuntimeHandlersOnWithSource(t, rt, src)
+
+	live <- agentruntime.SteerConsumed{
+		Steers: []agentruntime.ConsumedSteer{{QueuedID: "q-live", Text: "go on"}},
+	}
+	close(live)
+
+	frames := notif.waitFrames(t, 2) // SteerConsumed + runResultDone
+	var ef *wire.EventFrame
+	for _, f := range frames {
+		if f.method == wire.NotifyEvent {
+			ef = f.params.(*wire.EventFrame)
+		}
+	}
+	require.NotNil(t, ef, "fanout must emit the SteerConsumed event frame")
+	ev, err := agentruntime.UnmarshalEvent(ef.Event)
+	require.NoError(t, err)
+	sc, ok := ev.(agentruntime.SteerConsumed)
+	require.True(t, ok)
+	require.Len(t, sc.Steers, 1)
+	assert.Equal(t, "q-live", sc.Steers[0].QueuedID)
+	assert.Equal(t, "sha256:other-device", sc.Steers[0].SourcePeer)
+	assert.Equal(t, "iPad", sc.Steers[0].SourceName)
+}
+
 func TestRuntime_Abort_Success(t *testing.T) {
 	rt := &fullRT{}
 	ctx, _, h, live := runtimeWithLiveSession(t, rt, 3)

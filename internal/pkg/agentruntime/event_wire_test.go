@@ -55,7 +55,7 @@ func TestEvent_RoundTrip(t *testing.T) {
 
 		// SteerConsumed
 		{"steer_consumed", SteerConsumed{Steers: []ConsumedSteer{
-			{QueuedID: "q1", Text: "hey"},
+			{QueuedID: "q1", Text: "hey", SourcePeer: "sha256:peer-a", SourceName: "iPhone"},
 			{QueuedID: "q2", Text: "more"},
 		}}},
 		{"steer_consumed_empty", SteerConsumed{}},

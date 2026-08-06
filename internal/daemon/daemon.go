@@ -102,6 +102,10 @@ type Daemon struct {
 	// conns 是 daemon 的推送路由表:会话通知按**会话**解析到发起它的那条连接,
 	// MCP 反向隧道从同一份状态里解析目标,daemon 上没有第二个「当前连接」的全局。
 	conns connRegistry
+
+	// steerSource 是「queuedID → 提交方对端」的映射(R17),Daemon 级一份:Steer RPC
+	// 可能落在任意一条连接上,而 SteerConsumed 由发起会话那条连接的 fanout 发出。
+	steerSource *steerSourceStore
 }
 
 // sessionKey 是 daemon 侧的会话身份(R16):(对端设备指纹, 对端会话 id)。会话 id 是
@@ -472,6 +476,7 @@ func New(opts Options) (*Daemon, error) {
 		sessionStore: daemonSessionStore{db: gormDB},
 		pairing:      pm, ratelim: rl,
 		registry: reg, auth: auth,
+		steerSource: newSteerSourceStore(),
 	}
 	if st.IsClaimed() && opts.HubServerURL != "" {
 		credential := st.Snapshot().Credential
@@ -947,6 +952,10 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 		NotifyFor: d.notifierForPeer,
 		Journal:   d.journal,
 		Sessions:  d.sessionStore,
+		// R17:queuedID → 提交方对端映射是 Daemon 级的 —— Steer RPC 可能落在任意一条
+		// 连接(同设备多条连接 / 他端接管),而 SteerConsumed 由发起会话那条连接的
+		// fanout 发出,两者必须共享同一张表。
+		SteerSource: d.steerSource,
 		// 同一个仓储的读侧:提交决策解不出会话时,靠它区分「轮次真的结束了」与
 		// 「这个 handler 从没拥有过这条会话」(见 idempotentSubmitResult)。
 		SessionQuery:     d.sessionStore,
@@ -1223,6 +1232,53 @@ func (j notificationJournal) Append(ctx context.Context, peerFingerprint, peerSe
 // 方是脱离请求 ctx 的 fanout goroutine,而 daemon 故意不写 db.SetDefault(同进程多个
 // Daemon 会互相串库,见 Daemon.db 注释)。
 type daemonSessionStore struct{ db *gorm.DB }
+
+// steerSourceStore 是「queuedID → 提交方对端」的映射(R17),Daemon 级一份(见
+// Daemon.steerSource 注释)。queuedID 是桌面端生成的 UUID v4,跨对端天然唯一,所以可以
+// 用裸 ID 做键而不必按会话/对端隔离。映射在 Steer RPC 时写入、SteerConsumed / 轮末
+// DrainPending 消费后删除;撤回的 steer 由 CancelSteer 显式 Forget,不会无界增长。
+// 实现满足 handlers.SteerSourcePort(按 DIP 声明在消费方)。
+type steerSourceStore struct {
+	mu sync.Mutex
+	m  map[string]handlers.SteerSourceEntry
+}
+
+var _ handlers.SteerSourcePort = (*steerSourceStore)(nil)
+
+func newSteerSourceStore() *steerSourceStore {
+	return &steerSourceStore{m: make(map[string]handlers.SteerSourceEntry)}
+}
+
+func (s *steerSourceStore) Record(queuedID string, entry handlers.SteerSourceEntry) {
+	if queuedID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m[queuedID] = entry
+}
+
+func (s *steerSourceStore) Consume(queuedID string) (handlers.SteerSourceEntry, bool) {
+	if queuedID == "" {
+		return handlers.SteerSourceEntry{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.m[queuedID]
+	if ok {
+		delete(s.m, queuedID)
+	}
+	return e, ok
+}
+
+func (s *steerSourceStore) Forget(queuedID string) {
+	if queuedID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, queuedID)
+}
 
 var (
 	_ handlers.SessionLifecyclePort = daemonSessionStore{}

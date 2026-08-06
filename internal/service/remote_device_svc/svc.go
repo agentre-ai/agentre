@@ -51,6 +51,10 @@ type RemoteDeviceSvc interface {
 	UpdateTLS(ctx context.Context, id int64, mode, pem string) (*DeviceView, error)
 	Refresh(ctx context.Context, id int64) (*DeviceView, error)
 	Rename(ctx context.Context, id int64, name string) error
+	// DeviceFingerprint 交出本机设备指纹(agentre-device-fingerprint keychain 账号),
+	// 与 LAN 配对 / 账号登录共用同一指纹(R5 硬不变量)。前端拿它与消息上的 sourceDevice
+	// 比对,相等就不渲染来源标识(R17 本机不带)。keychain 缺失时惰性生成(与 Add 同源)。
+	DeviceFingerprint() (string, error)
 	// SetWatcher 注入 watcher port。生产由 bootstrap 在 watcher_svc 就绪后调用;
 	// nil 注入也允许(单测里不关心 watcher 时跳过)。
 	SetWatcher(w WatcherPort)

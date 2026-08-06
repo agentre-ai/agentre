@@ -85,6 +85,8 @@ type ChatMessageProps = React.ComponentProps<"article"> & {
   children: React.ReactNode;
   initials?: string;
   meta?: React.ReactNode;
+  /** R17:非本机发出的用户消息的来源设备显示名;undefined = 不渲染来源标识。 */
+  source?: string;
   time: string;
   /** "assistant" (默认): 渲染 agent avatar + 名字。
    *  "user": 渲染中性的「我」头像 —— 与 agent 头像视觉对称，但走 muted
@@ -99,6 +101,7 @@ function ChatMessage({
   className,
   initials,
   meta,
+  source,
   time,
   variant = "assistant",
   ...props
@@ -124,7 +127,16 @@ function ChatMessage({
       avatarColor={avatarColor}
       name={isUser ? null : author}
       headerExtra={
-        <span className="text-meta text-muted-foreground">{time}</span>
+        <>
+          <span className="text-meta text-muted-foreground">{time}</span>
+          {/* R17:来源标识跟随在角色标签之后,极简 inline pill,不占独立行、不用状态色
+              (它是设备属性,不是状态)。只有非本机发出的用户消息才有 source。 */}
+          {source ? (
+            <span className="inline-flex items-center rounded-full bg-muted px-1.5 text-meta text-muted-foreground">
+              {t("chat.message.fromDevice", { device: source })}
+            </span>
+          ) : null}
+        </>
       }
       footer={meta}
       {...props}
@@ -776,6 +788,7 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
           initials={isAssistant ? ctx?.agentName.charAt(0) : undefined}
           variant={isAssistant ? "assistant" : "user"}
           time={formatHHmm(m.createtime)}
+          source={isAssistant ? undefined : row.sourceDevice}
           meta={meta}
         >
           <RenderItemView item={row.item} messageId={row.messageId} />

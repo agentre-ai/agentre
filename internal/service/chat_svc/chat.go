@@ -3121,6 +3121,15 @@ func (s *chatSvc) persistAutoContinueTurn(
 		return nil, nil, nil, fmt.Errorf("encode auto-continue user msg: %w", err)
 	}
 	userEvent.SessionID = sess.ID
+	// R17: 合并多条残留 steers 成一条 user msg 时,取第一条非空来源(来源应一致;
+	// 不一致时按先到者标,保持极简)。本机/未知保持空。
+	for _, st := range pending {
+		if st.SourcePeer != "" || st.SourceName != "" {
+			userEvent.SourceDevice = st.SourcePeer
+			userEvent.SourceDeviceName = st.SourceName
+			break
+		}
+	}
 
 	payload := &ChatStreamEvent{
 		Kind:                     StreamSteerConsumed,
@@ -3213,12 +3222,18 @@ func (s *chatSvc) persistConsumedSteers(
 	}
 
 	userEvents := make([]ChatMessage, 0, len(userMsgs))
-	for _, msg := range userMsgs {
+	for i, msg := range userMsgs {
 		cm, err := toChatMessage(msg)
 		if err != nil {
 			return nil, nil, fmt.Errorf("encode consumed steer message: %w", err)
 		}
 		cm.SessionID = sess.ID
+		// R17: 把提交方来源带进 UserMessages —— 他端消息才有;本机/未知保持空,
+		// 前端看到空 sourceDevice 就不渲染来源标识。
+		if i < len(steers) {
+			cm.SourceDevice = steers[i].SourcePeer
+			cm.SourceDeviceName = steers[i].SourceName
+		}
 		userEvents = append(userEvents, cm)
 	}
 

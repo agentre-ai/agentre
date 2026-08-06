@@ -383,6 +383,32 @@ export type TranscriptRowsResult = {
   rowIndexByKey: Map<string, number>;
 };
 
+/**
+ * R17:从消息数组里收集「非本机发出的用户消息 → 来源设备显示名」,交给
+ * buildTranscriptRows 的 sourceByMessageId。
+ *
+ * 规则:角色必须是 user、消息上带了 sourceDevice(daemon 盖的提交方指纹)、且它 !=
+ * 本机指纹 —— 三者都满足才进表。本机发出的消息 sourceDevice 恒等于本机指纹,被跳过,
+ * 输出与不传逐项一致(单客户端界面零变化);localFingerprint 未就绪时保守输出空表。
+ *
+ * 显示名优先取 daemon 上报的设备名(sourceDeviceName);没名字就回退到指纹本身 ——
+ * 它仍是这台设备的标识。
+ */
+export function buildSourceByMessageId(
+  messages: readonly chat_svc.ChatMessage[],
+  localFingerprint: string | undefined,
+): Map<number, string> {
+  const out = new Map<number, string>();
+  if (!localFingerprint) return out;
+  for (const m of messages) {
+    if (m.role !== "user") continue;
+    const dev = m.sourceDevice;
+    if (!dev || dev === localFingerprint) continue;
+    out.set(m.id, m.sourceDeviceName || dev);
+  }
+  return out;
+}
+
 export type BuildTranscriptRowsArgs = {
   displayMessages: chat_svc.ChatMessage[];
   autonomousIds: ReadonlySet<number>;

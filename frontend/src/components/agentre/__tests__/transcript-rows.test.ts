@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildRenderItems,
+  buildSourceByMessageId,
   buildTranscriptRows,
   estimateRowSize,
   estimateRowSizeWithSpacing,
@@ -394,6 +395,65 @@ describe("buildTranscriptRows source device (R17)", () => {
     });
     expect(rows).toHaveLength(1);
     expect(rows[0].sourceDevice).toBe("iPhone");
+  });
+});
+
+describe("buildSourceByMessageId (R17 caller side)", () => {
+  const foreign = (
+    id: number,
+    sourceDevice: string,
+    sourceDeviceName?: string,
+  ) =>
+    ({
+      ...message(id, "user", [text("x")]),
+      sourceDevice,
+      sourceDeviceName,
+    }) as chat_svc.ChatMessage;
+
+  it("maps a foreign user message to its device name", () => {
+    const out = buildSourceByMessageId(
+      [foreign(1, "sha256:other", "iPhone")],
+      "sha256:self",
+    );
+    expect(out.get(1)).toBe("iPhone");
+  });
+
+  it("falls back to the fingerprint when no device name is available", () => {
+    const out = buildSourceByMessageId(
+      [foreign(2, "sha256:other")],
+      "sha256:self",
+    );
+    expect(out.get(2)).toBe("sha256:other");
+  });
+
+  it("never maps this device's own messages (single-client zero change)", () => {
+    const out = buildSourceByMessageId(
+      [foreign(3, "sha256:self")],
+      "sha256:self",
+    );
+    expect(out.size).toBe(0);
+  });
+
+  it("skips messages without a source and non-user roles", () => {
+    const out = buildSourceByMessageId(
+      [
+        message(4, "user", [text("no source")]),
+        {
+          ...message(5, "assistant", [text("assistant")]),
+          sourceDevice: "sha256:other",
+        } as chat_svc.ChatMessage,
+      ],
+      "sha256:self",
+    );
+    expect(out.size).toBe(0);
+  });
+
+  it("returns an empty map while the local fingerprint is unresolved", () => {
+    const out = buildSourceByMessageId(
+      [foreign(6, "sha256:other", "iPhone")],
+      undefined,
+    );
+    expect(out.size).toBe(0);
   });
 });
 
