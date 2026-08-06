@@ -99,9 +99,9 @@ func setupDirectModelOverrideTest(t *testing.T) (*chatSvc, *directModelOverrideM
 }
 
 func TestRunTurn_ModelOverrideReachesRunnerAndPersistsDeviationNotice(t *testing.T) {
-	s, m, ctx := setupDirectModelOverrideTest(t)
+	_, m, ctx := setupDirectModelOverrideTest(t)
 	var streamEvents []ChatStreamEvent
-	s = NewChat(EmitterFunc(func(_ context.Context, _ string, payload any) {
+	s := NewChat(EmitterFunc(func(_ context.Context, _ string, payload any) {
 		if event, ok := payload.(ChatStreamEvent); ok {
 			streamEvents = append(streamEvents, event)
 		}
@@ -130,8 +130,8 @@ func TestRunTurn_ModelOverrideReachesRunnerAndPersistsDeviationNotice(t *testing
 	var persisted *chat_entity.Message
 	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, msg *chat_entity.Message) error {
-			copy := *msg
-			persisted = &copy
+			msgCopy := *msg
+			persisted = &msgCopy
 			return nil
 		}).AnyTimes()
 
