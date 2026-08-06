@@ -120,3 +120,96 @@ func TestLoadSession_ProvidesModelOverrideAndProviderDefault(t *testing.T) {
 	assert.Equal(t, "selected-model", resp.Session.ModelOverride)
 	assert.Equal(t, "provider-default", resp.Session.ProviderDefaultModel)
 }
+
+func TestLoadSession_ProvidesLLMProviderKey(t *testing.T) {
+	t.Run("bound backend exposes its provider key", func(t *testing.T) {
+		m := setupChatTestWithoutDatabase(t)
+		ctx := m.ctx
+		m.session.EXPECT().Find(ctx, int64(100)).Return(&chat_entity.Session{
+			ID: 100, AgentID: 7, Status: consts.ACTIVE,
+		}, nil)
+		m.agent.EXPECT().Find(ctx, int64(7)).Return(&agent_entity.Agent{
+			ID: 7, AgentBackendID: 12, Status: consts.ACTIVE,
+		}, nil)
+		m.backend.EXPECT().Find(ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
+			ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "provider-key", Status: consts.ACTIVE,
+		}, nil)
+		m.provider.EXPECT().FindByKey(ctx, "provider-key").Return(&llm_provider_entity.LLMProvider{
+			ProviderKey: "provider-key", Type: string(llm_provider_entity.TypeAnthropic), Model: "default-model", Status: consts.ACTIVE,
+		}, nil)
+		m.message.EXPECT().List(ctx, int64(100)).Return(nil, nil)
+
+		resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 100})
+		require.NoError(t, err)
+		assert.Equal(t, "provider-key", resp.Session.LLMProviderKey)
+	})
+
+	t.Run("unbound backend leaves the key empty", func(t *testing.T) {
+		m := setupChatTestWithoutDatabase(t)
+		ctx := m.ctx
+		m.session.EXPECT().Find(ctx, int64(200)).Return(&chat_entity.Session{
+			ID: 200, AgentID: 8, Status: consts.ACTIVE,
+		}, nil)
+		m.agent.EXPECT().Find(ctx, int64(8)).Return(&agent_entity.Agent{
+			ID: 8, AgentBackendID: 13, Status: consts.ACTIVE,
+		}, nil)
+		m.backend.EXPECT().Find(ctx, int64(13)).Return(&agent_backend_entity.AgentBackend{
+			ID: 13, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "", Status: consts.ACTIVE,
+		}, nil)
+		m.message.EXPECT().List(ctx, int64(200)).Return(nil, nil)
+
+		resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 200})
+		require.NoError(t, err)
+		assert.Empty(t, resp.Session.LLMProviderKey)
+	})
+}
+
+func TestListAgents_ProvidesLLMProviderKey(t *testing.T) {
+	t.Run("bound backend exposes its provider key", func(t *testing.T) {
+		m := setupChatTestWithoutDatabase(t)
+		ctx := m.ctx
+		m.agent.EXPECT().List(ctx).Return([]*agent_entity.Agent{
+			{ID: 3, Name: "Eng", AgentBackendID: 17, Status: consts.ACTIVE},
+		}, nil)
+		m.backend.EXPECT().BatchFind(ctx, []int64{17}).Return(map[int64]*agent_backend_entity.AgentBackend{
+			17: {ID: 17, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-11", Status: consts.ACTIVE},
+		}, nil)
+		m.provider.EXPECT().BatchFindByKey(ctx, []string{"key-11"}).Return(map[string]*llm_provider_entity.LLMProvider{
+			"key-11": {ID: 11, Type: string(llm_provider_entity.TypeAnthropic), Model: "default-model", Status: consts.ACTIVE},
+		}, nil)
+		m.session.EXPECT().CountRunningByAgents(ctx, []int64{3}).Return(map[int64]int{}, nil)
+		m.session.EXPECT().CountByAgentsIncludingGroups(ctx, []int64{3}).Return(map[int64]int64{}, nil)
+		m.session.EXPECT().ListIDsByAgentsIncludingGroups(ctx, []int64{3}).Return(map[int64][]int64{}, nil)
+		m.session.EXPECT().ListByAgentIncludingGroups(ctx, int64(3), 5).Return(nil, nil)
+		m.session.EXPECT().ListAttentionByAgentIncludingGroups(ctx, int64(3), 20).Return(nil, nil)
+
+		resp, err := m.svc.ListAgents(ctx, &chat_svc.ListAgentsRequest{})
+		require.NoError(t, err)
+		if assert.Len(t, resp.Agents, 1) {
+			assert.Equal(t, "key-11", resp.Agents[0].LLMProviderKey)
+		}
+	})
+
+	t.Run("unbound backend leaves the key empty", func(t *testing.T) {
+		m := setupChatTestWithoutDatabase(t)
+		ctx := m.ctx
+		m.agent.EXPECT().List(ctx).Return([]*agent_entity.Agent{
+			{ID: 4, Name: "Codex", AgentBackendID: 18, Status: consts.ACTIVE},
+		}, nil)
+		m.backend.EXPECT().BatchFind(ctx, []int64{18}).Return(map[int64]*agent_backend_entity.AgentBackend{
+			18: {ID: 18, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "", Status: consts.ACTIVE},
+		}, nil)
+		m.provider.EXPECT().BatchFindByKey(ctx, []string{}).Return(map[string]*llm_provider_entity.LLMProvider{}, nil)
+		m.session.EXPECT().CountRunningByAgents(ctx, []int64{4}).Return(map[int64]int{}, nil)
+		m.session.EXPECT().CountByAgentsIncludingGroups(ctx, []int64{4}).Return(map[int64]int64{}, nil)
+		m.session.EXPECT().ListIDsByAgentsIncludingGroups(ctx, []int64{4}).Return(map[int64][]int64{}, nil)
+		m.session.EXPECT().ListByAgentIncludingGroups(ctx, int64(4), 5).Return(nil, nil)
+		m.session.EXPECT().ListAttentionByAgentIncludingGroups(ctx, int64(4), 20).Return(nil, nil)
+
+		resp, err := m.svc.ListAgents(ctx, &chat_svc.ListAgentsRequest{})
+		require.NoError(t, err)
+		if assert.Len(t, resp.Agents, 1) {
+			assert.Empty(t, resp.Agents[0].LLMProviderKey)
+		}
+	})
+}

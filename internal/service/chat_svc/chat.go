@@ -329,6 +329,7 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 		}
 		if be := backends[a.AgentBackendID]; be != nil {
 			item.BackendType = be.Type
+			item.LLMProviderKey = be.LLMProviderKey
 			if agent_backend_entity.BackendType(be.Type) == agent_backend_entity.TypeClaudeCode {
 				// 仅 claudecode 透出；entity.Check 限定其它后端为空串。
 				item.DefaultPermissionMode = be.DefaultPermissionMode
@@ -555,6 +556,7 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		}
 		if prov != nil {
 			resp.Session.LLMProviderType = prov.Type
+			resp.Session.LLMProviderKey = be.LLMProviderKey
 			resp.Session.ProviderDefaultModel = strings.TrimSpace(prov.Model)
 		}
 		resp.Session.ContextWindow = resolveContextWindowWithRuntime(sess, prov, msgs)

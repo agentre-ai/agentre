@@ -1926,6 +1926,22 @@
     },
     "reorderFailed": "Failed to save order, please retry"
   },
+  "modelPill": {
+    "active": "Active",
+    "aria": "Model: {{model}}",
+    "errorFetch": "Failed to load model list. Please try again.",
+    "errorPersist": "Failed to save the model switch. Please try again.",
+    "errorProvider": "No model list found for this provider (it may have been removed or is offline).",
+    "followDefault": "Follow provider default",
+    "followDefaultDesc": "Use the provider default model bound to this agent",
+    "followDefaultUnbound": "Follow default",
+    "footer": "The switch takes effect from the next turn; the running turn is unaffected",
+    "freeInputPlaceholder": "Type a model ID, press Enter to confirm",
+    "heading": "Model",
+    "submit": "Use",
+    "title": "Switch model · current {{model}}",
+    "unboundExisting": "No provider bound; existing sessions cannot switch models"
+  },
   "permissionMode": {
     "active": "ACTIVE",
     "aria": "Permission mode: {{label}} (Shift+Tab to switch)",

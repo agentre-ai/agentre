@@ -90,6 +90,7 @@ import {
 } from "./chat-panel-catchup-state";
 import { computeComposerContextUsage } from "./chat-panel-context-usage";
 import { PermissionModePill, usePermissionMode } from "./permission-mode";
+import { ModelPill, useModelPill } from "./model-pill";
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
 import { AgentAvatar, DeviceTag, StatusDot } from "./primitives";
 import { QueuedMessagesBar } from "./queued-messages-bar";
@@ -1242,6 +1243,17 @@ function ChatPanel({
       session?.agentStatus === "running" ||
       session?.agentStatus === "waiting");
 
+  // ModelPill：会话级模型覆盖。已绑 provider（llmProviderKey 非空）→ /v1/models 列表；
+  // 未绑 + 已有会话 → 灰显；未绑 + 新建会话 → 自由输入。新建会话的瞬态选择经
+  // doSend 的 SendRequest.ModelOverride 透传给后端落库（已有会话走 SetChatSessionModel）。
+  const modelPill = useModelPill({
+    sessionId,
+    llmProviderKey:
+      session?.llmProviderKey ?? newSessionAgent?.llmProviderKey ?? "",
+    initialOverride: session?.modelOverride,
+    providerDefaultModel: session?.providerDefaultModel,
+  });
+
   // prop 优先，无 prop 时降级到内部派生值。
   const effectiveTopline = headerTopline ?? derivedTopline;
 
@@ -1534,6 +1546,9 @@ function ChatPanel({
         permissionMode:
           permissionModeOverride ??
           (isModeSwitchable ? permissionMode.mode : ""),
+        // 新建会话首发前预选：瞬态模型随 SendRequest.ModelOverride 透传落库。
+        // 已有会话忽略（走 SetChatSessionModel），后端 Send 已约定该字段只读新建路径。
+        ...(targetSessionId === 0 ? { modelOverride: modelPill.override } : {}),
       };
       if (images.length > 0) {
         sendPayload.images = images.map((image) => ({
@@ -2677,6 +2692,7 @@ function ChatPanel({
                     />
                   ) : null
                 }
+                modelSlot={<ModelPill {...modelPill} />}
                 onShiftTab={
                   isModeSwitchable && !modeSwitchingDisabled
                     ? permissionMode.cycleMode

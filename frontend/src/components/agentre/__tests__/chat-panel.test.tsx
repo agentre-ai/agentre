@@ -39,6 +39,8 @@ const appMocks = vi.hoisted(() => ({
   GetCCUsage: vi.fn().mockResolvedValue({ reason: "" }),
   GetChatLaunchCommand: vi.fn(),
   GetChatGoal: vi.fn(),
+  ListLLMProviders: vi.fn().mockResolvedValue({ items: [] }),
+  ListLLMModels: vi.fn().mockResolvedValue({ items: [] }),
   LoadChatSession: vi.fn(),
   MarkChatSessionRead: vi.fn().mockResolvedValue({}),
   RegenerateChatMessage: vi.fn(),
@@ -46,6 +48,7 @@ const appMocks = vi.hoisted(() => ({
   ResolveLocalCommandScope: vi.fn(),
   SendChatMessage: vi.fn(),
   SetChatGoal: vi.fn(),
+  SetChatSessionModel: vi.fn().mockResolvedValue(undefined),
   StartChatGoal: vi.fn(),
   StopChatMessage: vi.fn(),
   TerminalClose: vi.fn(),
@@ -174,6 +177,7 @@ vi.mock("../chat", async () => {
       localCommandHistoryScope?: unknown;
       onSubmit?: (text: string) => void;
       permissionModeSlot?: React.ReactNode;
+      modelSlot?: React.ReactNode;
       topSlot?: React.ReactNode;
     }) => {
       componentMocks.chatComposerProps.push(props as Record<string, unknown>);
@@ -182,6 +186,7 @@ vi.mock("../chat", async () => {
         null,
         props.topSlot,
         props.permissionModeSlot,
+        props.modelSlot,
         componentMocks.localCommandMenuActive && props.localCommandHistoryScope
           ? React.createElement("div", {
               "data-testid": "local-command-history-menu",
@@ -2807,6 +2812,58 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
     expect(
       screen.queryByTestId("permission-mode-pill"),
     ).not.toBeInTheDocument();
+  });
+
+  it("sessionId=0 + newSessionAgent 时渲染 ModelPill，首发 Send 把瞬态 override 随 SendRequest.ModelOverride 透传", async () => {
+    resetStore();
+    mockSessionStore.session = null;
+    appMocks.SendChatMessage.mockResolvedValue({
+      assistantMessageId: 1001,
+      sessionId: 42,
+      stream: "chat:event:42:1001",
+      userMessageId: 1000,
+    });
+    // 未绑 provider 的新建会话：弹层走自由输入，pill 可用。
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Eng",
+            agentBackendId: 1,
+            backendType: "claudecode",
+            llmProviderKey: "",
+          } as never
+        }
+      />,
+    );
+
+    const pill = await screen.findByTestId("model-pill");
+    expect(pill).not.toBeDisabled();
+
+    const user = userEvent.setup();
+    await user.click(pill);
+    await user.type(
+      screen.getByLabelText(/Type a model ID/),
+      "cli-model{Enter}",
+    );
+
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((text: string) => void)
+      | undefined;
+    expect(submit).toBeDefined();
+    act(() => submit?.("hello"));
+
+    await waitFor(() => {
+      expect(appMocks.SendChatMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: 0,
+          agentId: 7,
+          modelOverride: "cli-model",
+        }),
+      );
+    });
   });
 });
 

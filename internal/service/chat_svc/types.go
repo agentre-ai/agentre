@@ -479,7 +479,10 @@ type ChatSessionDetail struct {
 	// openai-response）。前端用它和 BackendType 一起判定 Usage 字段语义：Anthropic 系
 	// 的 PromptTokens 只含未缓存输入，要叠加 CachedTokens + CacheCreationTokens 才是
 	// 总上下文；OpenAI 系的 PromptTokens 已是总数。空串表示后端未绑定 provider（CLI 登录态）。
-	LLMProviderType      string `json:"llmProviderType"`
+	LLMProviderType string `json:"llmProviderType"`
+	// LLMProviderKey 是 backend 绑定的 provider key；空串 = 未绑（CLI 登录态）。
+	// 前端 ModelPill 用它与 ListLLMProviders() 匹配 provider id 拉 /v1/models 列表。
+	LLMProviderKey       string `json:"llmProviderKey"`
 	ModelOverride        string `json:"modelOverride"`
 	ProviderDefaultModel string `json:"providerDefaultModel"`
 	Title                string `json:"title"`
@@ -542,16 +545,20 @@ type ChatAgentItem struct {
 	// （codex / builtin）一律留空。前端新会话场景下用它作为 pill 起手值兜底，并把
 	// 同值随 SendChatMessage.permissionMode 透回，让 chat_svc.createPermissionMode
 	// 的「raw 非空就直接用」分支照样落到管理员预设上。
-	DefaultPermissionMode string            `json:"defaultPermissionMode"`
-	Chattable             bool              `json:"chattable"`
-	Pinned                bool              `json:"pinned"`
-	ChattableHint         string            `json:"chattableHint"`
-	ActiveCount           int               `json:"activeCount"`
-	RecentCount           int               `json:"recentCount"`
-	TotalSessions         int64             `json:"totalSessions"`
-	SessionIDs            []int64           `json:"sessionIds"`
-	Sessions              []ChatSessionLite `json:"sessions"`
-	AttentionSessions     []ChatSessionLite `json:"attentionSessions"`
+	DefaultPermissionMode string `json:"defaultPermissionMode"`
+	// LLMProviderKey 是 backend 绑定的 provider key；空串 = 未绑（CLI 登录态）。
+	// 前端无会话 composer ModelPill 用它判定新会话已绑/未绑：非空 → 走 /v1/models 列表；
+	// 空 → 弹层内自由输入模型 id。
+	LLMProviderKey    string            `json:"llmProviderKey"`
+	Chattable         bool              `json:"chattable"`
+	Pinned            bool              `json:"pinned"`
+	ChattableHint     string            `json:"chattableHint"`
+	ActiveCount       int               `json:"activeCount"`
+	RecentCount       int               `json:"recentCount"`
+	TotalSessions     int64             `json:"totalSessions"`
+	SessionIDs        []int64           `json:"sessionIds"`
+	Sessions          []ChatSessionLite `json:"sessions"`
+	AttentionSessions []ChatSessionLite `json:"attentionSessions"`
 
 	// 远端 device 归属 — 给前端 DeviceTag 渲染本地/远端 chip 用。
 	// 空 DeviceID = 本地 backend；非空 = paired_agentred.id 字符串化。

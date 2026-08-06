@@ -1926,6 +1926,22 @@
     },
     "reorderFailed": "排序保存失败，请重试"
   },
+  "modelPill": {
+    "active": "生效中",
+    "aria": "模型：{{model}}",
+    "errorFetch": "模型列表加载失败，请稍后重试",
+    "errorPersist": "模型切换保存失败，请重试",
+    "errorProvider": "未找到该供应商的模型列表（供应商可能已删除或离线）",
+    "followDefault": "跟随供应商默认",
+    "followDefaultDesc": "使用 agent 绑定的供应商默认模型",
+    "followDefaultUnbound": "跟随默认",
+    "footer": "切换从下一轮开始生效，正在进行的回合不受影响",
+    "freeInputPlaceholder": "输入模型 ID，回车确认",
+    "heading": "模型",
+    "submit": "使用",
+    "title": "切换模型 · 当前 {{model}}",
+    "unboundExisting": "未绑定供应商，已有会话无法切换模型"
+  },
   "permissionMode": {
     "active": "ACTIVE",
     "aria": "权限模式：{{label}}（Shift+Tab 切换）",
