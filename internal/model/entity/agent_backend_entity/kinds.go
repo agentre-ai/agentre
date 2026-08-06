@@ -48,6 +48,7 @@ var backendKinds = map[BackendType]BackendKind{
 	TypeClaudeCode: claudeCodeKind{},
 	TypeCodex:      codexKind{},
 	TypePiAgent:    piAgentKind{},
+	TypeOpenClaw:   openClawKind{},
 }
 
 // KindFor 查表，找不到返 nil。Service 在 Test/Create/Update 前用它分派 Prober。
@@ -197,6 +198,39 @@ func (piAgentKind) ValidateExtra(ctx context.Context, b *AgentBackend) error {
 	return nil
 }
 
+// openClawKind 仅保存 Gateway-native 的非敏感配置。token/device private key
+// 由专用 keychain 管理，不进入 entity 或通用 env_json。
+type openClawKind struct{}
+
+func (openClawKind) Type() BackendType      { return TypeOpenClaw }
+func (openClawKind) KnownAliases() []string { return nil }
+func (openClawKind) ProviderTypeMatch(llm_provider_entity.ProviderType) bool {
+	return false
+}
+func (openClawKind) RequiresProviderModel() bool { return false }
+func (openClawKind) AllowsCLIPath() bool         { return false }
+
+func (openClawKind) ValidateExtra(ctx context.Context, b *AgentBackend) error {
+	if strings.TrimSpace(b.LLMProviderKey) != "" ||
+		strings.TrimSpace(b.CLIPath) != "" ||
+		!isEmptyJSONObject(b.ModelRoutes) ||
+		strings.TrimSpace(b.Sandbox) != "" ||
+		strings.TrimSpace(b.Approval) != "" ||
+		!isEmptyJSONObject(b.EnvJSON) ||
+		strings.TrimSpace(b.ReasoningEffort) != "" ||
+		strings.TrimSpace(b.DefaultPermissionMode) != "" ||
+		strings.TrimSpace(b.DefaultModel) != "" {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	if _, err := NormalizeOpenClawGatewayURL(b.OpenClawGatewayURL); err != nil {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	if strings.TrimSpace(b.OpenClawSessionMode) != OpenClawSessionPerAgentRESession {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	return nil
+}
+
 // validateSandbox 校验 codex sandbox 枚举；空字符串表示走 CLI 默认。
 func validateSandbox(ctx context.Context, v string) error {
 	switch strings.TrimSpace(v) {
@@ -210,7 +244,7 @@ func validateSandbox(ctx context.Context, v string) error {
 // validateApproval 校验 codex approval policy 枚举；空字符串表示 never。
 func validateApproval(ctx context.Context, v string) error {
 	switch strings.TrimSpace(v) {
-	case "", "untrusted", "on-failure", "on-request", "never":
+	case "", "untrusted", "on-request", "never":
 		return nil
 	default:
 		return i18n.NewError(ctx, code.AgentBackendInvalidApproval)

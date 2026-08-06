@@ -71,6 +71,7 @@ export type RenderItem =
       type: "tool_permission_request";
     }
   | { block: ChatBlockData; type: "tool_approval" }
+  | { block: ChatBlockData; type: "exec_approval" }
   | { block: ChatBlockData; type: "unknown" }
   | { block: ChatBlockData; type: "compact_boundary" };
 
@@ -274,6 +275,12 @@ export function buildRenderItems({
         // block.toolApproval.status 自身就是 truth(后端 finalize 已把悬空 pending 落成
         // expired),前端不按会话活跃度推断。
         items.push({ block: b, type: "tool_approval" });
+        break;
+      case "exec_approval":
+        // Gateway approval resolution is deliberately not paired with a
+        // tool_result: approval terminal and command execution terminal are
+        // separate protocol lifecycles.
+        items.push({ block: b, type: "exec_approval" });
         break;
       case "compact_boundary":
         // CLI 通报上下文已压缩 (manual /compact 或 auto)。在 transcript 中嵌一条
@@ -656,6 +663,9 @@ export function stableBlockIdentity(block?: ChatBlockData): string | undefined {
   }
   if (block.toolApproval?.requestId) {
     return `tool-approval:${block.toolApproval.requestId}`;
+  }
+  if (block.execApproval?.id) {
+    return `exec-approval:${block.execApproval.id}`;
   }
   const canonical = (block as { canonical?: unknown }).canonical;
   if (!canonical || typeof canonical !== "object") return undefined;

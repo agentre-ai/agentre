@@ -403,6 +403,7 @@ func TestClientCompact_SendsThreadCompactStartRPC(t *testing.T) {
 	assert.Equal(t, "thread-old", events[0].SessionID)
 	assert.Equal(t, EventDone, events[1].Kind)
 	assert.Equal(t, "thread-old", stream.SessionID())
+	assert.Equal(t, TurnStateCompleted, stream.State())
 }
 
 func TestClientGoal_SendsThreadGoalRPCs(t *testing.T) {
@@ -852,10 +853,12 @@ func TestClientStream_EmitsCompletedPlanItemAsPlanText(t *testing.T) {
 	}
 	require.NoError(t, stream.Close(ctx))
 
-	require.Len(t, events, 2)
+	require.Len(t, events, 3)
 	assert.Equal(t, EventPlanUpdated, events[0].Kind)
-	assert.Equal(t, "# Plan\n\n1. Inspect files\n2. Report findings\n", events[0].PlanText)
-	assert.Equal(t, EventDone, events[1].Kind)
+	assert.Equal(t, "# Plan\n", events[0].PlanText)
+	assert.Equal(t, EventPlanUpdated, events[1].Kind)
+	assert.Equal(t, "# Plan\n\n1. Inspect files\n2. Report findings\n", events[1].PlanText)
+	assert.Equal(t, EventDone, events[2].Kind)
 }
 
 func TestClientForkThread(t *testing.T) {

@@ -50,6 +50,7 @@ export type ChatStreamEvent = {
     | "ask_user_question"
     | "plan_update"
     | "tool_permission_request"
+    | "exec_approval"
     | "tool_approval"
     | "session_status"
     | "usage"
@@ -107,6 +108,10 @@ export type ChatStreamEvent = {
   // tool_permission_request: 携带工具审批载荷（初次到达）或审批后的状态切换
   // （Resolved=true，前端按 requestId 找到既有 block 更新）。
   toolPermission?: chat_svc.ChatBlockToolPermission;
+
+  // exec_approval: OpenClaw Gateway exec approval lifecycle. resolved/expired
+  // updates the existing card and does not mean the command/tool finished.
+  execApproval?: chat_svc.ChatBlockExecApproval;
 
   // tool_approval: agent 内置写工具审批。status="pending" 为新卡(appendLiveToolApproval),
   // "approved"|"denied"|"expired" 为决议更新(markToolApprovalResolved,同 requestId)。

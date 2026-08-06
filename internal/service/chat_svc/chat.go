@@ -43,6 +43,7 @@ import (
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/builtin"
 	claudecodert "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/claudecode"
 	codexrt "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/codex"
+	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/openclaw"
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
@@ -99,6 +100,7 @@ type ChatSvc interface {
 	MarkSessionRead(ctx context.Context, req *MarkSessionReadRequest) (*MarkSessionReadResponse, error)
 	AnswerUserQuestion(ctx context.Context, req *AnswerUserQuestionRequest) (*AnswerUserQuestionResponse, error)
 	AnswerToolPermission(ctx context.Context, req *AnswerToolPermissionRequest) (*AnswerToolPermissionResponse, error)
+	ResolveExecApproval(ctx context.Context, req *ResolveExecApprovalRequest) (*ResolveExecApprovalResponse, error)
 	ResolvePlanAction(ctx context.Context, req *ResolvePlanActionRequest) (*ResolvePlanActionResponse, error)
 	// EnsureSession 是 chat_sessions 的统一创建/复用边界。其它 domain 不直接写 chat_repo.Session().Create。
 	EnsureSession(ctx context.Context, req *EnsureSessionRequest) (*EnsureSessionResponse, error)
@@ -357,6 +359,12 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 					item.Chattable = true
 				} else if s.gateway == nil || s.gateway.Status().State != "running" {
 					item.ChattableHint = "本地网关未启动，CLI 后端暂不可用"
+				} else {
+					item.Chattable = true
+				}
+			case agent_backend_entity.TypeOpenClaw:
+				if be.IsRemote() {
+					item.ChattableHint = "远端 OpenClaw 暂不可用：agentred 尚无安全的 secret enrollment/reference"
 				} else {
 					item.Chattable = true
 				}
@@ -781,6 +789,12 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 		case *chatblocks.ToolPermissionBlock:
 			if tb != nil {
 				out.Blocks = append(out.Blocks, toolPermissionBlockToChatBlock(*tb))
+			}
+		case chatblocks.ExecApprovalBlock:
+			out.Blocks = append(out.Blocks, execApprovalBlockToChatBlock(tb))
+		case *chatblocks.ExecApprovalBlock:
+			if tb != nil {
+				out.Blocks = append(out.Blocks, execApprovalBlockToChatBlock(*tb))
 			}
 		case chatblocks.ToolApprovalBlock:
 			out.Blocks = append(out.Blocks, toolApprovalBlockToChatBlock(tb))
@@ -1452,6 +1466,10 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, agentID int64) (
 			}
 		}
 		// LLMProviderKey == "" → CLI 自身 login 状态生效，不强制 gateway。
+	case agent_backend_entity.TypeOpenClaw:
+		if be.IsRemote() {
+			return nil, nil, nil, fmt.Errorf("openclaw remote secret enrollment is unavailable")
+		}
 	default:
 		return nil, nil, nil, i18n.NewError(ctx, code.AgentBackendInvalidType)
 	}
@@ -2650,6 +2668,12 @@ func (s *chatSvc) runTurn(
 
 	events, result, err := runner.Run(ctx, req)
 	if err != nil {
+		// 用户在 Run 返回前就点了停止(网关型后端要先握手,这个窗口是真实存在的):
+		// 这是中止而不是故障,按 idle 收敛,别让会话卡在 running / 弹错误卡。
+		if s.turnAbortedByUser(sess.ID, err) {
+			s.abortTurnBeforeStream(ctx, sess, assistantMsg, stream)
+			return
+		}
 		s.failTurn(ctx, sess, assistantMsg, stream, s.mapTurnError(ctx, sess, be, err))
 		return
 	}
@@ -2766,6 +2790,7 @@ func (s *chatSvc) runTurn(
 			s.checkpointAssistantNew(ctx, assistantMsg, acc)
 		}
 	}
+	turnCtx.ClearWaits()
 
 	if req.CollaborationMode == permissionModePlan && !compact && acc.Empty() {
 		acc.AddText("Plan mode completed without executable changes.")
@@ -3004,7 +3029,6 @@ func (s *chatSvc) runTurn(
 	default:
 		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamDone, Message: final})
 	}
-	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamClosed})
 	// turn 正常收尾(含 abort)的唯一终态回灌点。错误路径走 failTurn 后 return,
 	// 自动接续路径在递归 runTurn 的 finalize 回灌(本帧 len(pending)>0 已提前 return)。
 	s.publishTurnResult(sess.ID, TurnResult{
@@ -3447,22 +3471,32 @@ func (s *chatSvc) failTurn(ctx context.Context, sess *chat_entity.Session, msg *
 	)
 	fields = append(fields, chatRuntimeErrorLogFields(err)...)
 	logger.Ctx(ctx).Warn("chat_svc.failTurn: turn failed", fields...)
+	// 终态一律用 WithoutCancel 落库:失败路径最常见的触发方式就是用户点「停止」把
+	// turnCtx cancel 掉,若沿用同一个 ctx,这两条 Update 会被 DB 层直接拒掉,结果
+	// agent_status 永远停在 running、error_text 也写不进去(前端既不报错也停不掉)。
+	finalCtx := context.WithoutCancel(ctx)
 	msg.ErrorText = err.Error()
-	_ = chat_repo.Message().Update(ctx, msg)
+	if uerr := chat_repo.Message().Update(finalCtx, msg); uerr != nil {
+		logger.Ctx(finalCtx).Error("chat_svc.failTurn: persist error text failed",
+			zap.Int64("messageId", msg.ID), zap.Error(uerr))
+	}
 	sess.AgentStatus = "error"
 	sess.NeedsAttention = false
-	_ = chat_repo.Session().Update(ctx, sess)
+	if uerr := chat_repo.Session().Update(finalCtx, sess); uerr != nil {
+		logger.Ctx(finalCtx).Error("chat_svc.failTurn: persist session status failed",
+			zap.Int64("sessionId", sess.ID), zap.Error(uerr))
+	}
 	// session_status 必须先于 StreamError emit:前端 chat-streams-host 收到 error
 	// 立刻 finishStream 删 LiveStream entry → StreamSubscriber 紧接着 unmount,后到
 	// 的 session_status 永远收不到。后台 session 出错时只靠 bumpDone 不会翻 tab 红点。
-	logger.Ctx(ctx).Info("chat_svc: session_status emit",
+	logger.Ctx(finalCtx).Info("chat_svc: session_status emit",
 		zap.Int64("sessionId", sess.ID),
 		zap.Int64("assistantMsgId", msg.ID),
 		zap.String("stream", stream),
 		zap.String("agentStatus", sess.AgentStatus),
 		zap.Bool("needsAttention", sess.NeedsAttention),
 		zap.String("source", "failTurn"))
-	s.emitter.Emit(ctx, stream, ChatStreamEvent{
+	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
 		Kind: StreamSessionStatus,
 		SessionStatus: &ChatSessionStatusPatch{
 			AgentStatus:    sess.AgentStatus,
@@ -3470,18 +3504,74 @@ func (s *chatSvc) failTurn(ctx context.Context, sess *chat_entity.Session, msg *
 			BgRunning:      s.bgRunningActive(sess.ID),
 		},
 	})
-	s.emitter.Emit(ctx, stream, ChatStreamEvent{
+	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
 		Kind:    StreamError,
 		Error:   err.Error(),
 		Message: chatMessageForEvent(sess, msg),
 	})
-	s.emitter.Emit(ctx, stream, ChatStreamEvent{Kind: StreamClosed})
 	// 错误路径的唯一终态回灌点。failTurn 直线到此(无内部 early return),尾端单点
 	// publish 即覆盖全部退出路径;与 finalize 互斥(调用方 failTurn 后立即 return)。
 	s.publishTurnResult(sess.ID, TurnResult{
 		SessionID:          sess.ID,
 		AssistantMessageID: msg.ID,
 		Err:                err,
+	})
+}
+
+// turnAbortedByUser 判定「runner.Run 返回的这个错误其实是用户点了停止」。
+// 只认两种信号:runtime 显式回 ErrAborted,或本会话已被 Stop 标记且错误确实是
+// ctx 取消。普通故障(拨号失败等)即使碰巧带着 abort 标记也仍按错误处理,免得把
+// 真故障伪装成"用户停的"。
+func (s *chatSvc) turnAbortedByUser(sessionID int64, err error) bool {
+	if errors.Is(err, agentruntime.ErrAborted) {
+		s.aborted.LoadAndDelete(sessionID)
+		return true
+	}
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if _, ok := s.aborted.Load(sessionID); !ok {
+		return false
+	}
+	s.aborted.LoadAndDelete(sessionID)
+	return true
+}
+
+// abortTurnBeforeStream 收敛「Run 还没返回就被 Stop」的那一轮。此时 runtime 侧
+// 还没注册 activeTurn(OpenClaw 要先跟网关握手),既没有流也没有产出,但会话已经是
+// running —— 必须在这里落回 idle,否则侧栏一直转圈、且只有重启 app 才洗得掉。
+// 与流式中途 abort 对齐:发 StreamAborted 而不是 StreamError,不写 ErrorText。
+func (s *chatSvc) abortTurnBeforeStream(ctx context.Context, sess *chat_entity.Session, msg *chat_entity.Message, stream string) {
+	finalCtx := context.WithoutCancel(ctx)
+	logger.Ctx(finalCtx).Info("chat_svc: turn aborted before stream started",
+		zap.Int64("sessionId", sess.ID),
+		zap.Int64("assistantMsgId", msg.ID),
+		zap.String("stream", stream))
+	if uerr := chat_repo.Message().Update(finalCtx, msg); uerr != nil {
+		logger.Ctx(finalCtx).Error("chat_svc.abortTurnBeforeStream: persist message failed",
+			zap.Int64("messageId", msg.ID), zap.Error(uerr))
+	}
+	sess.AgentStatus = "idle"
+	sess.NeedsAttention = false
+	if uerr := chat_repo.Session().Update(finalCtx, sess); uerr != nil {
+		logger.Ctx(finalCtx).Error("chat_svc.abortTurnBeforeStream: persist session status failed",
+			zap.Int64("sessionId", sess.ID), zap.Error(uerr))
+	}
+	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
+		Kind: StreamSessionStatus,
+		SessionStatus: &ChatSessionStatusPatch{
+			AgentStatus:    sess.AgentStatus,
+			NeedsAttention: sess.NeedsAttention,
+			BgRunning:      s.bgRunningActive(sess.ID),
+		},
+	})
+	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
+		Kind:    StreamAborted,
+		Message: chatMessageForEvent(sess, msg),
+	})
+	s.publishTurnResult(sess.ID, TurnResult{
+		SessionID:          sess.ID,
+		AssistantMessageID: msg.ID,
 	})
 }
 

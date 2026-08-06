@@ -188,6 +188,32 @@ describe("buildRenderItems", () => {
     });
   });
 
+  it("OpenClaw exec_approval block keeps its own lifecycle and stable approval identity", () => {
+    const items = buildRenderItems({
+      messageId: 9,
+      blocks: [
+        {
+          type: "exec_approval",
+          execApproval: {
+            id: "exec-approval-1",
+            commandText: "git status --short",
+            allowedDecisions: ["allow-once", "deny"],
+            status: "pending",
+          },
+        } as unknown as ChatBlockData,
+      ],
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      type: "exec_approval",
+      block: {
+        execApproval: { id: "exec-approval-1", status: "pending" },
+      },
+      uiStateKey: "message:9:exec_approval:exec-approval:exec-approval-1",
+    });
+  });
+
   it("agent.spawn 归集 parentToolUseId 子块到 childBlocks,子块不再上顶层", () => {
     const items = buildRenderItems({
       messageId: 1,

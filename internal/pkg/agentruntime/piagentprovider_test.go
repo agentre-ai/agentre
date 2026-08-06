@@ -98,7 +98,7 @@ func TestPiAgentProviderExtension_AllThreeTypesAPIMapping(t *testing.T) {
 }
 
 func TestPiAgentProviderExtension_FullShape(t *testing.T) {
-	src, err := PiAgentProviderExtension(&llm_provider_entity.LLMProvider{
+	src, err := PiAgentProviderExtension(&llm_provider_entity.LLMProvider{ //nolint:gosec // credential-shaped API key is a test fixture.
 		ProviderKey:   testProviderKey,
 		Type:          string(llm_provider_entity.TypeAnthropic),
 		Name:          "My Anthropic Compat",

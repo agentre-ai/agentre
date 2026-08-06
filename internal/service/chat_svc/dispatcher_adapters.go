@@ -231,5 +231,6 @@ func (s *chatSvc) newTurnContext(
 		MessageUpdater:       messageUpdaterAdapter{},
 		SessionUpdater:       sessionUpdaterAdapter{},
 		SessionTransitioner:  sessionTransitionerAdapter{svc: s},
+		Waits:                turn.NewWaitTracker(),
 	}
 }

@@ -14,7 +14,6 @@ type ApprovalPolicy string
 
 const (
 	ApprovalUntrusted ApprovalPolicy = "untrusted"
-	ApprovalOnFailure ApprovalPolicy = "on-failure"
 	ApprovalOnRequest ApprovalPolicy = "on-request"
 	ApprovalNever     ApprovalPolicy = "never"
 )

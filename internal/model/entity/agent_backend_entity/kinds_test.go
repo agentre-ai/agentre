@@ -148,10 +148,10 @@ func TestValidateSandboxEnum(t *testing.T) {
 
 func TestValidateApprovalEnum(t *testing.T) {
 	ctx := context.Background()
-	for _, v := range []string{"", "untrusted", "on-failure", "on-request", "never"} {
+	for _, v := range []string{"", "untrusted", "on-request", "never"} {
 		assert.NoError(t, validateApproval(ctx, v), v)
 	}
-	for _, v := range []string{"maybe", "Yes"} {
+	for _, v := range []string{"on-failure", "maybe", "Yes"} {
 		assert.Error(t, validateApproval(ctx, v))
 	}
 }

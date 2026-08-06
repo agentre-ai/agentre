@@ -13,6 +13,7 @@ import {
   Plus,
   Puzzle,
   Radar,
+  RadioTower,
   SendHorizontal,
   Sparkles,
   Trash2,
@@ -31,6 +32,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Table,
   TableBody,
@@ -46,6 +48,7 @@ import { truncateFlashText } from "./agent-backends-utils";
 import {
   CancelTestAgentBackend,
   CreateAgentBackend,
+  CreateOpenClawAgentBackend,
   DeleteAgentBackend,
   GetGatewayStatus,
   ListAgentBackends,
@@ -56,7 +59,9 @@ import {
   ResolveAgentBackendCLIPath,
   ScanAndCreateAgentBackends,
   TestAgentBackend,
+  TestOpenClawAgentBackend,
   UpdateAgentBackend,
+  UpdateOpenClawAgentBackend,
 } from "../../../wailsjs/go/app/App";
 import {
   agent_backend_svc,
@@ -64,10 +69,19 @@ import {
   llm_provider_svc,
 } from "../../../wailsjs/go/models";
 import { AgentreDialog } from "./app-dialog";
+import {
+  OPENCLAW_DEFAULT_GATEWAY_URL,
+  OPENCLAW_SESSION_MODE,
+  OpenClawBackendFields,
+} from "./openclaw-backend-fields";
+import {
+  OPENCLAW_ERROR_KEY_BY_CODE,
+  openClawDraftIssue,
+} from "./openclaw-validation";
 
 type Backend = agent_backend_svc.BackendItem;
 type Provider = llm_provider_svc.ProviderItem;
-type BackendType = "builtin" | "claudecode" | "codex" | "piagent";
+type BackendType = "builtin" | "claudecode" | "codex" | "piagent" | "openclaw";
 
 // DeviceView — local shim matching remote_device_svc.DeviceView.
 // wailsjs/go/models is generated at build time and not present in this worktree.
@@ -97,6 +111,10 @@ const backendTypeMeta: Record<
     icon: Bot,
     disabled: false,
   },
+  openclaw: {
+    icon: RadioTower,
+    disabled: false,
+  },
 };
 
 type EditorState =
@@ -110,7 +128,7 @@ type FlashState =
   | null;
 
 type SandboxValue = "" | "read-only" | "workspace-write" | "danger-full-access";
-type ApprovalValue = "" | "untrusted" | "on-failure" | "on-request" | "never";
+type ApprovalValue = "" | "untrusted" | "on-request" | "never";
 type ReasoningEffortValue = "" | "low" | "medium" | "high" | "xhigh" | "max";
 type BackendDraft = {
   type: BackendType;
@@ -125,6 +143,10 @@ type BackendDraft = {
   reasoningEffort: ReasoningEffortValue;
   defaultPermissionMode: string;
   defaultModel: string;
+  openClawGatewayUrl: string;
+  openClawAgentId: string;
+  openClawDefaultModel: string;
+  openClawSessionMode: string;
 };
 type PendingProviderSync = {
   draft: BackendDraft;
@@ -160,12 +182,7 @@ type ClaudeTier = (typeof CLAUDE_TIERS)[number];
 
 const APPROVAL_OPTIONS: {
   value: Exclude<ApprovalValue, "">;
-}[] = [
-  { value: "untrusted" },
-  { value: "on-failure" },
-  { value: "on-request" },
-  { value: "never" },
-];
+}[] = [{ value: "untrusted" }, { value: "on-request" }, { value: "never" }];
 
 const SANDBOX_OPTIONS: {
   value: Exclude<SandboxValue, "">;
@@ -309,6 +326,18 @@ function providerLabel(key: string, providers: Provider[]): string {
   return p.model ? `${p.name} · ${p.model}` : p.name;
 }
 
+function openClawProbeErrorMessage(
+  code: string,
+  fallback: string,
+  translate: (key: string) => string,
+): string {
+  const normalized = code.trim().toUpperCase();
+  const key = OPENCLAW_ERROR_KEY_BY_CODE[normalized];
+  return key
+    ? translate(`agentBackends.openclaw.errors.${key}`)
+    : fallback || translate("agentBackends.openclaw.errors.connectionFailed");
+}
+
 export function AgentBackendsPanel({
   onOpenProxySettings,
 }: {
@@ -340,21 +369,25 @@ export function AgentBackendsPanel({
     }
   }
 
-  async function handleTestRow(id: number) {
+  async function handleTestRow(backend: Backend) {
     if (testingId !== null) return;
     const requestId = newRequestId();
     testReqIdRef.current = requestId;
-    setTestingId(id);
+    setTestingId(backend.id);
     try {
-      const res = await TestAgentBackend({
-        id,
+      const request = {
+        id: backend.id,
         useDraft: false,
         type: "",
         name: "",
         llmProviderKey: "",
         cliPath: "",
         requestId,
-      } as agent_backend_svc.TestBackendRequest);
+      } as agent_backend_svc.TestBackendRequest;
+      const res =
+        backend.type === "openclaw"
+          ? await TestOpenClawAgentBackend(request, "")
+          : await TestAgentBackend(request);
       // 用户在等待期间点了取消 → testReqIdRef 已被清掉，丢弃 stale 响应。
       if (testReqIdRef.current !== requestId) return;
       flashFromTestResponse(res);
@@ -545,7 +578,7 @@ export function AgentBackendsPanel({
                   backend={b}
                   testing={testingId === b.id}
                   testDisabled={testingId !== null}
-                  onTest={() => handleTestRow(b.id)}
+                  onTest={() => handleTestRow(b)}
                   onCancelTest={handleCancelRow}
                   onEdit={() => setEditor({ kind: "edit", backend: b })}
                   onDelete={() => setPendingDelete(b)}
@@ -674,16 +707,21 @@ function BackendRow({
   const meta = backendTypeMeta[typ] ?? backendTypeMeta.builtin;
   const Icon = meta.icon;
   const cliBased = isCliBackend(typ);
+  const openClaw = typ === "openclaw";
   // 未关联 provider 的 CLI 后端 = 走 CLI 自身 login，不算需处理。
   const unlinkedCli =
     cliBased &&
     !((backend as unknown as { llmProviderKey?: string }).llmProviderKey ?? "");
-  const providerLabel = unlinkedCli
-    ? t("agentBackends.provider.cliLogin")
-    : backend.llmProviderName
-      ? `${backend.llmProviderName} · ${backend.llmProviderModel || t("agentBackends.provider.noModel")}`
-      : t("agentBackends.provider.unlinked");
-  const warning = !unlinkedCli && !backend.llmProviderActive;
+  const providerLabel = openClaw
+    ? backend.openClawDefaultModel ||
+      backend.openClawAgentId ||
+      t("agentBackends.openclaw.modelGatewayDefault")
+    : unlinkedCli
+      ? t("agentBackends.provider.cliLogin")
+      : backend.llmProviderName
+        ? `${backend.llmProviderName} · ${backend.llmProviderModel || t("agentBackends.provider.noModel")}`
+        : t("agentBackends.provider.unlinked");
+  const warning = !openClaw && !unlinkedCli && !backend.llmProviderActive;
 
   return (
     <TableRow className="hover:bg-accent/45">
@@ -732,7 +770,9 @@ function BackendRow({
           {t(`agentBackends.backendType.${typ}.label`)}
         </span>
       </TableCell>
-      <TableCell className="py-3 text-xs text-muted-foreground">—</TableCell>
+      <TableCell className="py-3 text-xs text-muted-foreground">
+        {openClaw ? backend.openClawGatewayUrl : "—"}
+      </TableCell>
       <TableCell className="py-3">
         <span className="inline-flex min-w-0 items-center gap-1.5 font-mono text-2xs">
           <Sparkles className="size-3 shrink-0 text-muted-foreground" />
@@ -866,6 +906,19 @@ function BackendEditor({
     ((editing as unknown as { defaultModel?: string } | null)
       ?.defaultModel as string) || "",
   );
+  const [openClawGatewayURL, setOpenClawGatewayURL] = React.useState(
+    editing?.openClawGatewayUrl || OPENCLAW_DEFAULT_GATEWAY_URL,
+  );
+  const [openClawAgentID, setOpenClawAgentID] = React.useState(
+    editing?.openClawAgentId ?? "",
+  );
+  const [openClawDefaultModel, setOpenClawDefaultModel] = React.useState(
+    editing?.openClawDefaultModel ?? "",
+  );
+  const [openClawToken, setOpenClawToken] = React.useState("");
+  const [clearOpenClawToken, setClearOpenClawToken] = React.useState(false);
+  const [openClawProbe, setOpenClawProbe] =
+    React.useState<agent_backend_svc.TestBackendResponse | null>(null);
   const [deviceId, setDeviceId] = React.useState<string>(
     // BackendItem.deviceID may not yet appear in the Wails-generated TS type;
     // use unknown cast to read it safely. Empty string = local.
@@ -928,6 +981,15 @@ function BackendEditor({
     setSandbox("");
     setApproval("");
     setTestResult(null);
+    setOpenClawProbe(null);
+    setOpenClawToken("");
+    setClearOpenClawToken(false);
+    if (nextType === "openclaw") {
+      setDeviceId("");
+      setOpenClawGatewayURL(OPENCLAW_DEFAULT_GATEWAY_URL);
+      setOpenClawAgentID("");
+      setOpenClawDefaultModel("");
+    }
     // 切离 claudecode 时清空 default permission mode / default model：
     // entity.Check 仅放行 claudecode + 非空。
     if (nextType !== "claudecode") {
@@ -1009,21 +1071,35 @@ function BackendEditor({
   function buildDraft(): BackendDraft {
     // 三种 backend 都保留 reasoningEffort；codex 二次兜底 normalize（防止历史脏数据 / 跨 type 残留）。
     const effort: ReasoningEffortValue =
-      type === "codex" ? normalizeForCodex(reasoningEffort) : reasoningEffort;
+      type === "openclaw"
+        ? ""
+        : type === "codex"
+          ? normalizeForCodex(reasoningEffort)
+          : reasoningEffort;
     return {
       type,
       name,
       // builtin 后端只能在本地运行（无 HTTP 网关路由到 daemon），强制清空以防误保存。
-      deviceId: type === "builtin" ? "" : deviceId,
-      llmProviderKey: effectiveLlmProviderKey,
-      cliPath: type === "builtin" ? "" : cliPath.trim(),
+      deviceId:
+        type === "builtin"
+          ? ""
+          : type === "openclaw"
+            ? (editing?.deviceId ?? "")
+            : deviceId,
+      llmProviderKey: type === "openclaw" ? "" : effectiveLlmProviderKey,
+      cliPath: isCliBackend(type) ? cliPath.trim() : "",
       modelRoutes: type === "claudecode" ? serializeRoutes(routes) : "{}",
       sandbox: type === "codex" ? sandbox : "",
       approval: type === "codex" ? approval : "",
-      envJson: type === "builtin" ? "{}" : serializeEnv(envEntries),
+      envJson: isCliBackend(type) ? serializeEnv(envEntries) : "{}",
       reasoningEffort: effort,
       defaultPermissionMode: type === "claudecode" ? defaultPermissionMode : "",
       defaultModel: type === "claudecode" ? defaultModel.trim() : "",
+      openClawGatewayUrl: type === "openclaw" ? openClawGatewayURL.trim() : "",
+      openClawAgentId: type === "openclaw" ? openClawAgentID.trim() : "",
+      openClawDefaultModel:
+        type === "openclaw" ? openClawDefaultModel.trim() : "",
+      openClawSessionMode: type === "openclaw" ? OPENCLAW_SESSION_MODE : "",
     };
   }
 
@@ -1049,12 +1125,19 @@ function BackendEditor({
 
   async function saveDraft(draft: BackendDraft) {
     if (state.kind === "create") {
-      await CreateAgentBackend({
-        ...draft,
-      } as agent_backend_svc.CreateBackendRequest);
+      if (draft.type === "openclaw") {
+        await CreateOpenClawAgentBackend(
+          { ...draft } as agent_backend_svc.CreateBackendRequest,
+          openClawToken,
+        );
+      } else {
+        await CreateAgentBackend({
+          ...draft,
+        } as agent_backend_svc.CreateBackendRequest);
+      }
       await onSaved(t("agentBackends.flash.created"));
     } else if (state.kind === "edit" && editing) {
-      await UpdateAgentBackend({
+      const request = {
         id: editing.id,
         name: draft.name,
         deviceId: draft.deviceId,
@@ -1067,7 +1150,20 @@ function BackendEditor({
         reasoningEffort: draft.reasoningEffort,
         defaultPermissionMode: draft.defaultPermissionMode,
         defaultModel: draft.defaultModel,
-      } as unknown as agent_backend_svc.UpdateBackendRequest);
+        openClawGatewayUrl: draft.openClawGatewayUrl,
+        openClawAgentId: draft.openClawAgentId,
+        openClawDefaultModel: draft.openClawDefaultModel,
+        openClawSessionMode: draft.openClawSessionMode,
+      } as unknown as agent_backend_svc.UpdateBackendRequest;
+      if (draft.type === "openclaw") {
+        await UpdateOpenClawAgentBackend(
+          request,
+          openClawToken,
+          clearOpenClawToken,
+        );
+      } else {
+        await UpdateAgentBackend(request);
+      }
       await onSaved(t("agentBackends.flash.saved"));
     }
   }
@@ -1077,7 +1173,7 @@ function BackendEditor({
 
   async function handleTest() {
     if (testing || submitting) return;
-    if (reservedOffenders.length > 0) {
+    if (isCliBackend(type) && reservedOffenders.length > 0) {
       setTestResult({
         kind: "err",
         text: t("agentBackends.env.reservedDisabled", {
@@ -1091,25 +1187,59 @@ function BackendEditor({
     testReqIdRef.current = requestId;
     setTesting(true);
     setTestResult(null);
+    setOpenClawProbe(null);
     try {
       const draft = buildDraft();
-      const res = await TestAgentBackend({
+      const request = {
         id: state.kind === "edit" && editing ? editing.id : 0,
         useDraft: true,
         ...draft,
         requestId,
-      } as agent_backend_svc.TestBackendRequest);
+      } as agent_backend_svc.TestBackendRequest;
+      const res =
+        type === "openclaw"
+          ? await TestOpenClawAgentBackend(request, openClawToken)
+          : await TestAgentBackend(request);
       if (testReqIdRef.current !== requestId) return;
       if (res.ok) {
+        if (type === "openclaw") {
+          setOpenClawProbe(res);
+          if (openClawAgentID === "" && (res.openClawAgents ?? []).length > 0) {
+            const selected =
+              res.openClawAgents.find((agent) => agent.default) ??
+              res.openClawAgents[0];
+            setOpenClawAgentID(selected.id);
+          }
+          if (
+            openClawDefaultModel === "" &&
+            (res.openClawModels ?? []).length > 0
+          ) {
+            const available =
+              res.openClawModels.find((model) => model.available) ??
+              res.openClawModels[0];
+            setOpenClawDefaultModel(available.id);
+          }
+        }
         setTestResult({
           kind: "ok",
-          text: t("agentBackends.test.passed", {
-            latency: res.latencyMs,
-            message: res.message,
-          }),
+          text:
+            type === "openclaw"
+              ? t("agentBackends.openclaw.probePassed", {
+                  latency: res.latencyMs,
+                })
+              : t("agentBackends.test.passed", {
+                  latency: res.latencyMs,
+                  message: res.message,
+                }),
         });
       } else {
-        setTestResult({ kind: "err", text: res.message });
+        setTestResult({
+          kind: "err",
+          text:
+            type === "openclaw"
+              ? openClawProbeErrorMessage(res.code ?? "", res.message ?? "", t)
+              : res.message,
+        });
       }
     } catch (err) {
       if (testReqIdRef.current !== requestId) return;
@@ -1141,7 +1271,7 @@ function BackendEditor({
     e.preventDefault();
     if (submitting) return;
     setSaveResult(null);
-    if (reservedOffenders.length > 0) {
+    if (isCliBackend(type) && reservedOffenders.length > 0) {
       setSaveResult({
         kind: "err",
         text: t("agentBackends.env.reservedDisabled", {
@@ -1150,6 +1280,22 @@ function BackendEditor({
       });
       setAdvancedOpen(true);
       return;
+    }
+    // OpenClaw 的保存路径只能拿到后端错误字符串(Wails 边界无结构化通道),不预校验
+    // 的话用户会看到后端 i18n 的中文「参数错误」。规则与服务端一致,服务端仍是权威。
+    if (type === "openclaw") {
+      const issue = openClawDraftIssue({
+        name,
+        gatewayURL: openClawGatewayURL,
+        sessionMode: OPENCLAW_SESSION_MODE,
+      });
+      if (issue) {
+        setSaveResult({
+          kind: "err",
+          text: openClawProbeErrorMessage(issue, "", t),
+        });
+        return;
+      }
     }
     setSubmitting(true);
     try {
@@ -1222,8 +1368,8 @@ function BackendEditor({
       String(p.id) === effectiveLlmProviderKey,
   );
   const strictLabel = strictMatchLabel(type, selectedProvider?.type);
-  // builtin 必须有 provider；claudecode / codex 允许未关联（CLI 自身登录）。
-  const providerOptional = isCliBackend(type);
+  // builtin 必须有 provider；CLI 自身登录、OpenClaw 走 Gateway 认证，都允许未关联。
+  const providerOptional = isCliBackend(type) || type === "openclaw";
   // piagent 绑定了 Model 为空的供应商时后端保存会报 AgentBackendProviderModelRequired；
   // 前端先行提示并禁用保存/测试，避免落库失败后再绕圈。
   const piAgentModelMissing =
@@ -1235,7 +1381,7 @@ function BackendEditor({
     piAgentModelMissing ||
     (!providerOptional &&
       (filteredProviders.length === 0 || effectiveLlmProviderKey === "")) ||
-    reservedOffenders.length > 0;
+    (isCliBackend(type) && reservedOffenders.length > 0);
   const manualProviderSyncKeys =
     deviceId !== "" ? referencedProviderKeys(buildDraft()) : [];
   const showManualProviderSync =
@@ -1332,7 +1478,7 @@ function BackendEditor({
           <Select
             value={deviceIdToSelectValue(deviceId)}
             onValueChange={(v) => setDeviceId(selectValueToDeviceId(v))}
-            disabled={type === "builtin"}
+            disabled={type === "builtin" || type === "openclaw"}
           >
             <SelectTrigger aria-label={t("agentBackends.fields.device")}>
               <SelectValue
@@ -1362,15 +1508,48 @@ function BackendEditor({
           ) : null}
         </div>
 
-        <LlmProviderField
-          type={type}
-          providers={filteredProviders}
-          value={effectiveLlmProviderKey}
-          onChange={setLlmProviderKey}
-          strictLabel={strictLabel}
-          piAgentModelMissing={piAgentModelMissing}
-          editing={!!editing}
-        />
+        {type !== "openclaw" ? (
+          <LlmProviderField
+            type={type}
+            providers={filteredProviders}
+            value={effectiveLlmProviderKey}
+            onChange={setLlmProviderKey}
+            strictLabel={strictLabel}
+            piAgentModelMissing={piAgentModelMissing}
+            editing={!!editing}
+          />
+        ) : (
+          <OpenClawBackendFields
+            gatewayURL={openClawGatewayURL}
+            onGatewayURLChange={(value) => {
+              setOpenClawGatewayURL(value);
+              setOpenClawProbe(null);
+            }}
+            token={openClawToken}
+            onTokenChange={(value) => {
+              setOpenClawToken(value);
+              if (value !== "") setClearOpenClawToken(false);
+              setOpenClawProbe(null);
+            }}
+            hasToken={editing?.hasToken ?? false}
+            clearToken={clearOpenClawToken}
+            onClearTokenChange={(value) => {
+              setClearOpenClawToken(value);
+              if (value) setOpenClawToken("");
+            }}
+            agentID={openClawAgentID}
+            onAgentIDChange={(value) => {
+              setOpenClawAgentID(value);
+              setOpenClawProbe(null);
+            }}
+            defaultModel={openClawDefaultModel}
+            onDefaultModelChange={(value) => {
+              setOpenClawDefaultModel(value);
+              setOpenClawProbe(null);
+            }}
+            probe={openClawProbe}
+          />
+        )}
 
         {showManualProviderSync ? (
           <Alert className="border-border bg-secondary text-xs">
@@ -1454,11 +1633,13 @@ function BackendEditor({
           </>
         ) : null}
 
-        <ReasoningEffortField
-          type={type}
-          value={reasoningEffort}
-          onChange={setReasoningEffort}
-        />
+        {type !== "openclaw" ? (
+          <ReasoningEffortField
+            type={type}
+            value={reasoningEffort}
+            onChange={setReasoningEffort}
+          />
+        ) : null}
 
         {cliBased ? (
           <EnvJsonField
@@ -1574,34 +1755,37 @@ function BackendTypeSegmented({
   const { t } = useTranslation();
   const items = Object.keys(backendTypeMeta) as BackendType[];
   return (
-    <div className="grid grid-cols-4 gap-0 rounded-md border border-border bg-secondary p-0.5">
+    <ToggleGroup
+      type="single"
+      variant="outline"
+      value={value}
+      onValueChange={(next) => {
+        if (next) onChange(next as BackendType);
+      }}
+      // 5 个引擎在对话框宽度(~545px)下挤成 5 列时,每格只有 ~107px,标签会溢出格子
+      // 与相邻图标叠字。改成 3 列两行:每格 ~178px,最长的 "OpenClaw Gateway" 也放得下。
+      className="grid w-full grid-cols-3 gap-1"
+      aria-label={t("agentBackends.fields.type")}
+    >
       {items.map((backendType) => {
         const m = backendTypeMeta[backendType];
         const Icon = m.icon;
-        const active = value === backendType;
         const itemDisabled = disabled || m.disabled;
         return (
-          <button
+          <ToggleGroupItem
             key={backendType}
-            type="button"
-            onClick={() => !itemDisabled && onChange(backendType)}
+            value={backendType}
             disabled={itemDisabled}
-            aria-pressed={active}
-            className={cn(
-              "flex items-center justify-center gap-1.5 rounded-[5px] px-2 py-1.5 text-xs font-medium transition-colors",
-              active
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground",
-              itemDisabled && !active && "cursor-not-allowed opacity-60",
-              itemDisabled && active && "cursor-default",
-            )}
+            role="button"
+            aria-pressed={value === backendType}
+            className="min-w-0 px-1.5 text-xs"
           >
-            <Icon className="size-3.5" aria-hidden="true" />
+            <Icon aria-hidden="true" />
             {t(`agentBackends.backendType.${backendType}.label`)}
-          </button>
+          </ToggleGroupItem>
         );
       })}
-    </div>
+    </ToggleGroup>
   );
 }
 
@@ -1979,7 +2163,7 @@ function ApprovalField({
         value={value === "" ? "never" : value}
         onValueChange={(v) => onChange(v as ApprovalValue)}
       >
-        <SelectTrigger>
+        <SelectTrigger aria-label={t("agentBackends.approval.label")}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

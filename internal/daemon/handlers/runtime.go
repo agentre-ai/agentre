@@ -149,6 +149,9 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	if bt == agent_backend_entity.TypeBuiltin {
 		return wire.RunAck{}, errors.New("builtin backend not supported in agentred")
 	}
+	if bt == agent_backend_entity.TypeOpenClaw {
+		return wire.RunAck{}, errors.New("openclaw backend not supported in agentred: remote secret enrollment is unavailable")
+	}
 
 	rt := h.lookupRuntimeByType(bt)
 	if rt == nil {

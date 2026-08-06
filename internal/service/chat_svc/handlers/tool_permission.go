@@ -51,9 +51,7 @@ func (ToolPermissionRequestHandler) Apply(ctx context.Context, ev agentruntime.E
 			"canonical":      buildToolPermissionCanonical(r.RequestID, r.ToolName, input, false, false, false, tc),
 		})
 	}
-	if tc != nil && tc.SessionTransitioner != nil && tc.Session != nil {
-		tc.SessionTransitioner.MarkWaiting(ctx, tc.Session, tc.Stream)
-	}
+	tc.BeginWait(ctx, "tool_permission", r.RequestID)
 	return nil
 }
 
@@ -92,9 +90,7 @@ func (ToolPermissionResolvedHandler) Apply(ctx context.Context, ev agentruntime.
 			"canonical": buildToolPermissionCanonical(r.RequestID, captured.ToolName, captured.ToolInput, true, r.Allowed, r.AlwaysAllow, tc),
 		})
 	}
-	if tc != nil && tc.SessionTransitioner != nil && tc.Session != nil {
-		tc.SessionTransitioner.MarkRunning(ctx, tc.Session, tc.Stream)
-	}
+	tc.ResolveWait(ctx, "tool_permission", r.RequestID)
 	return nil
 }
 

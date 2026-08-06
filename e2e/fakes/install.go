@@ -7,6 +7,8 @@ package fakes
 
 import (
 	"context"
+	"os"
+	"strings"
 
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
@@ -16,12 +18,23 @@ import (
 	fakert "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/fake"
 	"github.com/agentre-ai/agentre/internal/pkg/agentskill"
 	"github.com/agentre-ai/agentre/internal/pkg/agenttool"
+	"github.com/agentre-ai/agentre/internal/pkg/keychain"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/service/agent_backend_svc"
 	"github.com/agentre-ai/agentre/internal/service/agent_svc"
 	"github.com/agentre-ai/agentre/internal/service/department_svc"
 )
+
+const e2eKeychainDirEnv = "AGENTRE_E2E_KEYCHAIN_DIR"
+
+func installE2EKeychainOverride() {
+	dir := strings.TrimSpace(os.Getenv(e2eKeychainDirEnv))
+	if dir == "" {
+		return
+	}
+	keychain.SetDefault(keychain.NewFile(dir))
+}
 
 type codexSkillDiscoverer struct{}
 
@@ -68,6 +81,7 @@ func (claudeSkillDiscoverer) Discover(context.Context, agentskill.DiscoverQuery)
 //
 // 失败只记日志不 panic:e2e 环境异常应让 Playwright 用例红,而不是让 app 崩。
 func Install(ctx context.Context) {
+	installE2EKeychainOverride()
 	agentruntime.RegisterRuntime(agent_backend_entity.TypeClaudeCode, fakert.New())
 	agentskill.RegisterDiscoverer(agent_backend_entity.TypeClaudeCode, claudeSkillDiscoverer{})
 	agentskill.RegisterDiscoverer(agent_backend_entity.TypeCodex, codexSkillDiscoverer{})

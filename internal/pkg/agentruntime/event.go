@@ -1,6 +1,7 @@
 package agentruntime
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/cago-frame/agents/provider"
@@ -93,6 +94,32 @@ type ToolPermissionResolved struct {
 	Allowed     bool
 	AlwaysAllow bool
 	DenyReason  string
+}
+
+// ExecApprovalRequested is the safe, presentation-oriented subset of an
+// OpenClaw exec.approval.requested event. The Gateway's systemRunPlan is never
+// copied into a resolve request; AgentRE returns only ID + Decision.
+type ExecApprovalRequested struct {
+	ID               string
+	CommandText      string
+	CommandPreview   string
+	AllowedDecisions []string
+	Host             string
+	NodeID           string
+	AgentID          string
+	SessionKey       string
+	CreatedAtMs      int64
+	ExpiresAtMs      int64
+}
+
+// ExecApprovalResolved is an approval terminal state, distinct from the
+// lifecycle of the command/tool it authorized. Status is resolved or expired.
+type ExecApprovalResolved struct {
+	ID           string
+	Status       string
+	Decision     string
+	ResolvedBy   string
+	ResolvedAtMs int64
 }
 
 // PermissionModeChanged CLI 通报自身 permission_mode 已变更。
@@ -196,6 +223,8 @@ func (UserAskRequest) isEvent()         {}
 func (UserAskResolved) isEvent()        {}
 func (ToolPermissionRequest) isEvent()  {}
 func (ToolPermissionResolved) isEvent() {}
+func (ExecApprovalRequested) isEvent()  {}
+func (ExecApprovalResolved) isEvent()   {}
 func (PermissionModeChanged) isEvent()  {}
 func (SubagentStarted) isEvent()        {}
 func (SubagentProgress) isEvent()       {}
@@ -209,3 +238,15 @@ func (CompactBoundary) isEvent()        {}
 func (RuntimeStatus) isEvent()          {}
 func (Done) isEvent()                   {}
 func (ErrorEvent) isEvent()             {}
+
+type ExecApprovalResolution struct {
+	Status   string
+	Decision string
+}
+
+// ExecApprovalSink resolves a pending Gateway exec approval for the active
+// AgentRE chat session. Implementations must validate Decision against the
+// request's allowedDecisions before producing any side effect.
+type ExecApprovalSink interface {
+	ResolveExecApproval(ctx context.Context, sessionID int64, approvalID, decision string) (ExecApprovalResolution, error)
+}

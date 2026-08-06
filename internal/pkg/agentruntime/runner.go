@@ -59,6 +59,10 @@ const (
 	// service 把终态 patch 回 acc 里那条 ToolPermissionRequestBlock，并 forward
 	// 一条 StreamToolPermissionResolved 给前端做兜底 merge。
 	EventToolPermissionResolved EventKind = "tool_permission_resolved"
+	// EventExecApprovalRequested / Resolved model the OpenClaw Gateway exec
+	// approval lifecycle. Approval resolution is not tool execution completion.
+	EventExecApprovalRequested EventKind = "exec_approval_requested"
+	EventExecApprovalResolved  EventKind = "exec_approval_resolved"
 	// EventPermissionModeChanged claudecode CLI 通报自身 permission mode 已变更
 	// （被动 ExitPlanMode 流程 / 主动 set_permission_mode 回执）。
 	// chat_svc 接住后落 chat_sessions.permission_mode 并推 StreamSessionStatus patch。

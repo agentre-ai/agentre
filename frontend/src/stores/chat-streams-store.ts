@@ -26,6 +26,13 @@ export type ToolApprovalData = Omit<
   "convertValues"
 >;
 
+// ExecApprovalData mirrors the presentation-safe OpenClaw Gateway approval
+// projection. It deliberately contains no token, environment, or systemRunPlan.
+export type ExecApprovalData = Omit<
+  chat_svc.ChatBlockExecApproval,
+  "convertValues"
+>;
+
 export type RetryNotice = {
   attempt: number;
   maxAttempts: number;
@@ -199,6 +206,18 @@ type Actions = {
     sessionId: number,
     assistantMessageId: number,
     payload: ToolApprovalData,
+  ) => void;
+  // OpenClaw exec approvals are a lifecycle separate from tool completion.
+  // Requested cards flush pending text; terminal events merge by Gateway id.
+  appendLiveExecApproval: (
+    sessionId: number,
+    assistantMessageId: number,
+    payload: ExecApprovalData,
+  ) => void;
+  markExecApprovalResolved: (
+    sessionId: number,
+    assistantMessageId: number,
+    payload: ExecApprovalData,
   ) => void;
   // patchLiveUsage 把后端推来的 per-call usage 快照写到 LiveStream.liveUsage 上；
   // usage.contextWindow>0 时同一次 state 更新写入 liveContextWindow，保证收到的任一
@@ -754,6 +773,65 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
         return {
           ...cur,
           liveBlocks: replaceBlock(cur.liveBlocks, targetIdx, merged),
+        };
+      }),
+    ),
+
+  appendLiveExecApproval: (sessionId, assistantMessageId, payload) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) => {
+        if (!payload?.id) return null;
+        const existingIdx = findLastBlockIndex(
+          cur.liveBlocks,
+          (block) =>
+            block.type === "exec_approval" &&
+            block.execApproval?.id === payload.id,
+        );
+        if (existingIdx >= 0) {
+          const existing = cur.liveBlocks[existingIdx];
+          return {
+            ...cur,
+            liveBlocks: replaceBlock(cur.liveBlocks, existingIdx, {
+              ...existing,
+              execApproval: {
+                ...(existing.execApproval ?? payload),
+                ...payload,
+              } as ExecApprovalData,
+            }),
+          };
+        }
+        const flushed = flushLiveDelta(cur);
+        return {
+          ...flushed,
+          liveBlocks: [
+            ...flushed.liveBlocks,
+            { type: "exec_approval", execApproval: payload },
+          ],
+        };
+      }),
+    ),
+
+  markExecApprovalResolved: (sessionId, assistantMessageId, payload) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) => {
+        if (!payload?.id) return null;
+        const targetIdx = findLastBlockIndex(
+          cur.liveBlocks,
+          (block) =>
+            block.type === "exec_approval" &&
+            block.execApproval?.id === payload.id,
+        );
+        if (targetIdx < 0) return null;
+        const existing = cur.liveBlocks[targetIdx];
+        return {
+          ...cur,
+          liveBlocks: replaceBlock(cur.liveBlocks, targetIdx, {
+            ...existing,
+            execApproval: {
+              ...(existing.execApproval ?? payload),
+              ...payload,
+            } as ExecApprovalData,
+          }),
         };
       }),
     ),

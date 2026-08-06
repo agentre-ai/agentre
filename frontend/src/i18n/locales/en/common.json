@@ -62,7 +62,6 @@
       "label": "Approval Policy",
       "options": {
         "never": "Never ask for human approval",
-        "on-failure": "Ask when a tool fails",
         "on-request": "Ask when the model requests approval",
         "untrusted": "Auto-run trusted tools only"
       }
@@ -79,6 +78,9 @@
       },
       "piagent": {
         "label": "Pi Agent CLI"
+      },
+      "openclaw": {
+        "label": "OpenClaw Gateway"
       }
     },
     "cli": {
@@ -137,6 +139,53 @@
       "inheritMain": "Inherit main provider",
       "inheritWithName": "Inherit main provider · {{name}}",
       "label": "Model Tier Routes"
+    },
+    "openclaw": {
+      "agent": "Agent",
+      "agentPlaceholder": "Use the Gateway default agent",
+      "clearToken": "Clear stored token",
+      "errors": {
+        "agentNotFound": "The selected agent does not exist on this Gateway.",
+        "authFailed": "Gateway authentication failed. Check the saved or newly entered token.",
+        "canceled": "The Gateway connection test was canceled.",
+        "connectionFailed": "Could not connect to the OpenClaw Gateway.",
+        "eventMissing": "The Gateway does not advertise the required event stream.",
+        "methodMissing": "The Gateway does not advertise all required RPC methods.",
+        "modelNotFound": "The selected model does not exist or is unavailable on this Gateway.",
+        "protocolMismatch": "The Gateway does not support OpenClaw protocol 4.",
+        "remoteUnavailable": "Remote OpenClaw is unavailable because a secure secret reference cannot cross the agentred wire yet.",
+        "scopeMissing": "The Gateway did not grant all required operator scopes.",
+        "secretUnavailable": "The local secure secret store is unavailable.",
+        "timeout": "The Gateway connection test timed out.",
+        "notPaired": "This Gateway requires device pairing before granting the requested scopes. Approve the device on the Gateway, then test again.",
+        "nameRequired": "Give the backend a name before testing the connection.",
+        "urlRequired": "Enter the Gateway WebSocket URL.",
+        "urlInvalid": "That is not a valid Gateway WebSocket URL.",
+        "urlScheme": "The Gateway URL must start with ws:// or wss://.",
+        "urlHost": "The Gateway URL must include a host.",
+        "urlCredentials": "The Gateway URL cannot contain credentials, a query string, or a fragment.",
+        "urlPlaintextRemote": "Plaintext ws:// is only allowed for loopback hosts. Use wss:// for any other host.",
+        "sessionModeInvalid": "Unsupported session mapping. OpenClaw uses one Gateway session per AgentRE chat."
+      },
+      "gatewayURL": "Gateway WebSocket URL",
+      "gatewayURLHint": "Loopback ws:// is allowed. Other hosts must use wss://.",
+      "localOnlyTitle": "Secure local Gateway connection",
+      "model": "Model",
+      "modelGatewayDefault": "Gateway default model",
+      "modelPlaceholder": "Use the Gateway default model",
+      "probePassed": "Gateway verified · {{latency}}ms",
+      "probeVerified": "Gateway connection verified",
+      "protocol": "Protocol {{protocol}}",
+      "remoteUnavailable": "Remote agentred support is unavailable until secure secret enrollment is implemented.",
+      "sessionMode": "Session mapping",
+      "sessionModeHint": "Each AgentRE chat session maps to one stable OpenClaw session key.",
+      "sessionPerAgentRE": "One OpenClaw session per AgentRE chat",
+      "token": "Gateway token",
+      "tokenHint": "The token is stored in the local secure secret store and is never returned to the UI.",
+      "tokenPlaceholder": "Optional token",
+      "tokenSavedHint": "The existing token is retained unless you replace or explicitly clear it.",
+      "tokenSavedPlaceholder": "Token is stored securely. Enter a new value to replace it.",
+      "modelOverrideUnauthorized": "This Gateway does not authorize model overrides for this operator connection, so the agent's own model is used."
     },
     "permission": {
       "addIsSandbox": "Add IS_SANDBOX=1",
@@ -423,6 +472,31 @@
       "org_delete_agent": "Delete agent"
     }
   },
+  "openclawExecApproval": {
+    "title": "Execution approval",
+    "command": "Command",
+    "host": "Host",
+    "node": "Node",
+    "agent": "Agent",
+    "resolvedBy": "Resolved by",
+    "loading": "Submitting decision…",
+    "submitFailed": "Could not submit the approval decision.",
+    "status": {
+      "pending": "Pending",
+      "resolved": "Resolved",
+      "expired": "Expired"
+    },
+    "decision": {
+      "allow-once": "Allow once",
+      "allow-always": "Always allow",
+      "deny": "Deny"
+    },
+    "decisionResult": {
+      "allow-once": "Allowed once",
+      "allow-always": "Always allowed",
+      "deny": "Denied"
+    }
+  },
   "chat": {
     "actions": {
       "approve": "Approve",
@@ -498,7 +572,9 @@
       "model": "Model",
       "prompt": "Sent (prompt)",
       "reasoning": "Reasoning",
-      "tokenDetails": "Token usage details"
+      "tokenDetails": "Token usage details",
+      "usage": "Usage",
+      "usageUnavailable": "Not reported by the backend"
     },
     "quota": {
       "aria": "Claude Code quota 5h {{five}}% 7d {{seven}}% from {{device}}",
@@ -1315,7 +1391,10 @@
   },
   "mentions": {
     "aria": "Mention a project or agent",
-    "group": { "agents": "Agents", "projects": "Projects" },
+    "group": {
+      "agents": "Agents",
+      "projects": "Projects"
+    },
     "chip": {
       "agentTitle": "Agent: {{name}}",
       "projectTitle": "Project: {{name}}"
