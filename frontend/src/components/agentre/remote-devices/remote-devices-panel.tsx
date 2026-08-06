@@ -2,13 +2,12 @@ import { useEffect, useState } from "react";
 import { Plus, Server } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 import { AddDeviceDialog } from "./add-device-dialog";
 import { DeviceRow } from "./device-row";
 import { TLSTrustDialog } from "./tls-trust-dialog";
-import { useRemoteDevices, type DeviceView } from "./use-remote-devices";
+import { useRemoteDevices, type DeviceRowModel } from "./use-remote-devices";
 
 export function RemoteDevicesPanel() {
   const { t } = useTranslation();
@@ -16,7 +15,7 @@ export function RemoteDevicesPanel() {
     useRemoteDevices();
   const [now, setNow] = useState(() => Date.now());
   const [addOpen, setAddOpen] = useState(false);
-  const [editTLSFor, setEditTLSFor] = useState<DeviceView | null>(null);
+  const [editTLSFor, setEditTLSFor] = useState<DeviceRowModel | null>(null);
 
   useEffect(() => {
     const t = window.setInterval(() => setNow(Date.now()), 60_000);
@@ -51,10 +50,6 @@ export function RemoteDevicesPanel() {
           {t("remoteDevices.actions.addAgentred")}
         </Button>
       </header>
-
-      <div className="flex items-center gap-2">
-        <Badge variant="secondary">{t("remoteDevices.panel.lanAll")}</Badge>
-      </div>
 
       {devices.length === 0 ? (
         <EmptyState onAdd={() => setAddOpen(true)} />

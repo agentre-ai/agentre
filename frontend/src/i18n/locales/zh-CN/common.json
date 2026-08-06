@@ -488,6 +488,7 @@
       "attachmentAlt": "图片附件"
     },
     "message": {
+      "fromDevice": "来自 {{device}}",
       "me": "我"
     },
     "meta": {
@@ -1542,9 +1543,15 @@
     },
     "panel": {
       "description": "管理远程 agentred 计算端 — desktop 远程驱动；LAN 同网段直连，Cloud 中转跨网段（v0.3+）。",
-      "lanAll": "LAN 直连 · 全部",
       "stats": "{{paired}} 已配对 · {{online}} 在线",
       "title": "远端"
+    },
+    "path": {
+      "inUseAria": "{{path}} · 在用",
+      "lan": "直连",
+      "relay": "中转",
+      "unreachableAria": "{{path}} · 不可达",
+      "unreachableLabel": "{{path}} · 不可达"
     },
     "providers": {
       "copyAria": "复制修复命令 {{key}}",
@@ -1565,7 +1572,14 @@
       "lastConnected": "上次连接 {{time}}",
       "neverConnected": "尚未连接",
       "offline": "离线",
-      "online": "在线"
+      "online": "在线",
+      "viaRelay": "经中转"
+    },
+    "unclaimed": {
+      "claim": "认领到账号",
+      "instructions": "在这台远端机器上运行 `agentred login` 把它认领到你的账号（本桌面需先登录账号）。认领后，你账号下的其它设备就能看到它并直接连上。",
+      "label": "未认领",
+      "note": "仅本机配对 —— 其它设备看不到它"
     },
     "time": {
       "daysAgo": "{{days}} 天前",

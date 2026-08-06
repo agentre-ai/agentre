@@ -361,6 +361,12 @@ export type TranscriptRow = {
    * 无对应消息,字段缺省 —— 渲染层在读取前已按 item.type 提前返回。
    */
   message?: chat_svc.ChatMessage;
+  /**
+   * R17:非本机发出的用户消息的来源设备标识。仅当调用方在 sourceByMessageId
+   * 里给这条用户消息提供了来源时才有值(本机发出的恒为 undefined —— 呈现与
+   * 今天完全一致)。是设备属性,不是会话事件,渲染层把它放在角色标签之后。
+   */
+  sourceDevice?: string;
   item: TranscriptRowItem;
   /** 首行渲染头像 + 名字 + 时间戳(以及 autonomous banner)。 */
   isFirstOfMessage: boolean;
@@ -403,6 +409,11 @@ export type BuildTranscriptRowsArgs = {
    * 绕过缓存现场重建。
    */
   cache?: WeakMap<chat_svc.ChatMessage, TranscriptRow[]>;
+  /**
+   * R17:用户消息 id → 来源设备标识。只在多客户端、消息确实由他端发出时才有
+   * 条目;本机发出的消息不在表里,输出与不传逐项一致(单客户端界面零变化)。
+   */
+  sourceByMessageId?: ReadonlyMap<number, string>;
 };
 
 /** LiveRowContent 是一条 assistant 消息此刻的流式内容(尚未落库的部分)。 */
@@ -416,6 +427,7 @@ export type LiveRowContent = {
 function buildMessageRows(
   m: chat_svc.ChatMessage,
   autonomous: boolean,
+  sourceDevice: string | undefined,
   live?: {
     liveTail?: string;
     liveThinking?: string;
@@ -441,6 +453,7 @@ function buildMessageRows(
         key: `message:${m.id}:placeholder`,
         message: m,
         messageId: m.id,
+        sourceDevice,
       },
     ];
   }
@@ -455,6 +468,7 @@ function buildMessageRows(
     key: item.uiStateKey,
     message: m,
     messageId: m.id,
+    sourceDevice,
   }));
 }
 
@@ -476,25 +490,34 @@ export function buildTranscriptRows({
   localCommands,
   liveByMessageId,
   cache,
+  sourceByMessageId,
 }: BuildTranscriptRowsArgs): TranscriptRowsResult {
   // 阶段一:按 displayMessages 顺序产出各消息的行组(缓存/live 逻辑与历史一致),
   // 同时记下每组的 createtime,供阶段二归并 —— 消息组顺序原样保留,无重排可能。
   const messageGroups: { rows: TranscriptRow[]; createtime: number }[] = [];
   for (const m of displayMessages) {
     const autonomous = autonomousIds.has(m.id);
+    // R17:来源标识只属于「非本机发出的用户消息」—— 其它角色恒 undefined。
+    const sourceDevice =
+      m.role === "user" ? sourceByMessageId?.get(m.id) : undefined;
     const live = liveByMessageId?.get(m.id);
     let messageRows: TranscriptRow[];
     if (live) {
       // live 消息每 chunk 重建,不读不写缓存。
-      messageRows = buildMessageRows(m, autonomous, live);
+      messageRows = buildMessageRows(m, autonomous, sourceDevice, live);
     } else {
       const cached = cache?.get(m);
       // autonomous 取决于前一条消息,与消息对象自身无关 —— 缓存命中但标志变了
       // (极端:上游裁剪了前面的消息而对象引用未变)就重建,避免 banner 错挂。
-      if (cached && cached[0]?.autonomous === autonomous) {
+      // 来源标识同理:缓存命中但来源变了/新增了就重建,避免旧来源滞留在缓存里。
+      if (
+        cached &&
+        cached[0]?.autonomous === autonomous &&
+        cached[0]?.sourceDevice === sourceDevice
+      ) {
         messageRows = cached;
       } else {
-        messageRows = buildMessageRows(m, autonomous);
+        messageRows = buildMessageRows(m, autonomous, sourceDevice);
         cache?.set(m, messageRows);
       }
     }

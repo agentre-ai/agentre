@@ -355,6 +355,48 @@ describe("buildRenderItems", () => {
   });
 });
 
+describe("buildTranscriptRows source device (R17)", () => {
+  it("attaches a source device to non-local user messages only", () => {
+    const { rows } = buildTranscriptRows({
+      displayMessages: [
+        message(1, "user", [text("hi from another device")]),
+        message(2, "assistant", [text("reply")]),
+      ],
+      autonomousIds: new Set(),
+      sourceByMessageId: new Map([[1, "iPhone"]]),
+    });
+    expect(rows.find((r) => r.messageId === 1)?.sourceDevice).toBe("iPhone");
+    expect(rows.find((r) => r.messageId === 2)?.sourceDevice).toBeUndefined();
+  });
+
+  it("leaves local user messages without a source identifier (single-client zero change)", () => {
+    const { rows } = buildTranscriptRows({
+      displayMessages: [message(1, "user", [text("hi")])],
+      autonomousIds: new Set(),
+    });
+    expect(rows[0].sourceDevice).toBeUndefined();
+  });
+
+  it("never attaches a source to non-user roles", () => {
+    const { rows } = buildTranscriptRows({
+      displayMessages: [message(1, "assistant", [text("hi")])],
+      autonomousIds: new Set(),
+      sourceByMessageId: new Map([[1, "iPhone"]]),
+    });
+    expect(rows[0].sourceDevice).toBeUndefined();
+  });
+
+  it("propagates the source across every row of the message", () => {
+    const { rows } = buildTranscriptRows({
+      displayMessages: [message(1, "user", [text("a"), text("b")])],
+      autonomousIds: new Set(),
+      sourceByMessageId: new Map([[1, "iPhone"]]),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].sourceDevice).toBe("iPhone");
+  });
+});
+
 function message(
   id: number,
   role: "user" | "assistant",
