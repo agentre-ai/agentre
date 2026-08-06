@@ -41,6 +41,59 @@ func TestStreamDiscoversNativeSessionBeforePrompt(t *testing.T) {
 	assert.Equal(t, "get_session_stats", frames[2]["type"])
 }
 
+func TestPrepareStreamRejectsInvalidPrePromptTreeBoundary(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries string
+	}{
+		{
+			name:    "Given entries exist without a leaf, when preparing the prompt boundary, then startup fails before prompt",
+			entries: `{"entries":[{"type":"message","id":"history-user","parentId":null}],"leafId":null}`,
+		},
+		{
+			name:    "Given the leaf is not an entry, when preparing the prompt boundary, then startup fails before prompt",
+			entries: `{"entries":[{"type":"message","id":"history-user","parentId":null}],"leafId":"missing-leaf"}`,
+		},
+		{
+			name:    "Given entry IDs are duplicated, when preparing the prompt boundary, then startup fails before prompt",
+			entries: `{"entries":[{"type":"message","id":"duplicate","parentId":null},{"type":"message","id":"duplicate","parentId":null}],"leafId":"duplicate"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			script := strings.Join([]string{
+				`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"pi-native-boundary"}}`,
+				`{"id":"session-entries-before","type":"response","command":"get_entries","success":true,"data":` + tt.entries + `}`,
+				`{"type":"response","command":"prompt","success":true}`,
+				"",
+			}, "\n")
+			client, proc := newCaptureClient(script)
+
+			prepared, err := client.PrepareStream(context.Background(), "must not be sent", RunCaptureUserAnchor())
+
+			assert.Nil(t, prepared)
+			require.ErrorContains(t, err, "invalid pre-prompt tree boundary")
+			frames := stdinFrames(t, proc.stdin.String())
+			require.Len(t, frames, 2)
+			assert.Equal(t, "get_state", frames[0]["type"])
+			assert.Equal(t, "get_entries", frames[1]["type"])
+		})
+	}
+}
+
+func TestPrepareStreamRejectsWhitespacePaddedForkAnchorWithoutStartingProcess(t *testing.T) {
+	client, proc, runner := newSingleProcessCaptureClient("")
+	client.session = "pi-native-existing"
+
+	prepared, err := client.PrepareStream(context.Background(), "must not be sent", RunForkAnchor(" fork-user "))
+
+	assert.Nil(t, prepared)
+	require.ErrorContains(t, err, "invalid fork anchor")
+	assert.Zero(t, runner.starts)
+	assert.Empty(t, proc.stdin.String())
+}
+
 func TestPreparedStreamStartRequiresAcceptedPromptResponse(t *testing.T) {
 	tests := []struct {
 		name      string

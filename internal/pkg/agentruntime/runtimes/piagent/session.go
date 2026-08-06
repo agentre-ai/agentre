@@ -2,6 +2,7 @@ package piagent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 
@@ -77,7 +78,11 @@ func (a *clientAdapter) StreamTurn(ctx context.Context, prompt string, mode stri
 }
 
 func (a *clientAdapter) startStream(ctx context.Context, prompt string, mode string, images []piagent.Image, turn *turnSpec) (stream, error) {
-	s, err := a.client.Stream(ctx, prompt, turnRunOptions(mode, images, turn)...)
+	opts, err := turnRunOptions(mode, images, turn)
+	if err != nil {
+		return nil, err
+	}
+	s, err := a.client.Stream(ctx, prompt, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +97,11 @@ func (a *clientAdapter) PrepareStreamTurn(
 	images []piagent.Image,
 	turn turnSpec,
 ) (preparedTurnStream, error) {
-	prepared, err := a.client.PrepareStream(ctx, prompt, turnRunOptions(mode, images, &turn)...)
+	opts, err := turnRunOptions(mode, images, &turn)
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := a.client.PrepareStream(ctx, prompt, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -100,16 +109,19 @@ func (a *clientAdapter) PrepareStreamTurn(
 	return &clientPreparedTurn{adapter: a, prepared: prepared}, nil
 }
 
-func turnRunOptions(mode string, images []piagent.Image, turn *turnSpec) []piagent.RunOption {
+func turnRunOptions(mode string, images []piagent.Image, turn *turnSpec) ([]piagent.RunOption, error) {
 	// Resume 不在这里下发：会话复用走 Client 级 --session（WithSession）。每个
 	// runtime turn 都记录原生 user anchor；分叉 turn 由同一个 per-turn option
 	// 在当前 RPC 进程里先 fork，再发送 prompt。
 	var opts []piagent.RunOption
 	if turn != nil {
-		if anchor := strings.TrimSpace(turn.forkAnchor); anchor != "" {
-			opts = append(opts, piagent.RunForkAnchor(anchor))
-		} else {
+		switch {
+		case turn.forkAnchor == "":
 			opts = append(opts, piagent.RunCaptureUserAnchor())
+		case strings.TrimSpace(turn.forkAnchor) != turn.forkAnchor:
+			return nil, errors.New("piagent runtime: invalid fork anchor")
+		default:
+			opts = append(opts, piagent.RunForkAnchor(turn.forkAnchor))
 		}
 	}
 	if strings.TrimSpace(mode) != "" {
@@ -118,7 +130,7 @@ func turnRunOptions(mode string, images []piagent.Image, turn *turnSpec) []piage
 	if len(images) > 0 {
 		opts = append(opts, piagent.WithImages(images))
 	}
-	return opts
+	return opts, nil
 }
 
 func (a *clientAdapter) setActiveStream(s *piagent.Stream) {

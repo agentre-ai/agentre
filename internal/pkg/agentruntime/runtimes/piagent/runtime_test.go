@@ -97,6 +97,13 @@ func TestRun_ForksAndReturnsNativeSessionState(t *testing.T) {
 	})
 }
 
+func TestTurnRunOptionsRejectWhitespacePaddedForkAnchorWithoutRewriting(t *testing.T) {
+	opts, err := turnRunOptions("", nil, &turnSpec{forkAnchor: " fork-user "})
+
+	require.Nil(t, opts)
+	require.ErrorContains(t, err, "invalid fork anchor")
+}
+
 func TestRun_CanceledAcceptedTurnReturnsSettledUserAnchor(t *testing.T) {
 	stream := &acceptedStopStream{
 		started: make(chan struct{}),

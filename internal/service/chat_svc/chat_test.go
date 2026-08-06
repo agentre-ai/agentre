@@ -2127,6 +2127,79 @@ func TestSend_PiAgentPersistsNativeSessionBeforeTurnDrain(t *testing.T) {
 	assert.True(t, persistedBeforeDrain, "Pi native session ID must be durable before the event stream finishes")
 }
 
+func TestPiRecoveryGate_CompactAndChangedBackendReconcileBeforeProviderWork(t *testing.T) {
+	tests := []struct {
+		name        string
+		backendType agent_backend_entity.BackendType
+		invoke      func(chat_svc.ChatSvc, context.Context) error
+	}{
+		{
+			name:        "Given Pi recovery is pending, when Compact mutates the session, then recovery fails before provider work",
+			backendType: agent_backend_entity.TypePiAgent,
+			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) error {
+				_, err := svc.Compact(ctx, &chat_svc.CompactRequest{SessionID: 100})
+				return err
+			},
+		},
+		{
+			name:        "Given a Pi recovery marker survives a backend change, when Send changes provider mode, then recovery fails before the new provider runs",
+			backendType: agent_backend_entity.TypeClaudeCode,
+			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) error {
+				_, err := svc.Send(ctx, &chat_svc.SendRequest{
+					SessionID: 100, AgentID: 7, Text: "must not run", PermissionMode: "plan",
+				})
+				return err
+			},
+		},
+		{
+			name:        "Given a Pi recovery marker survives a backend change, when SetPermissionMode mutates the backend, then recovery fails before dispatch",
+			backendType: agent_backend_entity.TypeClaudeCode,
+			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) error {
+				_, err := svc.SetPermissionMode(ctx, &chat_svc.SetPermissionModeRequest{SessionID: 100, Mode: "plan"})
+				return err
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := setupChatTest(t)
+			compactRunner := &compactRecordingRunner{recordingRunner: &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}}
+			permissionRunner := &fakePermissionRunner{}
+			var runner agentruntime.Runtime = compactRunner
+			if tc.backendType == agent_backend_entity.TypeClaudeCode {
+				runner = permissionRunner
+			}
+			restore := agentruntime.SwapRuntimeForTest(tc.backendType, runner)
+			t.Cleanup(restore)
+
+			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+				ID: 100, AgentID: 7, ProviderSessionID: "pi-session-new", AgentStatus: "running", Status: consts.ACTIVE,
+			}, nil)
+			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+				ID: 7, Name: "Changed backend", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+			}, nil)
+			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+				ID: 12, Type: string(tc.backendType), EnvJSON: "{}", Status: consts.ACTIVE,
+			}, nil)
+			m.dbMock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE role = \\? AND device_id = \\? ORDER BY id ASC").
+				WithArgs(sqlmock.AnyArg(), "100").
+				WillReturnError(errors.New("pending Pi recovery read failed"))
+
+			err := tc.invoke(m.svc, m.ctx)
+
+			require.ErrorContains(t, err, "pending Pi recovery read failed")
+			select {
+			case req := <-compactRunner.requests:
+				t.Fatalf("unreconciled Pi recovery reached provider work: %+v", req)
+			default:
+			}
+			assert.False(t, permissionRunner.setCalled, "unreconciled Pi recovery changed provider mode")
+			assert.NoError(t, m.dbMock.ExpectationsWereMet())
+		})
+	}
+}
+
 func TestCompact_PiAgentRequiresNativeProviderSession(t *testing.T) {
 	m := setupChatTest(t)
 	ctx := m.ctx
@@ -2143,6 +2216,7 @@ func TestCompact_PiAgentRequiresNativeProviderSession(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}", Status: consts.ACTIVE,
 	}, nil)
+	expectNoPiTranscriptRecovery(m, 100)
 
 	resp, err := m.svc.Compact(ctx, &chat_svc.CompactRequest{SessionID: 100})
 
@@ -7035,7 +7109,35 @@ func TestPiRestart_RejectsEmptyAnchorBeforeTruncationOrRunnerStart(t *testing.T)
 			},
 		},
 		{
+			name:   "Given an old Pi assistant reply whose anchor is padded, when Regenerate runs, then it rejects the opaque ID without rewriting it",
+			anchor: " pi-user-entry ",
+			arrange: func(m *chatMocks, anchor string) {
+				m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(&chat_entity.Message{
+					ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("v1"),
+				}, nil)
+				m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{
+					{ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"), ForkAnchor: anchor},
+					{ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("v1")},
+				}, nil)
+			},
+			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) (*chat_svc.SendResponse, error) {
+				return svc.Regenerate(ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
+			},
+		},
+		{
 			name: "Given an old Pi user message whose anchor is empty, when Edit runs, then it fails without truncating or starting the runner",
+			arrange: func(m *chatMocks, anchor string) {
+				m.message.EXPECT().Find(gomock.Any(), int64(1000)).Return(&chat_entity.Message{
+					ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"), ForkAnchor: anchor,
+				}, nil)
+			},
+			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) (*chat_svc.SendResponse, error) {
+				return svc.Edit(ctx, &chat_svc.EditRequest{SessionID: 100, MessageID: 1000, Text: "replacement"})
+			},
+		},
+		{
+			name:   "Given an old Pi user message whose anchor is padded, when Edit runs, then it rejects the opaque ID without rewriting it",
+			anchor: "\tpi-user-entry\n",
 			arrange: func(m *chatMocks, anchor string) {
 				m.message.EXPECT().Find(gomock.Any(), int64(1000)).Return(&chat_entity.Message{
 					ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"), ForkAnchor: anchor,
@@ -7999,6 +8101,82 @@ func TestStop_LocalPiCancellationCannotHangBehindAcceptedTurnAbort(t *testing.T)
 	assert.True(t, abortSawCanceled, "the settlement window must start before waiting for the abort write")
 	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
 	assert.Equal(t, "pi-user-anchor-after-local-stop", persistedAnchor)
+}
+
+func TestStop_PiAnchorPersistenceFailureRemainsExplicitAfterAbort(t *testing.T) {
+	m := setupChatTest(t)
+	runner := &stopOrderPiRunner{
+		started:      make(chan struct{}),
+		abortEntered: make(chan struct{}),
+		releaseAbort: make(chan struct{}),
+	}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
+	t.Cleanup(restore)
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, ProviderSessionID: "pi-session", AgentStatus: "idle", Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Pi", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypePiAgent), Status: consts.ACTIVE,
+	}, nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+	expectNoPiTranscriptRecovery(m, 100)
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				msg.ID = 2000
+			} else {
+				msg.ID = 2001
+			}
+			return nil
+		}).Times(2)
+	m.dbMock.ExpectCommit()
+
+	var persistedAssistantError string
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				return errors.New("anchor update permanently failed")
+			}
+			persistedAssistantError = msg.ErrorText
+			return nil
+		}).AnyTimes()
+
+	resp, err := m.svc.Send(m.ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hello"})
+	require.NoError(t, err)
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("Pi runtime did not accept the turn")
+	}
+	stopped, stopErr := m.svc.Stop(m.ctx, &chat_svc.StopRequest{SessionID: 100})
+	require.NoError(t, stopErr)
+	require.NotNil(t, stopped)
+	require.True(t, stopped.Stopped)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	assert.Contains(t, persistedAssistantError, "persist user anchor")
+	var gotError, gotAborted bool
+	for _, recorded := range m.events {
+		event, ok := recorded.Payload.(chat_svc.ChatStreamEvent)
+		if !ok {
+			continue
+		}
+		switch event.Kind {
+		case chat_svc.StreamError:
+			gotError = true
+			assert.Contains(t, event.Error, "persist user anchor")
+		case chat_svc.StreamAborted:
+			gotAborted = true
+		}
+	}
+	assert.True(t, gotError, "anchor persistence failure must remain an explicit terminal error")
+	assert.False(t, gotAborted, "a plain aborted terminal event would hide the uneditable row")
 }
 
 func TestStop_NoActiveTurnReturnsError(t *testing.T) {

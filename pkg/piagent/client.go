@@ -72,7 +72,7 @@ type PreparedStream struct {
 }
 
 func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (*Stream, error) {
-	prepared, err := c.PrepareStream(ctx, prompt, opts...)
+	prepared, err := c.prepareStream(ctx, prompt, false, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -82,15 +82,24 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 }
 
 // PrepareStream starts/restores the Pi RPC process, completes any requested
-// native fork, and captures the pre-prompt leaf without sending the prompt.
-// Start must be called only after the caller has durably recorded the turn.
+// native fork, and requires an exact pre-prompt tree boundary without sending
+// the prompt. Start must be called only after the caller has durably recorded
+// the turn. Ordinary Stream calls retain the R6 metadata-degradation behavior
+// for non-replacement turns that cannot capture a boundary.
 func (c *Client) PrepareStream(ctx context.Context, prompt string, opts ...RunOption) (*PreparedStream, error) {
+	return c.prepareStream(ctx, prompt, true, opts...)
+}
+
+func (c *Client) prepareStream(ctx context.Context, prompt string, requireExactBoundary bool, opts ...RunOption) (*PreparedStream, error) {
 	spec := runSpec{}
 	for _, o := range opts {
 		o(&spec)
 	}
 	// Session resume is wired at the Client level (WithSession → --session); the
 	// per-turn spec carries multimodal images透传到 prompt 帧。
+	if spec.forkAnchor != "" && strings.TrimSpace(spec.forkAnchor) != spec.forkAnchor {
+		return nil, errors.New("piagent: invalid fork anchor")
+	}
 	proc, err := c.startRPC(ctx)
 	if err != nil {
 		return nil, err
@@ -102,8 +111,8 @@ func (c *Client) PrepareStream(ctx context.Context, prompt string, opts ...RunOp
 		_ = proc.terminate(context.Background(), c.killGrace)
 		return nil, err
 	}
-	if forkAnchor := strings.TrimSpace(spec.forkAnchor); forkAnchor != "" {
-		if err := forkSession(startupCtx, proc, forkAnchor); err != nil {
+	if spec.forkAnchor != "" {
+		if err := forkSession(startupCtx, proc, spec.forkAnchor); err != nil {
 			_ = proc.terminate(context.Background(), c.killGrace)
 			return nil, err
 		}
@@ -126,7 +135,13 @@ func (c *Client) PrepareStream(ctx context.Context, prompt string, opts ...RunOp
 			_ = stream.Close(context.Background())
 			return nil, err
 		}
-		if leafID, ok := validSessionEntriesLeaf(entries); ok {
+		leafID, ok := validSessionEntriesLeaf(entries)
+		if !ok {
+			if requireExactBoundary {
+				_ = stream.Close(context.Background())
+				return nil, errors.New("piagent: invalid pre-prompt tree boundary")
+			}
+		} else {
 			stream.setUserAnchorBoundary(leafID)
 		}
 	}
@@ -374,18 +389,18 @@ func scanRPCLine(ctx context.Context, scanner rpcLineScanner) bool {
 }
 
 func validSessionEntriesLeaf(entries sessionEntriesWire) (string, bool) {
-	leafID := strings.TrimSpace(entries.LeafID)
+	leafID := entries.LeafID
 	if len(entries.Entries) == 0 {
 		return leafID, leafID == ""
 	}
-	if leafID == "" {
+	if leafID == "" || strings.TrimSpace(leafID) != leafID {
 		return "", false
 	}
 	seen := make(map[string]struct{}, len(entries.Entries))
 	for _, entry := range entries.Entries {
-		id := strings.TrimSpace(entry.ID)
-		if id == "" {
-			continue
+		id := entry.ID
+		if id == "" || strings.TrimSpace(id) != id {
+			return "", false
 		}
 		if _, duplicate := seen[id]; duplicate {
 			return "", false

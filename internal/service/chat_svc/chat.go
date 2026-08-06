@@ -915,6 +915,16 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 	if err != nil {
 		return nil, err
 	}
+	gate, err := s.acquireTurnGate(ctx, sess, be)
+	if err != nil {
+		return nil, err
+	}
+	gateOwned := true
+	defer func() {
+		if gateOwned {
+			gate.lock.Unlock()
+		}
+	}()
 	// Codex and Pi Agent compact an existing provider-native session; neither may
 	// create an empty replacement session merely to satisfy an explicit compact.
 	if compactRequiresProviderSession(be) && strings.TrimSpace(sess.ProviderSessionID) == "" {
@@ -938,7 +948,8 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 		releasePreflight()
 		return nil, i18n.NewError(ctx, code.ChatCompactUnsupported)
 	}
-	resp, err := s.startCompactTurn(ctx, sess, a, be, prov)
+	gateOwned = false
+	resp, err := s.startCompactTurn(ctx, sess, a, be, prov, gate.lock)
 	if err != nil {
 		releasePreflight()
 		return nil, err
@@ -1216,6 +1227,20 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 	if err != nil {
 		return nil, err
 	}
+	var gate *sessionTurnGate
+	gateOwned := false
+	if req.SessionID > 0 {
+		gate, err = s.acquireTurnGate(ctx, sess, be)
+		if err != nil {
+			return nil, err
+		}
+		gateOwned = true
+		defer func() {
+			if gateOwned {
+				gate.lock.Unlock()
+			}
+		}()
+	}
 	if len(imageBlocks) > 0 && be.IsLocal() {
 		runner, err := s.selectRunner(ctx, be, req.SessionID)
 		if err != nil {
@@ -1263,9 +1288,14 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 		}
 	}
 
+	var prelocked *trylockMutex
+	if gate != nil {
+		prelocked = gate.lock
+		gateOwned = false
+	}
 	return s.startTurn(ctx, sess, a, be, prov, userBlocksForSend(text, imageBlocks), nil /*preTxHook*/, nil /*replacement*/, "" /*forkAnchor*/, turnExtras{
 		emitTurnStartedBypass: req.EmitTurnStartedBypass,
-	}, nil /*prelocked*/)
+	}, prelocked)
 }
 
 func userBlocksForSend(text string, imageBlocks []blocks.ContentBlock) []blocks.ContentBlock {
@@ -1959,6 +1989,19 @@ func (s *chatSvc) SetPermissionMode(ctx context.Context, req *SetPermissionModeR
 		return nil, err
 	}
 
+	// 后端变更类操作同样必须先对账未决的 Pi transcript recovery：会话可能带着 Pi
+	// 替换标记（标记把 provider session + running 态原子落库）后切换了后端，把
+	// permission mode 下发到新后端前必须先把标记恢复/清理掉，否则 provider 状态
+	// 会建立在未决恢复之上。这里不加 session turn 锁：SetPermissionMode 是允许
+	// claudecode 轮内切换的轻量操作（与 Enqueue 一致），真正在跑的轮子在其起点已
+	// 通过 gate 对账；未决标记只可能由持有锁的 Pi 轮产生，而 Pi 后端在下方
+	// supported 检查就被拒，故此处对账不会与创建标记的轮子并发。
+	if _, rerr := s.reconcileTranscriptReplacement(ctx, sess, be); rerr != nil {
+		return nil, operationFailedWithCause(ctx, rerr,
+			zap.Int64("sessionId", sess.ID),
+			zap.String("backendType", be.Type))
+	}
+
 	backendType := agent_backend_entity.BackendType(be.Type)
 	meta, supported := permissionModeMetaFor(backendType)
 	if !supported {
@@ -2427,13 +2470,17 @@ func (s *chatSvc) cleanupTranscriptReplacementRecovery(
 }
 
 // reconcileTranscriptReplacement is the single session-level recovery boundary
-// for Pi turns. Callers hold the session turn lock before entering it.
+// for a session that may still own a Pi replacement marker. Pi activation writes
+// AgentStatus=running and the new provider session atomically with the marker, so
+// that durable state keeps the gate active even if the configured backend changes.
+// Callers hold the session turn lock before entering it.
 func (s *chatSvc) reconcileTranscriptReplacement(
 	ctx context.Context,
 	sess *chat_entity.Session,
 	be *agent_backend_entity.AgentBackend,
 ) (bool, error) {
-	if sess == nil || be == nil || !be.IsPiAgent() {
+	if sess == nil || be == nil ||
+		(!be.IsPiAgent() && (sess.AgentStatus != "running" || !sess.HasProviderSession())) {
 		return false, nil
 	}
 	recovery, err := chat_repo.FindReplacementRecoveryForSession(ctx, sess.ID)
@@ -2566,11 +2613,11 @@ func (s *chatSvc) backendForkAnchor(
 }
 
 func normalizedPiForkAnchor(userMsg *chat_entity.Message) (string, bool) {
-	if userMsg == nil || strings.TrimSpace(userMsg.ForkAnchor) == "" {
+	if userMsg == nil || userMsg.ForkAnchor == "" || strings.TrimSpace(userMsg.ForkAnchor) != userMsg.ForkAnchor {
 		return "", false
 	}
-	// Entry IDs are opaque native Pi identities. Whitespace decides presence but
-	// must never rewrite or guess a nonblank persisted value.
+	// Entry IDs are opaque native Pi identities. Reject malformed persisted values
+	// instead of trimming them into a different provider identity.
 	return userMsg.ForkAnchor, true
 }
 
@@ -2954,10 +3001,15 @@ func (s *chatSvc) startCompactTurn(
 	a *agent_entity.Agent,
 	be *agent_backend_entity.AgentBackend,
 	prov *llm_provider_entity.LLMProvider,
+	prelocked *trylockMutex,
 ) (*CompactResponse, error) {
-	lock := s.lockFor(sess.ID)
-	if !lock.TryLock() {
-		return nil, i18n.NewError(ctx, code.ChatSendInFlight)
+	lock := prelocked
+	if lock == nil {
+		gate, err := s.acquireTurnGate(ctx, sess, be)
+		if err != nil {
+			return nil, err
+		}
+		lock = gate.lock
 	}
 
 	model := ""
@@ -3487,6 +3539,7 @@ func (s *chatSvc) runTurn(
 
 	assistantMsg.DurationMs = int(time.Since(segmentStart).Milliseconds())
 	stopErr := streamStopErr
+	var anchorPersistErr error
 	if result != nil {
 		if result.Usage != nil {
 			assistantMsg.PromptTokens = result.Usage.PromptTokens
@@ -3524,8 +3577,9 @@ func (s *chatSvc) runTurn(
 			userMsg,
 			result.UserAnchor,
 			be.IsPiAgent(),
-		); err != nil && stopErr == nil {
-			stopErr = err
+		); err != nil {
+			anchorPersistErr = err
+			stopErr = errors.Join(stopErr, err)
 		}
 		// codex app-server 上报的 modelContextWindow 落到 session 字段，下次
 		// LoadSession 用 resolveContextWindowWithRuntime 优先读这个值——比
@@ -3542,7 +3596,7 @@ func (s *chatSvc) runTurn(
 		req.CollaborationMode == permissionModePlan &&
 		hasActionablePlanBlock(finalBlocks)
 
-	if stopErr != nil && !aborted {
+	if stopErr != nil && (!aborted || anchorPersistErr != nil) {
 		assistantMsg.ErrorText = stopErr.Error()
 	}
 	// finalCtx：去掉 cancel 信号但保留 DB 句柄。abort 路径下 turnCtx 已 cancel，
@@ -3578,7 +3632,7 @@ func (s *chatSvc) runTurn(
 	// 即将自动接续的中间态：不要把 session 状态打成 idle，等最终轮收尾再翻。
 	if len(pending) == 0 {
 		switch {
-		case stopErr != nil && !aborted:
+		case stopErr != nil && (!aborted || anchorPersistErr != nil):
 			sess.AgentStatus = "error"
 			sess.NeedsAttention = false
 		case awaitingPlanAction:
@@ -3678,6 +3732,12 @@ func (s *chatSvc) runTurn(
 
 	final := chatMessageForEvent(sess, assistantMsg)
 	switch {
+	case anchorPersistErr != nil:
+		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
+			Kind:    StreamError,
+			Error:   stopErr.Error(),
+			Message: final,
+		})
 	case aborted:
 		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamAborted, Message: final})
 	case stopErr != nil:
