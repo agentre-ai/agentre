@@ -334,63 +334,174 @@ func TestPrepareRun_StartCancellationAbortsPromptAcknowledgement(t *testing.T) {
 	assert.ErrorIs(t, rt.Abort(context.Background(), 75), agentruntime.ErrNoActiveTurn)
 }
 
-func TestPrepareRun_LatePiFramesCannotAffectNewerGeneration(t *testing.T) {
+func TestPrepareRun_CurrentPiCompletionIsNotConsumedWhenAbortedOwnerEmitsNoTerminalFrame(t *testing.T) {
 	_, cli, capture, rt := setupRemote(t)
 
 	call := 0
-	var generationTokens []string
 	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, _ string, params any, result any) error {
 			call++
 			rp := params.(wire.RunParams)
-			generationTokens = append(generationTokens, rp.PermissionMode)
 			switch call {
 			case 1, 4:
 				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID}
-			case 2, 3:
-				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "pi-generation-1"}
-			case 5:
-				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "pi-generation-2"}
+			case 2, 3, 5, 6:
+				*(result.(*wire.RunAck)) = wire.RunAck{
+					SessionID: rp.SessionID, ProviderSessionID: "shared-native-session",
+				}
 			default:
 				t.Fatalf("unexpected runtime.run call %d", call)
 			}
 			return nil
-		}).Times(5)
-	cli.EXPECT().Call(gomock.Any(), wire.MethodAbort, wire.AbortParams{SessionID: 81}, gomock.Any()).Return(nil).Times(2)
+		}).Times(6)
+	cli.EXPECT().Call(gomock.Any(), wire.MethodAbort, wire.AbortParams{SessionID: 83}, gomock.Any()).Return(nil)
 
 	first, err := rt.PrepareRun(context.Background(), agentruntime.RunRequest{
-		Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)},
-		SessionID: 81,
+		Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)},
+		SessionID:         83,
+		ProviderSessionID: "shared-native-session",
 	})
 	require.NoError(t, err)
 	firstEvents, _, err := first.Start(context.Background())
 	require.NoError(t, err)
 	require.NoError(t, first.Close(context.Background()))
 	_, open := <-firstEvents
-	assert.False(t, open, "closing the exact prepared generation must settle its local event stream")
+	assert.False(t, open)
 
 	second, err := rt.PrepareRun(context.Background(), agentruntime.RunRequest{
 		Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)},
-		SessionID:         81,
-		ProviderSessionID: "pi-generation-1",
+		SessionID:         83,
+		ProviderSessionID: "shared-native-session",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "pi-generation-2", second.(piagentrt.PreparedRunIdentity).ProviderSessionID())
-
-	lateEvent, err := json.Marshal(agentruntime.TextDelta{Text: "late-secret-payload"})
+	secondEvents, result, err := second.Start(context.Background())
 	require.NoError(t, err)
-	capture.deliver(t, wire.NotifyEvent, wire.EventFrame{SessionID: 81, Event: lateEvent})
+
+	currentEvent, err := json.Marshal(agentruntime.TextDelta{Text: "current generation"})
+	require.NoError(t, err)
+	capture.deliver(t, wire.NotifyEvent, wire.EventFrame{SessionID: 83, Event: currentEvent})
 	capture.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{
-		SessionID: 81, ProviderSessionID: "pi-generation-1",
+		SessionID: 83, ProviderSessionID: "shared-native-session", Model: "current-model",
+	})
+	capture.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{
+		SessionID: 83, ProviderSessionID: "shared-native-session", Model: "duplicate-model",
 	})
 
-	require.NoError(t, second.Close(context.Background()),
-		"late cleanup from generation 1 must not delete generation 2")
-	require.Len(t, generationTokens, 5)
-	assert.Equal(t, generationTokens[0], generationTokens[1])
-	assert.Equal(t, generationTokens[1], generationTokens[2])
-	assert.Equal(t, generationTokens[3], generationTokens[4])
-	assert.NotEqual(t, generationTokens[0], generationTokens[3])
+	select {
+	case event, ok := <-secondEvents:
+		require.True(t, ok)
+		assert.Equal(t, agentruntime.TextDelta{Text: "current generation"}, event)
+	case <-time.After(time.Second):
+		t.Fatal("current generation event was consumed by the aborted owner")
+	}
+	_, open = <-secondEvents
+	assert.False(t, open)
+	assert.Equal(t, "current-model", result.Model)
+}
+
+func TestPrepareRun_StaleCloseCannotOverlapNewRegistrationWhenTerminalIdentityIsEmpty(t *testing.T) {
+	_, cli, capture, rt := setupRemote(t)
+	abortEntered := make(chan struct{})
+	allowAbort := make(chan struct{})
+	secondRegistrationEntered := make(chan struct{})
+	var (
+		mu   sync.Mutex
+		call int
+	)
+	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, params any, result any) error {
+			mu.Lock()
+			call++
+			currentCall := call
+			mu.Unlock()
+			rp := params.(wire.RunParams)
+			switch currentCall {
+			case 1, 4:
+				if currentCall == 4 {
+					close(secondRegistrationEntered)
+				}
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID}
+			case 2, 3, 5, 6:
+				*(result.(*wire.RunAck)) = wire.RunAck{
+					SessionID: rp.SessionID, ProviderSessionID: "shared-native-session",
+				}
+			default:
+				t.Fatalf("unexpected runtime.run call %d", currentCall)
+			}
+			return nil
+		}).Times(6)
+	cli.EXPECT().Call(gomock.Any(), wire.MethodAbort, wire.AbortParams{SessionID: 82}, gomock.Any()).
+		DoAndReturn(func(context.Context, string, any, any) error {
+			close(abortEntered)
+			<-allowAbort
+			return nil
+		})
+
+	first, err := rt.PrepareRun(context.Background(), agentruntime.RunRequest{
+		Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)},
+		SessionID:         82,
+		ProviderSessionID: "shared-native-session",
+	})
+	require.NoError(t, err)
+	firstEvents, _, err := first.Start(context.Background())
+	require.NoError(t, err)
+
+	closeErrC := make(chan error, 1)
+	go func() { closeErrC <- first.Close(context.Background()) }()
+	<-abortEntered
+	capture.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{
+		SessionID: 82, Model: "completed-before-abort-response",
+	})
+	_, open := <-firstEvents
+	assert.False(t, open)
+
+	preparedC := make(chan piagentrt.PreparedRun, 1)
+	errC := make(chan error, 1)
+	go func() {
+		prepared, prepareErr := rt.PrepareRun(context.Background(), agentruntime.RunRequest{
+			Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)},
+			SessionID:         82,
+			ProviderSessionID: "shared-native-session",
+		})
+		preparedC <- prepared
+		errC <- prepareErr
+	}()
+
+	registeredBeforeAbortSettled := false
+	select {
+	case <-secondRegistrationEntered:
+		registeredBeforeAbortSettled = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(allowAbort)
+	require.NoError(t, <-closeErrC)
+	assert.False(t, registeredBeforeAbortSettled,
+		"a stale Close must finish its exact abort before a retry can register on the daemon")
+	if !registeredBeforeAbortSettled {
+		<-secondRegistrationEntered
+	}
+
+	require.NoError(t, <-errC)
+	second := <-preparedC
+	require.NotNil(t, second)
+	secondEvents, result, err := second.Start(context.Background())
+	require.NoError(t, err)
+	currentEvent, err := json.Marshal(agentruntime.TextDelta{Text: "current generation"})
+	require.NoError(t, err)
+	capture.deliver(t, wire.NotifyEvent, wire.EventFrame{SessionID: 82, Event: currentEvent})
+	capture.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{
+		SessionID: 82, Model: "current-model",
+	})
+	capture.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{
+		SessionID: 82, Model: "duplicate-model",
+	})
+
+	event, open := <-secondEvents
+	require.True(t, open)
+	assert.Equal(t, agentruntime.TextDelta{Text: "current generation"}, event)
+	_, open = <-secondEvents
+	assert.False(t, open)
+	assert.Equal(t, "current-model", result.Model)
 }
 
 func TestHandleEvent_UnknownAndMalformedFramesNeverLogPayload(t *testing.T) {

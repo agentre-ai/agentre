@@ -68,15 +68,21 @@ type remoteSession struct {
 type Runtime struct {
 	client agentruntime.DaemonClientPort
 
-	mu       sync.RWMutex
-	sessions map[int64]*remoteSession
-	caps     map[agent_backend_entity.BackendType]capability.Capabilities
+	mu              sync.RWMutex
+	sessions        map[int64]*remoteSession
+	generationGates map[int64]*generationGate
+	caps            map[agent_backend_entity.BackendType]capability.Capabilities
 	// autoSessions 是「自主续轮」(AutonomousTurnSource)的会话级镜像,**独立于**
 	// per-Run 的 sessions(后者在 runResultDone 时删除,而自主续轮发生在 Run 收尾
 	// *之后*)。按 sessionID 持久(跨 turn / 子进程 evict 复用),conn close 时统一拆。
 	// 见 autoturn.go。
 	autoSessions    map[int64]*autoSession
 	piGenerationSeq atomic.Uint64
+}
+
+type generationGate struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // New 构造一个 remote.Runtime,并把 runtime.event / runtime.runResultDone
@@ -90,10 +96,11 @@ type Runtime struct {
 // StopErr 并 close events,chat_svc 走 StreamError 解锁前端。
 func New(c agentruntime.DaemonClientPort) *Runtime {
 	r := &Runtime{
-		client:       c,
-		sessions:     map[int64]*remoteSession{},
-		caps:         map[agent_backend_entity.BackendType]capability.Capabilities{},
-		autoSessions: map[int64]*autoSession{},
+		client:          c,
+		sessions:        map[int64]*remoteSession{},
+		generationGates: map[int64]*generationGate{},
+		caps:            map[agent_backend_entity.BackendType]capability.Capabilities{},
+		autoSessions:    map[int64]*autoSession{},
 	}
 	c.Handle(wire.NotifyEvent, r.handleEvent)
 	c.Handle(wire.NotifyRunResultDone, r.handleRunResultDone)
@@ -275,9 +282,11 @@ func (r *Runtime) PrepareRun(ctx context.Context, req agentruntime.RunRequest) (
 		cancel:           cancel,
 		registrationDone: make(chan struct{}),
 	}
+	releaseGenerationGate := r.acquireGenerationGate(req.SessionID)
 	r.mu.Lock()
 	if _, exists := r.sessions[req.SessionID]; exists {
 		r.mu.Unlock()
+		releaseGenerationGate()
 		cancel()
 		return nil, errors.New("remote runtime: session already has an active generation")
 	}
@@ -289,6 +298,7 @@ func (r *Runtime) PrepareRun(ctx context.Context, req agentruntime.RunRequest) (
 	registrationErr := r.client.Call(registrationCtx, wire.MethodRun, params, &registrationAck)
 	stopRegistration()
 	sess.registrationOnce.Do(func() { close(sess.registrationDone) })
+	releaseGenerationGate()
 	if registrationErr != nil {
 		_ = r.abortGeneration(ctx, sess)
 		return nil, wire.FromJSONRPCError(registrationErr)
@@ -809,17 +819,28 @@ func (r *Runtime) abortGeneration(ctx context.Context, sess *remoteSession) erro
 	if !current {
 		return nil
 	}
-	sess.abortOnce.Do(func() {
-		sess.mu.Lock()
-		if sess.cancel != nil {
-			sess.cancel()
-		}
-		registrationDone := sess.registrationDone
-		sess.mu.Unlock()
-		if registrationDone != nil {
-			<-registrationDone
-		}
 
+	// Cancellation is owner-local and must reach preparation immediately. Only
+	// the SessionID-only daemon Abort call waits behind the generation gate.
+	sess.mu.Lock()
+	if sess.cancel != nil {
+		sess.cancel()
+	}
+	registrationDone := sess.registrationDone
+	sess.mu.Unlock()
+	if registrationDone != nil {
+		<-registrationDone
+	}
+
+	releaseGenerationGate := r.acquireGenerationGate(sess.id)
+	defer releaseGenerationGate()
+	r.mu.RLock()
+	current = r.sessions[sess.id] == sess
+	r.mu.RUnlock()
+	if !current {
+		return nil
+	}
+	sess.abortOnce.Do(func() {
 		base := ctx
 		if base == nil {
 			base = context.Background()
@@ -857,6 +878,28 @@ func (r *Runtime) finishSession(sess *remoteSession, stopErr error) {
 		close(sess.events)
 	}
 	sess.mu.Unlock()
+}
+
+func (r *Runtime) acquireGenerationGate(sid int64) func() {
+	r.mu.Lock()
+	gate := r.generationGates[sid]
+	if gate == nil {
+		gate = &generationGate{}
+		r.generationGates[sid] = gate
+	}
+	gate.refs++
+	r.mu.Unlock()
+
+	gate.mu.Lock()
+	return func() {
+		gate.mu.Unlock()
+		r.mu.Lock()
+		gate.refs--
+		if gate.refs == 0 && r.generationGates[sid] == gate {
+			delete(r.generationGates, sid)
+		}
+		r.mu.Unlock()
+	}
 }
 
 func (r *Runtime) hasSession(sid int64) bool {

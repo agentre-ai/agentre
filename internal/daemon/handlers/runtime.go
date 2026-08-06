@@ -82,6 +82,10 @@ type runtimeSession struct {
 	started           bool
 	aborted           bool
 	abortErr          error
+	finishing         bool
+	aborting          bool
+	terminalDone      chan struct{}
+	terminalOnce      sync.Once
 }
 
 // NewRuntimeHandlers wires the dependencies and prepares the session map.
@@ -265,6 +269,7 @@ func (h *RuntimeHandlers) registerPiGeneration(
 		ctx:             generationCtx,
 		cancel:          cancel,
 		generationToken: generationToken,
+		terminalDone:    make(chan struct{}),
 	}
 	if !h.registerIfAbsent(p.SessionID, owner) {
 		cancel()
@@ -372,6 +377,7 @@ func (h *RuntimeHandlers) startPreparedPi(
 			log.Printf("runtime.run: close failed sid=%d backend=%s errorType=%T", p.SessionID, be.Type, abortErr)
 		}
 		h.unregister(p.SessionID, owner)
+		owner.signalTerminal()
 		return wire.RunAck{}, err
 	}
 	ack := wire.RunAck{SessionID: p.SessionID, ProviderSessionID: providerSessionID}
@@ -434,14 +440,30 @@ func (h *RuntimeHandlers) fanout(owner *runtimeSession, sid int64, ch <-chan age
 		}
 	}
 	frame := runResultToFrame(sid, result)
-	// Exact-owner removal prevents an old aborted fanout from deleting a newer
-	// retry registered under the same chat SessionID.
-	removed := h.unregister(sid, owner)
-	if perr := h.deps.Notify.Notify(wire.NotifyRunResultDone, frame); perr != nil {
-		log.Printf("runtime.runResultDone: notify failed sid=%d currentGeneration=%t errorType=%T", sid, removed, perr)
+	if owner.backendType != agent_backend_entity.TypePiAgent {
+		removed := h.unregister(sid, owner)
+		if perr := h.deps.Notify.Notify(wire.NotifyRunResultDone, frame); perr != nil {
+			log.Printf("runtime.runResultDone: notify failed sid=%d currentGeneration=%t errorType=%T", sid, removed, perr)
+		}
+		log.Printf("runtime.run: session ended sid=%d currentGeneration=%t totalEvents=%d kinds=%v stopErrCode=%d",
+			sid, removed, count, kindHist, frame.StopErrCode)
+		return
 	}
+
+	// Pi terminal delivery is claimed by the exact in-memory owner while it is
+	// still registered. If Abort claimed the owner first, this stale fanout is
+	// suppressed; if fanout claimed first, Abort waits for signalTerminal so the
+	// notification is written before its RPC response permits a retry.
+	current := h.claimPiTerminal(sid, owner)
+	if current {
+		if perr := h.deps.Notify.Notify(wire.NotifyRunResultDone, frame); perr != nil {
+			log.Printf("runtime.runResultDone: notify failed sid=%d currentGeneration=true errorType=%T", sid, perr)
+		}
+		h.unregister(sid, owner)
+	}
+	owner.signalTerminal()
 	log.Printf("runtime.run: session ended sid=%d currentGeneration=%t totalEvents=%d kinds=%v stopErrCode=%d",
-		sid, removed, count, kindHist, frame.StopErrCode)
+		sid, current, count, kindHist, frame.StopErrCode)
 }
 
 // startAutonomousFanout 每会话起一个 goroutine,把真实 runtime 的自主续轮转发到
@@ -580,17 +602,48 @@ func (h *RuntimeHandlers) DrainPending(ctx context.Context, p wire.DrainParams) 
 }
 
 func (h *RuntimeHandlers) Abort(ctx context.Context, p wire.AbortParams) (wire.OK, error) {
-	owner := h.lookupSession(p.SessionID)
+	h.mu.Lock()
+	owner := h.sessions[p.SessionID]
 	if owner == nil {
+		h.mu.Unlock()
 		return wire.OK{}, agentruntime.ErrNoActiveTurn
 	}
 	if owner.backendType == agent_backend_entity.TypePiAgent && owner.ctx != nil {
+		if owner.finishing {
+			terminalDone := owner.terminalDone
+			h.mu.Unlock()
+			select {
+			case <-terminalDone:
+				return wire.OK{}, nil
+			case <-ctx.Done():
+				return wire.OK{}, ctx.Err()
+			}
+		}
+		owner.aborting = true
+		h.mu.Unlock()
 		if err := owner.abort(ctx); err != nil {
+			terminalSettled := false
+			select {
+			case <-owner.terminalDone:
+				terminalSettled = true
+			default:
+			}
+			h.mu.Lock()
+			if h.sessions[p.SessionID] == owner {
+				if terminalSettled {
+					delete(h.sessions, p.SessionID)
+				} else {
+					owner.aborting = false
+				}
+			}
+			h.mu.Unlock()
 			return wire.OK{}, err
 		}
 		h.unregister(p.SessionID, owner)
+		owner.signalTerminal()
 		return wire.OK{}, nil
 	}
+	h.mu.Unlock()
 	a, err := resolveSessionCapability[agentruntime.Aborter](h, p.SessionID)
 	if err != nil {
 		return wire.OK{}, err
@@ -861,6 +914,23 @@ func (h *RuntimeHandlers) unregister(sid int64, owner *runtimeSession) bool {
 	}
 	delete(h.sessions, sid)
 	return true
+}
+
+func (h *RuntimeHandlers) claimPiTerminal(sid int64, owner *runtimeSession) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.sessions[sid] != owner || owner.aborting {
+		return false
+	}
+	owner.finishing = true
+	return true
+}
+
+func (s *runtimeSession) signalTerminal() {
+	if s == nil || s.terminalDone == nil {
+		return
+	}
+	s.terminalOnce.Do(func() { close(s.terminalDone) })
 }
 
 // decodeHistory turns wire HistoryMessage frames back into the agentruntime

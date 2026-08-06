@@ -9,7 +9,9 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 	"github.com/cago-frame/cago/pkg/logger"
@@ -23,6 +25,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent/mcpbridge"
 	"github.com/agentre-ai/agentre/internal/pkg/cliprocess"
 	pkgpiagent "github.com/agentre-ai/agentre/pkg/piagent"
 )
@@ -311,6 +314,109 @@ func TestRun_ClosesSessionAfterDrain(t *testing.T) {
 	})
 }
 
+func TestRun_StaleCleanupCannotUnregisterNewerGeneration(t *testing.T) {
+	firstCloseStarted := make(chan struct{})
+	allowFirstClose := make(chan struct{})
+	secondRelease := make(chan struct{})
+	releaseSecond := sync.OnceFunc(func() { close(secondRelease) })
+	defer releaseSecond()
+	secondInterrupted := make(chan struct{}, 1)
+	first := &fakeSession{
+		stream:       &emptyStream{},
+		sid:          "shared-native-session",
+		closeStarted: firstCloseStarted,
+		allowClose:   allowFirstClose,
+	}
+	second := &fakeSession{
+		stream:      &blockingStream{release: secondRelease},
+		sid:         "shared-native-session",
+		interrupter: &recordingInterruptor{called: secondInterrupted},
+	}
+	var (
+		factoryMu sync.Mutex
+		created   int
+	)
+	restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
+		factoryMu.Lock()
+		defer factoryMu.Unlock()
+		created++
+		if created == 1 {
+			return first, nil
+		}
+		return second, nil
+	})
+	defer restore()
+	runtime := New()
+	req := agentruntime.RunRequest{
+		Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+		SessionID:         91,
+		ProviderSessionID: "shared-native-session",
+		Cwd:               t.TempDir(),
+		UserText:          "ordinary resumed turn",
+	}
+
+	firstEvents, _, err := runtime.Run(context.Background(), req)
+	require.NoError(t, err)
+	<-firstCloseStarted
+
+	secondEvents, _, err := runtime.Run(context.Background(), req)
+	require.NoError(t, err)
+	close(allowFirstClose)
+	for range firstEvents {
+	}
+
+	require.NoError(t, runtime.Abort(context.Background(), req.SessionID),
+		"generation A's deferred unregister must not remove generation B")
+	select {
+	case <-secondInterrupted:
+	case <-time.After(time.Second):
+		t.Fatal("Abort did not reach the newer generation owner")
+	}
+
+	releaseSecond()
+	for range secondEvents {
+	}
+}
+
+func TestPreparedRun_StaleCloseCannotRemoveNewerGenerationMCPConfig(t *testing.T) {
+	t.Setenv("AGENTRE_DATA_DIR", t.TempDir())
+	first := &fakeSession{stream: &emptyStream{}, sid: "shared-native-session"}
+	second := &fakeSession{stream: &emptyStream{}, sid: "shared-native-session"}
+	created := 0
+	restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
+		created++
+		if created == 1 {
+			return first, nil
+		}
+		return second, nil
+	})
+	defer restore()
+	runtime := New()
+	req := agentruntime.RunRequest{
+		Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+		SessionID: 92,
+		Cwd:       t.TempDir(),
+		MCPServers: []agentruntime.MCPServerSpec{{
+			Name: "group", URL: "http://127.0.0.1:1/mcp/group/",
+		}},
+	}
+
+	firstPrepared, err := runtime.PrepareRun(context.Background(), req)
+	require.NoError(t, err)
+	secondPrepared, err := runtime.PrepareRun(context.Background(), req)
+	require.NoError(t, err)
+	configPath, err := mcpbridge.RenderConfig(req.MCPServers, req.SessionID)
+	require.NoError(t, err)
+
+	require.NoError(t, firstPrepared.Close(context.Background()))
+	_, err = os.Stat(configPath)
+	require.NoError(t, err, "generation A must not remove generation B's MCP config")
+
+	require.NoError(t, secondPrepared.Close(context.Background()))
+	_, err = os.Stat(configPath)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
 func TestRun_ClosesOutputAfterSessionClose(t *testing.T) {
 	Convey("Given a pi-agent session whose cleanup is still running", t, func() {
 		closeStarted := make(chan struct{})
@@ -551,6 +657,7 @@ func TestRun_PiFailuresStayRedactedAtStartupAndDownstream(t *testing.T) {
 type fakeSession struct {
 	stream        stream
 	sid           string
+	interrupter   interruptable
 	gotImages     []pkgpiagent.Image
 	gotPrompt     string
 	gotForkAnchor string
@@ -585,7 +692,31 @@ func (s *fakeSession) StreamTurn(ctx context.Context, prompt, mode string, image
 func (s *fakeSession) Compact(context.Context) (stream, error)          { return s.stream, s.streamErr }
 func (s *fakeSession) RewindTo(context.Context, string) (string, error) { return s.sid, nil }
 func (s *fakeSession) ActiveStream() steerStream                        { return nil }
-func (s *fakeSession) ActiveInterruptor() interruptable                 { return nil }
+func (s *fakeSession) ActiveInterruptor() interruptable                 { return s.interrupter }
+
+type recordingInterruptor struct {
+	called chan<- struct{}
+}
+
+func (i *recordingInterruptor) Interrupt(context.Context) error {
+	select {
+	case i.called <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+type blockingStream struct {
+	release <-chan struct{}
+}
+
+func (s *blockingStream) Next() bool {
+	<-s.release
+	return false
+}
+func (*blockingStream) Event() pkgpiagent.Event { return pkgpiagent.Event{} }
+func (*blockingStream) SessionID() string       { return "" }
+func (*blockingStream) Err() error              { return nil }
 
 type emptyStream struct{}
 

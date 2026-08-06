@@ -32,8 +32,9 @@ type activeSession struct {
 }
 
 type Runtime struct {
-	mu     sync.Mutex
-	active map[int64]*activeSession
+	mu       sync.Mutex
+	active   map[int64]*activeSession
+	prepared map[int64]*preparedRun
 }
 
 type PreparedRun interface {
@@ -68,7 +69,12 @@ type preparedRun struct {
 	close   sync.Once
 }
 
-func New() *Runtime { return &Runtime{active: map[int64]*activeSession{}} }
+func New() *Runtime {
+	return &Runtime{
+		active:   map[int64]*activeSession{},
+		prepared: map[int64]*preparedRun{},
+	}
+}
 
 func (r *Runtime) Capabilities() capability.Capabilities {
 	return capability.Capabilities{
@@ -126,6 +132,7 @@ func (r *Runtime) PrepareRun(ctx context.Context, req agentruntime.RunRequest) (
 		modelID:           modelID,
 		providerSessionID: strings.TrimSpace(sess.ID()),
 	}
+	r.registerPrepared(req.SessionID, prepared)
 	if !req.Compact {
 		if preparer, ok := sess.(turnStreamPreparer); ok {
 			preparedStream, err := preparer.PrepareStreamTurn(
@@ -212,7 +219,7 @@ func (p *preparedRun) Start(ctx context.Context) (<-chan agentruntime.Event, *ag
 
 	go func() {
 		defer close(out)
-		defer p.runtime.unregister(p.req.SessionID)
+		defer p.runtime.unregister(p.req.SessionID, active)
 		defer func() { _ = p.Close(context.Background()) }()
 		drainStream(ctx, p.req, p.cwd, s, out, result, active)
 	}()
@@ -234,7 +241,8 @@ func (p *preparedRun) Close(ctx context.Context) error {
 		if err := p.sess.Close(ctx); closeErr == nil && err != nil {
 			closeErr = err
 		}
-		if len(p.req.MCPServers) > 0 {
+		ownsPreparedRegistration := p.runtime.unregisterPrepared(p.req.SessionID, p)
+		if ownsPreparedRegistration && len(p.req.MCPServers) > 0 {
 			if err := mcpbridge.RemoveConfig(p.req.SessionID); closeErr == nil && err != nil {
 				closeErr = err
 			}
@@ -277,13 +285,37 @@ func (r *Runtime) register(sessionID int64, a *activeSession) {
 	r.mu.Unlock()
 }
 
-func (r *Runtime) unregister(sessionID int64) {
-	if sessionID <= 0 {
+func (r *Runtime) unregister(sessionID int64, owner *activeSession) {
+	if sessionID <= 0 || owner == nil {
 		return
 	}
 	r.mu.Lock()
-	delete(r.active, sessionID)
+	if r.active[sessionID] == owner {
+		delete(r.active, sessionID)
+	}
 	r.mu.Unlock()
+}
+
+func (r *Runtime) registerPrepared(sessionID int64, owner *preparedRun) {
+	if sessionID <= 0 || owner == nil {
+		return
+	}
+	r.mu.Lock()
+	r.prepared[sessionID] = owner
+	r.mu.Unlock()
+}
+
+func (r *Runtime) unregisterPrepared(sessionID int64, owner *preparedRun) bool {
+	if sessionID <= 0 || owner == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.prepared[sessionID] != owner {
+		return false
+	}
+	delete(r.prepared, sessionID)
+	return true
 }
 
 func (a *activeSession) addPending(id, text string) {

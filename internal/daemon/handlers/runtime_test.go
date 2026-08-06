@@ -407,6 +407,23 @@ type notifyFrame struct {
 	params any
 }
 
+type blockingTerminalNotifier struct {
+	recording *recordingNotifier
+	entered   chan struct{}
+	allow     chan struct{}
+	once      sync.Once
+}
+
+func (n *blockingTerminalNotifier) Notify(method string, params any) error {
+	if method == wire.NotifyRunResultDone {
+		n.once.Do(func() { close(n.entered) })
+		<-n.allow
+	}
+	return n.recording.Notify(method, params)
+}
+
+func (*blockingTerminalNotifier) Request(context.Context, string, any, any) error { return nil }
+
 func newRecordingNotifier() *recordingNotifier {
 	return &recordingNotifier{notifyC: make(chan struct{}, 64)}
 }
@@ -691,8 +708,60 @@ func TestRuntime_PiPrepareReturnsIdentityBeforeSecondRunStartsPrompt(t *testing.
 	assert.Equal(t, wire.NotifyRunResultDone, frames[0].method)
 }
 
-func TestRuntime_StalePiFanoutCannotUnregisterNewerGeneration(t *testing.T) {
-	rt := newScriptedPreparedPiRT("pi-generation-1", "pi-generation-2")
+func TestRuntime_PiAbortWaitsForClaimedTerminalNotification(t *testing.T) {
+	rt := newScriptedPreparedPiRT("shared-native-session")
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	notif := &blockingTerminalNotifier{
+		recording: newRecordingNotifier(),
+		entered:   make(chan struct{}),
+		allow:     make(chan struct{}),
+	}
+	h := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
+		Notify:  notif,
+		Gateway: mock_handlers.NewMockGatewayPort(ctrl),
+		Lookup:  mock_handlers.NewMockLLMProviderLookupPort(ctrl),
+		RuntimeFor: func(_ agent_backend_entity.BackendType) agentruntime.Runtime {
+			return rt
+		},
+	})
+	ctx := context.Background()
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{
+		Backend: backendJSON(t, be), SessionID: 54, PermissionMode: "generation-54",
+	}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	ack, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	params.ProviderSessionID = ack.ProviderSessionID
+	_, err = h.Run(ctx, params)
+	require.NoError(t, err)
+	close(rt.prepared[0].events)
+	<-notif.entered
+
+	abortErrC := make(chan error, 1)
+	go func() {
+		_, abortErr := h.Abort(ctx, wire.AbortParams{SessionID: 54})
+		abortErrC <- abortErr
+	}()
+	select {
+	case abortErr := <-abortErrC:
+		t.Fatalf("Abort returned before the claimed terminal notification was delivered: %v", abortErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(notif.allow)
+	require.NoError(t, <-abortErrC)
+	frames := notif.recording.waitFrames(t, 1)
+	require.Len(t, frames, 1)
+	assert.Equal(t, wire.NotifyRunResultDone, frames[0].method)
+}
+
+func TestRuntime_StalePiFanoutCannotTerminateOrNotifyForNewerGeneration(t *testing.T) {
+	rt := newScriptedPreparedPiRT("shared-native-session", "shared-native-session")
+	rt.prepared[0].result.Model = "stale-model"
+	rt.prepared[1].result.Model = "current-model"
 	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
 	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
 	params := wire.RunParams{Backend: backendJSON(t, be), SessionID: 55, PermissionMode: "generation-55-1"}
@@ -720,19 +789,30 @@ func TestRuntime_StalePiFanoutCannotUnregisterNewerGeneration(t *testing.T) {
 	rt.mu.Unlock()
 	secondAck, err := h.Run(ctx, params)
 	require.NoError(t, err)
-	assert.Equal(t, "pi-generation-2", secondAck.ProviderSessionID)
+	assert.Equal(t, "shared-native-session", secondAck.ProviderSessionID)
+	params.ProviderSessionID = secondAck.ProviderSessionID
+	_, err = h.Run(ctx, params)
+	require.NoError(t, err)
 
 	close(rt.prepared[0].events)
-	frames := notif.waitFrames(t, 1)
-	assert.Equal(t, wire.NotifyRunResultDone, frames[0].method,
-		"the old generation completion frame is the deterministic cleanup barrier")
+	close(rt.prepared[1].events)
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		_, steerErr := h.Steer(ctx, wire.SteerParams{SessionID: 55, Text: "after completion"})
+		assert.ErrorIs(c, steerErr, agentruntime.ErrNoActiveTurn)
+	}, time.Second, 10*time.Millisecond)
 
-	_, err = h.Abort(ctx, wire.AbortParams{SessionID: 55})
-	require.NoError(t, err, "old fanout cleanup must preserve the newer pending generation")
+	frames := notif.waitFrames(t, 1)
+	require.Len(t, frames, 1, "only the current owner may emit runResultDone")
+	assert.Equal(t, wire.NotifyRunResultDone, frames[0].method)
+	done := frames[0].params.(wire.RunResultDoneFrame)
+	assert.Equal(t, "current-model", done.Model)
+	assert.Never(t, func() bool { return len(notif.snapshot()) > 1 }, 100*time.Millisecond, 5*time.Millisecond,
+		"stale generation A must not emit a terminal result")
+
 	_, firstClosed := rt.prepared[0].counts()
 	_, secondClosed := rt.prepared[1].counts()
 	assert.Equal(t, 1, firstClosed)
-	assert.Equal(t, 1, secondClosed)
+	assert.Zero(t, secondClosed)
 }
 
 func TestRuntime_FanoutLogsEventClassificationWithoutSerializedPayload(t *testing.T) {
