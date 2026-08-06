@@ -161,6 +161,188 @@ func TestPrepareRun_PiExposesIdentityBeforePromptAndStartsThroughExistingRunRPC(
 	assert.False(t, ok)
 }
 
+func TestPrepareRun_PreAckBurstReturnsAckBeforeConsumerDrainsAndPreservesOrder(t *testing.T) {
+	_, cli, capture, rt := setupRemote(t)
+	const burst = 96
+
+	call := 0
+	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, params any, result any) error {
+			call++
+			rp := params.(wire.RunParams)
+			switch call {
+			case 1:
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID}
+			case 2:
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "pi-session-burst"}
+			case 3:
+				for i := 0; i < burst; i++ {
+					capture.deliver(t, wire.NotifyEvent, wire.EventFrame{
+						SessionID: rp.SessionID,
+						Event:     mustRawFrame(t, agentruntime.TextDelta{Text: fmt.Sprintf("event-%03d", i)}),
+					})
+				}
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "pi-session-burst"}
+			default:
+				t.Fatalf("unexpected runtime.run call %d", call)
+			}
+			return nil
+		}).Times(3)
+
+	prepared, err := rt.PrepareRun(context.Background(), agentruntime.RunRequest{
+		Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)},
+		SessionID: 164,
+	})
+	require.NoError(t, err)
+
+	type startResult struct {
+		events <-chan agentruntime.Event
+		result *agentruntime.RunResult
+		err    error
+	}
+	started := make(chan startResult, 1)
+	go func() {
+		events, result, startErr := prepared.Start(context.Background())
+		started <- startResult{events: events, result: result, err: startErr}
+	}()
+
+	var got startResult
+	select {
+	case got = <-started:
+	case <-time.After(time.Second):
+		// Release the historical direct-send deadlock so the failed RED leaves no
+		// parked goroutine or mock expectation behind.
+		rt.mu.RLock()
+		blocked := rt.sessions[int64(164)]
+		rt.mu.RUnlock()
+		require.NotNil(t, blocked)
+		go func() {
+			for i := 0; i < burst; i++ {
+				<-blocked.events
+			}
+		}()
+		got = <-started
+		capture.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{
+			SessionID: 164, ProviderSessionID: "pi-session-burst",
+		})
+		t.Fatal("Start acknowledgement was blocked by the pre-ack event burst")
+	}
+	require.NoError(t, got.err)
+	require.NotNil(t, got.result)
+
+	capture.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{
+		SessionID: 164, ProviderSessionID: "pi-session-burst",
+	})
+	for i := 0; i < burst; i++ {
+		event, open := <-got.events
+		require.True(t, open, "event stream closed at %d/%d", i, burst)
+		assert.Equal(t, agentruntime.TextDelta{Text: fmt.Sprintf("event-%03d", i)}, event)
+	}
+	_, open := <-got.events
+	assert.False(t, open)
+}
+
+func TestPrepareRun_SlowConsumerOverflowCancelsExactGenerationAndAllowsRetry(t *testing.T) {
+	_, cli, capture, rt := setupRemote(t)
+	const (
+		sessionID = int64(165)
+		burst     = 512
+		secret    = "private-overflow-event-payload"
+	)
+
+	var call int
+	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, params any, result any) error {
+			call++
+			rp := params.(wire.RunParams)
+			switch call {
+			case 1, 4:
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID}
+			case 2, 3, 5, 6:
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "shared-native-session"}
+			default:
+				t.Fatalf("unexpected runtime.run call %d", call)
+			}
+			return nil
+		}).Times(6)
+	abortCalled := make(chan struct{})
+	var abortOnce sync.Once
+	cli.EXPECT().Call(gomock.Any(), wire.MethodAbort, wire.AbortParams{SessionID: sessionID}, gomock.Any()).
+		DoAndReturn(func(context.Context, string, any, any) error {
+			abortOnce.Do(func() { close(abortCalled) })
+			return nil
+		})
+
+	first, err := rt.PrepareRun(context.Background(), agentruntime.RunRequest{
+		Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)},
+		SessionID: sessionID,
+	})
+	require.NoError(t, err)
+	firstEvents, firstResult, err := first.Start(context.Background())
+	require.NoError(t, err)
+
+	deliveryDone := make(chan struct{})
+	go func() {
+		defer close(deliveryDone)
+		for i := 0; i < burst; i++ {
+			capture.deliver(t, wire.NotifyEvent, wire.EventFrame{
+				SessionID: sessionID,
+				Event:     mustRawFrame(t, agentruntime.TextDelta{Text: fmt.Sprintf("%s-%03d", secret, i)}),
+			})
+		}
+	}()
+
+	overflowed := true
+	select {
+	case <-abortCalled:
+	case <-time.After(time.Second):
+		overflowed = false
+		go func() {
+			for range firstEvents {
+			}
+		}()
+		<-deliveryDone
+		require.NoError(t, first.Close(context.Background()))
+	}
+	if !overflowed {
+		t.Fatal("a non-consuming caller blocked event delivery instead of canceling the exact generation")
+	}
+	<-deliveryDone
+	for range firstEvents {
+	}
+	require.Error(t, firstResult.StopErr)
+	assert.Equal(t, "remote runtime: event delivery exceeded bounded buffer", firstResult.StopErr.Error())
+	assert.NotContains(t, firstResult.StopErr.Error(), secret)
+	assert.ErrorIs(t, rt.Abort(context.Background(), sessionID), agentruntime.ErrNoActiveTurn)
+
+	// A stale frame observed after exact-owner finalization is dropped before a
+	// same-SessionID retry is installed.
+	capture.deliver(t, wire.NotifyEvent, wire.EventFrame{
+		SessionID: sessionID,
+		Event:     mustRawFrame(t, agentruntime.TextDelta{Text: secret + "-late"}),
+	})
+	second, err := rt.PrepareRun(context.Background(), agentruntime.RunRequest{
+		Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)},
+		SessionID: sessionID,
+	})
+	require.NoError(t, err)
+	secondEvents, secondResult, err := second.Start(context.Background())
+	require.NoError(t, err)
+	capture.deliver(t, wire.NotifyEvent, wire.EventFrame{
+		SessionID: sessionID,
+		Event:     mustRawFrame(t, agentruntime.TextDelta{Text: "retry-current"}),
+	})
+	capture.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{
+		SessionID: sessionID, ProviderSessionID: "shared-native-session", Model: "retry-model",
+	})
+	event, open := <-secondEvents
+	require.True(t, open)
+	assert.Equal(t, agentruntime.TextDelta{Text: "retry-current"}, event)
+	_, open = <-secondEvents
+	assert.False(t, open)
+	assert.Equal(t, "retry-model", secondResult.Model)
+}
+
 func TestPrepareRun_StopDuringRegistrationWaitsForOwnerAckThenAborts(t *testing.T) {
 	_, cli, _, rt := setupRemote(t)
 	registrationEntered := make(chan struct{})
@@ -512,7 +694,7 @@ func TestHandleEvent_UnknownAndMalformedFramesNeverLogPayload(t *testing.T) {
 
 	unknown, err := json.Marshal(wire.EventFrame{
 		SessionID: 901,
-		Event:     mustRawFrame(t, agentruntime.TextDelta{Text: secret}),
+		Event:     json.RawMessage(fmt.Sprintf(`{"kind":%q,"text":%q}`, secret, secret)),
 	})
 	require.NoError(t, err)
 	_, err = rt.handleEvent(ctx, unknown)

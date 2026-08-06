@@ -121,6 +121,17 @@ func New(c agentruntime.DaemonClientPort) *Runtime {
 // StreamError,前端就能解锁「生成中」并显示一条提示。
 var ErrDaemonDisconnected = errors.New("agentruntime/runtimes/remote: daemon connection closed")
 
+// errEventBufferOverflow 是 bounded event buffer 溢出时注入到 StopErr 的脱敏
+// 错误:消息固定,不含任何 prompt / event payload。notify handler(read loop
+// 直接调用)做 non-blocking send,消费方跟不上时取消精确 generation 而不是
+// 阻塞 WebSocket 读循环。
+var errEventBufferOverflow = errors.New("remote runtime: event delivery exceeded bounded buffer")
+
+// eventChannelBound 是每个远端 generation 的有界事件缓冲。read loop 上的
+// handleEvent 用 non-blocking send,缓冲满即取消精确 generation。该值兼顾
+// 短突发(避免误取消正常 turn)和溢出保护(消费方卡死时尽快释放资源)。
+const eventChannelBound = 128
+
 const generationControlTimeout = 5 * time.Second
 
 // watchClose 阻塞读 client.Closed(),触发时把所有未结束的 session 用
@@ -276,7 +287,7 @@ func (r *Runtime) PrepareRun(ctx context.Context, req agentruntime.RunRequest) (
 	sess := &remoteSession{
 		id:               req.SessionID,
 		backendType:      agent_backend_entity.TypePiAgent,
-		events:           make(chan agentruntime.Event, 64),
+		events:           make(chan agentruntime.Event, eventChannelBound),
 		result:           &agentruntime.RunResult{},
 		ctx:              generationCtx,
 		cancel:           cancel,
@@ -419,7 +430,7 @@ func (r *Runtime) runDirect(ctx context.Context, req agentruntime.RunRequest) (<
 	sess := &remoteSession{
 		id:          req.SessionID,
 		backendType: agent_backend_entity.BackendType(req.Backend.Type),
-		events:      make(chan agentruntime.Event, 64),
+		events:      make(chan agentruntime.Event, eventChannelBound),
 		result:      &agentruntime.RunResult{},
 		ctx:         generationCtx,
 		cancel:      cancel,
@@ -557,23 +568,60 @@ func (r *Runtime) handleEvent(ctx context.Context, raw json.RawMessage) (any, er
 		return nil, nil
 	}
 	sess.mu.Lock()
-	defer sess.mu.Unlock()
 	if !sess.started {
+		sess.mu.Unlock()
 		logger.Ctx(ctx).Warn("remote runtime: event before prepared generation start dropped",
 			zap.Int64("sessionId", frame.SessionID),
 			zap.String("eventType", fmt.Sprintf("%T", ev)))
 		return nil, nil
 	}
 	if sess.closed {
+		sess.mu.Unlock()
 		logger.Ctx(ctx).Warn("remote runtime: event after session close dropped",
 			zap.Int64("sessionId", frame.SessionID),
 			zap.String("eventType", fmt.Sprintf("%T", ev)))
 		return nil, nil
 	}
-	logger.Ctx(ctx).Debug("remote runtime: event delivered",
+	// non-blocking send: read loop (conn.Serve) dispatches notifications
+	// synchronously, so blocking here would stall the entire WebSocket read
+	// loop including Start acknowledgement. A burst that exceeds the bounded
+	// buffer finalizes the exact generation instead of waiting.
+	select {
+	case sess.events <- ev:
+		sess.mu.Unlock()
+		logger.Ctx(ctx).Debug("remote runtime: event delivered",
+			zap.Int64("sessionId", frame.SessionID),
+			zap.String("eventType", fmt.Sprintf("%T", ev)))
+		return nil, nil
+	default:
+	}
+	// Bounded buffer overflow — finalize this exact generation under sess.mu
+	// (same invariant as finishSession: closed flag gates the close).
+	if sess.result != nil && sess.result.StopErr == nil {
+		sess.result.StopErr = errEventBufferOverflow
+	}
+	sess.closed = true
+	close(sess.events)
+	if sess.cancel != nil {
+		sess.cancel()
+	}
+	sess.mu.Unlock()
+	logger.Ctx(ctx).Warn("remote runtime: event delivery exceeded bounded buffer",
 		zap.Int64("sessionId", frame.SessionID),
-		zap.String("eventType", fmt.Sprintf("%T", ev)))
-	sess.events <- ev
+		zap.String("eventKind", kind))
+	// Remove from the session map so subsequent events for this generation are
+	// dropped as unknown, and trigger the daemon-side Abort asynchronously so
+	// the read loop is never blocked on an RPC.
+	r.mu.Lock()
+	if r.sessions[sess.id] == sess {
+		delete(r.sessions, sess.id)
+	}
+	r.mu.Unlock()
+	//nolint:gosec // G118: intentional — the abort must reach agentred even if
+	// the desktop connection (whose ctx backs the read loop) is closing, so
+	// the orphaned daemon generation is cleaned up. Bounded by
+	// generationControlTimeout inside abortOverflowedGeneration.
+	go r.abortOverflowedGeneration(sess)
 	return nil, nil
 }
 
@@ -799,11 +847,42 @@ func goalParams(req agentruntime.GoalRequest) (wire.GoalParams, error) {
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
+// knownEventKinds is the set of canonical event kinds safe to log verbatim.
+// Any other kind is reported as "unknown" so a malformed or adversarial frame
+// can never smuggle payload into diagnostics through the kind field (R6).
+var knownEventKinds = map[agentruntime.EventKind]struct{}{
+	agentruntime.EventTextDelta:               {},
+	agentruntime.EventThinkingDelta:           {},
+	agentruntime.EventToolUseStart:            {},
+	agentruntime.EventToolUseEnd:              {},
+	agentruntime.EventToolResult:              {},
+	agentruntime.EventSteerConsumed:           {},
+	agentruntime.EventSubagentStarted:         {},
+	agentruntime.EventSubagentProgress:        {},
+	agentruntime.EventSubagentDone:            {},
+	agentruntime.EventSubagentModel:           {},
+	agentruntime.EventAskUserQuestion:         {},
+	agentruntime.EventAskUserQuestionAnswered: {},
+	agentruntime.EventPlanUpdated:             {},
+	agentruntime.EventToolPermissionRequest:   {},
+	agentruntime.EventToolPermissionResolved:  {},
+	agentruntime.EventPermissionModeChanged:   {},
+	agentruntime.EventRetry:                   {},
+	agentruntime.EventUsage:                   {},
+	agentruntime.EventCompactBoundary:         {},
+	agentruntime.EventRuntimeStatus:           {},
+	agentruntime.EventError:                   {},
+	agentruntime.EventDone:                    {},
+}
+
 func eventKind(raw json.RawMessage) string {
 	var head struct {
 		Kind string `json:"kind"`
 	}
 	if err := json.Unmarshal(raw, &head); err != nil || strings.TrimSpace(head.Kind) == "" {
+		return "unknown"
+	}
+	if _, ok := knownEventKinds[agentruntime.EventKind(head.Kind)]; !ok {
 		return "unknown"
 	}
 	return head.Kind
@@ -855,6 +934,24 @@ func (r *Runtime) abortGeneration(ctx context.Context, sess *remoteSession) erro
 		r.finishSession(sess, agentruntime.ErrAborted)
 	})
 	return sess.abortErr
+}
+
+// abortOverflowedGeneration cancels the daemon-side generation after a bounded
+// buffer overflow. It runs in its own goroutine so the read loop that detected
+// the overflow is never blocked on an RPC. The session has already been
+// finalized (StopErr set, events closed, removed from the session map) by the
+// caller; this call only ensures the daemon stops producing events for the
+// abandoned generation.
+func (r *Runtime) abortOverflowedGeneration(sess *remoteSession) {
+	abortCtx, cancel := context.WithTimeout(context.Background(), generationControlTimeout)
+	defer cancel()
+	err := r.callSentinel(abortCtx, wire.MethodAbort, wire.AbortParams{SessionID: sess.id}, &wire.OK{})
+	if errors.Is(err, agentruntime.ErrNoActiveTurn) {
+		err = nil
+	}
+	sess.mu.Lock()
+	sess.abortErr = err
+	sess.mu.Unlock()
 }
 
 func (r *Runtime) finishSession(sess *remoteSession, stopErr error) {
