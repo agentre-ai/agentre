@@ -525,7 +525,11 @@
   "chatContext": {
     "files": {
       "empty": "本会话还没有改过任何文件",
-      "label": "文件"
+      "label": "文件",
+      "openFile": "打开文件",
+      "openFailed": "打开文件失败：{{error}}",
+      "expandFolder": "展开 {{name}}",
+      "collapseFolder": "收起 {{name}}"
     },
     "outline": {
       "empty": "本会话还没有消息",
