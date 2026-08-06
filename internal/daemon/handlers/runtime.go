@@ -56,6 +56,12 @@ type RuntimeGenerationRegistry interface {
 
 // RuntimeHandlers groups the runtime.* JSON-RPC handlers and owns the
 // per-connection session map so control RPCs can resolve sessionID → backend.
+//
+// Lock invariant: h.mu is the only lock guarding h.sessions and every mutable
+// runtimeSession lifecycle field. Code holding h.mu must never wait on owner
+// state, a channel, the generation registry, notifier delivery, or an external
+// runtime Close/Abort call. Snapshots and state claims happen under h.mu; all
+// potentially blocking work happens after it is released.
 type RuntimeHandlers struct {
 	deps RuntimeDeps
 
@@ -89,23 +95,26 @@ type runtimeSession struct {
 	cancel      context.CancelFunc
 	connection  *rpc.Conn
 
-	mu                sync.Mutex
 	prepared          piagentrt.PreparedRun
 	providerSessionID string
 	generationToken   string
 	preparing         bool
 	starting          bool
 	started           bool
-	aborted           bool
-	abortErr          error
-	finishing         bool
+	cancelRequested   bool
+	disconnected      bool
+	terminalClaimed   bool
+	finalizing        bool
 	aborting          bool
-	abortDone         chan struct{}
 	terminalDone      chan struct{}
 	terminalOnce      sync.Once
+	finalErr          error
 }
 
-const runtimeConnectionCleanupTimeout = 2 * time.Second
+const (
+	runtimeConnectionCleanupTimeout = 2 * time.Second
+	runtimePiTerminalWaitTimeout    = 2 * time.Second
+)
 
 // NewRuntimeHandlers wires the dependencies and prepares the session map.
 func NewRuntimeHandlers(deps RuntimeDeps) *RuntimeHandlers {
@@ -153,8 +162,7 @@ func (h *RuntimeHandlers) Close(ctx context.Context) error {
 type runtimeSessionCleanup struct {
 	sessionID int64
 	owner     *runtimeSession
-	abortDone <-chan struct{}
-	finishing bool
+	finalize  bool
 }
 
 func (h *RuntimeHandlers) cleanupConnectionPiGenerations() error {
@@ -165,87 +173,40 @@ func (h *RuntimeHandlers) cleanupConnectionPiGenerations() error {
 	h.closed = true
 	owned := make([]runtimeSessionCleanup, 0, len(h.sessions))
 	for sessionID, owner := range h.sessions {
-		if owner.backendType != agent_backend_entity.TypePiAgent {
+		if owner.backendType != agent_backend_entity.TypePiAgent || owner.ctx == nil {
 			continue
 		}
-		delete(h.sessions, sessionID)
+		owner.disconnected = true
+		owner.cancelRequested = true
 		owned = append(owned, runtimeSessionCleanup{
 			sessionID: sessionID,
 			owner:     owner,
-			abortDone: owner.abortDone,
-			finishing: owner.finishing,
+			finalize:  !owner.preparing && !owner.starting && !owner.terminalClaimed && !owner.finalizing,
 		})
 	}
 	h.mu.Unlock()
 
 	for _, item := range owned {
-		item.owner.mu.Lock()
-		item.owner.aborted = true
-		cancelGeneration := item.owner.cancel
-		item.owner.mu.Unlock()
-		if cancelGeneration != nil {
-			cancelGeneration()
+		if item.owner.cancel != nil {
+			item.owner.cancel()
 		}
-	}
-
-	results := make(chan error, len(owned))
-	for _, item := range owned {
-		go func(current runtimeSessionCleanup) {
-			results <- h.cleanupPiGeneration(cleanupCtx, current)
-		}(item)
+		if item.finalize {
+			go func(current runtimeSessionCleanup) {
+				_ = h.finalizePiGeneration(cleanupCtx, current.sessionID, current.owner)
+			}(item)
+		}
 	}
 
 	var cleanupErr error
-	remaining := len(owned)
-	for remaining > 0 {
-		select {
-		case resultErr := <-results:
-			remaining--
-			if resultErr != nil {
-				cleanupErr = errors.Join(cleanupErr, resultErr)
-			}
-		case <-cleanupCtx.Done():
-			cleanupErr = errors.Join(cleanupErr, cleanupCtx.Err())
-			remaining = 0
-		}
-	}
 	for _, item := range owned {
-		item.owner.signalTerminal()
-		h.releaseGeneration(item.sessionID, item.owner)
+		select {
+		case <-item.owner.terminalDone:
+			cleanupErr = errors.Join(cleanupErr, h.piFinalError(item.owner))
+		case <-cleanupCtx.Done():
+			return errors.Join(cleanupErr, cleanupCtx.Err())
+		}
 	}
 	return cleanupErr
-}
-
-func (h *RuntimeHandlers) cleanupPiGeneration(ctx context.Context, item runtimeSessionCleanup) error {
-	item.owner.mu.Lock()
-	prepared := item.owner.prepared
-	preparing := item.owner.preparing
-	starting := item.owner.starting
-	started := item.owner.started
-	item.owner.mu.Unlock()
-
-	var cleanupErr error
-	if prepared != nil {
-		if err := prepared.Close(ctx); err != nil {
-			cleanupErr = errors.Join(cleanupErr, err)
-		}
-	}
-	if !preparing && !starting && !started && !item.finishing {
-		item.owner.signalTerminal()
-	}
-	if item.abortDone != nil {
-		select {
-		case <-item.abortDone:
-		case <-ctx.Done():
-			return errors.Join(cleanupErr, ctx.Err())
-		}
-	}
-	select {
-	case <-item.owner.terminalDone:
-		return cleanupErr
-	case <-ctx.Done():
-		return errors.Join(cleanupErr, ctx.Err())
-	}
 }
 
 // ── Capabilities ────────────────────────────────────────────────────────────
@@ -285,10 +246,8 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 			if piOwner == nil {
 				return h.registerPiGeneration(ctx, p, &be)
 			}
-			piOwner.mu.Lock()
 			ownsGeneration := piOwner.generationToken == strings.TrimSpace(p.PermissionMode)
 			ownsConnection := piOwner.connection == nil || piOwner.connection == rpc.ConnFromContext(ctx)
-			piOwner.mu.Unlock()
 			if !ownsGeneration || !ownsConnection {
 				return wire.RunAck{}, errors.New("runtime.run: stale Pi generation request")
 			}
@@ -362,13 +321,13 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	}
 
 	if piPreparer != nil {
-		piOwner.mu.Lock()
-		prepared := piOwner.prepared != nil
-		piOwner.mu.Unlock()
+		h.mu.RLock()
+		prepared := h.sessions[p.SessionID] == piOwner && piOwner.prepared != nil
+		h.mu.RUnlock()
 		if prepared {
-			return h.startPreparedPi(ctx, p, &be, piOwner)
+			return h.startPreparedPi(p, &be, piOwner)
 		}
-		return h.preparePi(ctx, p, &be, piOwner, piPreparer, req)
+		return h.preparePi(p, &be, piOwner, piPreparer, req)
 	}
 
 	events, result, err := rt.Run(ctx, req)
@@ -386,7 +345,7 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	}
 	log.Printf("runtime.run: session started sid=%d backend=%s agentId=%d cwd=%q userTextLen=%d",
 		p.SessionID, be.Type, p.AgentID, p.Cwd, len(p.UserText))
-	go h.fanout(owner, p.SessionID, events, result)
+	go h.fanout(owner, p.SessionID, events, result) //nolint:gosec // G118: turn fanout outlives the Run RPC and owns terminal cleanup.
 	// 真实 runtime 若支持自主续轮(claudecode),起每会话一个转发 goroutine 把
 	// AutonomousTurns(sid) 推到 client。session 已 spawn,此刻订阅才拿得到 channel。
 	if src, ok := rt.(agentruntime.AutonomousTurnSource); ok {
@@ -422,78 +381,57 @@ func (h *RuntimeHandlers) registerPiGeneration(
 }
 
 func (h *RuntimeHandlers) preparePi(
-	ctx context.Context,
 	p wire.RunParams,
 	be *agent_backend_entity.AgentBackend,
 	owner *runtimeSession,
 	preparer piagentrt.RunPreparer,
 	req agentruntime.RunRequest,
 ) (wire.RunAck, error) {
-	owner.mu.Lock()
-	if owner.backendType != agent_backend_entity.TypePiAgent || owner.aborted || owner.preparing ||
-		owner.started || owner.prepared != nil || !h.isCurrent(p.SessionID, owner) {
-		owner.mu.Unlock()
+	h.mu.Lock()
+	if h.sessions[p.SessionID] != owner || owner.backendType != agent_backend_entity.TypePiAgent ||
+		owner.cancelRequested || owner.preparing || owner.starting || owner.started ||
+		owner.prepared != nil || owner.finalizing {
+		h.mu.Unlock()
 		return wire.RunAck{}, errors.New("runtime.run: Pi preparation does not own the registered generation")
 	}
 	owner.preparing = true
 	generationCtx := owner.ctx
-	owner.mu.Unlock()
+	h.mu.Unlock()
 
 	prepared, err := preparer.PrepareRun(generationCtx, req)
 	if err != nil {
-		owner.mu.Lock()
+		h.mu.Lock()
 		owner.preparing = false
-		owner.mu.Unlock()
-		h.unregister(p.SessionID, owner)
-		if owner.cancel != nil {
-			owner.cancel()
-		}
-		owner.signalTerminal()
-		return wire.RunAck{}, err
+		h.mu.Unlock()
+		cleanupErr := h.finalizePiGeneration(context.Background(), p.SessionID, owner)
+		return wire.RunAck{}, errors.Join(err, cleanupErr)
 	}
-	identity, ok := prepared.(piagentrt.PreparedRunIdentity)
-	if !ok {
-		owner.mu.Lock()
-		owner.preparing = false
-		owner.mu.Unlock()
-		if owner.cancel != nil {
-			owner.cancel()
-		}
-		_ = prepared.Close(context.Background())
-		h.unregister(p.SessionID, owner)
-		owner.signalTerminal()
-		return wire.RunAck{}, errors.New("runtime.run: prepared Pi generation has no pre-prompt identity")
-	}
-	providerSessionID := strings.TrimSpace(identity.ProviderSessionID())
-	if providerSessionID == "" {
-		owner.mu.Lock()
-		owner.preparing = false
-		owner.mu.Unlock()
-		if owner.cancel != nil {
-			owner.cancel()
-		}
-		_ = prepared.Close(context.Background())
-		h.unregister(p.SessionID, owner)
-		owner.signalTerminal()
-		return wire.RunAck{}, errors.New("runtime.run: prepared Pi generation returned empty provider session id")
+	identity, hasIdentity := prepared.(piagentrt.PreparedRunIdentity)
+	providerSessionID := ""
+	if hasIdentity {
+		providerSessionID = strings.TrimSpace(identity.ProviderSessionID())
 	}
 
-	owner.mu.Lock()
+	h.mu.Lock()
 	owner.preparing = false
-	aborted := owner.aborted
-	if !aborted {
-		owner.prepared = prepared
-		owner.providerSessionID = providerSessionID
+	owner.prepared = prepared
+	owner.providerSessionID = providerSessionID
+	canceled := h.sessions[p.SessionID] != owner || owner.cancelRequested || owner.disconnected ||
+		owner.finalizing || owner.ctx.Err() != nil
+	h.mu.Unlock()
+
+	var prepareErr error
+	switch {
+	case !hasIdentity:
+		prepareErr = errors.New("runtime.run: prepared Pi generation has no pre-prompt identity")
+	case providerSessionID == "":
+		prepareErr = errors.New("runtime.run: prepared Pi generation returned empty provider session id")
+	case canceled:
+		prepareErr = context.Canceled
 	}
-	owner.mu.Unlock()
-	if aborted || !h.isCurrent(p.SessionID, owner) {
-		if owner.cancel != nil {
-			owner.cancel()
-		}
-		_ = prepared.Close(context.Background())
-		h.unregister(p.SessionID, owner)
-		owner.signalTerminal()
-		return wire.RunAck{}, context.Canceled
+	if prepareErr != nil {
+		cleanupErr := h.finalizePiGeneration(context.Background(), p.SessionID, owner)
+		return wire.RunAck{}, errors.Join(prepareErr, cleanupErr)
 	}
 	log.Printf("runtime.run: Pi generation prepared sid=%d backend=%s providerSessionId=%s",
 		p.SessionID, be.Type, providerSessionID)
@@ -501,45 +439,44 @@ func (h *RuntimeHandlers) preparePi(
 }
 
 func (h *RuntimeHandlers) startPreparedPi(
-	ctx context.Context,
 	p wire.RunParams,
 	be *agent_backend_entity.AgentBackend,
 	owner *runtimeSession,
 ) (wire.RunAck, error) {
-	owner.mu.Lock()
+	h.mu.Lock()
 	providerSessionID := owner.providerSessionID
 	prepared := owner.prepared
-	if owner.backendType != agent_backend_entity.TypePiAgent || owner.aborted || owner.starting || owner.started || prepared == nil ||
+	if h.sessions[p.SessionID] != owner || owner.backendType != agent_backend_entity.TypePiAgent ||
+		owner.cancelRequested || owner.starting || owner.started || owner.finalizing || prepared == nil ||
 		strings.TrimSpace(p.ProviderSessionID) != providerSessionID {
-		owner.mu.Unlock()
+		h.mu.Unlock()
 		return wire.RunAck{}, errors.New("runtime.run: Pi start does not own the prepared generation")
 	}
 	owner.starting = true
-	owner.mu.Unlock()
+	h.mu.Unlock()
 
 	events, result, err := prepared.Start(owner.ctx)
-	owner.mu.Lock()
+	h.mu.Lock()
 	owner.starting = false
-	aborted := owner.aborted
-	if err == nil && !aborted {
+	canceled := h.sessions[p.SessionID] != owner || owner.cancelRequested || owner.disconnected ||
+		owner.finalizing || owner.ctx.Err() != nil
+	if err == nil && !canceled {
 		owner.started = true
 	}
-	owner.mu.Unlock()
+	h.mu.Unlock()
 	if err != nil {
-		if abortErr := owner.abortBeforeAcknowledgement(context.Background()); abortErr != nil {
-			log.Printf("runtime.run: close failed sid=%d backend=%s errorType=%T", p.SessionID, be.Type, abortErr)
+		cleanupErr := h.finalizePiGeneration(context.Background(), p.SessionID, owner)
+		if cleanupErr != nil {
+			log.Printf("runtime.run: close failed sid=%d backend=%s errorType=%T", p.SessionID, be.Type, cleanupErr)
 		}
-		h.unregister(p.SessionID, owner)
-		owner.signalTerminal()
-		return wire.RunAck{}, err
+		return wire.RunAck{}, errors.Join(err, cleanupErr)
 	}
-	if aborted || !h.isCurrent(p.SessionID, owner) {
-		go func() {
-			for range events {
-			}
-			owner.signalTerminal()
-		}()
-		return wire.RunAck{}, context.Canceled
+	if canceled {
+		if events != nil {
+			go drainRuntimeEvents(events)
+		}
+		cleanupErr := h.finalizePiGeneration(context.Background(), p.SessionID, owner)
+		return wire.RunAck{}, errors.Join(context.Canceled, cleanupErr)
 	}
 	ack := wire.RunAck{SessionID: p.SessionID, ProviderSessionID: providerSessionID}
 	if result != nil {
@@ -554,29 +491,9 @@ func (h *RuntimeHandlers) startPreparedPi(
 	return ack, nil
 }
 
-func (s *runtimeSession) abortBeforeAcknowledgement(ctx context.Context) error {
-	s.mu.Lock()
-	if s.aborted {
-		err := s.abortErr
-		s.mu.Unlock()
-		return err
+func drainRuntimeEvents(events <-chan agentruntime.Event) {
+	for range events {
 	}
-	s.aborted = true
-	cancel := s.cancel
-	prepared := s.prepared
-	s.mu.Unlock()
-
-	if cancel != nil {
-		cancel()
-	}
-	var abortErr error
-	if prepared != nil {
-		abortErr = prepared.Close(ctx)
-	}
-	s.mu.Lock()
-	s.abortErr = abortErr
-	s.mu.Unlock()
-	return abortErr
 }
 
 // fanout 把 backend events channel 抽干推到 runtime.event,channel close 后再发
@@ -594,7 +511,11 @@ func (h *RuntimeHandlers) fanout(owner *runtimeSession, sid int64, ch <-chan age
 		count++
 		kind := reflect.TypeOf(ev).Name()
 		kindHist[kind]++
-		if !h.isCurrent(sid, owner) {
+		current := h.isCurrent(sid, owner)
+		if owner.backendType == agent_backend_entity.TypePiAgent && owner.ctx != nil {
+			current = h.canDeliverPiEvent(sid, owner)
+		}
+		if !current {
 			log.Printf("runtime.event: stale generation dropped sid=%d n=%d kind=%s", sid, count, kind)
 			continue
 		}
@@ -610,7 +531,7 @@ func (h *RuntimeHandlers) fanout(owner *runtimeSession, sid int64, ch <-chan age
 		}
 	}
 	frame := runResultToFrame(sid, result)
-	if owner.backendType != agent_backend_entity.TypePiAgent {
+	if owner.backendType != agent_backend_entity.TypePiAgent || owner.ctx == nil {
 		removed := h.unregister(sid, owner)
 		if perr := h.deps.Notify.Notify(wire.NotifyRunResultDone, frame); perr != nil {
 			log.Printf("runtime.runResultDone: notify failed sid=%d currentGeneration=%t errorType=%T", sid, removed, perr)
@@ -621,17 +542,19 @@ func (h *RuntimeHandlers) fanout(owner *runtimeSession, sid int64, ch <-chan age
 	}
 
 	// Pi terminal delivery is claimed by the exact in-memory owner while it is
-	// still registered. If Abort claimed the owner first, this stale fanout is
-	// suppressed; if fanout claimed first, Abort waits for signalTerminal so the
-	// notification is written before its RPC response permits a retry.
+	// still registered. Abort may request cancellation before this claim, but an
+	// acknowledged turn still owns its one terminal result. Disconnect and stale
+	// owners cannot claim delivery. Finalization runs only after Notify returns,
+	// so Abort cannot permit a retry before the terminal frame is settled.
 	current := h.claimPiTerminal(sid, owner)
 	if current {
 		if perr := h.deps.Notify.Notify(wire.NotifyRunResultDone, frame); perr != nil {
 			log.Printf("runtime.runResultDone: notify failed sid=%d currentGeneration=true errorType=%T", sid, perr)
 		}
-		h.unregister(sid, owner)
+		if cleanupErr := h.finalizePiGeneration(context.Background(), sid, owner); cleanupErr != nil {
+			log.Printf("runtime.run: finalization failed sid=%d currentGeneration=true errorType=%T", sid, cleanupErr)
+		}
 	}
-	owner.signalTerminal()
 	log.Printf("runtime.run: session ended sid=%d currentGeneration=%t totalEvents=%d kinds=%v stopErrCode=%d",
 		sid, current, count, kindHist, frame.StopErrCode)
 }
@@ -779,46 +702,30 @@ func (h *RuntimeHandlers) Abort(ctx context.Context, p wire.AbortParams) (wire.O
 		return wire.OK{}, agentruntime.ErrNoActiveTurn
 	}
 	if owner.backendType == agent_backend_entity.TypePiAgent && owner.ctx != nil {
-		if owner.finishing || owner.aborting {
-			terminalDone := owner.terminalDone
+		if owner.terminalClaimed || owner.finalizing || owner.aborting {
 			h.mu.Unlock()
-			select {
-			case <-terminalDone:
-				return wire.OK{}, nil
-			case <-ctx.Done():
-				return wire.OK{}, ctx.Err()
-			}
+			return wire.OK{}, h.waitPiFinalization(ctx, owner)
 		}
+		owner.cancelRequested = true
 		owner.aborting = true
-		abortDone := make(chan struct{})
-		owner.abortDone = abortDone
-		owner.mu.Lock()
+		preparing := owner.preparing
+		starting := owner.starting
 		accepted := owner.started
-		owner.mu.Unlock()
 		h.mu.Unlock()
-		defer close(abortDone)
 
-		if !accepted {
-			if err := owner.abortBeforeAcknowledgement(ctx); err != nil {
-				h.mu.Lock()
-				if h.sessions[p.SessionID] == owner {
-					owner.aborting = false
-				}
-				h.mu.Unlock()
-				return wire.OK{}, err
-			}
-			h.unregister(p.SessionID, owner)
-			owner.signalTerminal()
-			return wire.OK{}, nil
-		}
-
-		// An acknowledged prompt owns a live runtime drain. Cancel its generation
-		// context to start the bounded single-scanner settlement window, then send
-		// the exact runtime abort without closing PreparedRun; its own drain/Close
-		// captures metadata and terminates the process tree before fanout returns.
 		if owner.cancel != nil {
 			owner.cancel()
 		}
+		if preparing || starting {
+			return wire.OK{}, h.waitPiFinalization(ctx, owner)
+		}
+		if !accepted {
+			return wire.OK{}, h.finalizePiGeneration(ctx, p.SessionID, owner)
+		}
+
+		// An acknowledged prompt owns one terminal settlement. Runtime Abort is
+		// invoked without h.mu; fanout may claim delivery concurrently and, if it
+		// does, this RPC waits only for the bounded exact-owner finalization.
 		var abortErr error
 		if aborter, ok := h.lookupRuntimeByType(owner.backendType).(agentruntime.Aborter); ok {
 			abortErr = aborter.Abort(ctx, p.SessionID)
@@ -826,15 +733,22 @@ func (h *RuntimeHandlers) Abort(ctx context.Context, p wire.AbortParams) (wire.O
 				abortErr = nil
 			}
 		}
-		select {
-		case <-owner.terminalDone:
-			return wire.OK{}, nil
-		case <-ctx.Done():
-			if abortErr != nil {
-				return wire.OK{}, errors.Join(ctx.Err(), abortErr)
-			}
-			return wire.OK{}, ctx.Err()
+		if abortErr != nil {
+			cleanupErr := h.finalizePiGeneration(ctx, p.SessionID, owner)
+			return wire.OK{}, errors.Join(abortErr, cleanupErr)
 		}
+		waitErr := h.waitPiFinalization(ctx, owner)
+		if waitErr == nil {
+			return wire.OK{}, nil
+		}
+		h.mu.RLock()
+		terminalOwned := owner.terminalClaimed || owner.finalizing
+		h.mu.RUnlock()
+		if terminalOwned {
+			return wire.OK{}, waitErr
+		}
+		cleanupErr := h.finalizePiGeneration(ctx, p.SessionID, owner)
+		return wire.OK{}, errors.Join(waitErr, cleanupErr)
 	}
 	h.mu.Unlock()
 	a, err := resolveSessionCapability[agentruntime.Aborter](h, p.SessionID)
@@ -1090,16 +1004,24 @@ func (h *RuntimeHandlers) register(sid int64, row *runtimeSession) {
 }
 
 func (h *RuntimeHandlers) registerPiIfAbsent(sid int64, row *runtimeSession) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.closed || h.sessions[sid] != nil {
-		return false
+	claimed := false
+	if h.deps.GenerationRegistry != nil {
+		claimed = h.deps.GenerationRegistry.ClaimRuntimeGeneration(row.connection, sid, row.generationToken)
+		if !claimed {
+			return false
+		}
 	}
-	if h.deps.GenerationRegistry != nil &&
-		!h.deps.GenerationRegistry.ClaimRuntimeGeneration(row.connection, sid, row.generationToken) {
+
+	h.mu.Lock()
+	if h.closed || h.sessions[sid] != nil {
+		h.mu.Unlock()
+		if claimed {
+			h.releaseGeneration(sid, row)
+		}
 		return false
 	}
 	h.sessions[sid] = row
+	h.mu.Unlock()
 	return true
 }
 
@@ -1122,14 +1044,80 @@ func (h *RuntimeHandlers) releaseGeneration(sid int64, owner *runtimeSession) {
 	h.deps.GenerationRegistry.ReleaseRuntimeGeneration(owner.connection, sid, owner.generationToken)
 }
 
+func (h *RuntimeHandlers) canDeliverPiEvent(sid int64, owner *runtimeSession) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.sessions[sid] == owner && !owner.disconnected && !owner.finalizing
+}
+
 func (h *RuntimeHandlers) claimPiTerminal(sid int64, owner *runtimeSession) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.sessions[sid] != owner {
+	if h.sessions[sid] != owner || !owner.started || owner.disconnected ||
+		owner.finalizing || owner.terminalClaimed {
 		return false
 	}
-	owner.finishing = true
+	owner.terminalClaimed = true
 	return true
+}
+
+func (h *RuntimeHandlers) finalizePiGeneration(ctx context.Context, sid int64, owner *runtimeSession) error {
+	if owner == nil {
+		return nil
+	}
+	h.mu.Lock()
+	if owner.finalizing {
+		h.mu.Unlock()
+		return h.waitPiFinalization(ctx, owner)
+	}
+	owner.finalizing = true
+	prepared := owner.prepared
+	h.mu.Unlock()
+
+	if owner.cancel != nil {
+		owner.cancel()
+	}
+	var closeErr error
+	if prepared != nil {
+		closeBase := ctx
+		if closeBase == nil || closeBase.Err() != nil {
+			closeBase = context.Background()
+		}
+		closeCtx, cancel := context.WithTimeout(closeBase, runtimeConnectionCleanupTimeout)
+		closeErr = prepared.Close(closeCtx)
+		cancel()
+	}
+	h.unregister(sid, owner)
+	h.mu.Lock()
+	owner.finalErr = closeErr
+	h.mu.Unlock()
+	owner.signalTerminal()
+	return closeErr
+}
+
+func (h *RuntimeHandlers) waitPiFinalization(ctx context.Context, owner *runtimeSession) error {
+	if owner == nil || owner.terminalDone == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timer := time.NewTimer(runtimePiTerminalWaitTimeout)
+	defer timer.Stop()
+	select {
+	case <-owner.terminalDone:
+		return h.piFinalError(owner)
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return context.DeadlineExceeded
+	}
+}
+
+func (h *RuntimeHandlers) piFinalError(owner *runtimeSession) error {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return owner.finalErr
 }
 
 func (s *runtimeSession) signalTerminal() {
