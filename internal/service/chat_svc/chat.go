@@ -1268,7 +1268,7 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 
 	return s.startTurn(ctx, sess, a, be, prov, userBlocksForSend(text, imageBlocks), nil /*preTxHook*/, nil /*replacement*/, "" /*forkAnchor*/, turnExtras{
 		emitTurnStartedBypass: req.EmitTurnStartedBypass,
-	})
+	}, nil /*prelocked*/)
 }
 
 func userBlocksForSend(text string, imageBlocks []blocks.ContentBlock) []blocks.ContentBlock {
@@ -2055,14 +2055,41 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 	if err != nil {
 		return nil, operationFailedWithCause(ctx, err)
 	}
-	if err := s.recoverHiddenTranscriptReplacement(ctx, sess, target); err != nil {
-		return nil, operationFailedWithCause(ctx, err)
-	}
-	if target == nil || target.SessionID != sess.ID {
+	if target == nil || (target.SessionID >= 0 && target.SessionID != sess.ID) {
 		return nil, i18n.NewError(ctx, code.ChatMessageNotFound)
 	}
 	if target.Role != "assistant" {
 		return nil, i18n.NewError(ctx, code.ChatRegenerateNotAssistant)
+	}
+
+	a, be, prov, err := s.resolveAgentBackend(ctx, sess.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	gate, err := s.acquireTurnGate(ctx, sess, be)
+	if err != nil {
+		return nil, err
+	}
+	gateOwned := true
+	defer func() {
+		if gateOwned {
+			gate.lock.Unlock()
+		}
+	}()
+	if gate.reconciled {
+		target, err = chat_repo.Message().Find(ctx, req.MessageID)
+		if err != nil {
+			return nil, operationFailedWithCause(ctx, err)
+		}
+		if target == nil || target.SessionID != sess.ID {
+			return nil, i18n.NewError(ctx, code.ChatMessageNotFound)
+		}
+		if target.Role != "assistant" {
+			return nil, i18n.NewError(ctx, code.ChatRegenerateNotAssistant)
+		}
+	}
+	if target.SessionID != sess.ID {
+		return nil, i18n.NewError(ctx, code.ChatMessageNotFound)
 	}
 
 	// 找紧邻 target 之前的最后一条 user 消息（按 seq）。
@@ -2082,23 +2109,6 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 	userBlocks, err := userAnchor.GetBlocks()
 	if err != nil {
 		return nil, i18n.NewError(ctx, code.ChatBlocksMalformed)
-	}
-
-	a, be, prov, err := s.resolveAgentBackend(ctx, sess.AgentID)
-	if err != nil {
-		return nil, err
-	}
-
-	_, hasPiForkAnchor := normalizedPiForkAnchor(userAnchor)
-	if be.IsPiAgent() && sess.HasProviderSession() && !hasPiForkAnchor &&
-		strings.TrimSpace(target.ErrorText) == "" && strings.TrimSpace(target.BlocksJSON) == "[]" {
-		restored, err := s.recoverActiveTranscriptReplacement(ctx, sess, be, target.ID)
-		if err != nil {
-			return nil, operationFailedWithCause(ctx, err)
-		}
-		if restored {
-			return nil, i18n.NewError(ctx, code.ChatMessageNotFound)
-		}
 	}
 
 	forkAnchor, ferr := s.backendForkAnchor(ctx, sess, be, userAnchor)
@@ -2122,7 +2132,8 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 		replacement = newTranscriptReplacementLifecycle(sess.ID, anchorSeq, req.MessageID)
 		preTx = nil
 	}
-	return s.startTurn(ctx, sess, a, be, prov, userBlocks, preTx, replacement, forkAnchor, turnExtras{})
+	gateOwned = false
+	return s.startTurn(ctx, sess, a, be, prov, userBlocks, preTx, replacement, forkAnchor, turnExtras{}, gate.lock)
 }
 
 // Edit 编辑历史 user 消息后用新文本重跑 turn。截到目标 user 消息（含）开始的全部
@@ -2156,34 +2167,45 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 	if err != nil {
 		return nil, operationFailedWithCause(ctx, err)
 	}
-	if err := s.recoverHiddenTranscriptReplacement(ctx, sess, target); err != nil {
-		return nil, operationFailedWithCause(ctx, err)
-	}
-	if target == nil || target.SessionID != sess.ID {
+	if target == nil || (target.SessionID >= 0 && target.SessionID != sess.ID) {
 		return nil, i18n.NewError(ctx, code.ChatMessageNotFound)
 	}
 	if target.Role != "user" {
 		return nil, i18n.NewError(ctx, code.ChatEditNotUser)
-	}
-	targetBlocks, err := target.GetBlocks()
-	if err != nil {
-		return nil, i18n.NewError(ctx, code.ChatBlocksMalformed)
 	}
 
 	a, be, prov, err := s.resolveAgentBackend(ctx, sess.AgentID)
 	if err != nil {
 		return nil, err
 	}
-
-	_, hasPiForkAnchor := normalizedPiForkAnchor(target)
-	if be.IsPiAgent() && sess.HasProviderSession() && !hasPiForkAnchor {
-		restored, err := s.recoverActiveTranscriptReplacement(ctx, sess, be, target.ID)
+	gate, err := s.acquireTurnGate(ctx, sess, be)
+	if err != nil {
+		return nil, err
+	}
+	gateOwned := true
+	defer func() {
+		if gateOwned {
+			gate.lock.Unlock()
+		}
+	}()
+	if gate.reconciled {
+		target, err = chat_repo.Message().Find(ctx, req.MessageID)
 		if err != nil {
 			return nil, operationFailedWithCause(ctx, err)
 		}
-		if restored {
+		if target == nil || target.SessionID != sess.ID {
 			return nil, i18n.NewError(ctx, code.ChatMessageNotFound)
 		}
+		if target.Role != "user" {
+			return nil, i18n.NewError(ctx, code.ChatEditNotUser)
+		}
+	}
+	if target.SessionID != sess.ID {
+		return nil, i18n.NewError(ctx, code.ChatMessageNotFound)
+	}
+	targetBlocks, err := target.GetBlocks()
+	if err != nil {
+		return nil, i18n.NewError(ctx, code.ChatBlocksMalformed)
 	}
 
 	forkAnchor, ferr := s.backendForkAnchor(ctx, sess, be, target)
@@ -2205,6 +2227,7 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 		replacement = newTranscriptReplacementLifecycle(sess.ID, anchorSeq, req.MessageID)
 		preTx = nil
 	}
+	gateOwned = false
 	return s.startTurn(
 		ctx,
 		sess,
@@ -2216,6 +2239,7 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 		replacement,
 		forkAnchor,
 		turnExtras{},
+		gate.lock,
 	)
 }
 
@@ -2336,6 +2360,9 @@ func (s *chatSvc) restoreTranscriptReplacement(
 	recovery := replacement.recovery
 	if err := db.Ctx(recoveryCtx).Transaction(func(tx *gorm.DB) error {
 		txCtx := db.WithContextDB(recoveryCtx, tx)
+		if err := chat_repo.EnsureReplacementActiveTailOwned(txCtx, recovery); err != nil {
+			return err
+		}
 		if err := chat_repo.RestoreReplacementSession(txCtx, recovery); err != nil {
 			return err
 		}
@@ -2357,8 +2384,14 @@ func (s *chatSvc) restoreTranscriptReplacement(
 		if moved == 0 {
 			return chat_repo.ErrReplacementOwnershipLost
 		}
-		_, err = chat_repo.DeleteReplacementRecovery(txCtx, recovery.RecoverySessionID)
-		return err
+		deleted, err = chat_repo.DeleteReplacementRecovery(txCtx, recovery.RecoverySessionID)
+		if err != nil {
+			return err
+		}
+		if deleted != 1 {
+			return chat_repo.ErrReplacementOwnershipLost
+		}
+		return nil
 	}); err != nil {
 		return err
 	}
@@ -2376,28 +2409,38 @@ func (s *chatSvc) cleanupTranscriptReplacementRecovery(
 	recoveryCtx, cancel := replacementRecoveryContext(ctx)
 	defer cancel()
 	return db.Ctx(recoveryCtx).Transaction(func(tx *gorm.DB) error {
-		_, err := chat_repo.DeleteReplacementRecovery(
+		deleted, err := chat_repo.DeleteReplacementRecovery(
 			db.WithContextDB(recoveryCtx, tx), recovery.RecoverySessionID,
 		)
-		return err
+		if err != nil {
+			return err
+		}
+		if deleted == 0 {
+			return chat_repo.ErrReplacementOwnershipLost
+		}
+		return nil
 	})
 }
 
-func (s *chatSvc) recoverActiveTranscriptReplacement(
+// reconcileTranscriptReplacement is the single session-level recovery boundary
+// for Pi turns. Callers hold the session turn lock before entering it.
+func (s *chatSvc) reconcileTranscriptReplacement(
 	ctx context.Context,
 	sess *chat_entity.Session,
 	be *agent_backend_entity.AgentBackend,
-	messageID int64,
 ) (bool, error) {
 	if sess == nil || be == nil || !be.IsPiAgent() {
 		return false, nil
 	}
-	recovery, err := chat_repo.FindReplacementRecoveryForMessage(ctx, sess.ID, messageID)
+	recovery, err := chat_repo.FindReplacementRecoveryForSession(ctx, sess.ID)
 	if err != nil || recovery == nil {
 		return false, err
 	}
 	if recovery.State == chat_repo.ReplacementRecoveryAcknowledged {
-		return false, s.cleanupTranscriptReplacementRecovery(ctx, recovery)
+		if sess.ProviderSessionID != recovery.NewProviderSessionID {
+			return false, chat_repo.ErrReplacementOwnershipLost
+		}
+		return true, s.cleanupTranscriptReplacementRecovery(ctx, recovery)
 	}
 	replacement := &transcriptReplacementLifecycle{
 		sessionID:        recovery.SessionID,
@@ -2409,37 +2452,6 @@ func (s *chatSvc) recoverActiveTranscriptReplacement(
 		return false, err
 	}
 	return true, nil
-}
-
-func (s *chatSvc) recoverHiddenTranscriptReplacement(
-	ctx context.Context,
-	sess *chat_entity.Session,
-	target *chat_entity.Message,
-) error {
-	if sess == nil || target == nil || target.SessionID >= 0 {
-		return nil
-	}
-	recovery, err := chat_repo.FindReplacementRecovery(ctx, target.SessionID)
-	if err != nil {
-		return err
-	}
-	if recovery == nil || recovery.SessionID != sess.ID || recovery.RequestMessageID != target.ID {
-		return nil
-	}
-	replacement := &transcriptReplacementLifecycle{
-		sessionID:        recovery.SessionID,
-		fromSeq:          recovery.FromSeq,
-		requestMessageID: recovery.RequestMessageID,
-		recovery:         recovery,
-	}
-	if recovery.State == chat_repo.ReplacementRecoveryAcknowledged {
-		return s.cleanupTranscriptReplacementRecovery(ctx, recovery)
-	}
-	if err := s.restoreTranscriptReplacement(ctx, replacement, sess); err != nil {
-		return err
-	}
-	target.SessionID = sess.ID
-	return nil
 }
 
 func (s *chatSvc) finalizeTranscriptReplacement(
@@ -2454,10 +2466,12 @@ func (s *chatSvc) finalizeTranscriptReplacement(
 	recovery := replacement.recovery
 	var acknowledgeErr error
 	for range 2 {
+		candidate := *recovery
 		acknowledgeErr = db.Ctx(recoveryCtx).Transaction(func(tx *gorm.DB) error {
-			return chat_repo.AcknowledgeReplacementRecovery(db.WithContextDB(recoveryCtx, tx), recovery)
+			return chat_repo.AcknowledgeReplacementRecovery(db.WithContextDB(recoveryCtx, tx), &candidate)
 		})
 		if acknowledgeErr == nil {
+			recovery.State = chat_repo.ReplacementRecoveryAcknowledged
 			break
 		}
 	}
@@ -2465,10 +2479,16 @@ func (s *chatSvc) finalizeTranscriptReplacement(
 		return fmt.Errorf("acknowledge Pi transcript recovery: %w", acknowledgeErr)
 	}
 	if err := db.Ctx(recoveryCtx).Transaction(func(tx *gorm.DB) error {
-		_, err := chat_repo.DeleteReplacementRecovery(
+		deleted, err := chat_repo.DeleteReplacementRecovery(
 			db.WithContextDB(recoveryCtx, tx), recovery.RecoverySessionID,
 		)
-		return err
+		if err != nil {
+			return err
+		}
+		if deleted == 0 {
+			return chat_repo.ErrReplacementOwnershipLost
+		}
+		return nil
 	}); err != nil {
 		return fmt.Errorf("cleanup Pi transcript recovery: %w", err)
 	}
@@ -2635,6 +2655,30 @@ type turnExtras struct {
 	emitTurnStartedBypass bool
 }
 
+type sessionTurnGate struct {
+	lock       *trylockMutex
+	reconciled bool
+}
+
+func (s *chatSvc) acquireTurnGate(
+	ctx context.Context,
+	sess *chat_entity.Session,
+	be *agent_backend_entity.AgentBackend,
+) (*sessionTurnGate, error) {
+	lock := s.lockFor(sess.ID)
+	if !lock.TryLock() {
+		return nil, i18n.NewError(ctx, code.ChatSendInFlight)
+	}
+	reconciled, err := s.reconcileTranscriptReplacement(ctx, sess, be)
+	if err != nil {
+		lock.Unlock()
+		return nil, operationFailedWithCause(ctx, err,
+			zap.Int64("sessionId", sess.ID),
+			zap.String("backendType", be.Type))
+	}
+	return &sessionTurnGate{lock: lock, reconciled: reconciled}, nil
+}
+
 func (s *chatSvc) startTurn(
 	ctx context.Context,
 	sess *chat_entity.Session,
@@ -2646,10 +2690,15 @@ func (s *chatSvc) startTurn(
 	replacement *transcriptReplacementLifecycle,
 	forkAnchor string,
 	extras turnExtras,
+	prelocked *trylockMutex,
 ) (*SendResponse, error) {
-	lock := s.lockFor(sess.ID)
-	if !lock.TryLock() {
-		return nil, i18n.NewError(ctx, code.ChatSendInFlight)
+	lock := prelocked
+	if lock == nil {
+		gate, err := s.acquireTurnGate(ctx, sess, be)
+		if err != nil {
+			return nil, err
+		}
+		lock = gate.lock
 	}
 
 	userMsg := &chat_entity.Message{SessionID: sess.ID, Role: "user", DeviceID: be.DeviceID}
@@ -2797,10 +2846,27 @@ func (s *chatSvc) startTurn(
 			return nil, err
 		}
 		if finalizeErr := s.finalizeTranscriptReplacement(ctx, replacement); finalizeErr != nil {
-			logger.Ctx(ctx).Warn("chat_svc.startTurn: Pi transcript recovery cleanup deferred",
+			clearSynchronousTurn()
+			s.discardPreparedTurn(sess.ID, prepared)
+			if replacement.recovery.State == chat_repo.ReplacementRecoveryPending {
+				if restoreErr := s.restoreTranscriptReplacement(ctx, replacement, sess); restoreErr != nil {
+					finalizeErr = errors.Join(finalizeErr, fmt.Errorf("restore Pi transcript: %w", restoreErr))
+				}
+			} else {
+				sess.AgentStatus = "error"
+				sess.ApplyDerivedFields()
+				recoveryCtx, cancelRecovery := replacementRecoveryContext(ctx)
+				if statusErr := chat_repo.Session().Update(recoveryCtx, sess); statusErr != nil {
+					finalizeErr = errors.Join(finalizeErr, fmt.Errorf("persist failed Pi turn status: %w", statusErr))
+				}
+				cancelRecovery()
+			}
+			lock.Unlock()
+			return nil, operationFailedWithCause(ctx, finalizeErr,
 				zap.Int64("sessionId", sess.ID),
+				zap.Int64("agentId", a.ID),
 				zap.String("backendType", be.Type),
-				zap.Error(finalizeErr))
+				zap.String("recoveryState", string(replacement.recovery.State)))
 		}
 		if stopRequestCancel != nil {
 			stopRequestCancel()

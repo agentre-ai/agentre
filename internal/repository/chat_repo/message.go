@@ -197,7 +197,9 @@ func ParseReplacementRecoveryMarker(marker *chat_entity.Message) (*ReplacementRe
 	}
 	markerSessionID, err := strconv.ParseInt(marker.DeviceID, 10, 64)
 	if err != nil || markerSessionID != payload.SessionID || payload.SessionID <= 0 ||
-		payload.FromSeq < 0 || payload.RequestMessageID <= 0 {
+		payload.FromSeq < 0 || payload.RequestMessageID <= 0 || payload.UserMessageID <= 0 ||
+		payload.AssistantMessageID <= 0 || payload.UserMessageID == payload.AssistantMessageID ||
+		payload.NewProviderSessionID == "" {
 		return nil, errors.New("invalid replacement recovery ownership")
 	}
 	return &ReplacementRecovery{
@@ -745,8 +747,8 @@ func FindReplacementRecovery(ctx context.Context, recoverySessionID int64) (*Rep
 	return ParseReplacementRecoveryMarker(markers[0])
 }
 
-func FindReplacementRecoveryForMessage(ctx context.Context, sessionID, messageID int64) (*ReplacementRecovery, error) {
-	if sessionID <= 0 || messageID <= 0 {
+func FindReplacementRecoveryForSession(ctx context.Context, sessionID int64) (*ReplacementRecovery, error) {
+	if sessionID <= 0 {
 		return nil, nil
 	}
 	var markers []*chat_entity.Message
@@ -756,22 +758,61 @@ func FindReplacementRecoveryForMessage(ctx context.Context, sessionID, messageID
 		Find(&markers).Error; err != nil {
 		return nil, err
 	}
-	var matched *ReplacementRecovery
-	for _, marker := range markers {
-		recovery, err := ParseReplacementRecoveryMarker(marker)
-		if err != nil {
-			return nil, err
-		}
-		if recovery.SessionID != sessionID ||
-			(recovery.UserMessageID != messageID && recovery.AssistantMessageID != messageID) {
-			continue
-		}
-		if matched != nil {
-			return nil, errors.New("active message has multiple replacement recovery owners")
-		}
-		matched = recovery
+	if len(markers) == 0 {
+		return nil, nil
 	}
-	return matched, nil
+	if len(markers) != 1 {
+		return nil, errors.New("session has multiple replacement recovery owners")
+	}
+	recovery, err := ParseReplacementRecoveryMarker(markers[0])
+	if err != nil {
+		return nil, err
+	}
+	if recovery.SessionID != sessionID {
+		return nil, errors.New("replacement recovery marker does not own session")
+	}
+	return recovery, nil
+}
+
+func FindReplacementRecoveryForMessage(ctx context.Context, sessionID, messageID int64) (*ReplacementRecovery, error) {
+	if messageID <= 0 {
+		return nil, nil
+	}
+	recovery, err := FindReplacementRecoveryForSession(ctx, sessionID)
+	if err != nil || recovery == nil {
+		return nil, err
+	}
+	if recovery.UserMessageID != messageID && recovery.AssistantMessageID != messageID {
+		return nil, nil
+	}
+	return recovery, nil
+}
+
+// EnsureReplacementActiveTailOwned rejects a legacy hybrid transcript before
+// restoration. FromSeq and the two active row IDs are persisted in the marker;
+// no content, timestamp, or inferred ordering is used.
+func EnsureReplacementActiveTailOwned(ctx context.Context, recovery *ReplacementRecovery) error {
+	if recovery == nil || recovery.SessionID <= 0 || recovery.FromSeq < 0 ||
+		recovery.UserMessageID <= 0 || recovery.AssistantMessageID <= 0 {
+		return errors.New("invalid replacement recovery ownership")
+	}
+	var unexpected int64
+	if err := db.Ctx(ctx).
+		Raw(
+			"SELECT COUNT(*) FROM `chat_messages` WHERE session_id = ? AND seq >= ? AND id NOT IN (?,?)",
+			recovery.SessionID,
+			recovery.FromSeq,
+			recovery.UserMessageID,
+			recovery.AssistantMessageID,
+		).
+		Row().
+		Scan(&unexpected); err != nil {
+		return err
+	}
+	if unexpected != 0 {
+		return ErrReplacementOwnershipLost
+	}
+	return nil
 }
 
 // AcknowledgeReplacementRecovery changes only the exact marker row and never
@@ -790,6 +831,9 @@ func AcknowledgeReplacementRecovery(ctx context.Context, recovery *ReplacementRe
 	)
 	if res.Error != nil {
 		return res.Error
+	}
+	if res.RowsAffected != 1 {
+		return ErrReplacementOwnershipLost
 	}
 	recovery.State = ReplacementRecoveryAcknowledged
 	return nil

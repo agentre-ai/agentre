@@ -407,6 +407,74 @@ func TestMessageRepo_FindReplacementRecoveryUsesHiddenOwnership(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestMessageRepo_FindReplacementRecoveryForSessionUsesExactHiddenOwnership(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	recovery := &chat_repo.ReplacementRecovery{
+		SessionID:            3,
+		FromSeq:              5,
+		RequestMessageID:     41,
+		UserMessageID:        51,
+		AssistantMessageID:   52,
+		OldProviderSessionID: "pi-old",
+		NewProviderSessionID: "pi-new",
+		OldAgentStatus:       "idle",
+		State:                chat_repo.ReplacementRecoveryPending,
+	}
+	marker, err := chat_repo.NewReplacementRecoveryMarker(recovery)
+	require.NoError(t, err)
+	marker.ID = 77
+	marker.SessionID, err = chat_repo.ReplacementRecoverySessionID(marker.ID)
+	require.NoError(t, err)
+
+	mock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE role = \\? AND device_id = \\? ORDER BY id ASC").
+		WithArgs(marker.Role, "3").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "session_id", "device_id", "role", "blocks_json", "model", "seq",
+		}).AddRow(marker.ID, marker.SessionID, marker.DeviceID, marker.Role, marker.BlocksJSON, marker.Model, marker.Seq))
+
+	got, err := chat_repo.FindReplacementRecoveryForSession(ctx, 3)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, recovery.UserMessageID, got.UserMessageID)
+	assert.Equal(t, recovery.NewProviderSessionID, got.NewProviderSessionID)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMessageRepo_FindReplacementRecoveryForSessionRejectsOverlappingMarkers(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	first := &chat_repo.ReplacementRecovery{
+		SessionID: 3, FromSeq: 5, RequestMessageID: 41, UserMessageID: 51, AssistantMessageID: 52,
+		NewProviderSessionID: "pi-new-1", State: chat_repo.ReplacementRecoveryPending,
+	}
+	second := &chat_repo.ReplacementRecovery{
+		SessionID: 3, FromSeq: 7, RequestMessageID: 61, UserMessageID: 71, AssistantMessageID: 72,
+		NewProviderSessionID: "pi-new-2", State: chat_repo.ReplacementRecoveryPending,
+	}
+	firstMarker, err := chat_repo.NewReplacementRecoveryMarker(first)
+	require.NoError(t, err)
+	firstMarker.ID = 77
+	firstMarker.SessionID, err = chat_repo.ReplacementRecoverySessionID(firstMarker.ID)
+	require.NoError(t, err)
+	secondMarker, err := chat_repo.NewReplacementRecoveryMarker(second)
+	require.NoError(t, err)
+	secondMarker.ID = 78
+	secondMarker.SessionID, err = chat_repo.ReplacementRecoverySessionID(secondMarker.ID)
+	require.NoError(t, err)
+
+	mock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE role = \\? AND device_id = \\? ORDER BY id ASC").
+		WithArgs(firstMarker.Role, "3").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "session_id", "device_id", "role", "blocks_json", "model", "seq",
+		}).
+			AddRow(firstMarker.ID, firstMarker.SessionID, firstMarker.DeviceID, firstMarker.Role, firstMarker.BlocksJSON, firstMarker.Model, firstMarker.Seq).
+			AddRow(secondMarker.ID, secondMarker.SessionID, secondMarker.DeviceID, secondMarker.Role, secondMarker.BlocksJSON, secondMarker.Model, secondMarker.Seq))
+
+	got, err := chat_repo.FindReplacementRecoveryForSession(ctx, 3)
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestMessageRepo_FindReplacementRecoveryForActiveMessageUsesExactOwnership(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 	recovery := &chat_repo.ReplacementRecovery{
@@ -440,6 +508,35 @@ func TestMessageRepo_FindReplacementRecoveryForActiveMessageUsesExactOwnership(t
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestMessageRepo_EnsureReplacementActiveTailOwnedUsesPersistedIDsAndSequence(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		unexpected int64
+		wantErr    bool
+	}{
+		{name: "exact owned replacement pair", unexpected: 0},
+		{name: "unowned follow-up row overlaps recovery tail", unexpected: 1, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, _, mock := testutils.Database(t)
+			recovery := &chat_repo.ReplacementRecovery{
+				SessionID: 3, FromSeq: 5, UserMessageID: 51, AssistantMessageID: 52,
+			}
+			mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `chat_messages` WHERE session_id = \\? AND seq >= \\? AND id NOT IN \\(\\?,\\?\\)").
+				WithArgs(int64(3), 5, int64(51), int64(52)).
+				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(tc.unexpected))
+
+			err := chat_repo.EnsureReplacementActiveTailOwned(ctx, recovery)
+			if tc.wantErr {
+				require.ErrorIs(t, err, chat_repo.ErrReplacementOwnershipLost)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
 func TestMessageRepo_AcknowledgeAndCleanupReplacementAreIdempotent(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 	recovery := &chat_repo.ReplacementRecovery{
@@ -462,6 +559,21 @@ func TestMessageRepo_AcknowledgeAndCleanupReplacementAreIdempotent(t *testing.T)
 		require.NoError(t, err)
 		assert.Equal(t, affected, deleted)
 	}
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMessageRepo_AcknowledgeReplacementRejectsMissingOwnedMarker(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	recovery := &chat_repo.ReplacementRecovery{
+		MarkerID: 77, RecoverySessionID: -155, State: chat_repo.ReplacementRecoveryPending,
+	}
+	mock.ExpectExec("UPDATE `chat_messages` SET `model`=\\?,`updatetime`=\\? WHERE id = \\? AND session_id = \\? AND role = \\?").
+		WithArgs(string(chat_repo.ReplacementRecoveryAcknowledged), sqlmock.AnyArg(), recovery.MarkerID, recovery.RecoverySessionID, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	err := chat_repo.AcknowledgeReplacementRecovery(ctx, recovery)
+	require.ErrorIs(t, err, chat_repo.ErrReplacementOwnershipLost)
+	assert.Equal(t, chat_repo.ReplacementRecoveryPending, recovery.State)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
