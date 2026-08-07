@@ -229,14 +229,17 @@ func (r *Runtime) DrainPending(ctx context.Context, sessionID int64) []agentrunt
 	return out
 }
 
-// Abort 软中断当前 turn。语义同顶层 Abort。
+// Abort 软中断当前 turn。语义同顶层 Abort:「中断该会话当前活跃的那一轮」——
+// 活跃轮既包括用户轮(inTurn)也包括带外轮(outOfBandActive:自主续轮 / 后台
+// subagent 活动轮独占帧流期间 inTurn 仍是 false)。两者都不活跃时才是真的
+// 无轮可中断,返回 ErrNoActiveTurn。
 func (r *Runtime) Abort(ctx context.Context, sessionID int64) error {
 	v, ok := r.cache.Get(sessionKey(sessionID))
 	if !ok {
 		return agentruntime.ErrNoActiveTurn
 	}
 	a := v.(*claudeActive)
-	if !a.inTurn.Load() {
+	if !a.inTurn.Load() && !a.outOfBandActive() {
 		return agentruntime.ErrNoActiveTurn
 	}
 	if r.steer != nil && a.sessionUUID != "" {

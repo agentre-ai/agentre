@@ -4252,6 +4252,88 @@ describe("ChatPanel · T32 会话级 autonomous_finished 兜底漏掉的 per-tur
   });
 });
 
+// ─── T33: 自主续轮落库失败的会话级错误事件 ─────────────────────────────────────
+// 自主续轮的 assistant 消息落库最终失败时,后端把会话翻 error、经**会话级**流推一条
+// error 事件、中断 CLI 这一轮,再抽干事件(见
+// docs/specs/2026-08-07-autonomous-turn-resilience.md「自主续轮落库失败时的可观察结果」)。
+// 这一轮压根没有 assistant 行 —— 失败的正是建那一行的写事务,per-turn 流也从未开过,
+// ChatStreamsHost 按 assistantMessageId 收口的 error 路径接不住。会话级 handler 必须
+// 自己把它渲染出来:否则用户在会话里什么都看不到,状态胶囊还停在上一态(规范
+// 「用户故事 1:立刻在会话里看到出错而不是永久转圈」)。
+describe("ChatPanel · T33 自主续轮落库失败的会话级错误事件", () => {
+  function getAutonomousHandler(
+    sessionId: number,
+  ): ((ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void) | null {
+    const calls = runtimeMocks.EventsOn.mock.calls as unknown as Array<
+      [string, (ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void]
+    >;
+    const found = calls.find(
+      ([name]) => name === `chat:autonomous:${sessionId}`,
+    );
+    return found ? found[1] : null;
+  }
+
+  async function mountPanel(sessionId: number) {
+    resetStore();
+    useSessionStatusStore.getState().__reset();
+    mockSessionStore.session = makeSession({
+      id: sessionId,
+      backendType: "claudecode",
+    });
+    mockSessionStore.messages = [];
+    render(<ChatPanel sessionId={sessionId} />);
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        `chat:autonomous:${sessionId}`,
+        expect.any(Function),
+      ),
+    );
+    const handler = getAutonomousHandler(sessionId);
+    expect(handler).toBeTruthy();
+    return handler!;
+  }
+
+  it("Given the backend dropped an autonomous turn after its persist failed, When the session-level error event arrives, Then the panel surfaces the error copy and flips the session status to error", async () => {
+    const handler = await mountPanel(2627);
+
+    act(() => {
+      handler({
+        kind: "error",
+        sessionId: 2627,
+        error: "操作失败\ndatabase is locked (5) (SQLITE_BUSY)",
+      } as unknown as import("@/hooks/use-chat-stream").ChatStreamEvent);
+    });
+
+    // 文案原样来自后端 mapTurnError(动态输出,不进 i18n),headline / cause 按既有
+    // splitErrorDetail 拆成两段渲染。
+    expect(screen.getByText("操作失败")).toBeInTheDocument();
+    expect(screen.getByTestId("notice-detail")).toHaveTextContent(
+      "database is locked (5) (SQLITE_BUSY)",
+    );
+    // 后端只把 error 落了库、没有 emit session_status,前端不补这一刀,tab / sidebar
+    // 会停在上一状态(同 markSessionRunning 的既有理由)。
+    expect(
+      useSessionStatusStore.getState().statuses.get(2627)?.agentStatus,
+    ).toBe("error");
+  });
+
+  it("Given a session-level error event carrying no error text, When it arrives, Then no notice is shown (boundary: nothing to display)", async () => {
+    const handler = await mountPanel(2628);
+
+    act(() => {
+      handler({
+        kind: "error",
+        sessionId: 2628,
+      } as unknown as import("@/hooks/use-chat-stream").ChatStreamEvent);
+    });
+
+    expect(screen.queryByTestId("notice-detail")).toBeNull();
+    expect(
+      useSessionStatusStore.getState().statuses.get(2628)?.agentStatus,
+    ).toBeUndefined();
+  });
+});
+
 describe("ChatPanel · /new 斜杠命令", () => {
   it("exact /new 在新 tab 中开同 agent+项目的空白会话并跳转,不动当前会话", () => {
     resetStore();

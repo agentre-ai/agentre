@@ -275,11 +275,17 @@ type fakeCCHandle struct {
 	killed    chan struct{}
 	killOnce  sync.Once
 	killCalls int32
+	// interruptCalls 原子计数 Interrupt 调用次数,断言 Abort 是否真下发中断
+	// (决策 8:Abort 放宽到带外轮活跃也执行中断)。
+	interruptCalls int32
 }
 
-func (f *fakeCCHandle) ID() string                      { return f.id }
-func (f *fakeCCHandle) Close(context.Context) error     { return nil }
-func (f *fakeCCHandle) Interrupt(context.Context) error { return nil }
+func (f *fakeCCHandle) ID() string                  { return f.id }
+func (f *fakeCCHandle) Close(context.Context) error { return nil }
+func (f *fakeCCHandle) Interrupt(context.Context) error {
+	atomic.AddInt32(&f.interruptCalls, 1)
+	return nil
+}
 func (f *fakeCCHandle) Kill(context.Context) error {
 	atomic.AddInt32(&f.killCalls, 1)
 	if f.killed != nil {
@@ -721,6 +727,38 @@ func TestRuntime_StopBackgroundTask(t *testing.T) {
 	Convey("会话不在缓存(已 evict/未 spawn)→ ErrNoActiveTurn", t, func() {
 		err := New().StopBackgroundTask(context.Background(), 999, "b0n82mqaj")
 		So(errors.Is(err, agentruntime.ErrNoActiveTurn), ShouldBeTrue)
+	})
+}
+
+// TestRuntime_Abort 钉死决策 8:Abort 的活跃判据放宽为 inTurn || outOfBandActive()。
+// 带外轮(自主续轮 / 后台 subagent 活动轮)独占帧流期间 inTurn 仍是 false —— 此前
+// 会被误判为「无活跃轮」拒绝中断,用户按「停止」停不掉正在飞的带外轮。放宽后
+// outOfBandActive 单独也能触发真正的中断;两者都不活跃时契约不变,仍返回
+// ErrNoActiveTurn。
+func TestRuntime_Abort(t *testing.T) {
+	Convey("仅带外轮活跃(inTurn=false, outOfBandActive=true) → 执行中断", t, func() {
+		r := New()
+		h := &fakeCCHandle{}
+		a := &claudeActive{handle: h}
+		a.enterOutOfBand()
+		r.cache.Put(sessionKey(501), a)
+
+		err := r.Abort(context.Background(), 501)
+
+		So(err, ShouldBeNil)
+		So(atomic.LoadInt32(&h.interruptCalls), ShouldEqual, 1)
+	})
+
+	Convey("用户轮与带外轮都不活跃 → 契约不变,返回 ErrNoActiveTurn", t, func() {
+		r := New()
+		h := &fakeCCHandle{}
+		a := &claudeActive{handle: h}
+		r.cache.Put(sessionKey(502), a)
+
+		err := r.Abort(context.Background(), 502)
+
+		So(errors.Is(err, agentruntime.ErrNoActiveTurn), ShouldBeTrue)
+		So(atomic.LoadInt32(&h.interruptCalls), ShouldEqual, 0)
 	})
 }
 

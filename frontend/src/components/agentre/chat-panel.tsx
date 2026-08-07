@@ -335,18 +335,26 @@ function optimisticUser(
   } as unknown as SvcChatMessage;
 }
 
-// markSessionRunning 在 Send / Regenerate / Edit 成功返回后乐观把 session 翻成
-// running 态。后端落库已经是 running, 但 turn 起手没 emit session_status 事件,
-// 不补一刀的话 tab / toolbar / sidebar 读 session-status-store 会停在 idle。
+// markSessionStatus 乐观补一刀 session 状态 —— 后端在这两条路上都没有
+// session_status 事件可跟, 不补的话 tab / toolbar / sidebar 读
+// session-status-store 会一直停在上一状态:
+//   - "running": Send / Regenerate / Edit 成功返回后。后端落库已经是 running,
+//     但 turn 起手不 emit session_status, 不补就停在 idle。
+//   - "error": 自主续轮落库失败时后端只把 error 落了库、经会话级流推一条 error
+//     事件(那条轮压根没有 per-turn 流), 不补就停在 running 空转。
 // permissionMode 取 store 当前值, 避免覆盖刚 set 的 plan/default 等。
-function markSessionRunning(sessionId: number): void {
+function markSessionStatus(sessionId: number, agentStatus: AgentStatus): void {
   if (!sessionId) return;
   const prev = useSessionStatusStore.getState().statuses.get(sessionId);
   useSessionStatusStore.getState().upsert(sessionId, {
-    agentStatus: "running",
+    agentStatus,
     needsAttention: false,
     permissionMode: prev?.permissionMode,
   });
+}
+
+function markSessionRunning(sessionId: number): void {
+  markSessionStatus(sessionId, "running");
 }
 
 function optimisticAssistantPlaceholder(
@@ -733,6 +741,19 @@ function ChatPanel({
         if (streamForMessage(streamsState, sessionId, mid)) {
           streamsState.finishStream(sessionId, mid, { kind: "done" });
         }
+        return;
+      }
+      // error:自主续轮的 assistant 消息落库最终失败,后端已把会话翻 error、丢弃这一轮
+      // 并中断 CLI 那一轮(见 docs/specs/2026-08-07-autonomous-turn-resilience.md
+      // 「自主续轮落库失败时的可观察结果」)。失败的正是**建 assistant 行**那次写,所以
+      // 这一轮既没有消息行也没有 per-turn 流 —— ChatStreamsHost 按 assistantMessageId
+      // 收口的 error 路径接不住,只能就地渲染成 composer 上方的 notice。文案是后端
+      // mapTurnError 给的动态文本(与用户发起的轮次同一套),不进 i18n。
+      if (ev.kind === "error") {
+        if (!ev.error) return;
+        const { msg, detail } = splitErrorDetail(ev.error);
+        setNotice({ kind: "error", text: msg, detail });
+        markSessionStatus(sessionId, "error");
         return;
       }
       if (ev.kind !== "autonomous_started") {
