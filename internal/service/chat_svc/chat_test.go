@@ -8561,6 +8561,9 @@ func TestStop_OrphanRunningSessionReconciledToIdle(t *testing.T) {
 		// reconcile 回 idle(等同 abort 收尾),让那颗一直亮着的「停止」按钮真能生效。
 		m.session.EXPECT().Find(m.ctx, int64(200)).Return(
 			&chat_entity.Session{ID: 200, AgentStatus: "running", Status: consts.ACTIVE}, nil)
+		// 遗孤前先问一次 runtime 有没有带外轮在飞;这条会话解析不出 agent,
+		// 拿不到 runner,直接落回 reconcile。
+		m.agent.EXPECT().Find(m.ctx, int64(0)).Return(nil, nil)
 		var updated *chat_entity.Session
 		m.session.EXPECT().Update(m.ctx, gomock.Any()).DoAndReturn(
 			func(_ context.Context, s *chat_entity.Session) error {
@@ -8583,6 +8586,8 @@ func TestStop_OrphanWaitingSessionReconciledToIdle(t *testing.T) {
 		m := setupChatTest(t)
 		m.session.EXPECT().Find(m.ctx, int64(201)).Return(
 			&chat_entity.Session{ID: 201, AgentStatus: "waiting", NeedsAttention: true, Status: consts.ACTIVE}, nil)
+		// 同上:解析不出 agent → 没有带外轮可中断 → 走遗孤 reconcile。
+		m.agent.EXPECT().Find(m.ctx, int64(0)).Return(nil, nil)
 		var updated *chat_entity.Session
 		m.session.EXPECT().Update(m.ctx, gomock.Any()).DoAndReturn(
 			func(_ context.Context, s *chat_entity.Session) error {
@@ -8596,6 +8601,75 @@ func TestStop_OrphanWaitingSessionReconciledToIdle(t *testing.T) {
 		assert.True(t, resp.Stopped)
 		assert.Equal(t, "idle", updated.AgentStatus)
 		assert.False(t, updated.NeedsAttention, "reconcile 同时清掉 attention 标记")
+	})
+}
+
+// TestStop_OutOfBandTurnIsInterruptedNotReconciled 钉死规范「中断带外轮」承诺的第二
+// 个可观察改善(docs/specs/2026-08-07-autonomous-turn-resilience.md):「带外轮独占帧流
+// 期间，用户点『停止』能真正中断这一轮」。带外轮(自主续轮 / 后台 subagent 活动轮)
+// 不进 activeCancels —— 只放宽 Runtime.Abort 的活跃判据够不着这条通路:Stop 在
+// activeCancels 取不到条目时直接走 reconcileOrphanStop,把一个真在跑的会话谎报成
+// idle 就返回,runner.Abort 一次都没下发,CLI 那一轮照跑。
+func TestStop_OutOfBandTurnIsInterruptedNotReconciled(t *testing.T) {
+	convey.Convey("Stop 无活跃用户轮但带外轮在飞 → 真下发中断,且不按遗孤 reconcile 成 idle", t, func() {
+		m := setupChatTest(t)
+
+		runner := &abortRecordingRunner{}
+		restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, runner)
+		t.Cleanup(restore)
+
+		m.session.EXPECT().Find(m.ctx, int64(300)).Return(
+			&chat_entity.Session{ID: 300, AgentID: 7, AgentStatus: "running", Status: consts.ACTIVE}, nil)
+		m.agent.EXPECT().Find(m.ctx, int64(7)).Return(
+			&agent_entity.Agent{ID: 7, AgentBackendID: 12, Status: consts.ACTIVE}, nil)
+		m.backend.EXPECT().Find(m.ctx, int64(12)).Return(
+			&agent_backend_entity.AgentBackend{
+				ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE,
+			}, nil)
+		// 刻意不 EXPECT Session().Update:带外轮仍在跑,状态归它自己收尾时落,
+		// Stop 这里翻 idle 就是谎报(gomock 严格,真调了会直接判失败)。
+
+		resp, err := m.svc.Stop(m.ctx, &chat_svc.StopRequest{SessionID: 300})
+
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+		assert.True(t, resp.Stopped, "带外轮被中断了就该回报已停止")
+		assert.Equal(t, []int64{300}, runner.Calls(), "必须真的把中断下发到 runtime")
+	})
+}
+
+// TestStop_NoTurnAtAllStillReconcilesOrphan 守住「重启遗孤」那条既有修复不被上面的
+// 改动吃掉:runtime 报 ErrNoActiveTurn(app crash / 热重载后内存里什么都不剩)时,
+// 会话仍要被 reconcile 回 idle,那颗一直亮着的「停止」按钮才有效。
+func TestStop_NoTurnAtAllStillReconcilesOrphan(t *testing.T) {
+	convey.Convey("Stop 无用户轮且 runtime 报无活跃轮 → 仍 reconcile 回 idle", t, func() {
+		m := setupChatTest(t)
+
+		runner := &abortRecordingRunner{abortErr: agentruntime.ErrNoActiveTurn}
+		restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, runner)
+		t.Cleanup(restore)
+
+		m.session.EXPECT().Find(m.ctx, int64(301)).Return(
+			&chat_entity.Session{ID: 301, AgentID: 7, AgentStatus: "running", Status: consts.ACTIVE}, nil)
+		m.agent.EXPECT().Find(m.ctx, int64(7)).Return(
+			&agent_entity.Agent{ID: 7, AgentBackendID: 12, Status: consts.ACTIVE}, nil)
+		m.backend.EXPECT().Find(m.ctx, int64(12)).Return(
+			&agent_backend_entity.AgentBackend{
+				ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE,
+			}, nil)
+		var updated *chat_entity.Session
+		m.session.EXPECT().Update(m.ctx, gomock.Any()).DoAndReturn(
+			func(_ context.Context, s *chat_entity.Session) error {
+				updated = s
+				return nil
+			})
+
+		resp, err := m.svc.Stop(m.ctx, &chat_svc.StopRequest{SessionID: 301})
+
+		assert.NoError(t, err)
+		assert.True(t, resp.Stopped)
+		assert.NotNil(t, updated, "没有任何活跃轮时仍要落库")
+		assert.Equal(t, "idle", updated.AgentStatus, "遗孤会话应被 reconcile 回 idle")
 	})
 }
 

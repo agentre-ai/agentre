@@ -349,6 +349,20 @@ function markSessionRunning(sessionId: number): void {
   });
 }
 
+// markSessionError 同 markSessionRunning 的理由, 方向相反: 自主续轮落库失败时后端
+// 只把 error 落了库、经会话级流推一条 error 事件, 没有 session_status 事件可跟
+// (那条轮压根没有 per-turn 流)。不补这一刀, tab / toolbar / sidebar 会一直停在
+// 上一状态(典型是 running), 用户只能看着它空转。
+function markSessionError(sessionId: number): void {
+  if (!sessionId) return;
+  const prev = useSessionStatusStore.getState().statuses.get(sessionId);
+  useSessionStatusStore.getState().upsert(sessionId, {
+    agentStatus: "error",
+    needsAttention: false,
+    permissionMode: prev?.permissionMode,
+  });
+}
+
 function optimisticAssistantPlaceholder(
   id: number,
   sid: number,
@@ -733,6 +747,19 @@ function ChatPanel({
         if (streamForMessage(streamsState, sessionId, mid)) {
           streamsState.finishStream(sessionId, mid, { kind: "done" });
         }
+        return;
+      }
+      // error:自主续轮的 assistant 消息落库最终失败,后端已把会话翻 error、丢弃这一轮
+      // 并中断 CLI 那一轮(见 docs/specs/2026-08-07-autonomous-turn-resilience.md
+      // 「自主续轮落库失败时的可观察结果」)。失败的正是**建 assistant 行**那次写,所以
+      // 这一轮既没有消息行也没有 per-turn 流 —— ChatStreamsHost 按 assistantMessageId
+      // 收口的 error 路径接不住,只能就地渲染成 composer 上方的 notice。文案是后端
+      // mapTurnError 给的动态文本(与用户发起的轮次同一套),不进 i18n。
+      if (ev.kind === "error") {
+        if (!ev.error) return;
+        const { msg, detail } = splitErrorDetail(ev.error);
+        setNotice({ kind: "error", text: msg, detail });
+        markSessionError(sessionId);
         return;
       }
       if (ev.kind !== "autonomous_started") {

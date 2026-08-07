@@ -1785,11 +1785,14 @@ func (s *chatSvc) Stop(ctx context.Context, req *StopRequest) (*StopResponse, er
 	return &StopResponse{Stopped: true}, nil
 }
 
-// reconcileOrphanStop 处理「Stop 时内存里没有活跃 turn」的情况:
+// reconcileOrphanStop 处理「Stop 时内存里没有活跃**用户**轮」的情况:
 //   - 会话查不到 / 已是终态(idle/error)→ turn 早就收尾,返 ChatStopNoActive(无害的
 //     「太晚了」,前端静默)。
-//   - 会话还停在 running/waiting 但没有活跃 turn,即「重启遗孤」→ 翻回 idle(等同 abort
-//     收尾)并落库,让前端那颗按 DB 状态一直亮着的「停止」按钮真能把会话停下来。
+//   - 会话还停在 running/waiting,先问 runtime 有没有带外轮在飞(自主续轮 / 后台
+//     subagent 活动轮不进 activeCancels,却是此刻真正活跃的那一轮)→ 有就中断它,
+//     状态留给那一轮自己收尾。
+//   - runtime 也说没有活跃轮,才是真「重启遗孤」→ 翻回 idle(等同 abort 收尾)并落库,
+//     让前端那颗按 DB 状态一直亮着的「停止」按钮真能把会话停下来。
 //
 // 不去 emit StreamSessionStatus:遗孤会话没有活跃 stream 订阅(stream 名按
 // sessionID+assistantMsgID 双键),推了也送不到;前端 doStop 成功后会主动 reload
@@ -1802,6 +1805,9 @@ func (s *chatSvc) reconcileOrphanStop(ctx context.Context, sessionID int64) (*St
 	if sess.AgentStatus != "running" && sess.AgentStatus != "waiting" {
 		return nil, i18n.NewError(ctx, code.ChatStopNoActive)
 	}
+	if s.abortOutOfBandTurn(ctx, sess) {
+		return &StopResponse{Stopped: true}, nil
+	}
 	logger.Ctx(ctx).Info("chat_svc.Stop: reconciling orphan session to idle",
 		zap.Int64("sessionId", sessionID),
 		zap.String("prevStatus", sess.AgentStatus))
@@ -1811,6 +1817,46 @@ func (s *chatSvc) reconcileOrphanStop(ctx context.Context, sessionID int64) (*St
 		return nil, perr
 	}
 	return &StopResponse{Stopped: true}, nil
+}
+
+// abortOutOfBandTurn 在「没有活跃用户轮」的前提下,把中断请求交给 runtime 试一次,
+// 报告是否真有一轮被中断。
+//
+// 带外轮(自主续轮 / 后台 subagent 活动轮)独占帧流期间不进 activeCancels —— 它就是
+// 该会话此刻活跃的那一轮,而 Abort 的契约正是「中断该会话当前活跃的那一轮」,两者
+// 都不活跃时才返回 ErrNoActiveTurn。因此这里可以直接拿 Abort 的返回值当判据:
+// nil = 确有一轮被中断,会话仍在跑,调用方不能再把它当遗孤 reconcile 成 idle(那会
+// 在 CLI 还在产帧时谎报 idle);ErrNoActiveTurn / 解析不出 runner = 内存里真的什么
+// 都没有,交回遗孤路径。
+func (s *chatSvc) abortOutOfBandTurn(ctx context.Context, sess *chat_entity.Session) bool {
+	_, be, _, err := s.resolveAgentBackend(ctx, sess.AgentID)
+	if err != nil || be == nil {
+		logger.Ctx(ctx).Warn("chat_svc.Stop: cannot resolve backend to interrupt out-of-band turn",
+			zap.Int64("sessionId", sess.ID), zap.Error(err))
+		return false
+	}
+	runner, err := s.selectRunner(ctx, be, sess.ID)
+	if err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.Stop: selectRunner failed, cannot interrupt out-of-band turn",
+			zap.Int64("sessionId", sess.ID), zap.String("backendType", be.Type), zap.Error(err))
+		return false
+	}
+	aborter, ok := runner.(agentruntime.Aborter)
+	if !ok {
+		return false
+	}
+	if aerr := aborter.Abort(ctx, sess.ID); aerr != nil {
+		if !errors.Is(aerr, agentruntime.ErrNoActiveTurn) {
+			logger.Ctx(ctx).Warn("chat_svc.Stop: out-of-band runner.Abort failed",
+				zap.Int64("sessionId", sess.ID), zap.String("backendType", be.Type), zap.Error(aerr))
+		}
+		return false
+	}
+	logger.Ctx(ctx).Info("chat_svc.Stop: interrupted out-of-band turn",
+		zap.Int64("sessionId", sess.ID),
+		zap.String("backendType", be.Type),
+		zap.String("prevStatus", sess.AgentStatus))
+	return true
 }
 
 // StopBackgroundTask 停掉某个后台任务 / 子 agent(run_in_background),而不是中断整个 turn。
