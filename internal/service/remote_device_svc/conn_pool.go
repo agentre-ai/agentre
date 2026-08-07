@@ -5,12 +5,14 @@ package remote_device_svc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
+	"github.com/agentre-ai/agentre/internal/daemon/client"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/repository/remote_device_repo"
 )
@@ -58,6 +60,18 @@ func WithIdleTimeout(d time.Duration) Option {
 	return func(p *pool) { p.idleTimeout = d }
 }
 
+// WithRelayDial 注入账号中转拨号端口。注入后 Borrow 会并发发起直连与中转两条
+// 尝试、先到者胜（R6），任一路径不可用不构成失败；未注入时保持纯 LAN 行为。
+func WithRelayDial(relay RelayDialPort) Option {
+	return func(p *pool) { p.relay = relay }
+}
+
+// WithAccountCredential 注入账号凭据来源。注入后，本机对目标 daemon 没有配对时
+// 直连改出示账号凭据（auth.account）；未注入或未登录时保持既有行为。
+func WithAccountCredential(credentials AccountCredentialPort) Option {
+	return func(p *pool) { p.credentials = credentials }
+}
+
 // NewConnPool 构造一个生产 ConnPool。
 //   - repo: 查 device row(URL / TLS / fingerprint)
 //   - kc:   读 keychain 的 token + device fingerprint(用本包窄接口 KeychainPort)
@@ -87,6 +101,8 @@ type pool struct {
 	repo        remote_device_repo.PairedAgentredRepo
 	kc          KeychainPort
 	dial        DaemonDialPort
+	relay       RelayDialPort         // 可空:未注入时 Borrow 纯 LAN
+	credentials AccountCredentialPort // 可空:未注入时直连只认配对令牌
 	idleTimeout time.Duration
 
 	mu      sync.Mutex
@@ -178,24 +194,41 @@ func (p *pool) Borrow(ctx context.Context, deviceID int64) (Lease, error) {
 		return nil, ErrDeviceNotFound
 	}
 	token, err := p.kc.Get(keychainAccountForToken(deviceID))
-	if err != nil || token == "" {
-		return nil, ErrDeviceUnauthorized
+	if err != nil {
+		// 读不到配对令牌不再直接判死:账号凭据(若有)仍可能连上这台 daemon。
+		logger.Ctx(ctx).Warn("conn pool: pairing token unreadable",
+			zap.Int64("deviceID", deviceID), zap.Error(err))
+		token = ""
 	}
 	fp, err := p.kc.Get(accountForDeviceFingerprint)
 	if err != nil || fp == "" {
 		return nil, ErrDeviceUnauthorized
 	}
-	c, err := p.dial.Open(ctx, ConnectArgs{
+	credential := p.accountCredential()
+	if token == "" && credential == "" {
+		// 既没有本地配对令牌、账号也没登录 —— 没有任何身份可出示。
+		return nil, ErrDeviceUnauthorized
+	}
+	if token == "" {
+		logger.Ctx(ctx).Info("conn pool: no local pairing, dialing with the account credential",
+			zap.Int64("deviceID", deviceID))
+	}
+	c, err := p.openAny(ctx, ConnectArgs{
 		URL:                       row.URL,
 		TLSMode:                   row.TLSMode,
 		TLSCertPEM:                row.TLSCertPEM,
 		DeviceFingerprint:         fp,
 		DeviceToken:               token,
 		ExpectedDaemonFingerprint: row.DaemonFingerprint,
-	})
+	}, credential)
 	if err != nil {
 		if errors.Is(err, ErrUnauthorized) {
-			return nil, ErrDeviceUnauthorized
+			// 直连的 auth.connect 明确拒绝了凭据(设备令牌被撤销 / 已解除配对)。
+			// 这是终止条件:上层(chat_svc.terminalBorrowError / remote_fs_svc /
+			// sync_provider)靠这个 sentinel 判定「重试也没用」,少了它重连循环会
+			// 永远重试一台再也不会接受自己的 daemon。包一层而不是直接返回 sentinel,
+			// 是为了保住 R6 要求的「两条路径各自的失败原因」。
+			return nil, fmt.Errorf("%w: %w", ErrDeviceUnauthorized, err)
 		}
 		return nil, err
 	}
@@ -226,6 +259,53 @@ func (p *pool) Borrow(ctx context.Context, deviceID int64) (Lease, error) {
 	logger.Ctx(ctx).Info("conn pool: new entry, dialed daemon",
 		zap.Int64("deviceID", deviceID))
 	return &lease{e: e, pool: p}, nil
+}
+
+// accountCredential 返回当前账号凭据；未注入凭据来源或未登录时是空串。
+func (p *pool) accountCredential() string {
+	if p.credentials == nil {
+		return ""
+	}
+	return p.credentials.AccessToken()
+}
+
+// openAny 拨一台 daemon：未注入 relay 时只走 LAN 直连；注入了 relay 时并发发起
+// 直连与中转两条路径、先到者胜（R6）。两条路径解析出的对端标识（DeviceFingerprint）
+// 相同——该硬不变量由 client.Race 守卫。
+//
+// 直连的凭据优先级：该指纹有本地配对就沿用 auth.connect（R2，行为不变）；没有配对
+// 才用账号凭据走 auth.account（R3）。中转路径恒用 auth.account，不受影响。
+func (p *pool) openAny(ctx context.Context, args ConnectArgs, credential string) (*client.Client, error) {
+	direct := func(ctx context.Context) (*client.Client, error) {
+		if args.DeviceToken != "" {
+			return p.dial.Open(ctx, args)
+		}
+		return p.dial.OpenAccount(ctx, AccountArgs{
+			URL:                       args.URL,
+			TLSMode:                   args.TLSMode,
+			TLSCertPEM:                args.TLSCertPEM,
+			Credential:                credential,
+			DeviceFingerprint:         args.DeviceFingerprint,
+			ExpectedDaemonFingerprint: args.ExpectedDaemonFingerprint,
+		})
+	}
+	if p.relay == nil {
+		return direct(ctx)
+	}
+	return client.Race(ctx,
+		client.Path{
+			Name:        "direct",
+			Fingerprint: args.DeviceFingerprint,
+			Dial:        direct,
+		},
+		client.Path{
+			Name:        "relay",
+			Fingerprint: args.DeviceFingerprint,
+			Dial: func(ctx context.Context) (*client.Client, error) {
+				return p.relay.Open(ctx, args.ExpectedDaemonFingerprint, args.DeviceFingerprint)
+			},
+		},
+	)
 }
 
 // watchClient 在 entry 建好后启,监听底层 conn 死亡 → evict。

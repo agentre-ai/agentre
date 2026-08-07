@@ -41,6 +41,7 @@ import {
   type TranscriptRenderContextValue,
 } from "./transcript-row-view";
 import {
+  buildSourceByMessageId,
   buildTranscriptRows,
   estimateRowSizeWithSpacing,
   isLastRowOfMessage,
@@ -54,7 +55,10 @@ import type { RetryNotice } from "@/stores/chat-streams-store";
 import { useLocalCommandsStore } from "@/stores/local-commands-store";
 import { useChatAgents } from "@/hooks/use-chat-agents";
 import { useProjectList } from "@/hooks/use-project-list";
-import { ChatReadDroppedImages } from "../../../wailsjs/go/app/App";
+import {
+  ChatReadDroppedImages,
+  RemoteDeviceFingerprint,
+} from "../../../wailsjs/go/app/App";
 import { chat_svc } from "../../../wailsjs/go/models";
 import { buildMentionSources } from "./chat-input/mentions/build-sources";
 import { LOCAL_COMMAND_HISTORY_CLEAR_SELECTOR } from "./chat-input/local-command-history/history-popover";
@@ -1006,6 +1010,32 @@ function findLastCompactBoundary(
   return found;
 }
 
+// useLocalDeviceFingerprint 交出本机设备指纹(R17 本机判定)。指纹是 keychain 里
+// 的稳定值,模块级缓存一次 Wails 调用,进程内不再重复请求;组件用它计算
+// sourceByMessageId(本机发出的用户消息不进来源表)。
+let localFingerprintPromise: Promise<string> | null = null;
+
+function getLocalFingerprintPromise(): Promise<string> {
+  if (!localFingerprintPromise) {
+    localFingerprintPromise = RemoteDeviceFingerprint().catch(() => "");
+  }
+  return localFingerprintPromise;
+}
+
+function useLocalDeviceFingerprint(): string | undefined {
+  const [fp, setFp] = React.useState<string | undefined>(undefined);
+  React.useEffect(() => {
+    let alive = true;
+    void getLocalFingerprintPromise().then((v) => {
+      if (alive) setFp(v || undefined);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return fp;
+}
+
 const ChatTranscript = React.forwardRef<
   ChatTranscriptHandle,
   ChatTranscriptProps
@@ -1135,6 +1165,13 @@ const ChatTranscript = React.forwardRef<
   const localCommands = useLocalCommandsStore(
     useShallow((s) => s.listForSession(sessionId ?? 0)),
   );
+  // R17:非本机发出的用户消息的来源标识。本机指纹与本机消息的 sourceDevice 相等,
+  // 全部被 buildSourceByMessageId 跳过 → 单客户端恒为空表,界面零变化。
+  const localFingerprint = useLocalDeviceFingerprint();
+  const sourceByMessageId = React.useMemo(
+    () => buildSourceByMessageId(displayMessages, localFingerprint),
+    [displayMessages, localFingerprint],
+  );
   const { rows, firstRowIndexByMessageId, rowIndexByKey } = React.useMemo(
     () =>
       buildTranscriptRows({
@@ -1143,8 +1180,15 @@ const ChatTranscript = React.forwardRef<
         displayMessages,
         liveByMessageId,
         localCommands,
+        sourceByMessageId,
       }),
-    [autonomousIds, displayMessages, liveByMessageId, localCommands],
+    [
+      autonomousIds,
+      displayMessages,
+      liveByMessageId,
+      localCommands,
+      sourceByMessageId,
+    ],
   );
 
   const renderCtx = React.useMemo<TranscriptRenderContextValue>(

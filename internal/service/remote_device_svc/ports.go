@@ -15,10 +15,13 @@ import (
 //     仅返回握手结果，连接不会留给调用方。
 //   - Open 走「长连接」语义：内部 Dial + auth.connect 鉴权 + 把连接保留给
 //     调用方，由调用方负责 defer Close。给 DialOnce 这类短 RPC 场景用。
+//   - OpenAccount 与 Open 同为长连接语义，但出示的是账号凭据（auth.account）：
+//     本机对这台 daemon 没有配对时走它。
 type DaemonDialPort interface {
 	Pair(ctx context.Context, args PairArgs) (PairResult, error)
 	Connect(ctx context.Context, args ConnectArgs) (ConnectResult, error)
 	Open(ctx context.Context, args ConnectArgs) (*client.Client, error)
+	OpenAccount(ctx context.Context, args AccountArgs) (*client.Client, error)
 }
 
 // PairArgs 是 auth.pair 的入参。
@@ -48,11 +51,40 @@ type ConnectArgs struct {
 	ExpectedDaemonFingerprint string
 }
 
+// AccountArgs 是直连 auth.account 的入参。Credential 是账号签发的访问凭据，
+// daemon 用缓存的公钥本地验签（R3，零网络往返）；DeviceFingerprint 与 auth.connect
+// 呈现的是同一值（R5）；ExpectedDaemonFingerprint 必填，与 auth.connect 一样把
+// 连接钉死在本地登记的那台 daemon 上。
+type AccountArgs struct {
+	URL                       string
+	TLSMode                   string
+	TLSCertPEM                string
+	Credential                string
+	DeviceFingerprint         string
+	ExpectedDaemonFingerprint string
+}
+
 // ConnectResult 是 auth.connect 的返回；ActualFingerprint 在 -32001 时由服务端 error.data 提供，
 // 正常成功时填 expected。
 type ConnectResult struct {
 	InstanceUUID      string
 	ActualFingerprint string
+}
+
+// RelayDialPort 提供账号中转（relay）路径的拨号（R6）。真实现由 server_svc 提供
+// （bootstrap 注入），消费方只有 ConnPool。
+type RelayDialPort interface {
+	// Open 经账号中转连接指定指纹的 daemon，并在该通道上完成 auth.account 握手，
+	// 呈现 peerFingerprint——与 LAN 路径 auth.connect 呈现的是同一值（R5）。
+	Open(ctx context.Context, daemonFingerprint, peerFingerprint string) (*client.Client, error)
+}
+
+// AccountCredentialPort 提供当前账号凭据（access token）。ConnPool 在本机对目标
+// daemon 没有配对时用它走直连的 auth.account —— 这正是「server 不可用」时仍能连上
+// 同账号 daemon 的那条路径（R3）。真实现由 server_svc 提供（bootstrap 注入）。
+type AccountCredentialPort interface {
+	// AccessToken 返回当前账号访问凭据；未登录时为空串。
+	AccessToken() string
 }
 
 // KeychainPort 抽象 OS keychain（internal/pkg/keychain 接口的窄子集）。

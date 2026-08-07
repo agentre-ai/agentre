@@ -91,6 +91,39 @@ func (s *State) InstanceUUID() string {
 	return s.DaemonInstanceUUID
 }
 
+// IsClaimed reports whether this daemon belongs to an account.
+func (s *State) IsClaimed() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.AccountID != ""
+}
+
+// Claim records the opaque account identity, the public key used to verify its
+// credentials, and the refreshable credential obtained from the device flow.
+func (s *State) Claim(accountID, verificationPublicKeyPEM string, credential AccountCredential) {
+	s.Mutate(func(st *State) {
+		st.AccountID = accountID
+		st.VerificationPublicKeyPEM = verificationPublicKeyPEM
+		st.Credential = credential
+	})
+}
+
+// Unclaim removes all account-bound material and returns the daemon to its
+// pairing-only state. It is intentionally a state-only operation.
+func (s *State) Unclaim() {
+	s.Mutate(func(st *State) {
+		st.AccountID = ""
+		st.VerificationPublicKeyPEM = ""
+		st.Credential = AccountCredential{}
+		// The cached revocation list is pulled from the claimed account and
+		// only ever consulted for that account's credentials, so it is part of
+		// the claim: leaving it behind would keep one account's data on a
+		// daemon that has returned to the unclaimed state (R19).
+		st.RevokedJTIs = nil
+		st.RevocationsAsOf = 0
+	})
+}
+
 // Snapshot returns a deep-ish copy safe for read-only callers. Maps are
 // shallow-copied since their value types are immutable structs in this
 // codebase (PairedPeer, LLMProviderMeta) — callers must not mutate the
@@ -111,6 +144,7 @@ func (s *State) Snapshot() State {
 	for k, v := range s.LLMProviders {
 		out.LLMProviders[k] = v
 	}
+	out.RevokedJTIs = append([]string(nil), s.RevokedJTIs...)
 	return out
 }
 

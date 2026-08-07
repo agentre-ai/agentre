@@ -152,9 +152,19 @@ type SubagentRun struct {
 
 // ConsumedSteer is a queued mid-turn user message that the backend has now
 // incorporated into the active conversation.
+//
+// R17: daemon 在收到这条 steer 的 Steer RPC 时,把**提交方**对端设备指纹 / 设备名盖到
+// SourcePeer / SourceName 上,随 SteerConsumed 密封事件一路带到桌面端。桌面端拿
+// SourcePeer 与本机指纹比对,相等就不渲染来源标识(本机不带);SourceName 是渲染
+// 「来自 <设备名>」的文案(空 = 无可用名字,前端回退到指纹/通用文案)。
+// 本机 builtin 后端产生的 steer 没有这两个字段(空),呈现与今天完全一致。
 type ConsumedSteer struct {
 	QueuedID string
 	Text     string
+	// 新增字段走 lowerCamelCase(现有 QueuedID/Text 无 tag、线上是 PascalCase,不能改:
+	// 老桌面端按字段名解,改名会让老客户端把 QueuedID/Text 解成空)。
+	SourcePeer string `json:"sourcePeer,omitempty"`
+	SourceName string `json:"sourceName,omitempty"`
 }
 
 // RetryEvent is a non-terminal backend retry notification. It is surfaced to

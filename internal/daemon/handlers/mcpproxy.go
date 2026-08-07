@@ -22,13 +22,14 @@ func daemonGatewayBase(g GatewayPort) string {
 	return g.URL()
 }
 
-// rewriteMCPServersForDaemon 把 desktop 下发的内置工具 MCP server URL 的 scheme+host 改写成
-// daemon 本机 gateway 的(只换 host,保留 /mcp/<name>/ 路径 + Headers + Tools + Name),
-// 让 daemon 上的 CLI 子进程把请求打到 daemon 本地的隧道入口,而不是 desktop 的 127.0.0.1
-// (在 daemon 主机上拨不到)。token 等鉴权头原样保留,隧道回 desktop 后由 desktop 侧校验。
+// rewriteMCPServersForDaemon rewrites each desktop MCP server URL to the daemon
+// gateway and embeds its originating (peerFingerprint, sessionId) query pair.
+// This lets the local tunnel resolve the initiating connection exactly rather
+// than guessing from a global active connection. Paths, headers, tools, and
+// names remain unchanged; desktop validates the original authorization token.
 // 返回新 slice,不就地改入参;daemonBaseFn 惰性求值 —— 无 MCP server 时根本不取(也就不
 // 触碰 gateway),base 为空 / 解析失败时保守返回原 specs。
-func rewriteMCPServersForDaemon(specs []agentruntime.MCPServerSpec, daemonBaseFn func() string) []agentruntime.MCPServerSpec {
+func rewriteMCPServersForDaemon(specs []agentruntime.MCPServerSpec, daemonBaseFn func() string, peerFingerprint string, sessionID int64) []agentruntime.MCPServerSpec {
 	if len(specs) == 0 || daemonBaseFn == nil {
 		return specs
 	}
@@ -49,6 +50,10 @@ func rewriteMCPServersForDaemon(specs []agentruntime.MCPServerSpec, daemonBaseFn
 		}
 		u.Scheme = base.Scheme
 		u.Host = base.Host
+		query := u.Query()
+		query.Set("peerFingerprint", peerFingerprint)
+		query.Set("sessionId", strconv.FormatInt(sessionID, 10))
+		u.RawQuery = query.Encode()
 		out[i].URL = u.String()
 	}
 	return out
@@ -82,12 +87,10 @@ func sanitizeTunnelHeaders(h http.Header) map[string][]string {
 // MCP HTTP 请求装包,经 NotifierPort 反向请求(MethodMCPProxy)隧道回 desktop 执行,再把
 // 应答原样写回 CLI。MCP-over-HTTP 是纯请求/应答,单帧足够。
 //
-// notifierFn 在请求时解析目标,与会话通知共用 daemon 的同一份连接状态(没有第二个「当前
-// 连接」的全局):取最近被认领的那条会话的属主连接,一条会话都还没被认领时回落到最近完成
-// 鉴权的活连接 —— 完成 WS 升级却从不认证的连接永远不构成隧道目标。请求身上**没有**会话
-// 标识可用(路径是 /mcp/<server>/,鉴权头是 desktop 签的不透明 token,daemon 既不签也验不
-// 了),所以隧道只能定位到「跑着会话的那台设备」;好在 desktop 侧的隧道 handler 是无状态的
-// (把请求重放到它本机 gateway),同一台设备的哪条连接送达都等价。
+// notifierFn resolves the peer/session identity embedded by the daemon in the
+// local MCP URL query. The exact (peerFingerprint, sessionId) pair selects its
+// originating live connection; malformed, unknown, or offline origins have no
+// fallback target and must not be cross-routed to another client.
 //
 // 隧道够不着发起会话的桌面端时,不能回裸 HTTP 错误。够不着有两种:调用之前就解不出目标
 // (桌面端已离线),以及解出了目标、请求也发出去了,桌面端却在答复之前死掉(rpc.ErrConnClosed)
@@ -97,14 +100,19 @@ func sanitizeTunnelHeaders(h http.Header) map[string][]string {
 // 工具 MCP server(org/subagent/hooktool_svc 的 writeRPCError)在工具执行失败时使用的
 // 形状,MCP 客户端读它就是读一次普通的工具调用失败,原样喂给模型当 tool 输出——而不是让
 // CLI 报一个模型看不懂的基础设施错误。见 writeMCPTunnelUnavailable。
-func NewMCPTunnelHandler(notifierFn func() NotifierPort) http.Handler {
+func NewMCPTunnelHandler(notifierFn func(peerFingerprint string, sessionID int64) NotifierPort) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "mcp tunnel: read body", http.StatusBadRequest)
 			return
 		}
-		n := notifierFn()
+		peerFingerprint := r.URL.Query().Get("peerFingerprint")
+		sessionID, parseErr := strconv.ParseInt(r.URL.Query().Get("sessionId"), 10, 64)
+		var n NotifierPort
+		if parseErr == nil && peerFingerprint != "" && sessionID > 0 {
+			n = notifierFn(peerFingerprint, sessionID)
+		}
 		if n == nil {
 			// 降级分支必须留痕(observability.md 强制埋点 3):这条应答只进 CLI 子进程,
 			// 发起端按定义已经离线,daemon 日志是事后唯一能回答「为什么 agent 说这个工具

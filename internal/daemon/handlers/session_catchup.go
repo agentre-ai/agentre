@@ -10,8 +10,8 @@
 //  2. 它只读存储 + 只读实时状态,不启动、不推进、不中止任何一轮执行。唯一的例外是
 //     显式接管,而接管改的是「通知推给谁」,不是会话本身(且由 daemon.go 在受理后
 //     执行,见 MethodSessionAttach 的注册)。
-//  3. 它的范围一律是调用方自己的对端(R16)。对端指纹取自那条连接的鉴权状态,不从
-//     参数读 —— 参数里的对端标识等于让任何已配对设备点名读别人的会话。
+//  3. 默认范围是调用方自己的对端。可选 origin 对端只在 daemon 已认领且调用方
+//     auth.account 的账号等于 daemon 账号时放宽；配对身份绝不能点名别人的会话。
 package handlers
 
 import (
@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
@@ -33,6 +34,8 @@ type SessionCatchupDeps struct {
 	// RuntimeFor 解 backend 类型 → 本进程里那个 runtime 单例,用来问它此刻有哪些
 	// 阻塞中的 waiter。留空取 agentruntime.RuntimeFor。
 	RuntimeFor func(agent_backend_entity.BackendType) agentruntime.Runtime
+	// ClaimedAccountID returns the daemon account allowed to name another peer.
+	ClaimedAccountID func() string
 }
 
 // SessionCatchupHandlers 实现补齐族的四个 RPC。无状态:它的全部事实要么在存储里,
@@ -55,15 +58,33 @@ func NewSessionCatchupHandlers(deps SessionCatchupDeps) *SessionCatchupHandlers 
 // 发出时报 0。「是否正在等待输入」现算,见 waitingForInput。
 func (h *SessionCatchupHandlers) List(ctx context.Context) (wire.SessionListResult, error) {
 	peer := peerFingerprint(ctx)
-	rows, err := h.deps.Sessions.List(ctx, peer)
+	accountWide := hasClaimedAccount(ctx, h.deps.ClaimedAccountID)
+	var (
+		rows []SessionRecord
+		err  error
+	)
+	if accountWide {
+		allSessions, ok := h.deps.Sessions.(interface {
+			ListAll(context.Context) ([]SessionRecord, error)
+		})
+		if !ok {
+			return wire.SessionListResult{}, fmt.Errorf("list all sessions: account visibility is not wired")
+		}
+		rows, err = allSessions.ListAll(ctx)
+	} else {
+		rows, err = h.deps.Sessions.List(ctx, peer)
+	}
 	if err != nil {
 		// 报错而不是回一份空清单:空清单与「这台 daemon 上没有你的会话」无法区分,
 		// 客户端会据此把还活着的会话当成已消失。
 		return wire.SessionListResult{}, fmt.Errorf("list sessions: %w", err)
 	}
-	latest, err := h.deps.Journal.LatestSeqByPeer(ctx, peer)
-	if err != nil {
-		return wire.SessionListResult{}, fmt.Errorf("read latest seq: %w", err)
+	latest := map[string]int64{}
+	if !accountWide {
+		latest, err = h.deps.Journal.LatestSeqByPeer(ctx, peer)
+		if err != nil {
+			return wire.SessionListResult{}, fmt.Errorf("read latest seq: %w", err)
+		}
 	}
 	out := wire.SessionListResult{Sessions: make([]wire.SessionSummary, 0, len(rows))}
 	for _, row := range rows {
@@ -73,23 +94,41 @@ func (h *SessionCatchupHandlers) List(ctx context.Context) (wire.SessionListResu
 			// 跳过而不是整份清单失败 —— 一条坏行不该让客户端连自己的会话都看不到。
 			continue
 		}
-		out.Sessions = append(out.Sessions, wire.SessionSummary{
+		latestSeq := latest[row.PeerSessionID]
+		if accountWide {
+			latestSeq, err = h.deps.Journal.LatestSeq(ctx, row.PeerFingerprint, row.PeerSessionID)
+			if err != nil {
+				return wire.SessionListResult{}, fmt.Errorf("read latest seq: %w", err)
+			}
+		}
+		summary := wire.SessionSummary{
 			SessionID:       sid,
 			AgentID:         row.AgentID,
 			Cwd:             row.Cwd,
 			BackendType:     row.BackendType,
 			LifecycleState:  row.LifecycleState,
 			WaitingForInput: h.waitingForInput(ctx, row, sid),
-			LatestSeq:       latest[row.PeerSessionID],
-		})
+			LatestSeq:       latestSeq,
+		}
+		// Origin 只标在**别的对端**发起的那些会话上。空 origin 的语义是
+		// ResolveSessionPeer 的入口约定 ——「省略 = 调用方自己的对端」—— 而清单是客户端
+		// 学 origin 的唯一来源:它会把这里交出的值原样带回此后每一次 attach / pull /
+		// 控制请求。把调用方自己的指纹写进来,它就会在**配对鉴权**的连接上也点名一个
+		// origin,而配对身份点名任何 origin 都被 ResolveSessionPeer 拒掉;桌面端同时握
+		// 着两条路径(直连有配对令牌时走 auth.connect,中转恒走 auth.account,谁先到谁
+		// 胜),路径一切换就连自己的会话都补不齐 —— 规格的硬不变量正是「路径切换不得使
+		// 事件游标失效」。
+		if accountWide && row.PeerFingerprint != peer {
+			summary.PeerFingerprint = row.PeerFingerprint
+		}
+		out.Sessions = append(out.Sessions, summary)
 	}
 	return out, nil
 }
 
 // Pull 按游标取回该会话其后的通知(seq 升序),并一并交出该会话现存最老的 seq。
-//
-// 拉取不校验会话归属:日志行本身以 (对端, 会话) 为键,别的对端拉同一个会话 id 只会
-// 拿到自己那条会话的日志(通常是空),跨对端泄漏在 SQL 层就不成立。
+// The optional origin peer is resolved at the account gate before it reaches
+// the composite journal key; omitted origin remains the caller's own peer.
 //
 // 现存最老的 seq 每页都报:日志的老前缀会被留存回收(daemon.collectJournal 只保住高水位
 // 那一行),一个离线超过整个留存窗口的客户端,它的游标正落在那段已经不存在的区间里。
@@ -97,7 +136,10 @@ func (h *SessionCatchupHandlers) List(ctx context.Context) (wire.SessionListResu
 // 游标永远推不动,此后连实时通知也全被判成跳号,会话没有错误、没有跳号地冻住。
 // 读不出下界不让整页拉取失败:内容比下界重要,客户端按 0(=不知道)处理即可。
 func (h *SessionCatchupHandlers) Pull(ctx context.Context, p wire.SessionPullParams) (wire.SessionPullResult, error) {
-	peer := peerFingerprint(ctx)
+	peer, err := ResolveSessionPeer(ctx, p.PeerFingerprint, h.deps.ClaimedAccountID)
+	if err != nil {
+		return wire.SessionPullResult{}, err
+	}
 	sid := strconv.FormatInt(p.SessionID, 10)
 	// 下界先读:两次读之间随时可能跑一轮留存回收。先读页、后读下界,回收就会让下界涨到
 	// 页里那些行**之上** —— 客户端拿它复位游标(复位跑在重放之前),这一整页已经拿到手
@@ -131,7 +173,7 @@ func (h *SessionCatchupHandlers) Pull(ctx context.Context, p wire.SessionPullPar
 // 的、跑的是哪个 backend」。不属于调用方的会话、未实现审批协议的 backend,都回空列表
 // 而不是报错 —— 两者都是正常情况,报错会让客户端误判为故障。
 func (h *SessionCatchupHandlers) PendingWaiters(ctx context.Context, p wire.SessionPendingWaitersParams) (wire.SessionPendingWaitersResult, error) {
-	row, err := h.findOwnSession(ctx, p.SessionID)
+	row, err := h.findSession(ctx, p.SessionID, p.PeerFingerprint)
 	if err != nil {
 		return wire.SessionPendingWaitersResult{}, err
 	}
@@ -151,7 +193,7 @@ func (h *SessionCatchupHandlers) PendingWaiters(ctx context.Context, p wire.Sess
 // 把推送目标真正改到这条连接上的动作在 daemon.go 的注册处,且只在本方法**成功返回
 // 之后**执行 —— 被拒的接管不得改变任何东西。
 func (h *SessionCatchupHandlers) Attach(ctx context.Context, p wire.SessionAttachParams) (wire.SessionAttachResult, error) {
-	row, err := h.findOwnSession(ctx, p.SessionID)
+	row, err := h.findSession(ctx, p.SessionID, p.PeerFingerprint)
 	if err != nil {
 		return wire.SessionAttachResult{}, err
 	}
@@ -165,7 +207,7 @@ func (h *SessionCatchupHandlers) Attach(ctx context.Context, p wire.SessionAttac
 		// 客户端对着一条永远不会再产出任何东西的会话无限期等下去。历史仍可 Pull。
 		return wire.SessionAttachResult{}, agentruntime.ErrNoActiveTurn
 	}
-	latest, err := h.deps.Journal.LatestSeq(ctx, peerFingerprint(ctx), row.PeerSessionID)
+	latest, err := h.deps.Journal.LatestSeq(ctx, row.PeerFingerprint, row.PeerSessionID)
 	if err != nil {
 		return wire.SessionAttachResult{}, fmt.Errorf("read latest seq: %w", err)
 	}
@@ -177,14 +219,47 @@ func (h *SessionCatchupHandlers) Attach(ctx context.Context, p wire.SessionAttac
 	}, nil
 }
 
-// findOwnSession 取调用方自己那个对端名下的一条会话;不是它的(或不存在)返回
-// (nil, nil)。这是 R16 在读侧的唯一入口,补齐族的每个按会话的方法都必须过它。
-func (h *SessionCatchupHandlers) findOwnSession(ctx context.Context, sessionID int64) (*SessionRecord, error) {
-	row, err := h.deps.Sessions.Find(ctx, peerFingerprint(ctx), strconv.FormatInt(sessionID, 10))
+// findSession resolves an omitted origin to the caller's own peer, or an
+// authorized claimed-account origin to that peer's row. Every per-session
+// catch-up operation passes through this boundary.
+func (h *SessionCatchupHandlers) findSession(ctx context.Context, sessionID int64, originPeer string) (*SessionRecord, error) {
+	peer, err := ResolveSessionPeer(ctx, originPeer, h.deps.ClaimedAccountID)
+	if err != nil {
+		return nil, err
+	}
+	row, err := h.deps.Sessions.Find(ctx, peer, strconv.FormatInt(sessionID, 10))
 	if err != nil {
 		return nil, fmt.Errorf("find session: %w", err)
 	}
 	return row, nil
+}
+
+// ResolveSessionPeer selects the caller's own peer for an omitted origin. A
+// named origin is an account-level capability: pairing alone never grants it.
+func ResolveSessionPeer(ctx context.Context, originPeer string, claimedAccountID func() string) (string, error) {
+	ownPeer := peerFingerprint(ctx)
+	if originPeer == "" {
+		return ownPeer, nil
+	}
+	if !hasClaimedAccount(ctx, claimedAccountID) {
+		return "", rpc.ErrUnauthorized
+	}
+	return originPeer, nil
+}
+
+func hasClaimedAccount(ctx context.Context, claimedAccountID func() string) bool {
+	if claimedAccountID == nil {
+		return false
+	}
+	claimed := claimedAccountID()
+	if claimed == "" {
+		return false
+	}
+	if c := rpc.ConnFromContext(ctx); c != nil {
+		auth := c.Auth()
+		return auth.AccountID != "" && auth.AccountID == claimed
+	}
+	return false
 }
 
 // waitingForInput 现算「这条会话是不是正在等用户操作」:问 backend 此刻有没有阻塞中的
@@ -198,7 +273,7 @@ func (h *SessionCatchupHandlers) waitingForInput(ctx context.Context, row Sessio
 // pendingWaiters 问该会话的 backend 要一份 waiter 快照。backend 没注册、或没实现审批
 // 协议时回零值 —— 未实现者返回空列表而非报错是 R7 明写的。
 //
-// 问的是**按对端隔离过的会话键**(runtimeSID),不是客户端报的裸数字:backend 的 waiter
+// 问的是**按对端隔离过的会话键**(runtimeSessionID),不是客户端报的裸数字:backend 的 waiter
 // 表是进程内一份、只按会话 id 索引,而会话 id 各客户端本地自增、必然重号。拿裸 id 去问,
 // 拿回来的可能是别的对端那条同号会话的 requestID / 工具名 / 完整工具入参 —— 交出去等于
 // 泄漏别人的审批载荷,对方还能照着 requestID 替人回答(R16)。
@@ -217,7 +292,7 @@ func (h *SessionCatchupHandlers) pendingWaiters(ctx context.Context, row Session
 	if !ok {
 		return agentruntime.WaiterSnapshot{}
 	}
-	return lister.PendingWaiters(ctx, runtimeSID(ctx, sessionID))
+	return lister.PendingWaiters(ctx, runtimeSessionID(row.PeerFingerprint, sessionID))
 }
 
 // clampPullLimit 把客户端报的单页条数收进 daemon 的上限。

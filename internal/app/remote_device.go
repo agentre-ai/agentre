@@ -36,6 +36,15 @@ func (a *App) RemoteDeviceRename(id int64, name string) error {
 	return remote_device_svc.Default().Rename(a.ctx, id, name)
 }
 
+// RemoteDeviceFingerprint 返回本机设备指纹(与 LAN 配对 / 账号登录共用,见 R5)。
+// 前端用它判定一条用户消息是不是本机发出的(R17:本机不带来源标识)。
+func (a *App) RemoteDeviceFingerprint() (string, error) {
+	if svc := remote_device_svc.Default(); svc != nil {
+		return svc.DeviceFingerprint()
+	}
+	return "", errors.New("remote device service unavailable")
+}
+
 // RemoteDeviceListProviders 返回该 device 上 daemon 已配置的 LLM provider key 列表
 // (来源:最近一次 health.ping)。前端用来渲染 sync 状态。
 func (a *App) RemoteDeviceListProviders(id int64) []remote_device_svc.ProviderSummary {

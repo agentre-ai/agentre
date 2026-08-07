@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/daemon/notifier"
 	"github.com/agentre-ai/agentre/internal/daemon/repository/notification_repo"
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/daemon/state"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
@@ -438,7 +440,7 @@ func TestConnRegistry_UnauthenticatedConnNeverEnters(t *testing.T) {
 	assert.Nil(t, r.routerFor(""), "空指纹不是可匹配身份")
 	assert.Nil(t, r.ownerOf(sessionKey{peer: "", sid: 7}))
 	assertTarget(t, nDesktop, r.ownerOf(sessionKey{peer: "fp-desktop", sid: 7}), "野连接顶不掉正主")
-	assertTarget(t, nDesktop, r.tunnelTarget(), "MCP 反向隧道的目标同样只在已认证连接里取")
+	assertTarget(t, nDesktop, r.tunnelTargetFor("fp-desktop", 7), "MCP 反向隧道的目标同样只在已认证连接里取")
 }
 
 // TestConnRegistry_ReauthDropsClaimsOfThePreviousFingerprint 回归:一条连接先认证 fp-a
@@ -470,18 +472,32 @@ func TestConnRegistry_ClosedConnLeavesNoStaleEntry(t *testing.T) {
 
 	assert.Nil(t, r.ownerOf(sessionKey{peer: "fp-desktop", sid: 7}), "已关闭的连接不得成为会话目标")
 	assert.Nil(t, r.routerFor("fp-desktop"))
-	assert.Nil(t, r.tunnelTarget(), "MCP 反向隧道同样不得指向一条已关闭的连接")
+	assert.Nil(t, r.tunnelTargetFor("fp-desktop", 7), "MCP 反向隧道同样不得指向一条已关闭的连接")
 }
 
 // recordingNotifier 记下推给它的通知,用来观察一条通知**实际落到了哪条连接**。
-type recordingNotifier struct{ got []string }
+// 带锁:扇出给订阅者的投递跑在各自的投递 goroutine 上(见 asyncNotifier),
+// 观察方与投递方是并发的。
+type recordingNotifier struct {
+	mu  sync.Mutex
+	got []string
+}
 
 func (n *recordingNotifier) Notify(method string, _ any) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	n.got = append(n.got, method)
 	return nil
 }
 
 func (n *recordingNotifier) Request(context.Context, string, any, any) error { return nil }
+
+// methods 交回此刻收到的全部通知方法名(副本)。
+func (n *recordingNotifier) methods() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]string(nil), n.got...)
+}
 
 // TestSessionRouter_RoutesByFrameSessionID 覆盖出口本身的契约:同一个对端出口上,每条
 // 通知按帧上的 sessionId 交给发起那条会话的连接(两条会话各归各的);帧上没有 sessionId、
@@ -500,34 +516,279 @@ func TestSessionRouter_RoutesByFrameSessionID(t *testing.T) {
 	require.NotNil(t, out)
 	require.NoError(t, out.Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7}))
 	require.NoError(t, out.Notify(wire.NotifyRunResultDone, &wire.RunResultDoneFrame{SessionID: 8}))
-	assert.Equal(t, []string{wire.NotifyEvent}, nA.got, "会话 7 的通知只落在发起它的那条连接")
-	assert.Equal(t, []string{wire.NotifyRunResultDone}, nB.got, "会话 8 的通知只落在发起它的那条连接")
+	assert.Equal(t, []string{wire.NotifyEvent}, nA.methods(), "会话 7 的通知只落在发起它的那条连接")
+	assert.Equal(t, []string{wire.NotifyRunResultDone}, nB.methods(), "会话 8 的通知只落在发起它的那条连接")
 
 	assert.Error(t, out.Notify(wire.NotifyEvent, map[string]any{"sessionId": 7}),
 		"帧上取不到 sessionId 时必须报错点名类型,而不是猜一条连接推过去")
 	r.remove(connA)
 	assert.Error(t, out.Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7}),
 		"属主断开后这条会话没有出口(通知已落库,等接管后补齐)")
-	assert.Equal(t, []string{wire.NotifyRunResultDone}, nB.got, "更不能改推给同设备的另一条连接")
+	assert.Equal(t, []string{wire.NotifyRunResultDone}, nB.methods(), "更不能改推给同设备的另一条连接")
 }
 
-// TestConnRegistry_TunnelTargetFollowsTheSessionOwner 覆盖 MCP 反向隧道的解析:隧道请求
-// 来自 daemon 本机的 CLI 子进程(HTTP,身上没有会话标识),所以取最近被认领的那条会话的
-// 属主连接 —— 跑着会话的那台设备就是这些子进程的发起端。一条会话都没被认领时回落到最近
-// 完成鉴权的活连接(desktop 侧隧道 handler 无状态,同设备哪条连接送达都等价);表空 → nil。
-func TestConnRegistry_TunnelTargetFollowsTheSessionOwner(t *testing.T) {
+// TestConnRegistry_TunnelTargetForSession_RoutesOnlyToTheOriginatingPeer covers R11:
+// simultaneous peers each own their session's MCP reverse tunnel; neither can
+// override the other by authenticating or claiming later.
+func TestConnRegistry_TunnelTargetForSession_RoutesOnlyToTheOriginatingPeer(t *testing.T) {
 	var r connRegistry
-	assert.Nil(t, r.tunnelTarget(), "一条连接都没有时没有隧道目标")
+	peerA, notifierA := registerAuthed(&r, "fp-a")
+	peerB, notifierB := registerAuthed(&r, "fp-b")
+	r.claim(peerA, 7)
+	r.claim(peerB, 7)
 
-	runner, nRunner := registerAuthed(&r, "fp-desktop")
-	assertTarget(t, nRunner, r.tunnelTarget(), "还没有会话时回落到最近完成鉴权的活连接")
+	assertTarget(t, notifierA, r.tunnelTargetFor("fp-a", 7),
+		"peer A's local MCP request must return to peer A")
+	assertTarget(t, notifierB, r.tunnelTargetFor("fp-b", 7),
+		"peer B's same numeric session must return to peer B")
 
-	r.claim(runner, 7)
-	_, nLater := registerAuthed(&r, "fp-other") // 另一台设备后认证,但没跑会话
-	assertTarget(t, nRunner, r.tunnelTarget(), "隧道目标跟着会话属主走,不被后认证的设备顶掉")
+	// A same-account client may take over B's notification/control path, but
+	// the local CLI process still belongs to B's originating session.
+	r.claimFor(peerA, "fp-b", 7)
+	assertTarget(t, notifierB, r.tunnelTargetFor("fp-b", 7),
+		"an authorized cross-peer control must not reroute B's MCP tunnel to A")
+	r.remove(peerB)
+	assert.Nil(t, r.tunnelTargetFor("fp-b", 7),
+		"the initiating peer offline remains unavailable even when the controller is live")
+	assert.Nil(t, r.tunnelTargetFor("fp-a", 8), "an unclaimed session has no fallback target")
+}
 
-	r.remove(runner)
-	assertTarget(t, nLater, r.tunnelTarget(), "属主离线后回落到仍在线的连接")
+// ── 多客户端扇出(用户流程「桌面与手机同时连着同一个会话」)────────────────────
+
+// claimedRegistry 造一台**已认领** daemon 的登记表:扇出的第一道门就是它 ——
+// 归属账号为空(未认领)时一条订阅者都不成立。
+func claimedRegistry(accountID string) *connRegistry {
+	return &connRegistry{claimedAccountID: func() string { return accountID }}
+}
+
+// registerAccountAuthed 登记一条走 auth.account 认证的连接:账号门(任务 6)把 daemon
+// 此刻的归属账号写进 AuthState.AccountID,订阅资格拿它与 state.AccountID 比。
+func registerAccountAuthed(r *connRegistry, fingerprint, accountID string) (*rpc.Conn, *recordingNotifier) {
+	c := rpc.NewConn(nil, rpc.NewRegistry())
+	c.SetAuth(rpc.AuthState{Authenticated: true, DeviceFingerprint: fingerprint, AccountID: accountID})
+	n := &recordingNotifier{}
+	r.add(c, n)
+	return c, n
+}
+
+// blockingNotifier 是一条**卡住**的订阅者:Notify 一直阻塞到 release 被关闭
+// (真机上就是对端 TCP 不收、写缓冲写满)。
+type blockingNotifier struct {
+	release chan struct{}
+	entered chan struct{}
+}
+
+func newBlockingNotifier() *blockingNotifier {
+	return &blockingNotifier{release: make(chan struct{}), entered: make(chan struct{}, 1)}
+}
+
+func (n *blockingNotifier) Notify(string, any) error {
+	select {
+	case n.entered <- struct{}{}:
+	default:
+	}
+	<-n.release
+	return nil
+}
+
+func (n *blockingNotifier) Request(context.Context, string, any, any) error { return nil }
+
+// awaitMethods 等某个订阅者收齐 want 条通知 —— 扇出给订阅者的投递是异步的
+// (慢订阅者不得阻塞会话),所以观察必须给它时间。
+func awaitMethods(t *testing.T, n *recordingNotifier, want []string, msg string) {
+	t.Helper()
+	require.Eventually(t, func() bool { return len(n.methods()) >= len(want) }, 2*time.Second, 5*time.Millisecond, msg)
+	assert.Equal(t, want, n.methods(), msg)
+}
+
+// TestConnRegistry_ClaimedDaemonFansOutSessionEventsToEveryConnOnThatSession 兑现用户
+// 流程「桌面与手机同时连着同一个会话,双方都收到实时事件」:已认领 daemon 上,一条会话
+// 的通知除了发起它的那条连接,还发给上过这条会话的其余同账号连接。
+//
+// 同时钉死账号门:订阅资格 = 已认领 **且** 连接的 AuthState.AccountID == 归属账号。
+// 别的账号的连接、以及只走 LAN 配对(没有账号身份)的连接,即便点名了这条会话也一条
+// 收不到 —— 前者是跨账号信息泄漏,后者是「配对 ≠ 账号级可见性」这条既有分界(R13)。
+func TestConnRegistry_ClaimedDaemonFansOutSessionEventsToEveryConnOnThatSession(t *testing.T) {
+	r := claimedRegistry("acct-1")
+	desktop, nDesktop := registerAccountAuthed(r, "fp-desktop", "acct-1")
+	phone, nPhone := registerAccountAuthed(r, "fp-phone", "acct-1")
+	stranger, nStranger := registerAccountAuthed(r, "fp-stranger", "acct-2")
+	pairedOnly, nPairedOnly := authedConn("fp-lan"), &recordingNotifier{}
+	r.add(pairedOnly, nPairedOnly)
+	r.claim(desktop, 7)
+	// 手机按 R12 接管这条会话 —— 「同时连着同一个会话」的那一步。别的账号的连接与只走
+	// LAN 配对的连接同样点名这条会话,验的就是它们过不了账号门。
+	r.claimFor(phone, "fp-desktop", 7)
+	r.claimFor(stranger, "fp-desktop", 7)
+	r.claimFor(pairedOnly, "fp-desktop", 7)
+	r.claim(desktop, 7) // 还原属主:接管只是为了进订阅者集合
+
+	out := r.routerFor("fp-desktop")
+	require.NotNil(t, out)
+	require.NoError(t, out.Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7, Seq: 1}))
+
+	awaitMethods(t, nDesktop, []string{wire.NotifyEvent}, "发起会话的那条连接照收")
+	awaitMethods(t, nPhone, []string{wire.NotifyEvent}, "同账号的另一条连接同时收到同一条事件")
+	assert.Never(t, func() bool { return len(nStranger.methods()) > 0 }, 200*time.Millisecond, 20*time.Millisecond,
+		"别的账号的连接不得收到本账号会话的事件")
+	assert.Empty(t, nPairedOnly.methods(), "只走 LAN 配对的连接没有账号身份,不构成订阅者")
+}
+
+// TestConnRegistry_FanoutReachesOnlyTheConnsOnThatSession 钉死扇出的边界:一条会话的
+// 订阅者是**上过这条会话的**那些连接(发起它、或按 R12 显式接管过它),不是同账号的
+// 每一条活连接。
+//
+// 为什么边界必须在这里:推出去的帧只带一个 sessionId(wire.EventFrame),而会话 id 是
+// 各客户端本地自增的 —— daemon 侧的会话主键是 (对端指纹, 会话 id) 两段(见 sessionKey
+// 的注释:「两个对端各自持有同一个 id 时是两条互不相干的会话」),帧上只剩后一段。把
+// 桌面端会话 7 的事件推给一条从没上过这条会话的同账号连接,对方只能按裸 7 去找,于是
+// 落进它**自己**那条同号会话里。R12 明写「放宽的是过滤条件,会话主键结构不变」:同账号
+// 客户端**可以**看到并操作全部会话(list / attach),不等于每条会话都无条件推给它。
+func TestConnRegistry_FanoutReachesOnlyTheConnsOnThatSession(t *testing.T) {
+	r := claimedRegistry("acct-1")
+	desktop, nDesktop := registerAccountAuthed(r, "fp-desktop", "acct-1")
+	_, nIdle := registerAccountAuthed(r, "fp-idle", "acct-1")
+	r.claim(desktop, 7)
+
+	out := r.routerFor("fp-desktop")
+	require.NotNil(t, out)
+	require.NoError(t, out.Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7, Seq: 1}))
+
+	awaitMethods(t, nDesktop, []string{wire.NotifyEvent}, "发起会话的那条连接照收")
+	assert.Never(t, func() bool { return len(nIdle.methods()) > 0 }, 200*time.Millisecond, 20*time.Millisecond,
+		"没上过这条会话的同账号连接不得收到它的事件 —— 它只会按裸 sessionId 落进自己的同号会话")
+}
+
+// TestConnRegistry_AttachJoinsTheSessionFanout 是上一条的另一半,也是用户流程
+// 「桌面与手机**同时连着同一个会话**」的正路:手机按 R12 接管(claimFor)之后,
+// 桌面端虽然不再是属主,仍留在这条会话的订阅者里,两边同收一条事件。
+func TestConnRegistry_AttachJoinsTheSessionFanout(t *testing.T) {
+	r := claimedRegistry("acct-1")
+	desktop, nDesktop := registerAccountAuthed(r, "fp-desktop", "acct-1")
+	phone, nPhone := registerAccountAuthed(r, "fp-phone", "acct-1")
+	r.claim(desktop, 7)
+	// 手机接管桌面端发起的那条会话:目标对端是桌面端的指纹(R12 的跨对端操作)。
+	r.claimFor(phone, "fp-desktop", 7)
+
+	out := r.routerFor("fp-desktop")
+	require.NotNil(t, out)
+	require.NoError(t, out.Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7, Seq: 1}))
+
+	awaitMethods(t, nPhone, []string{wire.NotifyEvent}, "接管方是属主,同步收")
+	awaitMethods(t, nDesktop, []string{wire.NotifyEvent}, "接管不把另一方踢下线,它仍是这条会话的订阅者")
+}
+
+// TestConnRegistry_UnclaimedDaemonKeepsPushingOnlyToTheOriginatingPeer 钉死 R13:
+// 未认领 daemon(归属账号为空)行为不变 —— 推送目标仍是发起会话的那**一条**连接,
+// 解析出来的就是它自己的端口本身,没有任何复合出口。
+func TestConnRegistry_UnclaimedDaemonKeepsPushingOnlyToTheOriginatingPeer(t *testing.T) {
+	var r connRegistry // 未认领
+	desktop, nDesktop := authedConn("fp-desktop"), &recordingNotifier{}
+	r.add(desktop, nDesktop)
+	other, nOther := authedConn("fp-phone"), &recordingNotifier{}
+	r.add(other, nOther)
+	r.claim(desktop, 7)
+
+	assertTarget(t, nDesktop, r.ownerOf(sessionKey{peer: "fp-desktop", sid: 7}),
+		"未认领时会话的推送端口就是发起连接自己的端口")
+
+	out := r.routerFor("fp-desktop")
+	require.NotNil(t, out)
+	require.NoError(t, out.Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7}))
+	assert.Never(t, func() bool { return len(nOther.methods()) > 0 }, 200*time.Millisecond, 20*time.Millisecond,
+		"未认领 daemon 上另一台已配对设备不得看到别人会话的事件")
+}
+
+// TestConnRegistry_FanoutDoesNotBroadcastTheMCPTunnel 钉死决策 9:扇出只作用于会话
+// 通知。MCP 反向隧道仍解析到**发起端那一条**连接 —— 内置工具的实现与数据在发起端本地,
+// 广播给同账号的其它客户端就是把 A 的工具请求发给 B。
+func TestConnRegistry_FanoutDoesNotBroadcastTheMCPTunnel(t *testing.T) {
+	r := claimedRegistry("acct-1")
+	desktop, nDesktop := registerAccountAuthed(r, "fp-desktop", "acct-1")
+	_, nPhone := registerAccountAuthed(r, "fp-phone", "acct-1")
+	r.claim(desktop, 7)
+
+	assertTarget(t, nDesktop, r.tunnelTargetFor("fp-desktop", 7),
+		"隧道目标是发起端那一条连接本身,不是订阅者集合")
+	assert.Empty(t, nPhone.methods(), "同账号的另一条连接不参与隧道")
+}
+
+// TestConnRegistry_SlowSubscriberBlocksNeitherTheSessionNorItsPeers 钉死扇出的隔离性:
+// 一个订阅者写不动(对端不收/网络卡住)时,会话本身与其余订阅者都不受影响。做不到的话,
+// 多接一个客户端就等于给每条会话加了一个能把整轮执行卡死的单点。
+func TestConnRegistry_SlowSubscriberBlocksNeitherTheSessionNorItsPeers(t *testing.T) {
+	r := claimedRegistry("acct-1")
+	desktop, nDesktop := registerAccountAuthed(r, "fp-desktop", "acct-1")
+	stuck := rpc.NewConn(nil, rpc.NewRegistry())
+	stuck.SetAuth(rpc.AuthState{Authenticated: true, DeviceFingerprint: "fp-stuck", AccountID: "acct-1"})
+	blocking := newBlockingNotifier()
+	r.add(stuck, blocking)
+	defer close(blocking.release)
+	phone, nPhone := registerAccountAuthed(r, "fp-phone", "acct-1")
+	r.claim(desktop, 7)
+	r.claimFor(stuck, "fp-desktop", 7)
+	r.claimFor(phone, "fp-desktop", 7)
+	r.claim(desktop, 7) // 还原属主
+
+	out := r.routerFor("fp-desktop")
+	require.NotNil(t, out)
+	done := make(chan error, 1)
+	go func() {
+		for i := 0; i < 512; i++ {
+			if err := out.Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7, Seq: int64(i + 1)}); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("一个卡住的订阅者把会话的推送整个堵死了")
+	}
+
+	require.Len(t, nDesktop.methods(), 512, "会话自己的连接一条不少")
+	require.Eventually(t, func() bool { return len(nPhone.methods()) > 0 }, 2*time.Second, 5*time.Millisecond,
+		"另一个订阅者不受慢订阅者牵连")
+	select {
+	case <-blocking.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("卡住的那条从没被当成订阅者 —— 这个用例什么也没测到")
+	}
+}
+
+// TestConnRegistry_LosingOneSubscriberLeavesTheRestReceiving 钉死订阅者集合的生灭:
+// 掉一条连接只摘掉它自己那份订阅,其余照收;连发起会话的那条一起掉了也不算挂起 ——
+// 只要还有一个订阅者在,实时流就得继续。全部掉光才回到既有的「只落库不推送」。
+func TestConnRegistry_LosingOneSubscriberLeavesTheRestReceiving(t *testing.T) {
+	r := claimedRegistry("acct-1")
+	desktop, nDesktop := registerAccountAuthed(r, "fp-desktop", "acct-1")
+	phone, nPhone := registerAccountAuthed(r, "fp-phone", "acct-1")
+	tablet, nTablet := registerAccountAuthed(r, "fp-tablet", "acct-1")
+	r.claim(desktop, 7)
+	r.claimFor(phone, "fp-desktop", 7)
+	r.claimFor(tablet, "fp-desktop", 7)
+	r.claim(desktop, 7) // 还原属主
+
+	out := r.routerFor("fp-desktop")
+	require.NotNil(t, out)
+
+	r.remove(phone)
+	require.NoError(t, out.Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7, Seq: 1}))
+	awaitMethods(t, nDesktop, []string{wire.NotifyEvent}, "掉线的是别人,会话自己的连接照收")
+	awaitMethods(t, nTablet, []string{wire.NotifyEvent}, "另一个订阅者照收")
+	assert.Empty(t, nPhone.methods(), "掉线的那条不再收到任何东西")
+
+	r.remove(desktop)
+	require.NotNil(t, r.routerFor("fp-desktop"), "还有订阅者在,会话不算挂起")
+	require.NoError(t, r.routerFor("fp-desktop").Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7, Seq: 2}))
+	awaitMethods(t, nTablet, []string{wire.NotifyEvent, wire.NotifyEvent}, "发起端掉线后剩下的订阅者继续收")
+
+	r.remove(tablet)
+	assert.Nil(t, r.routerFor("fp-desktop"), "订阅者全掉光 → 回到只落库不推送")
+	assert.Nil(t, r.ownerOf(sessionKey{peer: "fp-desktop", sid: 7}))
 }
 
 // TestDaemon_BindConnDoesNotMakeUnauthenticatedConnATarget 钉死接线:bindConn 跑在鉴权
@@ -551,7 +812,7 @@ func TestDaemon_BindConnDoesNotMakeUnauthenticatedConnATarget(t *testing.T) {
 	require.NotNil(t, router, "野连接接入后,正主的会话仍必须有推送出口")
 	assertTarget(t, nDesktop, d.conns.ownerOf(sessionKey{peer: "fp-desktop", sid: 7}),
 		"野连接接入后,会话仍解析到发起它的那条连接")
-	assertTarget(t, nDesktop, d.tunnelTarget(), "MCP 反向隧道目标同样不得被野连接顶掉")
+	assertTarget(t, nDesktop, d.tunnelTargetFor("fp-desktop", 7), "MCP 反向隧道目标同样不得被野连接顶掉")
 	assert.Nil(t, d.notifierForPeer(""), "空指纹不是可匹配身份")
 }
 
@@ -574,6 +835,66 @@ func TestDaemon_AuthRejectsEmptyDeviceFingerprint(t *testing.T) {
 	_, err = d.registry.Dispatch(context.Background(), "auth.connect",
 		json.RawMessage(`{"deviceFingerprint":"","deviceToken":"whatever"}`))
 	require.Error(t, err, "auth.connect must reject an empty deviceFingerprint")
+}
+
+// TestDaemon_GivenClaimedAndUnavailableRelay_WhenRunning_ThenLANKeepsServing
+// covers R14's degradation boundary: a relay failure must stay in the outbound
+// background loop rather than preventing the daemon's direct LAN server from starting.
+func TestDaemon_GivenClaimedAndUnavailableRelay_WhenRunning_ThenLANKeepsServing(t *testing.T) {
+	var requests atomic.Int32
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer device-access-token", r.Header.Get("Authorization"))
+		requests.Add(1)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(relay.Close)
+
+	dir, err := os.MkdirTemp("", "agentred-hub-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	st.Claim("account-42", "cached-public-key", state.AccountCredential{AccessToken: "device-access-token"})
+	require.NoError(t, st.Save())
+
+	d, err := New(Options{
+		DataDir:      dir,
+		LANHost:      "127.0.0.1",
+		LANPort:      0,
+		HubServerURL: relay.URL,
+	})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case runErr := <-errCh:
+			require.NoError(t, runErr)
+		case <-time.After(3 * time.Second):
+			t.Error("Run did not return after cancel")
+		}
+	})
+
+	require.Eventually(t, func() bool {
+		d.mu.RLock()
+		ready := d.lan != nil && d.lan.Addr() != ""
+		d.mu.RUnlock()
+		return ready && requests.Load() > 0
+	}, 2*time.Second, 10*time.Millisecond, "the LAN server must run while the claimed daemon retries the relay")
+}
+
+// TestDaemon_GivenUnclaimedRelayURL_WhenConstructed_ThenKeepsLANOnly ensures
+// relay construction remains gated by account ownership; an unclaimed daemon
+// must not create a hub link or a multiplexer merely because a server URL exists.
+func TestDaemon_GivenUnclaimedRelayURL_WhenConstructed_ThenKeepsLANOnly(t *testing.T) {
+	d, err := New(Options{DataDir: t.TempDir(), HubServerURL: "http://relay.example"})
+	require.NoError(t, err)
+	t.Cleanup(func() { closeDB(d.db) })
+
+	assert.Nil(t, d.hub)
+	assert.Nil(t, d.mux)
 }
 
 func TestDaemon_BootShutdown(t *testing.T) {
@@ -1016,6 +1337,501 @@ func TestDaemon_RunCollectsTheJournal(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(journalSeqs(t, dbCtx, "peerA", "1")) == 1
 	}, 3*time.Second, 20*time.Millisecond, "daemon 跑起来之后必须自己回收掉安静会话的日志前缀")
+}
+
+// TestDaemon_RevocationPoll_GivenServerList_WhenPulled_ThenPersistedAndSurvivesRestart
+// 覆盖 R4 的 daemon 一半:在线时按固定间隔(须显著短于 15m 的 access TTL)拉取账号的
+// 吊销列表,列表与 as_of 经 state.Mutate/Save 落盘 —— 之后 daemon 离线重启,列表照样
+// 在,吊销才不会被一次重启抹掉。
+func TestDaemon_RevocationPoll_GivenServerList_WhenPulled_ThenPersistedAndSurvivesRestart(t *testing.T) {
+	var polls atomic.Int32
+	auths := make(chan string, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/devices/revocations" || r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		polls.Add(1)
+		select {
+		case auths <- r.Header.Get("Authorization"):
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{"revoked_jti":["jti-a","jti-b"],"as_of":1716000000123}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	st.Claim("account-42", "cached-public-key", state.AccountCredential{AccessToken: "access-1"})
+	require.NoError(t, st.Save())
+
+	requested := make(chan time.Duration, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	poller := &revocationPoller{
+		state:       st,
+		serverURL:   server.URL,
+		httpClient:  server.Client(),
+		accessToken: func() string { return st.Snapshot().Credential.AccessToken },
+		interval:    defaultRevocationPollInterval,
+		wait: func(loopCtx context.Context, delay time.Duration) error {
+			requested <- delay
+			<-loopCtx.Done()
+			return loopCtx.Err()
+		},
+		backoff: defaultRefreshBackoff,
+		logf:    t.Logf,
+	}
+	go poller.run(ctx)
+
+	select {
+	case delay := <-requested:
+		assert.Equal(t, time.Minute, delay, "轮询间隔须显著短于 15m 的 access TTL 才有意义")
+	case <-time.After(2 * time.Second):
+		t.Fatal("poller never pulled the revocation list")
+	}
+	assert.Equal(t, "Bearer access-1", <-auths, "拉取吊销列表用的是 HubLink 一直在续期的那份设备凭据")
+
+	snapshot := st.Snapshot()
+	assert.Equal(t, []string{"jti-a", "jti-b"}, snapshot.RevokedJTIs)
+	assert.Equal(t, int64(1716000000123), snapshot.RevocationsAsOf)
+
+	// 重启:重新从磁盘 Load 出来的 state 必须仍然带着这份列表。
+	reloaded, err := state.Load(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"jti-a", "jti-b"}, reloaded.RevokedJTIs, "吊销列表必须挺过一次 daemon 重启")
+	assert.Equal(t, int64(1716000000123), reloaded.RevocationsAsOf)
+	assert.Equal(t, int32(1), polls.Load(), "一个间隔内只拉一次")
+}
+
+// TestDaemon_RevocationPoll_GivenPullFails_WhenRetrying_ThenKeepsLastListAndBacksOff
+// 覆盖离线/拉取失败:上一次的列表原样保留并继续本地生效(这正是 R4 承认的吊销延迟,
+// 不是 bug),重试按退避而不是按固定间隔,循环自己扛住失败、恢复后继续替换列表。
+func TestDaemon_RevocationPoll_GivenPullFails_WhenRetrying_ThenKeepsLastListAndBacksOff(t *testing.T) {
+	var polls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if polls.Add(1) <= 2 {
+			http.Error(w, "boom", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{"revoked_jti":["jti-fresh"],"as_of":1716000060000}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	st.Claim("account-42", "cached-public-key", state.AccountCredential{AccessToken: "access-1"})
+	st.Mutate(func(s *state.State) {
+		s.RevokedJTIs = []string{"jti-known"}
+		s.RevocationsAsOf = 1716000000000
+	})
+	require.NoError(t, st.Save())
+
+	requested := make(chan time.Duration, 8)
+	release := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	poller := &revocationPoller{
+		state:       st,
+		serverURL:   server.URL,
+		httpClient:  server.Client(),
+		accessToken: func() string { return st.Snapshot().Credential.AccessToken },
+		interval:    defaultRevocationPollInterval,
+		wait: func(loopCtx context.Context, delay time.Duration) error {
+			requested <- delay
+			select {
+			case <-release:
+				return nil
+			case <-loopCtx.Done():
+				return loopCtx.Err()
+			}
+		},
+		backoff: defaultRefreshBackoff,
+		logf:    t.Logf,
+	}
+	go poller.run(ctx)
+
+	nextDelay := func() time.Duration {
+		t.Helper()
+		select {
+		case delay := <-requested:
+			return delay
+		case <-time.After(2 * time.Second):
+			t.Fatal("poller stopped scheduling")
+			return 0
+		}
+	}
+
+	assert.Equal(t, time.Second, nextDelay(), "拉取失败后按退避重试,而不是等满一个轮询间隔")
+	kept := st.Snapshot()
+	assert.Equal(t, []string{"jti-known"}, kept.RevokedJTIs, "拉取失败时必须保留上一次的列表继续生效")
+	assert.Equal(t, int64(1716000000000), kept.RevocationsAsOf, "失败的拉取不得推进 as_of")
+	release <- struct{}{}
+
+	assert.Equal(t, 2*time.Second, nextDelay(), "连续失败时退避必须加倍")
+	assert.Equal(t, []string{"jti-known"}, st.Snapshot().RevokedJTIs, "第二次失败同样保留旧列表")
+	release <- struct{}{}
+
+	assert.Equal(t, time.Minute, nextDelay(), "恢复之后回到固定轮询间隔")
+	recovered := st.Snapshot()
+	assert.Equal(t, []string{"jti-fresh"}, recovered.RevokedJTIs, "循环必须扛住失败并在恢复后继续替换列表")
+	assert.Equal(t, int64(1716000060000), recovered.RevocationsAsOf)
+	reloaded, err := state.Load(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"jti-fresh"}, reloaded.RevokedJTIs)
+}
+
+// TestDaemon_RevocationPoll_GivenPayloadWithoutAsOf_WhenPulled_ThenKeepsLastList
+// 守住「失败要失败在安全的一侧」:一个语法合法、却不是契约形状的 200(中间设备塞
+// 回来的空 JSON 是最常见的一种)绝不能把吊销列表洗成空的 —— 契约里 as_of 恒有值,
+// 拿不到就当这次拉取失败,保留上一次的列表继续生效。
+func TestDaemon_RevocationPoll_GivenPayloadWithoutAsOf_WhenPulled_ThenKeepsLastList(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	st.Claim("account-42", "cached-public-key", state.AccountCredential{AccessToken: "access-1"})
+	st.Mutate(func(s *state.State) {
+		s.RevokedJTIs = []string{"jti-known"}
+		s.RevocationsAsOf = 1716000000000
+	})
+	require.NoError(t, st.Save())
+
+	requested := make(chan time.Duration, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	poller := &revocationPoller{
+		state:       st,
+		serverURL:   server.URL,
+		httpClient:  server.Client(),
+		accessToken: func() string { return st.Snapshot().Credential.AccessToken },
+		interval:    defaultRevocationPollInterval,
+		wait: func(loopCtx context.Context, delay time.Duration) error {
+			requested <- delay
+			<-loopCtx.Done()
+			return loopCtx.Err()
+		},
+		backoff: defaultRefreshBackoff,
+		logf:    t.Logf,
+	}
+	go poller.run(ctx)
+
+	select {
+	case delay := <-requested:
+		assert.Equal(t, time.Second, delay, "不成形的响应算拉取失败,按退避重试")
+	case <-time.After(2 * time.Second):
+		t.Fatal("poller stopped scheduling")
+	}
+	kept := st.Snapshot()
+	assert.Equal(t, []string{"jti-known"}, kept.RevokedJTIs, "不成形的响应绝不能把吊销列表洗空")
+	assert.Equal(t, int64(1716000000000), kept.RevocationsAsOf)
+}
+
+// TestDaemon_RunStartsRevocationPolling 钉死接线:拉取必须由 daemon 自己跑起来。
+// 没有调用方的拉取路径等于没有吊销机制 —— 握手期只查缓存(R3 零网络往返),缓存
+// 没人更新就永远是空的。
+func TestDaemon_RunStartsRevocationPolling(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/devices/revocations" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{"revoked_jti":["jti-wired"],"as_of":1716000000123}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	dir, err := os.MkdirTemp("", "agentred-revocations-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	st.Claim("account-42", "cached-public-key", state.AccountCredential{AccessToken: "device-access-token"})
+	require.NoError(t, st.Save())
+
+	d, err := New(Options{DataDir: dir, LANHost: "127.0.0.1", LANPort: 0, HubServerURL: server.URL})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = d.Run(ctx) }()
+
+	require.Eventually(t, func() bool {
+		return len(d.state.Snapshot().RevokedJTIs) == 1
+	}, 3*time.Second, 20*time.Millisecond, "daemon 跑起来之后必须自己把吊销列表拉下来")
+	assert.Equal(t, []string{"jti-wired"}, d.state.Snapshot().RevokedJTIs)
+}
+
+// refreshTestClock is the injectable clock for the credential refresh loop: the
+// loop asks how much to wait, the test releases it and advances the clock by
+// exactly that delay, so the refresh fires at a fully deterministic time.
+type refreshTestClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *refreshTestClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *refreshTestClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// TestDaemon_RefreshLoop_RefreshesBeforeExpiryAndRelayDialUsesFreshToken is the
+// R4/R14 happy path: with a minute-level access token the daemon must refresh
+// well before expiry, rotate both tokens back into state.json, and hand the
+// relay link the freshest access token at its next dial.
+func TestDaemon_RefreshLoop_RefreshesBeforeExpiryAndRelayDialUsesFreshToken(t *testing.T) {
+	clock := &refreshTestClock{now: time.Unix(1_700_000_000, 0)}
+
+	var refreshCalls atomic.Int32
+	sentRefresh := make(chan string, 1)
+	dialAuth := make(chan string, 4)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/oauth/token/refresh":
+			refreshCalls.Add(1)
+			body, _ := io.ReadAll(r.Body)
+			var req struct {
+				RefreshToken string `json:"refresh_token"`
+			}
+			_ = json.Unmarshal(body, &req)
+			sentRefresh <- req.RefreshToken
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"access-2","expires_in":900,"refresh_token":"refresh-2","refresh_expires_in":3600}`))
+		case "/v1/relay/daemon":
+			dialAuth <- r.Header.Get("Authorization")
+			ws, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer func() { _ = ws.Close() }()
+			for {
+				if _, _, err := ws.ReadMessage(); err != nil {
+					return
+				}
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	st.Claim("account-42", "cached-public-key", state.AccountCredential{
+		DeviceID:              7,
+		AccessToken:           "access-1",
+		AccessTokenExpiresAt:  clock.Now().Add(15 * time.Minute).Unix(),
+		RefreshToken:          "refresh-1",
+		RefreshTokenExpiresAt: clock.Now().Add(24 * time.Hour).Unix(),
+	})
+	require.NoError(t, st.Save())
+
+	requested := make(chan time.Duration, 8)
+	release := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stopped atomic.Bool
+	refresher := &credentialRefresher{
+		state:      st,
+		serverURL:  server.URL,
+		httpClient: server.Client(),
+		now:        clock.Now,
+		wait: func(loopCtx context.Context, delay time.Duration) error {
+			requested <- delay
+			select {
+			case <-release:
+				clock.Advance(delay)
+				return nil
+			case <-loopCtx.Done():
+				return loopCtx.Err()
+			}
+		},
+		backoff: defaultRefreshBackoff,
+		logf:    t.Logf,
+		margin:  2 * time.Minute,
+	}
+	go refresher.run(ctx, func() { stopped.Store(true) })
+
+	select {
+	case delay := <-requested:
+		assert.Equal(t, 13*time.Minute, delay, "the refresh must be scheduled well before the access token expires")
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresher never scheduled a pre-expiry refresh")
+	}
+
+	release <- struct{}{} // let the first refresh fire
+	require.Eventually(t, func() bool { return refreshCalls.Load() == 1 }, 2*time.Second, 10*time.Millisecond)
+	select {
+	case rt := <-sentRefresh:
+		assert.Equal(t, "refresh-1", rt, "the refresh request must present the stored refresh token")
+	case <-time.After(time.Second):
+		t.Fatal("refresh endpoint never received the refresh token")
+	}
+
+	updated := st.Snapshot().Credential
+	assert.Equal(t, "access-2", updated.AccessToken, "state must hold the refreshed access token")
+	assert.Equal(t, "refresh-2", updated.RefreshToken, "state must hold the rotated refresh token")
+	// The refresh fired at now+13m; the server granted a 15m access and 1h refresh TTL.
+	assert.Equal(t, clock.Now().Add(15*time.Minute).Unix(), updated.AccessTokenExpiresAt)
+	assert.Equal(t, clock.Now().Add(time.Hour).Unix(), updated.RefreshTokenExpiresAt)
+	assert.Equal(t, int64(7), updated.DeviceID, "DeviceID must survive a refresh")
+	assert.False(t, stopped.Load(), "a successful refresh must not stop relay renewal")
+
+	// A relay link whose token provider reads the same state must dial with the
+	// refreshed access token, not the one captured at construction.
+	relayCtx, relayCancel := context.WithCancel(context.Background())
+	defer relayCancel()
+	link := rpc.NewHubLink(rpc.HubLinkOptions{
+		ServerURL:           server.URL,
+		AccessToken:         "access-1", // stale static fallback; the provider must win
+		AccessTokenProvider: func() string { return st.Snapshot().Credential.AccessToken },
+		RetryWait:           func(context.Context, time.Duration) error { return nil },
+		Random:              func() float64 { return 0.5 },
+	})
+	go func() { _ = link.Run(relayCtx) }()
+
+	select {
+	case auth := <-dialAuth:
+		assert.Equal(t, "Bearer access-2", auth, "the relay dial must use the freshly refreshed access token")
+	case <-time.After(2 * time.Second):
+		t.Fatal("relay link did not dial with the fresh token")
+	}
+}
+
+// TestDaemon_RefreshLoop_ExpiredRefreshTokenStopsWithoutServerCall covers the
+// R4 stop path: an already-expired refresh token must not hit the server, must
+// stop relay renewal (no dead link kept alive forever), and must leave local
+// sessions untouched.
+func TestDaemon_RefreshLoop_ExpiredRefreshTokenStopsWithoutServerCall(t *testing.T) {
+	clock := &refreshTestClock{now: time.Unix(1_700_000_000, 0)}
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "unexpected", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	st.Claim("account-42", "pk", state.AccountCredential{
+		AccessToken:           "access-1",
+		AccessTokenExpiresAt:  clock.Now().Add(10 * time.Minute).Unix(),
+		RefreshToken:          "refresh-1",
+		RefreshTokenExpiresAt: clock.Now().Add(-time.Minute).Unix(), // already expired
+	})
+	require.NoError(t, st.Save())
+
+	refresher := &credentialRefresher{
+		state:      st,
+		serverURL:  server.URL,
+		httpClient: server.Client(),
+		now:        clock.Now,
+		wait:       func(context.Context, time.Duration) error { return nil },
+		backoff:    defaultRefreshBackoff,
+		logf:       t.Logf,
+		margin:     2 * time.Minute,
+	}
+	stopped := false
+	refresher.run(context.Background(), func() { stopped = true })
+
+	assert.True(t, stopped, "an expired refresh token must stop relay renewal")
+	assert.Zero(t, calls.Load(), "an expired refresh token must not hit the server")
+}
+
+// TestDaemon_RefreshLoop_GivenTransientRefreshFailure_WhenRetrySucceeds_ThenCredentialRotated
+// covers the "log + retry with backoff" half of R14: a 5xx refresh failure is
+// transient, retried on the configured backoff, and must never propagate to the
+// daemon run loop.
+func TestDaemon_RefreshLoop_GivenTransientRefreshFailure_WhenRetrySucceeds_ThenCredentialRotated(t *testing.T) {
+	clock := &refreshTestClock{now: time.Unix(1_700_000_000, 0)}
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			http.Error(w, "boom", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"access-2","expires_in":900,"refresh_token":"refresh-2","refresh_expires_in":3600}`))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	st.Claim("account-42", "pk", state.AccountCredential{
+		AccessToken:           "access-1",
+		AccessTokenExpiresAt:  clock.Now().Add(time.Minute).Unix(), // due before the margin
+		RefreshToken:          "refresh-1",
+		RefreshTokenExpiresAt: clock.Now().Add(24 * time.Hour).Unix(),
+	})
+	require.NoError(t, st.Save())
+
+	requested := make(chan time.Duration, 8)
+	release := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	refresher := &credentialRefresher{
+		state:      st,
+		serverURL:  server.URL,
+		httpClient: server.Client(),
+		now:        clock.Now,
+		wait: func(loopCtx context.Context, delay time.Duration) error {
+			requested <- delay
+			select {
+			case <-release:
+				clock.Advance(delay)
+				return nil
+			case <-loopCtx.Done():
+				return loopCtx.Err()
+			}
+		},
+		backoff: defaultRefreshBackoff,
+		logf:    t.Logf,
+		margin:  2 * time.Minute,
+	}
+	go refresher.run(ctx, func() {})
+
+	// The access token is already inside the margin, so the first wait is zero.
+	select {
+	case delay := <-requested:
+		assert.Zero(t, delay, "an already-due access token must refresh immediately")
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresher never attempted a refresh")
+	}
+	release <- struct{}{}
+	require.Eventually(t, func() bool { return calls.Load() == 1 }, 2*time.Second, 10*time.Millisecond)
+
+	// The failed refresh must back off before retrying.
+	select {
+	case delay := <-requested:
+		assert.Equal(t, time.Second, delay, "the first retry must wait the initial backoff")
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresher never backed off after a transient failure")
+	}
+	release <- struct{}{}
+	require.Eventually(t, func() bool { return calls.Load() == 2 }, 2*time.Second, 10*time.Millisecond)
+
+	updated := st.Snapshot().Credential
+	assert.Equal(t, "access-2", updated.AccessToken, "a transient failure must not prevent the eventual refresh")
+	assert.Equal(t, "refresh-2", updated.RefreshToken)
 }
 
 type daemonPreparedPiRT struct {

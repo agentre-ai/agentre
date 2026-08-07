@@ -77,6 +77,12 @@ func (s *service) SetWatcher(w WatcherPort) {
 	s.watcher = w
 }
 
+// DeviceFingerprint 交出本机设备指纹。与 Add 共用 ensureDeviceFingerprint:同一个
+// keychain 账号、同一把生成逻辑,保证 R5 硬不变量(两条路径解析出同一对端标识)。
+func (s *service) DeviceFingerprint() (string, error) {
+	return s.ensureDeviceFingerprint()
+}
+
 // Pool 返回 chat_svc / agent_backend_svc 共享的 per-device 连接池。
 func (s *service) Pool() ConnPool { return s.pool }
 

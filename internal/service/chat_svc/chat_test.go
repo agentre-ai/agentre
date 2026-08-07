@@ -1794,7 +1794,8 @@ func (r streamSteerConsumedRunner) Run(_ context.Context, _ agentruntime.RunRequ
 	events := make(chan agentruntime.Event, 3)
 	events <- agentruntime.TextDelta{Text: "before "}
 	events <- agentruntime.SteerConsumed{
-		Steers: []agentruntime.ConsumedSteer{{QueuedID: "qid-1", Text: "follow-up"}},
+		Steers: []agentruntime.ConsumedSteer{{QueuedID: "qid-1", Text: "follow-up",
+			SourcePeer: "sha256:remote-peer", SourceName: "iPhone"}},
 	}
 	events <- agentruntime.TextDelta{Text: "after"}
 	close(events)
@@ -4856,6 +4857,9 @@ func TestSend_SteerConsumedSplitsMessages(t *testing.T) {
 		if assert.Len(t, consumed.UserMessages, 1) {
 			assert.Equal(t, int64(1002), consumed.UserMessages[0].ID)
 			assert.Equal(t, "follow-up", consumed.UserMessages[0].Blocks[0].Text)
+			// R17: 他端消息的来源标识随 UserMessages 带出(本机为空)。
+			assert.Equal(t, "sha256:remote-peer", consumed.UserMessages[0].SourceDevice)
+			assert.Equal(t, "iPhone", consumed.UserMessages[0].SourceDeviceName)
 		}
 		if assert.NotNil(t, consumed.AssistantMessage) {
 			assert.Equal(t, int64(1003), consumed.AssistantMessage.ID)
@@ -5032,9 +5036,9 @@ func TestSend_AutoContinuesMultipleLevels(t *testing.T) {
 
 	runner := &autoContinueRunner{
 		pendingByRun: [][]agentruntime.ConsumedSteer{
-			{{QueuedID: "qid-a", Text: "A"}, {QueuedID: "qid-b", Text: "B"}}, // 第 1 轮后
-			{{QueuedID: "qid-c", Text: "C"}},                                 // 第 2 轮后
-			nil,                                                              // 第 3 轮后收尾
+			{{QueuedID: "qid-a", Text: "A", SourcePeer: "sha256:other-device", SourceName: "iPad"}, {QueuedID: "qid-b", Text: "B"}}, // 第 1 轮后
+			{{QueuedID: "qid-c", Text: "C"}}, // 第 2 轮后
+			nil,                              // 第 3 轮后收尾
 		},
 	}
 	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, runner)
@@ -5120,6 +5124,24 @@ func TestSend_AutoContinuesMultipleLevels(t *testing.T) {
 	if assert.Len(t, consumedQueuedIDs, 2, "expect StreamSteerConsumed twice for two transitions") {
 		assert.ElementsMatch(t, []string{"qid-a", "qid-b"}, consumedQueuedIDs[0])
 		assert.ElementsMatch(t, []string{"qid-c"}, consumedQueuedIDs[1])
+	}
+
+	// R17: 合并出的 auto-continue user 消息带提交方来源(取第一条非空;本地/未知为空)。
+	var autoUserMsg *chat_svc.ChatMessage
+	for _, ev := range m.events {
+		payload, ok := ev.Payload.(chat_svc.ChatStreamEvent)
+		if !ok || payload.Kind != chat_svc.StreamSteerConsumed {
+			continue
+		}
+		if len(payload.UserMessages) > 0 {
+			um := payload.UserMessages[0]
+			autoUserMsg = &um
+			break
+		}
+	}
+	if assert.NotNil(t, autoUserMsg, "auto-continue StreamSteerConsumed must carry a user message") {
+		assert.Equal(t, "sha256:other-device", autoUserMsg.SourceDevice)
+		assert.Equal(t, "iPad", autoUserMsg.SourceDeviceName)
 	}
 	assert.GreaterOrEqual(t, doneCount, 1, "final turn must emit StreamDone")
 }

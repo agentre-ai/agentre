@@ -263,11 +263,56 @@ export const SetChatPermissionMode = windowBackedMock(
 export const RemoteDeviceList = windowBackedMock("RemoteDeviceList", () =>
   Promise.resolve([]),
 );
+// R17 本机指纹判定:测试默认给一个非空指纹,用例可改返回以验证本机/他端两种分支。
+export const RemoteDeviceFingerprint = windowBackedMock(
+  "RemoteDeviceFingerprint",
+  () => Promise.resolve("sha256:test-local-device"),
+);
 export const RemoteFsListDir = windowBackedMock("RemoteFsListDir", () =>
   Promise.resolve({ entries: [] }),
 );
 export const RemoteFsMkdir = windowBackedMock("RemoteFsMkdir", () =>
   Promise.resolve({}),
+);
+
+// Account login (internal/app/server.go) — used by RemoteDevicesPanel's
+// login entry point / identity card via use-server-login.ts + login-dialog.tsx.
+// Default is the fresh-install logged-out row; tests that exercise the login
+// flow override these directly.
+export const ServerGetState = windowBackedMock("ServerGetState", () =>
+  Promise.resolve({
+    ID: 1,
+    ServerURL: "",
+    DeviceID: 0,
+    DeviceFingerprint: "",
+    ServerUserID: 0,
+    KeychainAccount: "",
+    Updatetime: 0,
+  }),
+);
+export const ServerCheckURL = windowBackedMock("ServerCheckURL", () =>
+  Promise.resolve("dev"),
+);
+export const ServerStartLogin = windowBackedMock("ServerStartLogin", () =>
+  missingWailsBinding("ServerStartLogin"),
+);
+export const ServerPollLoginToken = windowBackedMock(
+  "ServerPollLoginToken",
+  () => Promise.resolve(false),
+);
+export const ServerCancelLogin = windowBackedMock("ServerCancelLogin", () =>
+  Promise.resolve(),
+);
+export const ServerLogout = windowBackedMock("ServerLogout", () =>
+  Promise.resolve(),
+);
+// use-remote-devices.ts reads the account device list to decide which rows are
+// 未认领. The default rejects like ServerStartLogin because ServerGetState's
+// default is the logged-out row: a logged-out desktop cannot know the account
+// list, and the hook treats that as known=false rather than marking every
+// machine unclaimed.
+export const ServerListDevices = windowBackedMock("ServerListDevices", () =>
+  missingWailsBinding("ServerListDevices"),
 );
 
 // Data backup bindings

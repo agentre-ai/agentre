@@ -56,6 +56,10 @@ type SessionRepo interface {
 	// ListByPeer 列出某个对端在本 daemon 上的全部会话,最近活动的在前。
 	ListByPeer(ctx context.Context, peerFingerprint string) ([]*DaemonSession, error)
 
+	// ListAll 列出所有对端的会话,最近活动的在前。账号可见性由上层鉴权后决定;
+	// 本仓储不改变复合主键,也不解释调用方是否有资格跨对端读取。
+	ListAll(ctx context.Context) ([]*DaemonSession, error)
+
 	// CountByLifecycle 数一数此刻停在某个生命周期上的会话有几条。
 	//
 	// 它服务的是本机状态查询(`agentred status` 的「活跃会话数」):daemon 记着的
@@ -127,6 +131,15 @@ func (r *sessionRepo) ListByPeer(ctx context.Context, peerFingerprint string) ([
 		Where("peer_fingerprint = ?", peerFingerprint).
 		Order("updated_at DESC").
 		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *sessionRepo) ListAll(ctx context.Context) ([]*DaemonSession, error) {
+	var rows []*DaemonSession
+	err := db.Ctx(ctx).Order("updated_at DESC").Find(&rows).Error
 	if err != nil {
 		return nil, err
 	}

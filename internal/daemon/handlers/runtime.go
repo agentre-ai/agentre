@@ -59,6 +59,12 @@ type RuntimeDeps struct {
 	Gateway      GatewayPort
 	Lookup       LLMProviderLookupPort
 	RuntimeFor   func(agent_backend_entity.BackendType) agentruntime.Runtime
+	// ClaimedAccountID returns the daemon account authorized to target a
+	// non-caller origin peer in control requests.
+	ClaimedAccountID func() string
+	// SteerSource 是「queuedID → 提交方对端」的映射(R17),Daemon 级共享(见
+	// SteerSourcePort 注释)。nil 时 NewRuntimeHandlers 兜成 no-op,单测/旧调用不炸。
+	SteerSource SteerSourcePort
 	// GenerationRegistry 是 Daemon 级的 generation 属主表(见 sessions.Registry)。
 	// RuntimeHandlers 是 per-connection 构造的,而一条会话上在飞的 generation 要跨
 	// 连接排他:重连必须等旧属主释放,迟到的旧清理也顶不掉重连。
@@ -147,6 +153,9 @@ func NewRuntimeHandlers(deps RuntimeDeps) *RuntimeHandlers {
 	if deps.RuntimeFor == nil {
 		deps.RuntimeFor = agentruntime.RuntimeFor
 	}
+	if deps.SteerSource == nil {
+		deps.SteerSource = noopSteerSource{}
+	}
 	return &RuntimeHandlers{
 		deps:        deps,
 		sessions:    map[int64]*runtimeSession{},
@@ -154,6 +163,14 @@ func NewRuntimeHandlers(deps RuntimeDeps) *RuntimeHandlers {
 		cleanupDone: make(chan struct{}),
 	}
 }
+
+// noopSteerSource 是未注入 SteerSourcePort 时的空实现:单测 / 旧调用不记录任何来源,
+// 被消费的 steer 保持 SourcePeer/SourceName 为空(本机路径,与今天行为一致)。
+type noopSteerSource struct{}
+
+func (noopSteerSource) Record(string, SteerSourceEntry)         {}
+func (noopSteerSource) Consume(string) (SteerSourceEntry, bool) { return SteerSourceEntry{}, false }
+func (noopSteerSource) Forget(string)                           {}
 
 // Adopt 让这条连接的 handler 认下一条**别处发起的**会话:它此后能像自己起的那样解出
 // 会话的 backend,控制 RPC(steer / abort / submitAnswer / submitToolPermission …)因此
@@ -168,10 +185,16 @@ func NewRuntimeHandlers(deps RuntimeDeps) *RuntimeHandlers {
 // 认下的是**这个对端**的那条会话:内存会话表与 backend 一样按隔离后的会话键存放,
 // 否则同号会话会在这张表里互相顶掉(见 runtimeSessionID)。
 func (h *RuntimeHandlers) Adopt(ctx context.Context, sessionID int64, backendType agent_backend_entity.BackendType) {
+	h.AdoptForPeer(peerFingerprint(ctx), sessionID, backendType)
+}
+
+// AdoptForPeer remembers a session under its persisted origin after an
+// authorized account-level attach.
+func (h *RuntimeHandlers) AdoptForPeer(peer string, sessionID int64, backendType agent_backend_entity.BackendType) {
 	if sessionID == 0 || backendType == "" {
 		return
 	}
-	h.register(runtimeSID(ctx, sessionID), &runtimeSession{backendType: backendType, adopted: true})
+	h.register(runtimeSessionID(peer, sessionID), &runtimeSession{backendType: backendType, adopted: true})
 }
 
 // SwapRuntimeFor replaces the runtime lookup at runtime — test seam only.
@@ -366,7 +389,12 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		// 内置工具 MCP server 的 URL 是 desktop 的 127.0.0.1(在 daemon 主机拨不到),
 		// 改写成 daemon 本机 gateway base → CLI 打到本地 /mcp/ 隧道入口,再反向请求回
 		// desktop 执行。Headers(desktop 签的 token)/ Tools / Name 原样保留。
-		MCPServers:     rewriteMCPServersForDaemon(p.MCPServers, func() string { return daemonGatewayBase(h.deps.Gateway) }),
+		MCPServers: rewriteMCPServersForDaemon(
+			p.MCPServers,
+			func() string { return daemonGatewayBase(h.deps.Gateway) },
+			em.peer,
+			em.sid,
+		),
 		EnabledPlugins: p.EnabledPlugins,
 		ModelOverride:  p.ModelOverride,
 	}
@@ -603,6 +631,12 @@ func (h *RuntimeHandlers) fanout(em *sessionEmitter, owner *runtimeSession, ch <
 	count := 0
 	kindHist := map[string]int{}
 	for ev := range ch {
+		// R17:SteerConsumed 里的每条 steer 都带着它的提交方来源 —— 实时消费路径
+		// 在这里把 Steer RPC 时记下的对端盖回去(轮末残留的走 DrainPending 同表消费)。
+		// 盖在**密封事件内部**:远端 runtime 把 EventFrame 原样传递、会丢外层字段。
+		if sc, ok := ev.(agentruntime.SteerConsumed); ok {
+			ev = stampSteerSources(h.deps.SteerSource, sc)
+		}
 		raw, err := json.Marshal(ev)
 		if err != nil {
 			log.Printf("runtime.event: marshal failed sid=%d kind=%T errClass=%T errBytes=%d",
@@ -663,6 +697,32 @@ func (h *RuntimeHandlers) fanout(em *sessionEmitter, owner *runtimeSession, ch <
 	}
 	log.Printf("runtime.run: session ended sid=%d currentGeneration=%t totalEvents=%d kinds=%v hasStopErr=%t stopErrBytes=%d stopErrCode=%d",
 		sid, current, count, kindHist, frame.StopErrMsg != "", len(frame.StopErrMsg), frame.StopErrCode)
+}
+
+// stampSteerSources 把 Steer RPC 时记下的提交方来源盖回被消费的 steer 上(R17)。
+// 每条 steer 按 QueuedID 取映射(取走即删);查不到的保持空(本机/未知)。返回新事件,
+// 不改 backend 侧 slice。
+func stampSteerSources(src SteerSourcePort, sc agentruntime.SteerConsumed) agentruntime.SteerConsumed {
+	if len(sc.Steers) == 0 || src == nil {
+		return sc
+	}
+	out := make([]agentruntime.ConsumedSteer, len(sc.Steers))
+	copied := false
+	for i, st := range sc.Steers {
+		if entry, ok := src.Consume(st.QueuedID); ok && (entry.Peer != "" || entry.Name != "") {
+			if !copied {
+				copy(out, sc.Steers)
+				copied = true
+			}
+			out[i].SourcePeer = entry.Peer
+			out[i].SourceName = entry.Name
+		}
+	}
+	if !copied {
+		return sc
+	}
+	sc.Steers = out
+	return sc
 }
 
 // startAutonomousFanout 每会话起一个 goroutine,把真实 runtime 的自主续轮转发到
@@ -819,14 +879,16 @@ func peerFingerprint(ctx context.Context) string {
 	return ""
 }
 
-// ── backend 会话键(按对端隔离)──────────────────────────────────────────────
-
-// runtimeSID 是 runtimeSessionID 在请求 ctx 上的取用形式:对端指纹取自那条连接的鉴权
-// 状态,不从参数读 —— 参数里的对端标识等于让任何已配对设备点名操作别人的会话(R16)。
-// 每一处把会话 id 交给 backend runtime 的地方都必须过它。
-func runtimeSID(ctx context.Context, sessionID int64) int64 {
-	return runtimeSessionID(peerFingerprint(ctx), sessionID)
+// peerName 取发起这条 RPC 的对端设备名(auth.pair 时上报;auth.account 路径为空)。
+// 与 peerFingerprint 一样只在请求 ctx 上有,必须在 RPC 处理期间取。
+func peerName(ctx context.Context) string {
+	if c := rpc.ConnFromContext(ctx); c != nil {
+		return c.Auth().DeviceName
+	}
+	return ""
 }
+
+// ── backend 会话键(按对端隔离)──────────────────────────────────────────────
 
 // runtimeSessionID 把「客户端报的会话 id」翻成本 daemon 进程内唯一的 backend 会话键。
 //
@@ -903,9 +965,13 @@ func runResultToFrame(sid int64, r *agentruntime.RunResult) wire.RunResultDoneFr
 // resolveSessionCapability 解出该会话的 backend 能力,并**一并交回要用来调用它的那个
 // 会话键**(按对端隔离,见 runtimeSessionID)。两样东西一起返回是有意的:控制 RPC 全都
 // 「先解会话,再调 backend」,分两次各取一次就有机会解的是隔离键、调的却是客户端裸 id。
-func resolveSessionCapability[T any](ctx context.Context, h *RuntimeHandlers, sessionID int64) (T, int64, error) {
+func resolveSessionCapability[T any](ctx context.Context, h *RuntimeHandlers, sessionID int64, originPeer string) (T, int64, error) {
 	var zero T
-	rid := runtimeSID(ctx, sessionID)
+	peer, err := ResolveSessionPeer(ctx, originPeer, h.deps.ClaimedAccountID)
+	if err != nil {
+		return zero, 0, err
+	}
+	rid := runtimeSessionID(peer, sessionID)
 	rt, err := h.resolveSession(rid)
 	if err != nil {
 		return zero, rid, err
@@ -921,18 +987,27 @@ func resolveSessionCapability[T any](ctx context.Context, h *RuntimeHandlers, se
 //                  SubmitAnswer / SubmitToolPermission) ─────────────────────
 
 func (h *RuntimeHandlers) Steer(ctx context.Context, p wire.SteerParams) (wire.OK, error) {
-	s, rid, err := resolveSessionCapability[agentruntime.Steerer](ctx, h, p.SessionID)
+	s, rid, err := resolveSessionCapability[agentruntime.Steerer](ctx, h, p.SessionID, p.PeerFingerprint)
 	if err != nil {
 		return wire.OK{}, err
 	}
 	if err := s.Steer(ctx, rid, p.QueuedID, p.Text); err != nil {
 		return wire.OK{}, err
 	}
+	// R17:记下这条 steer 的**提交方**(调用连接自己的对端 —— 他端接管别人的会话时,
+	// 提交方 ≠ 会话发起方,而来源标识要标的是「谁发的」)。等 backend 把这条 steer
+	// 消费掉、SteerConsumed 事件经 fanout 流出时,盖回 ConsumedSteer.SourcePeer。
+	if p.QueuedID != "" {
+		h.deps.SteerSource.Record(p.QueuedID, SteerSourceEntry{
+			Peer: peerFingerprint(ctx),
+			Name: peerName(ctx),
+		})
+	}
 	return wire.OK{}, nil
 }
 
 func (h *RuntimeHandlers) CancelSteer(ctx context.Context, p wire.CancelSteerParams) (wire.CancelSteerResult, error) {
-	c, rid, err := resolveSessionCapability[agentruntime.SteerCanceler](ctx, h, p.SessionID)
+	c, rid, err := resolveSessionCapability[agentruntime.SteerCanceler](ctx, h, p.SessionID, p.PeerFingerprint)
 	if err != nil {
 		return wire.CancelSteerResult{}, err
 	}
@@ -940,20 +1015,39 @@ func (h *RuntimeHandlers) CancelSteer(ctx context.Context, p wire.CancelSteerPar
 	if err != nil {
 		return wire.CancelSteerResult{}, err
 	}
+	// 被撤回的 steer 不会再被消费,清掉它的来源映射避免无界增长。
+	h.deps.SteerSource.Forget(p.QueuedID)
+	for _, id := range removed {
+		h.deps.SteerSource.Forget(id)
+	}
 	return wire.CancelSteerResult{Removed: removed}, nil
 }
 
 func (h *RuntimeHandlers) DrainPending(ctx context.Context, p wire.DrainParams) (wire.DrainResult, error) {
-	d, rid, err := resolveSessionCapability[agentruntime.SteerDrainer](ctx, h, p.SessionID)
+	d, rid, err := resolveSessionCapability[agentruntime.SteerDrainer](ctx, h, p.SessionID, p.PeerFingerprint)
 	if err != nil {
 		return wire.DrainResult{}, err
 	}
 	steers := d.DrainPending(ctx, rid)
+	// R17:轮末残留的 pending steer 同样带来源 —— 它们和实时消费的 SteerConsumed 走
+	// 同一个 SteerInbox,QueuedID 对得上同一张映射表。
+	for i := range steers {
+		if entry, ok := h.deps.SteerSource.Consume(steers[i].QueuedID); ok {
+			steers[i].SourcePeer = entry.Peer
+			steers[i].SourceName = entry.Name
+		}
+	}
 	return wire.DrainResult{Steers: steers}, nil
 }
 
 func (h *RuntimeHandlers) Abort(ctx context.Context, p wire.AbortParams) (wire.OK, error) {
-	rid := runtimeSID(ctx, p.SessionID)
+	// 会话键按对端隔离,而这里要处理的可能是他端(账号)接管后的会话:先解析
+	// 提交方对端(省略 = 调用方自己),再按隔离后的键查本 handler 的内存会话表。
+	peer, err := ResolveSessionPeer(ctx, p.PeerFingerprint, h.deps.ClaimedAccountID)
+	if err != nil {
+		return wire.OK{}, err
+	}
+	rid := runtimeSessionID(peer, p.SessionID)
 	h.mu.Lock()
 	owner := h.sessions[rid]
 	if owner == nil {
@@ -1010,7 +1104,7 @@ func (h *RuntimeHandlers) Abort(ctx context.Context, p wire.AbortParams) (wire.O
 		return wire.OK{}, errors.Join(waitErr, cleanupErr)
 	}
 	h.mu.Unlock()
-	a, rid, err := resolveSessionCapability[agentruntime.Aborter](ctx, h, p.SessionID)
+	a, rid, err := resolveSessionCapability[agentruntime.Aborter](ctx, h, p.SessionID, p.PeerFingerprint)
 	if err != nil {
 		return wire.OK{}, err
 	}
@@ -1021,7 +1115,7 @@ func (h *RuntimeHandlers) Abort(ctx context.Context, p wire.AbortParams) (wire.O
 }
 
 func (h *RuntimeHandlers) StopBackgroundTask(ctx context.Context, p wire.StopBackgroundTaskParams) (wire.OK, error) {
-	s, rid, err := resolveSessionCapability[agentruntime.BackgroundTaskStopper](ctx, h, p.SessionID)
+	s, rid, err := resolveSessionCapability[agentruntime.BackgroundTaskStopper](ctx, h, p.SessionID, p.PeerFingerprint)
 	if err != nil {
 		return wire.OK{}, err
 	}
@@ -1032,7 +1126,7 @@ func (h *RuntimeHandlers) StopBackgroundTask(ctx context.Context, p wire.StopBac
 }
 
 func (h *RuntimeHandlers) SetPermissionMode(ctx context.Context, p wire.SetPermissionModeParams) (wire.OK, error) {
-	m, rid, err := resolveSessionCapability[agentruntime.PermissionModeSetter](ctx, h, p.SessionID)
+	m, rid, err := resolveSessionCapability[agentruntime.PermissionModeSetter](ctx, h, p.SessionID, p.PeerFingerprint)
 	if err != nil {
 		return wire.OK{}, err
 	}
@@ -1043,20 +1137,20 @@ func (h *RuntimeHandlers) SetPermissionMode(ctx context.Context, p wire.SetPermi
 }
 
 func (h *RuntimeHandlers) SubmitAnswer(ctx context.Context, p wire.SubmitAnswerParams) (wire.OK, error) {
-	s, rid, err := resolveSessionCapability[agentruntime.AskAnswerSink](ctx, h, p.SessionID)
+	s, rid, err := resolveSessionCapability[agentruntime.AskAnswerSink](ctx, h, p.SessionID, p.PeerFingerprint)
 	if err != nil {
-		return h.idempotentSubmitResult(ctx, p.SessionID, err)
+		return h.idempotentSubmitResult(ctx, p.SessionID, p.PeerFingerprint, err)
 	}
-	return h.idempotentSubmitResult(ctx, p.SessionID,
+	return h.idempotentSubmitResult(ctx, p.SessionID, p.PeerFingerprint,
 		s.SubmitAnswer(ctx, rid, p.RequestID, p.Questions, p.Answers, p.Skipped))
 }
 
 func (h *RuntimeHandlers) SubmitToolPermission(ctx context.Context, p wire.SubmitToolPermissionParams) (wire.OK, error) {
-	s, rid, err := resolveSessionCapability[agentruntime.ToolPermissionSink](ctx, h, p.SessionID)
+	s, rid, err := resolveSessionCapability[agentruntime.ToolPermissionSink](ctx, h, p.SessionID, p.PeerFingerprint)
 	if err != nil {
-		return h.idempotentSubmitResult(ctx, p.SessionID, err)
+		return h.idempotentSubmitResult(ctx, p.SessionID, p.PeerFingerprint, err)
 	}
-	return h.idempotentSubmitResult(ctx, p.SessionID,
+	return h.idempotentSubmitResult(ctx, p.SessionID, p.PeerFingerprint,
 		s.SubmitToolPermission(ctx, rid, p.RequestID, p.Allow, p.AlwaysAllowSession, p.DenyReason))
 }
 
@@ -1085,7 +1179,7 @@ func (h *RuntimeHandlers) SubmitToolPermission(ctx context.Context, p wire.Submi
 //
 // 判别依据是 daemon 自己的会话生命周期行(sessionRunningHere):它是 Daemon 级的、
 // 不随连接生灭,正好答得了内存会话表答不了的那个问题。
-func (h *RuntimeHandlers) idempotentSubmitResult(ctx context.Context, sid int64, err error) (wire.OK, error) {
+func (h *RuntimeHandlers) idempotentSubmitResult(ctx context.Context, sid int64, originPeer string, err error) (wire.OK, error) {
 	if err == nil {
 		return wire.OK{}, nil
 	}
@@ -1096,7 +1190,7 @@ func (h *RuntimeHandlers) idempotentSubmitResult(ctx context.Context, sid int64,
 		return wire.OK{}, nil
 	}
 	if errors.Is(err, agentruntime.ErrNoActiveTurn) {
-		if h.sessionRunningHere(ctx, sid) {
+		if h.sessionRunningHere(ctx, sid, originPeer) {
 			return wire.OK{}, err
 		}
 		return wire.OK{}, nil
@@ -1112,11 +1206,14 @@ func (h *RuntimeHandlers) idempotentSubmitResult(ctx context.Context, sid int64,
 //
 // 无判别依据时(没接查询出口 / 读不出来)一律回 false:只有能**证明**会话仍在跑时才
 // 把错误抛给客户端,证不了就维持 R8 的幂等,不拿一个读不出来的库去换用户面前一个假失败。
-func (h *RuntimeHandlers) sessionRunningHere(ctx context.Context, sid int64) bool {
+func (h *RuntimeHandlers) sessionRunningHere(ctx context.Context, sid int64, originPeer string) bool {
 	if h.deps.SessionQuery == nil {
 		return false
 	}
-	peer := peerFingerprint(ctx)
+	peer, err := ResolveSessionPeer(ctx, originPeer, h.deps.ClaimedAccountID)
+	if err != nil {
+		return false
+	}
 	row, err := h.deps.SessionQuery.Find(ctx, peer, strconv.FormatInt(sid, 10))
 	if err != nil {
 		log.Printf("runtime.submit: read session lifecycle failed sid=%d peer=%q err=%v", sid, peer, err)
@@ -1171,7 +1268,11 @@ func (h *RuntimeHandlers) resolveGoalController(ctx context.Context, p wire.Goal
 	}
 	// goal 也按会话键落到 backend 的会话表上(codex 的 goalSession 走的正是
 	// r.active[sessionID] / sessionKey(sessionID)),所以同样要按对端隔离。
-	req.SessionID = runtimeSID(ctx, req.SessionID)
+	peer, err := ResolveSessionPeer(ctx, p.PeerFingerprint, h.deps.ClaimedAccountID)
+	if err != nil {
+		return nil, agentruntime.GoalRequest{}, func() {}, err
+	}
+	req.SessionID = runtimeSessionID(peer, req.SessionID)
 	if req.Backend != nil {
 		release, err := h.hydrateGoalProvider(ctx, &req)
 		if err != nil {
@@ -1189,7 +1290,7 @@ func (h *RuntimeHandlers) resolveGoalController(ctx context.Context, p wire.Goal
 		}
 		return g, req, release, nil
 	}
-	g, _, err := resolveSessionCapability[agentruntime.GoalController](ctx, h, p.SessionID)
+	g, _, err := resolveSessionCapability[agentruntime.GoalController](ctx, h, p.SessionID, p.PeerFingerprint)
 	if err != nil {
 		return nil, agentruntime.GoalRequest{}, func() {}, err
 	}

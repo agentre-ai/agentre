@@ -81,6 +81,26 @@ func TestSessionRepo_ListByPeer_ScopedToCaller(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestSessionRepo_ListAll_ReturnsRowsAcrossPeers covers claimed-daemon visibility:
+// account authorization is decided above the repository, so this deliberately has
+// no peer filter while retaining the unchanged composite session primary key.
+func TestSessionRepo_ListAll_ReturnsRowsAcrossPeers(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	repo := session_repo.NewSession()
+
+	rows := sqlmock.NewRows([]string{"peer_fingerprint", "peer_session_id", "agent_id", "cwd", "backend_type", "lifecycle_state", "created_at", "updated_at"}).
+		AddRow("peerA", "s1", 7, "/work", "claudecode", "running", 100, 200).
+		AddRow("peerB", "s1", 8, "/other", "codex", "idle", 100, 150)
+	mock.ExpectQuery("SELECT \\* FROM `daemon_sessions` ORDER BY updated_at DESC").WillReturnRows(rows)
+
+	got, err := repo.ListAll(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, "peerA", got[0].PeerFingerprint)
+	assert.Equal(t, "peerB", got[1].PeerFingerprint)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 // TestSessionRepo_Find_ScopedToPeer 覆盖单条查询同样带对端限定:调用方拿它判断
 // 「这条会话是不是我的」,只按会话 id 查会让跨对端接管在 SQL 层就成立。
 func TestSessionRepo_Find_ScopedToPeer(t *testing.T) {

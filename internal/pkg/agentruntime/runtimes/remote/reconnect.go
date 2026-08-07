@@ -360,7 +360,7 @@ func (r *Runtime) pullUntilCaughtUp(ctx context.Context, sid int64, ss *sessionS
 		// 发 RPC 时绝不持 ss.mu,见 sessionSync 的纪律注释。
 		var res wire.SessionPullResult
 		if err := r.conn().Call(ctx, wire.MethodSessionPull, wire.SessionPullParams{
-			SessionID: sid, Cursor: before,
+			SessionID: sid, Cursor: before, PeerFingerprint: r.originFor(sid),
 		}, &res); err != nil {
 			return replayed, wire.FromJSONRPCError(err)
 		}
@@ -671,7 +671,7 @@ func (r *Runtime) catchUpSession(ctx context.Context, sid int64) error {
 	}
 	var pend wire.SessionPendingWaitersResult
 	if err := r.conn().Call(ctx, wire.MethodSessionPendingWaiters,
-		wire.SessionPendingWaitersParams{SessionID: sid}, &pend); err != nil {
+		wire.SessionPendingWaitersParams{SessionID: sid, PeerFingerprint: r.originFor(sid)}, &pend); err != nil {
 		// 待决策查询失败不推翻已经补齐的转录:重放已经落定,卡片最差是少一张,
 		// 用户仍可看到全部历史。
 		logger.Ctx(ctx).Warn("remote runtime: pending waiters query failed",
@@ -695,7 +695,9 @@ func (r *Runtime) catchUpSession(ctx context.Context, sid int64) error {
 // 本地游标有没有越界(见 dropCursorAboveHighWater)。失败时返 0。
 func (r *Runtime) attachSession(ctx context.Context, sid int64) (int64, error) {
 	var att wire.SessionAttachResult
-	err := r.conn().Call(ctx, wire.MethodSessionAttach, wire.SessionAttachParams{SessionID: sid}, &att)
+	err := r.conn().Call(ctx, wire.MethodSessionAttach, wire.SessionAttachParams{
+		SessionID: sid, PeerFingerprint: r.originFor(sid),
+	}, &att)
 	if err == nil {
 		r.setDurability(durabilitySupported)
 		return att.LatestSeq, nil
@@ -1048,9 +1050,39 @@ func (r *Runtime) sessionSummaries(ctx context.Context) (map[int64]wire.SessionS
 	r.setDurability(durabilitySupported)
 	out := make(map[int64]wire.SessionSummary, len(res.Sessions))
 	for _, s := range res.Sessions {
+		// 账号级清单(R12)里两个对端各有一条**同号**会话是常态而非例外:会话 id 是各
+		// 客户端本地自增的主键。这张表按裸 id 索引,所以同号时必须让**自己**那条(daemon
+		// 在清单里把它的 origin 留空)胜出,别的对端那条不得覆盖它 —— R12 放宽的是可见性
+		// 的过滤条件,「会话主键结构不变」,主键仍是 (对端指纹, 会话 id) 两段。
+		//
+		// 覆盖了会同时坏两处:turnStartFloor 把别人的高水位当成自己会话的下限,自己此后
+		// 每一条通知都低于下限被判成重复丢弃(会话不报错地冻住);补齐三步则会带着别人的
+		// origin 去 attach / pull,把别人的通知日志重放进自己的转录。
+		if _, dup := out[s.SessionID]; dup && s.PeerFingerprint != "" {
+			continue
+		}
 		out[s.SessionID] = s
+		r.rememberOrigin(s.SessionID, s.PeerFingerprint)
 	}
 	return out, nil
+}
+
+// rememberOrigin 记下清单里学到的会话发起对端(R12 桌面侧)。下游的 attach / pull /
+// pendingWaiters / 控制请求都要按它把 PeerFingerprint 原样带过去,daemon 据此解析到
+// 发起对端;记到空值 = 未认领 daemon / 自己对端,请求省略该字段(向后兼容)。
+func (r *Runtime) rememberOrigin(sid int64, fp string) {
+	r.originMu.Lock()
+	r.origins[sid] = fp
+	r.originMu.Unlock()
+}
+
+// originFor 交出这条会话学到的发起对端;没学过(本地 Run 起的会话、清单还没含它)返
+// 空串,调用方据此省略 PeerFingerprint —— 空 origin 在 daemon 侧解析为调用方自己对端,
+// 正好是自己发的会话,天然向后兼容。
+func (r *Runtime) originFor(sid int64) string {
+	r.originMu.Lock()
+	defer r.originMu.Unlock()
+	return r.origins[sid]
 }
 
 // setDurability 记下能力探测的结论,并在结论**翻转**时播报给观察者(R18)。
