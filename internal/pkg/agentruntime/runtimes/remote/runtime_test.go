@@ -319,7 +319,8 @@ func TestPrepareRun_SlowConsumerOverflowCancelsExactGenerationAndAllowsRetry(t *
 	require.Error(t, firstResult.StopErr)
 	assert.Equal(t, "remote runtime: event delivery exceeded bounded buffer", firstResult.StopErr.Error())
 	assert.NotContains(t, firstResult.StopErr.Error(), secret)
-	assert.ErrorIs(t, rt.Abort(context.Background(), sessionID), agentruntime.ErrNoActiveTurn)
+	_, err = rt.Abort(context.Background(), sessionID, 0)
+	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
 
 	// A stale frame observed after exact-owner finalization is dropped before a
 	// same-SessionID retry is installed.
@@ -383,7 +384,8 @@ func TestPrepareRun_StopDuringRegistrationWaitsForOwnerAckThenAborts(t *testing.
 	abortErrC := make(chan error, 1)
 	go func() {
 		close(abortStarted)
-		abortErrC <- rt.Abort(context.Background(), 72)
+		_, err := rt.Abort(context.Background(), 72, 0)
+		abortErrC <- err
 	}()
 	<-abortStarted
 	select {
@@ -428,9 +430,11 @@ func TestPrepareRun_PendingPiAbortCancelsTheRegisteredGeneration(t *testing.T) {
 	}()
 	<-entered
 
-	require.NoError(t, rt.Abort(context.Background(), 73))
+	_, err := rt.Abort(context.Background(), 73, 0)
+	require.NoError(t, err)
 	require.ErrorIs(t, <-errC, context.Canceled)
-	assert.ErrorIs(t, rt.Abort(context.Background(), 73), agentruntime.ErrNoActiveTurn)
+	_, err = rt.Abort(context.Background(), 73, 0)
+	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
 }
 
 func TestPrepareRun_RequestCancellationAbortsPendingDaemonGeneration(t *testing.T) {
@@ -471,7 +475,8 @@ func TestPrepareRun_RequestCancellationAbortsPendingDaemonGeneration(t *testing.
 
 	require.ErrorIs(t, <-errC, context.Canceled)
 	<-abortCalled
-	assert.ErrorIs(t, rt.Abort(context.Background(), 74), agentruntime.ErrNoActiveTurn)
+	_, err := rt.Abort(context.Background(), 74, 0)
+	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
 }
 
 func TestPrepareRun_StartCancellationAbortsPromptAcknowledgement(t *testing.T) {
@@ -519,7 +524,8 @@ func TestPrepareRun_StartCancellationAbortsPromptAcknowledgement(t *testing.T) {
 
 	require.ErrorIs(t, <-startErrC, context.Canceled)
 	<-abortCalled
-	assert.ErrorIs(t, rt.Abort(context.Background(), 75), agentruntime.ErrNoActiveTurn)
+	_, err = rt.Abort(context.Background(), 75, 0)
+	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
 }
 
 func TestPrepareRun_CurrentPiCompletionIsNotConsumedWhenAbortedOwnerEmitsNoTerminalFrame(t *testing.T) {
@@ -1284,10 +1290,11 @@ func TestAbort_SuccessAndNoSession(t *testing.T) {
 
 	cli.EXPECT().Call(gomock.Any(), wire.MethodAbort, gomock.Any(), gomock.Any()).
 		Return(nil)
-	require.NoError(t, rt.Abort(context.Background(), 4))
+	_, err = rt.Abort(context.Background(), 4, 0)
+	require.NoError(t, err)
 
 	// Unknown session
-	err = rt.Abort(context.Background(), 999)
+	_, err = rt.Abort(context.Background(), 999, 0)
 	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
 }
 

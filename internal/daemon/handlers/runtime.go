@@ -754,6 +754,7 @@ func (h *RuntimeHandlers) forwardAutonomousTurn(em *sessionEmitter, at agentrunt
 	em.emit(wire.NotifyAutonomousTurnStarted, &wire.AutonomousTurnStartedFrame{
 		SessionID: sid,
 		Trigger:   at.Trigger,
+		TurnToken: at.TurnToken,
 	})
 	count := 0
 	for ev := range at.Events {
@@ -942,6 +943,7 @@ func runResultToFrame(sid int64, r *agentruntime.RunResult) wire.RunResultDoneFr
 		UserAnchor:        r.UserAnchor,
 		Model:             r.Model,
 		ContextWindow:     r.ContextWindow,
+		TurnToken:         r.TurnToken,
 	}
 	if r.Usage != nil {
 		f.Usage = &wire.UsageWire{
@@ -1040,24 +1042,24 @@ func (h *RuntimeHandlers) DrainPending(ctx context.Context, p wire.DrainParams) 
 	return wire.DrainResult{Steers: steers}, nil
 }
 
-func (h *RuntimeHandlers) Abort(ctx context.Context, p wire.AbortParams) (wire.OK, error) {
+func (h *RuntimeHandlers) Abort(ctx context.Context, p wire.AbortParams) (wire.AbortResult, error) {
 	// 会话键按对端隔离,而这里要处理的可能是他端(账号)接管后的会话:先解析
 	// 提交方对端(省略 = 调用方自己),再按隔离后的键查本 handler 的内存会话表。
 	peer, err := ResolveSessionPeer(ctx, p.PeerFingerprint, h.deps.ClaimedAccountID)
 	if err != nil {
-		return wire.OK{}, err
+		return wire.AbortResult{}, err
 	}
 	rid := runtimeSessionID(peer, p.SessionID)
 	h.mu.Lock()
 	owner := h.sessions[rid]
 	if owner == nil {
 		h.mu.Unlock()
-		return wire.OK{}, agentruntime.ErrNoActiveTurn
+		return wire.AbortResult{}, agentruntime.ErrNoActiveTurn
 	}
 	if owner.backendType == agent_backend_entity.TypePiAgent && owner.ctx != nil {
 		if owner.terminalClaimed || owner.finalizing || owner.aborting {
 			h.mu.Unlock()
-			return wire.OK{}, h.waitPiFinalization(ctx, owner)
+			return wire.AbortResult{}, h.waitPiFinalization(ctx, owner)
 		}
 		owner.cancelRequested = true
 		owner.aborting = true
@@ -1070,10 +1072,10 @@ func (h *RuntimeHandlers) Abort(ctx context.Context, p wire.AbortParams) (wire.O
 			owner.cancel()
 		}
 		if preparing || starting {
-			return wire.OK{}, h.waitPiFinalization(ctx, owner)
+			return wire.AbortResult{}, h.waitPiFinalization(ctx, owner)
 		}
 		if !accepted {
-			return wire.OK{}, h.finalizePiGeneration(ctx, rid, owner)
+			return wire.AbortResult{}, h.finalizePiGeneration(ctx, rid, owner)
 		}
 
 		// An acknowledged prompt owns one terminal settlement. Runtime Abort is
@@ -1081,37 +1083,38 @@ func (h *RuntimeHandlers) Abort(ctx context.Context, p wire.AbortParams) (wire.O
 		// does, this RPC waits only for the bounded exact-owner finalization.
 		var abortErr error
 		if aborter, ok := h.lookupRuntimeByType(owner.backendType).(agentruntime.Aborter); ok {
-			abortErr = aborter.Abort(ctx, rid)
+			_, abortErr = aborter.Abort(ctx, rid, p.TurnToken)
 			if errors.Is(abortErr, agentruntime.ErrNoActiveTurn) {
 				abortErr = nil
 			}
 		}
 		if abortErr != nil {
 			cleanupErr := h.finalizePiGeneration(ctx, rid, owner)
-			return wire.OK{}, errors.Join(abortErr, cleanupErr)
+			return wire.AbortResult{}, errors.Join(abortErr, cleanupErr)
 		}
 		waitErr := h.waitPiFinalization(ctx, owner)
 		if waitErr == nil {
-			return wire.OK{}, nil
+			return wire.AbortResult{}, nil
 		}
 		h.mu.RLock()
 		terminalOwned := owner.terminalClaimed || owner.finalizing
 		h.mu.RUnlock()
 		if terminalOwned {
-			return wire.OK{}, waitErr
+			return wire.AbortResult{}, waitErr
 		}
 		cleanupErr := h.finalizePiGeneration(ctx, rid, owner)
-		return wire.OK{}, errors.Join(waitErr, cleanupErr)
+		return wire.AbortResult{}, errors.Join(waitErr, cleanupErr)
 	}
 	h.mu.Unlock()
 	a, rid, err := resolveSessionCapability[agentruntime.Aborter](ctx, h, p.SessionID, p.PeerFingerprint)
 	if err != nil {
-		return wire.OK{}, err
+		return wire.AbortResult{}, err
 	}
-	if err := a.Abort(ctx, rid); err != nil {
-		return wire.OK{}, err
+	outcome, err := a.Abort(ctx, rid, p.TurnToken)
+	if err != nil {
+		return wire.AbortResult{}, err
 	}
-	return wire.OK{}, nil
+	return wire.AbortResult{TurnKind: outcome.TurnKind}, nil
 }
 
 func (h *RuntimeHandlers) StopBackgroundTask(ctx context.Context, p wire.StopBackgroundTaskParams) (wire.OK, error) {

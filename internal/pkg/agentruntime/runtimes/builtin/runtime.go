@@ -10,6 +10,7 @@ import (
 	"iter"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cago-frame/agents/agent"
 	"github.com/cago-frame/agents/app/coding"
@@ -71,6 +72,10 @@ type builtinActive struct {
 	// cancel 取消本轮 turn 的 ctx。Run 用 context.WithCancel 派生 turnCtx 给
 	// runner.Send,cago 的 LLM 调用监听 ctx 退出。Abort 通过它解锁阻塞读。
 	cancel context.CancelFunc
+	// turnToken 本会话当前活跃轮的 per-turn token(决策 1):每轮 Run 入口递增,值随
+	// RunResult 暴露给 chat_svc。Abort(turnToken!=0) 只在该 token 仍是当前活跃轮时
+	// 才中断,否则 stale no-op。builtin 每会话同时至多一轮、只有用户轮。
+	turnToken atomic.Uint64
 }
 
 // Runtime in-process cago runtime 实现。
@@ -122,13 +127,19 @@ func (r *Runtime) Steer(ctx context.Context, sessionID int64, queuedID, text str
 //  2. cancel turnCtx —— cago Runner.Send 监听 ctx,events channel 关闭,drain
 //     goroutine 退出。
 //
+// turnToken 语义(决策 1):0 = 中断当前活跃轮;非 0 = 仅当该轮仍是当前活跃轮才中断,
+// 否则 stale no-op。builtin 只有用户轮,被中断轮类型恒为 userTurn。
+//
 // 幂等;并发安全。
-func (r *Runtime) Abort(_ context.Context, sessionID int64) error {
+func (r *Runtime) Abort(_ context.Context, sessionID int64, turnToken uint64) (agentruntime.AbortOutcome, error) {
 	r.mu.Lock()
 	a := r.active[sessionID]
 	r.mu.Unlock()
 	if a == nil {
-		return agentruntime.ErrNoActiveTurn
+		return agentruntime.AbortOutcome{}, agentruntime.ErrNoActiveTurn
+	}
+	if turnToken != 0 && a.turnToken.Load() != turnToken {
+		return agentruntime.AbortOutcome{TurnKind: agentruntime.TurnKindNone}, nil
 	}
 	if a.runner != nil {
 		_ = a.runner.ClearPendingSteers()
@@ -136,7 +147,7 @@ func (r *Runtime) Abort(_ context.Context, sessionID int64) error {
 	if a.cancel != nil {
 		a.cancel()
 	}
-	return nil
+	return agentruntime.AbortOutcome{TurnKind: agentruntime.TurnKindUser}, nil
 }
 
 // CancelSteer 撤回尚未被消费的 steer 条目。语义同顶层 builtin.go.CancelSteer:
@@ -271,12 +282,14 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		zap.String("convID", convID),
 		zap.Int("historyLen", len(history)))
 
-	r.register(req.SessionID, &builtinActive{runner: runner, cancel: cancelTurn})
+	ba := &builtinActive{runner: runner, cancel: cancelTurn}
+	r.register(req.SessionID, ba)
 
 	out := make(chan agentruntime.Event, 32)
 	result := &agentruntime.RunResult{
 		ProviderSessionID: convID,
 		Model:             builtinEffectiveModel(req),
+		TurnToken:         ba.turnToken.Add(1),
 	}
 	go func() {
 		defer close(out)

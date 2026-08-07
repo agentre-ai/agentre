@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 
@@ -35,6 +36,11 @@ type Runtime struct {
 
 	mu     sync.RWMutex
 	active map[int64]*activeTurn
+	// turnSeq 会话无关的轮计数器:每轮 Run 入口递增一次,赋给 activeTurn.turnToken,
+	// 值随 RunResult 暴露给 chat_svc。openclaw 每会话同时至多一轮(register 会拒绝
+	// 重入),token 用于区分「调用方想中断的那一轮」与「当前活跃轮」:旧轮已结束、
+	// 新轮已起时带旧 token 的 abort 是 stale no-op(决策 1)。
+	turnSeq atomic.Uint64
 }
 
 var defaultRuntime = New(nil)
@@ -245,7 +251,9 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		sessionDescribe:      slices.Contains(hello.Features.Methods, sessionDescribeMethod),
 		approvals:            make(map[string]*approvalState),
 		initialApprovals:     initialApprovals,
+		turnToken:            r.turnSeq.Add(1),
 	}
+	result.TurnToken = active.turnToken
 	if !r.register(active) {
 		client.Close()
 		return nil, nil, fmt.Errorf("openclaw runtime: session already has an active turn")
@@ -273,14 +281,20 @@ func (r *Runtime) ResolveExecApproval(ctx context.Context, sessionID int64, appr
 	return active.resolveApproval(ctx, approvalID, decision)
 }
 
-func (r *Runtime) Abort(ctx context.Context, sessionID int64) error {
+func (r *Runtime) Abort(ctx context.Context, sessionID int64, turnToken uint64) (agentruntime.AbortOutcome, error) {
 	r.mu.RLock()
 	active := r.active[sessionID]
 	r.mu.RUnlock()
 	if active == nil {
-		return agentruntime.ErrNoActiveTurn
+		return agentruntime.AbortOutcome{}, agentruntime.ErrNoActiveTurn
 	}
-	return active.abort(ctx)
+	if turnToken != 0 && active.turnToken != turnToken {
+		return agentruntime.AbortOutcome{TurnKind: agentruntime.TurnKindNone}, nil
+	}
+	if err := active.abort(ctx); err != nil {
+		return agentruntime.AbortOutcome{}, err
+	}
+	return agentruntime.AbortOutcome{TurnKind: agentruntime.TurnKindUser}, nil
 }
 
 func (r *Runtime) register(active *activeTurn) bool {

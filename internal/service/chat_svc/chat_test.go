@@ -1365,11 +1365,11 @@ func (r *generationSafePreparedRunner) PrepareRun(context.Context, agentruntime.
 	return &generationSafePreparedRun{runner: r}, nil
 }
 
-func (r *generationSafePreparedRunner) Abort(context.Context, int64) error {
+func (r *generationSafePreparedRunner) Abort(context.Context, int64, uint64) (agentruntime.AbortOutcome, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.abortCalls++
-	return nil
+	return agentruntime.AbortOutcome{}, nil
 }
 
 func (r *generationSafePreparedRunner) Counts() (prepare, closed, abort int) {
@@ -1483,7 +1483,7 @@ func (r *stopOrderPiRunner) Run(ctx context.Context, req agentruntime.RunRequest
 	return events, result, nil
 }
 
-func (r *stopOrderPiRunner) Abort(context.Context, int64) error {
+func (r *stopOrderPiRunner) Abort(context.Context, int64, uint64) (agentruntime.AbortOutcome, error) {
 	r.mu.Lock()
 	r.abortCalls++
 	runCtx := r.runCtx
@@ -1503,7 +1503,7 @@ func (r *stopOrderPiRunner) Abort(context.Context, int64) error {
 		r.mu.Unlock()
 		r.finishOnce.Do(func() { close(events) })
 	}
-	return nil
+	return agentruntime.AbortOutcome{}, nil
 }
 
 func (r *stopOrderPiRunner) stopObservation() (int, bool) {

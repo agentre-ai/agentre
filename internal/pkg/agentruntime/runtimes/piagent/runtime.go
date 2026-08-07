@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cago-frame/agents/provider"
 	"github.com/cago-frame/cago/pkg/logger"
@@ -31,6 +32,10 @@ type activeSession struct {
 	interrupter    interruptable
 	pending        []agentruntime.ConsumedSteer
 	abortRequested bool
+	// turnToken 本会话当前活跃轮的 per-turn token(决策 1):每轮入口递增,值随
+	// RunResult 暴露给 chat_svc。Abort(turnToken!=0) 只在该 token 仍是当前活跃轮时
+	// 才中断,否则 stale no-op。piagent 只有用户轮,被中断轮类型恒为 userTurn。
+	turnToken atomic.Uint64
 }
 
 type Runtime struct {
@@ -214,7 +219,7 @@ func (p *preparedRun) Start(ctx context.Context) (<-chan agentruntime.Event, *ag
 	if providerSessionID == "" {
 		providerSessionID = strings.TrimSpace(p.sess.ID())
 	}
-	result := &agentruntime.RunResult{ProviderSessionID: providerSessionID, Model: p.modelID}
+	result := &agentruntime.RunResult{ProviderSessionID: providerSessionID, Model: p.modelID, TurnToken: active.turnToken.Add(1)}
 	logFields := make([]zap.Field, 0, 7)
 	logFields = append(logFields,
 		zap.Int64("sessionID", p.req.SessionID),
@@ -261,19 +266,22 @@ func (p *preparedRun) Close(ctx context.Context) error {
 	return closeErr
 }
 
-func (r *Runtime) Abort(ctx context.Context, sessionID int64) error {
+func (r *Runtime) Abort(ctx context.Context, sessionID int64, turnToken uint64) (agentruntime.AbortOutcome, error) {
 	r.mu.Lock()
 	a := r.active[sessionID]
 	r.mu.Unlock()
 	if a == nil || a.interrupter == nil {
-		return agentruntime.ErrNoActiveTurn
+		return agentruntime.AbortOutcome{}, agentruntime.ErrNoActiveTurn
+	}
+	if turnToken != 0 && a.turnToken.Load() != turnToken {
+		return agentruntime.AbortOutcome{TurnKind: agentruntime.TurnKindNone}, nil
 	}
 	a.setAbortRequested(true)
 	if err := a.interrupter.Interrupt(ctx); err != nil {
 		a.setAbortRequested(false)
-		return err
+		return agentruntime.AbortOutcome{}, err
 	}
-	return nil
+	return agentruntime.AbortOutcome{TurnKind: agentruntime.TurnKindUser}, nil
 }
 
 func (r *Runtime) Steer(ctx context.Context, sessionID int64, queuedID string, text string) error {

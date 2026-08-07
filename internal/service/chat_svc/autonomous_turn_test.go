@@ -29,10 +29,13 @@ import (
 // abortRecordingRunner 是一个最小的 agentruntime.Runtime + agentruntime.Aborter
 // fake,用来断言 driveAutonomousTurn 落库失败分支(结果 3)确实请求了中断,以及
 // 中断失败(abortErr,含"子进程已消失"场景)不影响其余可观察结果。
+//
+// abortTokens 记录每次 Abort 收到的 turnToken,供断言「异步中断携带失败轮的 token」。
 type abortRecordingRunner struct {
-	mu         sync.Mutex
-	abortCalls []int64
-	abortErr   error
+	mu          sync.Mutex
+	abortCalls  []int64
+	abortTokens []uint64
+	abortErr    error
 }
 
 func (*abortRecordingRunner) Capabilities() capability.Capabilities {
@@ -43,17 +46,24 @@ func (*abortRecordingRunner) Run(context.Context, agentruntime.RunRequest) (<-ch
 	return nil, nil, errors.New("abortRecordingRunner: Run must not be called")
 }
 
-func (r *abortRecordingRunner) Abort(_ context.Context, sessionID int64) error {
+func (r *abortRecordingRunner) Abort(_ context.Context, sessionID int64, turnToken uint64) (agentruntime.AbortOutcome, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.abortCalls = append(r.abortCalls, sessionID)
-	return r.abortErr
+	r.abortTokens = append(r.abortTokens, turnToken)
+	return agentruntime.AbortOutcome{}, r.abortErr
 }
 
 func (r *abortRecordingRunner) Calls() []int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]int64(nil), r.abortCalls...)
+}
+
+func (r *abortRecordingRunner) Tokens() []uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]uint64(nil), r.abortTokens...)
 }
 
 // joinAbort 在**父作用域**里等本遍那个异步中断落地,再放叶子断言跑。
@@ -346,7 +356,7 @@ func TestDriveAutonomousTurn_PersistFailure_FlipsErrorEmitsAndInterrupts(t *test
 		evs <- agentruntime.TextDelta{Text: "must not be read by the dispatcher"}
 		evs <- agentruntime.TextDelta{Text: "must not be read by the dispatcher either"}
 		close(evs)
-		at := agentruntime.AutonomousTurn{Events: evs, Trigger: "background_task"}
+		at := agentruntime.AutonomousTurn{Events: evs, Trigger: "background_task", TurnToken: 7}
 
 		chat_svc.DriveAutonomousTurnForTest(ctx, m.svc, 100, be, at)
 		// 中断是异步发出的(见 failAutonomousTurnPersist:同步等回执会与第 4 步的抽干
@@ -378,6 +388,8 @@ func TestDriveAutonomousTurn_PersistFailure_FlipsErrorEmitsAndInterrupts(t *test
 
 		convey.Convey("3. 主动中断 CLI 当前这一轮,使子进程解除等待", func() {
 			assert.Equal(t, []int64{100}, runner.Calls(), "应请求中断这一轮")
+			assert.Equal(t, []uint64{7}, runner.Tokens(),
+				"异步中断必须携带失败轮的 per-turn token,精确寻址(决策 1)")
 		})
 
 		convey.Convey("4. Hard invariant:事件流仍被抽干,发生在前三步之后", func() {
@@ -462,13 +474,13 @@ type abortWaitsForDrainRunner struct {
 	giveUp  <-chan struct{}
 }
 
-func (r *abortWaitsForDrainRunner) Abort(ctx context.Context, sessionID int64) error {
-	err := r.abortRecordingRunner.Abort(ctx, sessionID)
+func (r *abortWaitsForDrainRunner) Abort(ctx context.Context, sessionID int64, turnToken uint64) (agentruntime.AbortOutcome, error) {
+	outcome, err := r.abortRecordingRunner.Abort(ctx, sessionID, turnToken)
 	select {
 	case <-r.drained:
 	case <-r.giveUp:
 	}
-	return err
+	return outcome, err
 }
 
 // TestDriveAutonomousTurn_PersistFailure_InterruptDoesNotBlockWatcher 钉死 spec

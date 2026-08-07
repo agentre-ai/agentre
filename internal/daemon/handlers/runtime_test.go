@@ -175,11 +175,11 @@ func (r *fullRT) DrainPending(_ context.Context, sid int64) []agentruntime.Consu
 	return nil
 }
 
-func (r *fullRT) Abort(_ context.Context, sid int64) error {
+func (r *fullRT) Abort(_ context.Context, sid int64, _ uint64) (agentruntime.AbortOutcome, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.abortCalls = append(r.abortCalls, sid)
-	return r.abortErr
+	return agentruntime.AbortOutcome{}, r.abortErr
 }
 
 func (r *fullRT) StopBackgroundTask(_ context.Context, sid int64, taskID string) error {
@@ -2278,11 +2278,11 @@ func (r *settlingAcceptedPiRT) PrepareRun(context.Context, agentruntime.RunReque
 	return r.prepared, nil
 }
 
-func (r *settlingAcceptedPiRT) Abort(context.Context, int64) error {
+func (r *settlingAcceptedPiRT) Abort(context.Context, int64, uint64) (agentruntime.AbortOutcome, error) {
 	r.prepared.result.UserAnchor = "pi-user-anchor-after-stop"
 	r.prepared.result.StopErr = agentruntime.ErrAborted
 	r.prepared.finish()
-	return nil
+	return agentruntime.AbortOutcome{}, nil
 }
 
 type settlingAcceptedPiRun struct {
@@ -2318,11 +2318,11 @@ func (r *blockingAbortAcceptedPiRT) PrepareRun(context.Context, agentruntime.Run
 	return r.prepared, nil
 }
 
-func (r *blockingAbortAcceptedPiRT) Abort(context.Context, int64) error {
+func (r *blockingAbortAcceptedPiRT) Abort(context.Context, int64, uint64) (agentruntime.AbortOutcome, error) {
 	r.abortOnce.Do(func() { close(r.abortEntered) })
 	<-r.allowAbort
 	r.prepared.finish()
-	return nil
+	return agentruntime.AbortOutcome{}, nil
 }
 
 func (p *settlingAcceptedPiRun) Start(context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
@@ -2405,16 +2405,16 @@ func (r *gatedPreparedPiRT) PrepareRun(ctx context.Context, req agentruntime.Run
 	return r.scriptedPreparedPiRT.PrepareRun(ctx, req)
 }
 
-func (r *scriptedPreparedPiRT) Abort(context.Context, int64) error {
+func (r *scriptedPreparedPiRT) Abort(context.Context, int64, uint64) (agentruntime.AbortOutcome, error) {
 	r.mu.Lock()
 	active := r.active
 	r.mu.Unlock()
 	if active == nil {
-		return agentruntime.ErrNoActiveTurn
+		return agentruntime.AbortOutcome{}, agentruntime.ErrNoActiveTurn
 	}
 	active.result.StopErr = agentruntime.ErrAborted
 	active.finish()
-	return nil
+	return agentruntime.AbortOutcome{}, nil
 }
 
 type scriptedPreparedPiRun struct {

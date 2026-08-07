@@ -161,7 +161,7 @@ func TestSteer_MapsCagoErrSteerNoActiveTurn(t *testing.T) {
 
 func TestAbort_NoActiveReturnsErr(t *testing.T) {
 	r := New()
-	err := r.Abort(context.Background(), 42)
+	_, err := r.Abort(context.Background(), 42, 0)
 	assert.True(t, errors.Is(err, agentruntime.ErrNoActiveTurn))
 }
 

@@ -89,7 +89,7 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 	}); err != nil {
 		logger.Ctx(ctx).Error("chat_svc: driveAutonomousTurn persist assistant failed",
 			zap.Int64("sessionId", sessionID), zap.Error(err))
-		s.failAutonomousTurnPersist(ctx, sessionID, sess, be, err, at.Events)
+		s.failAutonomousTurnPersist(ctx, sessionID, sess, be, err, at.Events, at.TurnToken)
 		return
 	}
 
@@ -258,6 +258,7 @@ func (s *chatSvc) failAutonomousTurnPersist(
 	be *agent_backend_entity.AgentBackend,
 	persistErr error,
 	events <-chan agentruntime.Event,
+	turnToken uint64,
 ) {
 	// 1. 会话翻 error 并持久化;这次写失败只记日志,不重试。
 	sess.AgentStatus = "error"
@@ -278,7 +279,10 @@ func (s *chatSvc) failAutonomousTurnPersist(
 	// 中断要等的回执反过来依赖抽干)。走与 Stop 遗孤路径同一个 requestRuntimeAbort:
 	// selectRunner / Abort 失败(含子进程已消失)在那里只记日志,不影响前两步已经产
 	// 生的结果,这里的布尔判据也就无人可报,直接丢弃。
-	go func() { _ = s.requestRuntimeAbort(ctx, be, sessionID) }()
+	//
+	// turnToken 携带本轮的身份(决策 1):异步中断到达时若这一轮仍是当前活跃轮就中断,
+	// 否则 stale no-op —— drain 完成后即使新轮已起,迟到的中断也不会杀掉新轮。
+	go func() { _ = s.requestRuntimeAbort(ctx, be, sessionID, turnToken) }()
 
 	// 4. Hard invariant:抽干事件 channel,别让 Session reader 阻塞。
 	drainAndDiscard(events)

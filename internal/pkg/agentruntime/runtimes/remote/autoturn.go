@@ -47,7 +47,7 @@ type autoTurn struct {
 //
 // a.out 有缓冲且轮次串行(daemon 任一时刻至多一轮、消费方独立 drain),送出几乎不
 // 阻塞;缓冲满时短暂阻塞读循环(既定 back-pressure 契约),不与 a.mu 形成锁环。
-func (a *autoSession) openTurnLocked(trigger string, catchUp bool) *autoTurn {
+func (a *autoSession) openTurnLocked(trigger string, catchUp bool, turnToken uint64) *autoTurn {
 	if a.closed {
 		return nil
 	}
@@ -68,9 +68,10 @@ func (a *autoSession) openTurnLocked(trigger string, catchUp bool) *autoTurn {
 	}
 	a.cur = turn
 	a.out <- agentruntime.AutonomousTurn{
-		Events:  turn.events,
-		Result:  turn.result,
-		Trigger: trigger,
+		Events:    turn.events,
+		Result:    turn.result,
+		Trigger:   trigger,
+		TurnToken: turnToken,
 	}
 	return turn
 }
@@ -128,7 +129,7 @@ func (r *Runtime) handleAutonomousTurnStarted(ctx context.Context, raw json.RawM
 	// send-on-closed-channel panic。对齐 handleAutonomousTurnEvent 的同款纪律。
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.openTurnLocked(frame.Trigger, false)
+	a.openTurnLocked(frame.Trigger, false, frame.TurnToken)
 	return nil, nil
 }
 
@@ -153,7 +154,7 @@ func (r *Runtime) deliverToCatchUpTurn(ctx context.Context, sid int64, ev agentr
 	if a.cur == nil {
 		logger.Ctx(ctx).Info("remote runtime: opening catch-up turn for replayed content",
 			zap.Int64("sid", sid))
-		if a.openTurnLocked(TriggerCatchUp, true) == nil {
+		if a.openTurnLocked(TriggerCatchUp, true, 0) == nil {
 			return false
 		}
 	}
@@ -180,6 +181,7 @@ func (r *Runtime) closeCatchUpTurn(ctx context.Context, frame wire.RunResultDone
 	a.cur.result.UserAnchor = frame.UserAnchor
 	a.cur.result.Model = frame.Model
 	a.cur.result.ContextWindow = frame.ContextWindow
+	a.cur.result.TurnToken = frame.TurnToken
 	if frame.Usage != nil {
 		a.cur.result.Usage = usageFromWire(frame.Usage)
 	}
@@ -241,6 +243,7 @@ func (r *Runtime) handleAutonomousTurnDone(ctx context.Context, raw json.RawMess
 	cur.result.ProviderSessionID = frame.ProviderSessionID
 	cur.result.Model = frame.Model
 	cur.result.ContextWindow = frame.ContextWindow
+	cur.result.TurnToken = frame.TurnToken
 	if frame.Usage != nil {
 		cur.result.Usage = usageFromWire(frame.Usage)
 	}

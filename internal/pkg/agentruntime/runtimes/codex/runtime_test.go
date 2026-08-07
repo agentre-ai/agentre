@@ -870,7 +870,7 @@ func TestRun_ControlCallsAreRaceFreeWhileActiveOwnerInitializes(t *testing.T) {
 			case <-stopControls:
 				return
 			default:
-				_ = r.Abort(context.Background(), 707)
+				_, _ = r.Abort(context.Background(), 707, 0)
 			}
 		}
 	}()

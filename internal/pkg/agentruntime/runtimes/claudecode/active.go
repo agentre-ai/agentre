@@ -34,6 +34,15 @@ type claudeActive struct {
 	// **一帧都收不到**。startup 看门狗必须据此暂停计时,否则会把一个健康、正忙的
 	// 子进程当成「起步即卡死」硬杀(sess-1950)。
 	outOfBand atomic.Int32
+	// turnSeq 会话级轮计数器:每次 Run(用户轮)入口 / 自主续轮入口 / 后台 subagent
+	// 活动轮入口递增一次,值随 RunResult / AutonomousTurn / SubagentActivity 暴露给
+	// chat_svc,供 Abort 按 token 精确寻址(决策 1)。
+	turnSeq atomic.Uint64
+	// curTurnToken / curTurnKind 记录「当前活跃轮」的 token 与类型(0=暂无)。每次轮
+	// 入口(nextTurnToken)覆盖为最新一轮;Abort(turnToken!=0)只在该 token 仍是当前
+	// 活跃轮时才中断,否则 stale no-op。curTurnKind 供 Abort 上报被中断轮的类型。
+	curTurnToken atomic.Uint64
+	curTurnKind  atomic.Value // holds agentruntime.TurnKind
 	// launchedEffort 记录 spawn 时下发给 claude CLI 的 --effort <level>。
 	// --effort 是启动期 flag,运行时改不掉;下一轮如果 backend.ReasoningEffort
 	// 变了,acquireSession 会用这个字段比对、强制 evict 重 spawn。
@@ -94,6 +103,23 @@ func (a *claudeActive) leaveOutOfBand() { a.outOfBand.Add(-1) }
 
 // outOfBandActive 报告此刻是否有带外轮在流。
 func (a *claudeActive) outOfBandActive() bool { return a.outOfBand.Load() > 0 }
+
+// nextTurnToken 为新一轮入口分配自增 token 并记录为当前活跃轮,返回新 token。
+// kind 是这一轮的类型(用户轮 / 自主续轮 / 后台 subagent 活动轮)。
+func (a *claudeActive) nextTurnToken(kind agentruntime.TurnKind) uint64 {
+	t := a.turnSeq.Add(1)
+	a.curTurnToken.Store(t)
+	a.curTurnKind.Store(kind)
+	return t
+}
+
+// currentTurnKind 读当前活跃轮的类型;尚无任何轮记录时返回 TurnKindNone。
+func (a *claudeActive) currentTurnKind() agentruntime.TurnKind {
+	if v := a.curTurnKind.Load(); v != nil {
+		return v.(agentruntime.TurnKind)
+	}
+	return agentruntime.TurnKindNone
+}
 
 // attachOut / detachOut 由 drainStream 圈住一轮的事件出口存活期。
 func (a *claudeActive) attachOut(out chan<- agentruntime.Event) {

@@ -721,8 +721,10 @@ func TestRuntimeAbortIsIdempotentAndDistinctFromCompletion(t *testing.T) {
 		Backend: runtimeBackend(), SessionID: 36, UserText: "long task",
 	})
 	require.NoError(t, err)
-	require.NoError(t, runtime.Abort(context.Background(), 36))
-	require.NoError(t, runtime.Abort(context.Background(), 36))
+	_, abortErr := runtime.Abort(context.Background(), 36, 0)
+	require.NoError(t, abortErr)
+	_, abortErr = runtime.Abort(context.Background(), 36, 0)
+	require.NoError(t, abortErr)
 	close(allowTerminal)
 	collected := collectRuntimeEvents(t, events)
 	assert.Equal(t, int32(1), abortCalls.Load())
@@ -730,7 +732,8 @@ func TestRuntimeAbortIsIdempotentAndDistinctFromCompletion(t *testing.T) {
 	require.Len(t, collected, 1)
 	_, ok := collected[0].(agentruntime.Done)
 	assert.True(t, ok)
-	assert.ErrorIs(t, runtime.Abort(context.Background(), 36), agentruntime.ErrNoActiveTurn)
+	_, abortErr = runtime.Abort(context.Background(), 36, 0)
+	assert.ErrorIs(t, abortErr, agentruntime.ErrNoActiveTurn)
 }
 
 func TestRuntimeReconcilesAfterDisconnectWithoutResubmittingUserMessage(t *testing.T) {

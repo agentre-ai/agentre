@@ -1755,7 +1755,7 @@ func (s *chatSvc) Stop(ctx context.Context, req *StopRequest) (*StopResponse, er
 	}
 	if gracefulAbort {
 		abortCtx, cancelAbort := context.WithTimeout(ctx, piStopAbortWriteBound)
-		abortErr := gracefulAborter.Abort(abortCtx, req.SessionID)
+		_, abortErr := gracefulAborter.Abort(abortCtx, req.SessionID, 0)
 		cancelAbort()
 		if abortErr != nil && !errors.Is(abortErr, agentruntime.ErrNoActiveTurn) {
 			logger.Ctx(ctx).Warn("chat_svc.Stop: local Pi abort failed",
@@ -1773,7 +1773,7 @@ func (s *chatSvc) Stop(ctx context.Context, req *StopRequest) (*StopResponse, er
 			if _, be, _, berr := s.resolveAgentBackend(ctx, sess.AgentID); berr == nil && be != nil {
 				// 中断没下发下去不致命(前面已 cancel turnCtx 兜底),布尔判据这里
 				// 无人可报;失败的留底由 requestRuntimeAbort 自己记。
-				_ = s.requestRuntimeAbort(ctx, be, req.SessionID)
+				_ = s.requestRuntimeAbort(ctx, be, req.SessionID, 0)
 			}
 		}
 	}
@@ -1822,7 +1822,7 @@ func (s *chatSvc) reconcileOrphanStop(ctx context.Context, sessionID int64) (*St
 // 都不活跃时才返回 ErrNoActiveTurn。因此这里可以直接拿 Abort 的返回值当判据:
 // nil = 确有一轮被中断,会话仍在跑,调用方不能再把它当遗孤 reconcile 成 idle(那会
 // 在 CLI 还在产帧时谎报 idle);ErrNoActiveTurn / 解析不出 runner = 内存里真的什么
-// 都没有,交回遗孤路径。
+// 都没有,交回遗孤路径。turnToken 固定传 0(中断当前活跃的带外轮,等价旧行为)。
 func (s *chatSvc) abortOutOfBandTurn(ctx context.Context, sess *chat_entity.Session) bool {
 	_, be, _, err := s.resolveAgentBackend(ctx, sess.AgentID)
 	if err != nil || be == nil {
@@ -1830,7 +1830,7 @@ func (s *chatSvc) abortOutOfBandTurn(ctx context.Context, sess *chat_entity.Sess
 			zap.Int64("sessionId", sess.ID), zap.Error(err))
 		return false
 	}
-	if !s.requestRuntimeAbort(ctx, be, sess.ID) {
+	if !s.requestRuntimeAbort(ctx, be, sess.ID, 0) {
 		return false
 	}
 	logger.Ctx(ctx).Info("chat_svc.Stop: interrupted out-of-band turn",
@@ -1851,7 +1851,7 @@ func (s *chatSvc) abortOutOfBandTurn(ctx context.Context, sess *chat_entity.Sess
 // **会阻塞**:claudecode 的 Abort 写完 control_request 后要等 CLI 的 control_response,
 // 而那条回执要常驻 readLoop 前进才派发得了。调用方若同时还担着「让帧流继续被消费」的
 // 责任(failAutonomousTurnPersist 的抽干),必须以非阻塞方式调用,否则两者互相等着。
-func (s *chatSvc) requestRuntimeAbort(ctx context.Context, be *agent_backend_entity.AgentBackend, sessionID int64) bool {
+func (s *chatSvc) requestRuntimeAbort(ctx context.Context, be *agent_backend_entity.AgentBackend, sessionID int64, turnToken uint64) bool {
 	backendType := ""
 	if be != nil {
 		backendType = be.Type
@@ -1866,7 +1866,7 @@ func (s *chatSvc) requestRuntimeAbort(ctx context.Context, be *agent_backend_ent
 	if !ok {
 		return false
 	}
-	if aerr := aborter.Abort(ctx, sessionID); aerr != nil {
+	if _, aerr := aborter.Abort(ctx, sessionID, turnToken); aerr != nil {
 		if !errors.Is(aerr, agentruntime.ErrNoActiveTurn) {
 			logger.Ctx(ctx).Warn("chat_svc.requestRuntimeAbort: runner.Abort failed",
 				zap.Int64("sessionId", sessionID), zap.String("backendType", backendType), zap.Error(aerr))
@@ -3257,7 +3257,7 @@ func (s *chatSvc) discardPreparedTurn(sessionID int64, prepared *preparedTurnRun
 		cancel()
 	} else if prepared.events != nil {
 		if aborter, ok := prepared.runner.(agentruntime.Aborter); ok {
-			_ = aborter.Abort(context.Background(), sessionID)
+			_, _ = aborter.Abort(context.Background(), sessionID, 0)
 		}
 	}
 	if prepared.events == nil {
