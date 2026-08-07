@@ -105,9 +105,16 @@ func NewHubLink(opts HubLinkOptions) *HubLink {
 	return &HubLink{opts: opts, frames: make(chan HubFrame, hubFrameBuffer)}
 }
 
-// Run connects until ctx is canceled. A relay failure is intentionally not
-// returned to the daemon: it is logged, backed off, and retried while LAN work
-// and local sessions continue independently.
+// Run connects until ctx is canceled, and returns nil for that shutdown. A
+// relay failure is intentionally not returned to the daemon: it is logged,
+// backed off, and retried while LAN work and local sessions continue
+// independently.
+//
+// The single exception is a retry clock that fails for a reason other than
+// shutdown (see stopRetrying): backing off has become impossible, so Run stops
+// and returns that error instead of looking like a clean exit. A caller that
+// discards Run's error therefore keeps a relay that is permanently down and
+// silent except for the log line.
 func (l *HubLink) Run(ctx context.Context) error {
 	failures := 0
 	for {
