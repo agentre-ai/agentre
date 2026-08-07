@@ -240,11 +240,18 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 //  3. 主动中断 CLI 当前这一轮,让子进程解除等待(镜像 chat.go Stop 里
 //     `runner.(agentruntime.Aborter)` 的既有先例)。selectRunner / Abort 失败
 //     (含子进程已消失,即 ErrNoActiveTurn)只记日志,不影响前两步已产生的结果。
-//  4. Hard invariant:抽干 at.Events,必须发生在 1-3 之后 —— 出口 channel 无人
-//     drain 会导致 Session 活跃槽位不释放,后续用户 turn 全部卡死。
+//     **必须异步发出**:Abort → Session.Interrupt 写完 control_request 后要阻塞等
+//     CLI 的 control_response,而那条回执只能由常驻 readLoop 派发,readLoop 又停在
+//     feed(at.ch <- ev) 上等本轮事件被消费 —— 也就是等第 4 步。同步调用会让 3 和 4
+//     互相等着,watcher goroutine 永久卡死(ctx 是 context.Background(),没有
+//     deadline),比修复前的静默丢弃更糟:连事件流都不再被抽干。异步发出后第 4 步
+//     得以进行,回执随之到达,中断真正完成 —— 这正是 Hard invariant 说的
+//     「在 drain 之外**或以非阻塞方式进行**」。
+//  4. Hard invariant:抽干 at.Events —— 出口 channel 无人 drain 会导致 Session 活跃
+//     槽位不释放,后续用户 turn 全部卡死。排在 1-3 发起之后。
 //
-// 四步互相独立、顺序执行,任何一步失败都不影响其余步骤,也不 panic、不阻塞
-// watcher goroutine。
+// 四步互相独立,任何一步失败都不影响其余步骤,也不 panic、不阻塞 watcher goroutine
+// (spec:「失败处置本身不得抛出或阻塞 watcher goroutine」)。
 func (s *chatSvc) failAutonomousTurnPersist(
 	ctx context.Context,
 	sessionID int64,
@@ -268,17 +275,25 @@ func (s *chatSvc) failAutonomousTurnPersist(
 		Error: mappedErr.Error(),
 	})
 
-	// 3. 主动中断 CLI 当前这一轮。selectRunner / Abort 失败(含子进程已消失)只记日志,
-	// 不影响前两步已经产生的结果。
-	if runner, err := s.selectRunner(ctx, be, sessionID); err != nil {
-		logger.Ctx(ctx).Warn("chat_svc.failAutonomousTurnPersist: selectRunner failed, cannot interrupt CLI turn",
-			zap.Int64("sessionId", sessionID), zap.Error(err))
-	} else if aborter, ok := runner.(agentruntime.Aborter); ok {
+	// 3. 主动中断 CLI 当前这一轮 —— 异步发出,让第 4 步的抽干得以进行(见函数注释:
+	// 中断要等的回执反过来依赖抽干)。selectRunner / Abort 失败(含子进程已消失)只
+	// 记日志,不影响前两步已经产生的结果。
+	go func() {
+		runner, err := s.selectRunner(ctx, be, sessionID)
+		if err != nil {
+			logger.Ctx(ctx).Warn("chat_svc.failAutonomousTurnPersist: selectRunner failed, cannot interrupt CLI turn",
+				zap.Int64("sessionId", sessionID), zap.Error(err))
+			return
+		}
+		aborter, ok := runner.(agentruntime.Aborter)
+		if !ok {
+			return
+		}
 		if aerr := aborter.Abort(ctx, sessionID); aerr != nil && !errors.Is(aerr, agentruntime.ErrNoActiveTurn) {
 			logger.Ctx(ctx).Warn("chat_svc.failAutonomousTurnPersist: runner.Abort failed",
 				zap.Int64("sessionId", sessionID), zap.Error(aerr))
 		}
-	}
+	}()
 
 	// 4. Hard invariant:抽干事件 channel,别让 Session reader 阻塞。
 	drainAndDiscard(events)

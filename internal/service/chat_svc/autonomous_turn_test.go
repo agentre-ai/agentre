@@ -359,6 +359,11 @@ func TestDriveAutonomousTurn_PersistFailure_FlipsErrorEmitsAndInterrupts(t *test
 		})
 
 		convey.Convey("3. 主动中断 CLI 当前这一轮,使子进程解除等待", func() {
+			// 中断是异步发出的(见 failAutonomousTurnPersist:同步等回执会与第 4 步的
+			// 抽干互相死等),所以这里等它到达而不是假定它已经到达。
+			assert.Eventually(t, func() bool {
+				return len(runner.Calls()) == 1
+			}, 2*time.Second, 5*time.Millisecond, "应请求中断这一轮")
 			assert.Equal(t, []int64{100}, runner.Calls())
 		})
 
@@ -403,6 +408,10 @@ func TestDriveAutonomousTurn_PersistFailure_InterruptFailureDoesNotAffectOtherRe
 		})
 
 		convey.Convey("中断确实被尝试过(否则谈不上'失败')", func() {
+			// 同上:中断异步发出,等它到达。
+			assert.Eventually(t, func() bool {
+				return len(runner.Calls()) == 1
+			}, 2*time.Second, 5*time.Millisecond, "应请求中断这一轮")
 			assert.Equal(t, []int64{100}, runner.Calls())
 		})
 
@@ -424,6 +433,113 @@ func TestDriveAutonomousTurn_PersistFailure_InterruptFailureDoesNotAffectOtherRe
 		convey.Convey("事件流仍被抽干", func() {
 			_, ok := <-evs
 			assert.False(t, ok, "events channel 应已被抽干,不能有残留未读事件")
+		})
+	})
+}
+
+// abortWaitsForDrainRunner 复刻真实 claudecode.Runtime.Abort 的**阻塞形态**:它调
+// Session.Interrupt,后者把 control_request 写进 stdin 后阻塞等 CLI 的 control_response
+// (pkg/claudecode/session.go:769 的 select);而那条回执只能由常驻 readLoop 派发,
+// readLoop 又可能正停在 feed(at.ch <- ev) 上 —— 只有本轮事件流继续被消费,它才前进。
+// 于是 Abort 的完成**依赖 drain 继续进行**。ctx 是 startAutonomousWatcher 传的
+// context.Background(),没有 deadline,等不到回执就是永久等待。
+//
+// drained 关闭 = 本轮事件被读完(drain 已跑完);giveUp 是测试收尾兜底,免得断言失败
+// 时留下一个永久阻塞的 goroutine。
+type abortWaitsForDrainRunner struct {
+	abortRecordingRunner
+	drained <-chan struct{}
+	giveUp  <-chan struct{}
+}
+
+func (r *abortWaitsForDrainRunner) Abort(ctx context.Context, sessionID int64) error {
+	err := r.abortRecordingRunner.Abort(ctx, sessionID)
+	select {
+	case <-r.drained:
+	case <-r.giveUp:
+	}
+	return err
+}
+
+// TestDriveAutonomousTurn_PersistFailure_InterruptDoesNotBlockWatcher 钉死 spec
+// 「自主续轮落库失败时的可观察结果」的收尾约束:「失败处置本身不得抛出或**阻塞
+// watcher goroutine**:startAutonomousWatcher 是每会话单 goroutine 顺序处理,一轮的
+// 失败处置卡住会波及该会话所有后续自主轮」,以及 Hard invariant 的「本轮新增的失败
+// 处置全部在 drain 之外**或以非阻塞方式进行**」。
+//
+// 中断与抽干之间有真实的循环依赖:中断要等 CLI 回执 → 回执要等 readLoop 前进 →
+// readLoop 要等本轮事件被消费 → 消费就是第 4 步的抽干。把中断**同步**摆在抽干之前,
+// 两者就互相等着,watcher goroutine 永久卡死 —— 比修复前的静默丢弃更糟:连事件流都
+// 不再被抽干,Session 活跃槽位永不释放。真实管道只有 48 格缓冲(pkg/claudecode
+// activeTurn.ch 16 + runtimes/claudecode autoturn evOut 32),事故那轮 60+ 帧足以填满。
+// 中断必须以非阻塞方式发出,让抽干得以进行、回执随之到达。
+func TestDriveAutonomousTurn_PersistFailure_InterruptDoesNotBlockWatcher(t *testing.T) {
+	convey.Convey("Given 中断要等 CLI 回执、回执要等事件流继续被消费, When 落库失败触发失败处置, Then 处置不得卡住 watcher goroutine", t, func() {
+		m := setupChatTest(t)
+		ctx := m.ctx
+
+		sess := &chat_entity.Session{ID: 100, AgentID: 7, AgentStatus: "idle", ProviderSessionID: "sess-abc"}
+		be := &agent_backend_entity.AgentBackend{ID: 12, Type: string(agent_backend_entity.TypeClaudeCode)}
+
+		giveUp := make(chan struct{})
+		var giveUpOnce sync.Once
+		t.Cleanup(func() { giveUpOnce.Do(func() { close(giveUp) }) })
+
+		// 无缓冲 evs = 真实管道 48 格填满之后的形态:生产者必须等消费者读。
+		evs := make(chan agentruntime.Event)
+		drained := make(chan struct{})
+		go func() {
+			defer close(drained)
+			defer close(evs)
+			for i := 0; i < 3; i++ {
+				select {
+				case evs <- agentruntime.TextDelta{Text: "frame produced while the turn is still live"}:
+				case <-giveUp:
+					return
+				}
+			}
+		}()
+
+		runner := &abortWaitsForDrainRunner{drained: drained, giveUp: giveUp}
+		restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, runner)
+		t.Cleanup(restore)
+
+		m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil).AnyTimes()
+
+		persistErr := errors.New("database is locked (5) (SQLITE_BUSY)")
+		m.dbMock.ExpectBegin()
+		m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(0, persistErr)
+		m.dbMock.ExpectRollback()
+		m.session.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+
+		at := agentruntime.AutonomousTurn{Events: evs, Trigger: "background_task"}
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			chat_svc.DriveAutonomousTurnForTest(ctx, m.svc, 100, be, at)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("失败处置卡住了 watcher goroutine:中断同步等回执、回执等抽干、抽干排在中断之后 —— 死锁")
+		}
+
+		convey.Convey("中断仍然被发出(非阻塞不等于不发)", func() {
+			assert.Eventually(t, func() bool {
+				return len(runner.Calls()) == 1
+			}, 2*time.Second, 5*time.Millisecond, "异步不等于不发:中断必须真的被请求")
+			assert.Equal(t, []int64{100}, runner.Calls())
+		})
+
+		convey.Convey("事件流仍被抽干", func() {
+			_, ok := <-evs
+			assert.False(t, ok, "events channel 应已被抽干,不能有残留未读事件")
+		})
+
+		convey.Convey("会话仍翻 error 并持久化", func() {
+			assert.Equal(t, "error", sess.AgentStatus)
 		})
 	})
 }
