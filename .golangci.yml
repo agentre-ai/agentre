@@ -35,6 +35,7 @@ linters:
   exclusions:
     paths:
       - .claude
+      - .dev-kit
       - frontend
 
 formatters:
@@ -48,6 +49,7 @@ formatters:
   exclusions:
     paths:
       - .claude
+      - .dev-kit
       - frontend
 
 run:
