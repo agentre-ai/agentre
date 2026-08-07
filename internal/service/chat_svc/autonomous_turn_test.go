@@ -31,11 +31,14 @@ import (
 // 中断失败(abortErr,含"子进程已消失"场景)不影响其余可观察结果。
 //
 // abortTokens 记录每次 Abort 收到的 turnToken,供断言「异步中断携带失败轮的 token」。
+// turnKind 配置 Abort 返回的被中断轮类型(决策 1 的 AbortOutcome),让
+// reconcileOrphanStop 的分流(自主轮 vs subagent 活动轮)可测。
 type abortRecordingRunner struct {
 	mu          sync.Mutex
 	abortCalls  []int64
 	abortTokens []uint64
 	abortErr    error
+	turnKind    agentruntime.TurnKind
 }
 
 func (*abortRecordingRunner) Capabilities() capability.Capabilities {
@@ -51,7 +54,7 @@ func (r *abortRecordingRunner) Abort(_ context.Context, sessionID int64, turnTok
 	defer r.mu.Unlock()
 	r.abortCalls = append(r.abortCalls, sessionID)
 	r.abortTokens = append(r.abortTokens, turnToken)
-	return agentruntime.AbortOutcome{}, r.abortErr
+	return agentruntime.AbortOutcome{TurnKind: r.turnKind}, r.abortErr
 }
 
 func (r *abortRecordingRunner) Calls() []int64 {

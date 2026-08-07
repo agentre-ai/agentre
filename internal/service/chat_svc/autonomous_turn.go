@@ -282,7 +282,7 @@ func (s *chatSvc) failAutonomousTurnPersist(
 	//
 	// turnToken 携带本轮的身份(决策 1):异步中断到达时若这一轮仍是当前活跃轮就中断,
 	// 否则 stale no-op —— drain 完成后即使新轮已起,迟到的中断也不会杀掉新轮。
-	go func() { _ = s.requestRuntimeAbort(ctx, be, sessionID, turnToken) }()
+	go func() { _, _ = s.requestRuntimeAbort(ctx, be, sessionID, turnToken) }()
 
 	// 4. Hard invariant:抽干事件 channel,别让 Session reader 阻塞。
 	drainAndDiscard(events)
