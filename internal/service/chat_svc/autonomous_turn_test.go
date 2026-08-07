@@ -56,6 +56,21 @@ func (r *abortRecordingRunner) Calls() []int64 {
 	return append([]int64(nil), r.abortCalls...)
 }
 
+// joinAbort 在**父作用域**里等本遍那个异步中断落地,再放叶子断言跑。
+//
+// failAutonomousTurnPersist 的中断是 fire-and-forget goroutine(同步等回执会与抽干
+// 互相死等,见那里的注释),而 goconvey 为每个叶子重跑一遍父作用域、每遍各
+// SwapRuntimeForTest 一个新 runner。不在每遍收干净的话,上一遍还没跑到
+// selectRunner 的 goroutine 会解析到**下一遍**的 runner,把中断记到它头上 ——
+// 断言随即看到 []int64{100, 100}(GOMAXPROCS=1 下稳定复现)。goroutine 一旦记下
+// 调用就不再碰注册表,所以等到调用出现即等于本遍已收口。
+func joinAbort(t *testing.T, runner interface{ Calls() []int64 }) {
+	t.Helper()
+	assert.Eventually(t, func() bool {
+		return len(runner.Calls()) == 1
+	}, 2*time.Second, 5*time.Millisecond, "中断应被异步下发到 runtime")
+}
+
 // autoTurnRunner 是同时实现 agentruntime.Runtime + AutonomousTurnSource 的 fake,
 // 用来验证 runTurn 的挂载 type-assert(走 builtin Send 路径,比 claudecode 简单)。
 type autoTurnRunner struct {
@@ -334,6 +349,9 @@ func TestDriveAutonomousTurn_PersistFailure_FlipsErrorEmitsAndInterrupts(t *test
 		at := agentruntime.AutonomousTurn{Events: evs, Trigger: "background_task"}
 
 		chat_svc.DriveAutonomousTurnForTest(ctx, m.svc, 100, be, at)
+		// 中断是异步发出的(见 failAutonomousTurnPersist:同步等回执会与第 4 步的抽干
+		// 互相死等),在父作用域里等它落地 —— 叶子里才拿得到确定的调用序列。
+		joinAbort(t, runner)
 
 		convey.Convey("1. 会话翻 error 并持久化(独立于失败的消息写事务,允许独立成功)", func() {
 			assert.Equal(t, "error", sess.AgentStatus)
@@ -359,12 +377,7 @@ func TestDriveAutonomousTurn_PersistFailure_FlipsErrorEmitsAndInterrupts(t *test
 		})
 
 		convey.Convey("3. 主动中断 CLI 当前这一轮,使子进程解除等待", func() {
-			// 中断是异步发出的(见 failAutonomousTurnPersist:同步等回执会与第 4 步的
-			// 抽干互相死等),所以这里等它到达而不是假定它已经到达。
-			assert.Eventually(t, func() bool {
-				return len(runner.Calls()) == 1
-			}, 2*time.Second, 5*time.Millisecond, "应请求中断这一轮")
-			assert.Equal(t, []int64{100}, runner.Calls())
+			assert.Equal(t, []int64{100}, runner.Calls(), "应请求中断这一轮")
 		})
 
 		convey.Convey("4. Hard invariant:事件流仍被抽干,发生在前三步之后", func() {
@@ -406,13 +419,10 @@ func TestDriveAutonomousTurn_PersistFailure_InterruptFailureDoesNotAffectOtherRe
 		require.NotPanics(t, func() {
 			chat_svc.DriveAutonomousTurnForTest(ctx, m.svc, 100, be, at)
 		})
+		joinAbort(t, runner) // 同上:中断异步发出,父作用域里收干净再断言。
 
 		convey.Convey("中断确实被尝试过(否则谈不上'失败')", func() {
-			// 同上:中断异步发出,等它到达。
-			assert.Eventually(t, func() bool {
-				return len(runner.Calls()) == 1
-			}, 2*time.Second, 5*time.Millisecond, "应请求中断这一轮")
-			assert.Equal(t, []int64{100}, runner.Calls())
+			assert.Equal(t, []int64{100}, runner.Calls(), "应请求中断这一轮")
 		})
 
 		convey.Convey("会话仍翻 error 并持久化", func() {
@@ -525,12 +535,10 @@ func TestDriveAutonomousTurn_PersistFailure_InterruptDoesNotBlockWatcher(t *test
 		case <-time.After(3 * time.Second):
 			t.Fatal("失败处置卡住了 watcher goroutine:中断同步等回执、回执等抽干、抽干排在中断之后 —— 死锁")
 		}
+		joinAbort(t, runner) // 同上:中断异步发出,父作用域里收干净再断言。
 
 		convey.Convey("中断仍然被发出(非阻塞不等于不发)", func() {
-			assert.Eventually(t, func() bool {
-				return len(runner.Calls()) == 1
-			}, 2*time.Second, 5*time.Millisecond, "异步不等于不发:中断必须真的被请求")
-			assert.Equal(t, []int64{100}, runner.Calls())
+			assert.Equal(t, []int64{100}, runner.Calls(), "异步不等于不发:中断必须真的被请求")
 		})
 
 		convey.Convey("事件流仍被抽干", func() {

@@ -335,32 +335,26 @@ function optimisticUser(
   } as unknown as SvcChatMessage;
 }
 
-// markSessionRunning 在 Send / Regenerate / Edit 成功返回后乐观把 session 翻成
-// running 态。后端落库已经是 running, 但 turn 起手没 emit session_status 事件,
-// 不补一刀的话 tab / toolbar / sidebar 读 session-status-store 会停在 idle。
+// markSessionStatus 乐观补一刀 session 状态 —— 后端在这两条路上都没有
+// session_status 事件可跟, 不补的话 tab / toolbar / sidebar 读
+// session-status-store 会一直停在上一状态:
+//   - "running": Send / Regenerate / Edit 成功返回后。后端落库已经是 running,
+//     但 turn 起手不 emit session_status, 不补就停在 idle。
+//   - "error": 自主续轮落库失败时后端只把 error 落了库、经会话级流推一条 error
+//     事件(那条轮压根没有 per-turn 流), 不补就停在 running 空转。
 // permissionMode 取 store 当前值, 避免覆盖刚 set 的 plan/default 等。
-function markSessionRunning(sessionId: number): void {
+function markSessionStatus(sessionId: number, agentStatus: AgentStatus): void {
   if (!sessionId) return;
   const prev = useSessionStatusStore.getState().statuses.get(sessionId);
   useSessionStatusStore.getState().upsert(sessionId, {
-    agentStatus: "running",
+    agentStatus,
     needsAttention: false,
     permissionMode: prev?.permissionMode,
   });
 }
 
-// markSessionError 同 markSessionRunning 的理由, 方向相反: 自主续轮落库失败时后端
-// 只把 error 落了库、经会话级流推一条 error 事件, 没有 session_status 事件可跟
-// (那条轮压根没有 per-turn 流)。不补这一刀, tab / toolbar / sidebar 会一直停在
-// 上一状态(典型是 running), 用户只能看着它空转。
-function markSessionError(sessionId: number): void {
-  if (!sessionId) return;
-  const prev = useSessionStatusStore.getState().statuses.get(sessionId);
-  useSessionStatusStore.getState().upsert(sessionId, {
-    agentStatus: "error",
-    needsAttention: false,
-    permissionMode: prev?.permissionMode,
-  });
+function markSessionRunning(sessionId: number): void {
+  markSessionStatus(sessionId, "running");
 }
 
 function optimisticAssistantPlaceholder(
@@ -759,7 +753,7 @@ function ChatPanel({
         if (!ev.error) return;
         const { msg, detail } = splitErrorDetail(ev.error);
         setNotice({ kind: "error", text: msg, detail });
-        markSessionError(sessionId);
+        markSessionStatus(sessionId, "error");
         return;
       }
       if (ev.kind !== "autonomous_started") {
