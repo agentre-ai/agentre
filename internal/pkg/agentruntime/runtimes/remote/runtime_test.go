@@ -1508,7 +1508,7 @@ func TestControlRequests_CarryPeerOrigin(t *testing.T) {
 		{"Steer", func() error { return rt.Steer(context.Background(), peerSid, "q-1", "stop") }, wire.MethodSteer},
 		{"CancelSteer", func() error { _, err := rt.CancelSteer(context.Background(), peerSid, "q-1"); return err }, wire.MethodCancelSteer},
 		{"DrainPending", func() error { rt.DrainPending(context.Background(), peerSid); return nil }, wire.MethodDrainPending},
-		{"Abort", func() error { return rt.Abort(context.Background(), peerSid) }, wire.MethodAbort},
+		{"Abort", func() error { _, err := rt.Abort(context.Background(), peerSid, 0); return err }, wire.MethodAbort},
 		{"StopBackgroundTask", func() error { return rt.StopBackgroundTask(context.Background(), peerSid, "t-1") }, wire.MethodStopBackgroundTask},
 		{"SetPermissionMode", func() error { return rt.SetPermissionMode(context.Background(), peerSid, "plan") }, wire.MethodSetPermissionMode},
 		{"SubmitAnswer", func() error { return rt.SubmitAnswer(context.Background(), peerSid, "r-1", nil, nil, true) }, wire.MethodSubmitAnswer},
