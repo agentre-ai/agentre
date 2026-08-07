@@ -532,9 +532,9 @@ describe("ChatTranscript source device pill (R17)", () => {
         ]}
       />,
     );
-    expect(screen.queryByText(/来自/)).toBeNull();
+    expect(screen.queryByText(/^From /)).toBeNull();
     await act(async () => {}); // 等指纹 Promise 落定再确认一次没有药丸
-    expect(screen.queryByText(/来自/)).toBeNull();
+    expect(screen.queryByText(/^From /)).toBeNull();
   });
 
   it("renders no pill without any source (single-client default)", async () => {
@@ -545,9 +545,9 @@ describe("ChatTranscript source device pill (R17)", () => {
         messages={[textMessage(1, "user", "跑吧")]}
       />,
     );
-    expect(screen.queryByText(/来自/)).toBeNull();
+    expect(screen.queryByText(/^From /)).toBeNull();
     await act(async () => {});
-    expect(screen.queryByText(/来自/)).toBeNull();
+    expect(screen.queryByText(/^From /)).toBeNull();
   });
 });
 

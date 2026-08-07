@@ -163,6 +163,47 @@ describe("LoginDialog", () => {
     expect(pollLoginToken).not.toHaveBeenCalled();
   });
 
+  // 取消只清了 interval,在飞的那一次 pollLoginToken 还挂着。它随后 resolve(true)
+  // ——用户在浏览器里已经批准过、只是又按了取消——旧代码照样跑 onLoggedIn()+onClose(),
+  // 于是一次被明确取消(且已经发过 cancelLogin)的登录把桌面端标成已登录。
+  it("ignores an in-flight poll that settles after the user cancelled", async () => {
+    let releasePoll: (done: boolean) => void = () => {};
+    const pollLoginToken = vi.fn().mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          releasePoll = resolve;
+        }),
+    );
+    const cancelLogin = vi.fn().mockResolvedValue(undefined);
+    const props = renderDialog({ pollLoginToken, cancelLogin });
+
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText(/hub\.example\.com/), {
+        target: { value: "https://hub.example.com" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(pollLoginToken).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(cancelLogin).toHaveBeenCalled();
+    expect(props.onLoggedIn).not.toHaveBeenCalled();
+
+    // 取消之后那一次在飞的轮询才落定,并且带回「已批准」。
+    await act(async () => {
+      releasePoll(true);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(props.onLoggedIn).not.toHaveBeenCalled();
+  });
+
   // e) an error from start surfaces to the user rather than a silent spinner.
   it("surfaces a start error and lets the user retry", async () => {
     const startLogin = vi

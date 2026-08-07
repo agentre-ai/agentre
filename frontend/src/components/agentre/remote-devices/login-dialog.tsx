@@ -57,8 +57,14 @@ export function LoginDialog({
   const [error, setError] = useState<string | null>(null);
   const timerRef = useRef<number | null>(null);
   const deadlineRef = useRef<number | null>(null);
+  // attemptRef 标识「当前这一次登录尝试」。清 interval 只挡得住**还没发出**的轮询;
+  // 已经在飞的那一次 pollLoginToken 照样会 resolve/reject,它落定时必须先确认自己
+  // 还属于当前这次尝试 —— 否则一次已经取消(且已发过 cancelLogin)的登录会凭一个
+  // 迟到的 true 跑完 onLoggedIn(),或者把错误写进一个已经关掉的对话框。
+  const attemptRef = useRef(0);
 
   const stopPolling = () => {
+    attemptRef.current += 1;
     if (timerRef.current !== null) {
       window.clearInterval(timerRef.current);
       timerRef.current = null;
@@ -84,9 +90,10 @@ export function LoginDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const poll = async (deviceCode: string) => {
+  const poll = async (deviceCode: string, attempt: number) => {
     try {
       const done = await pollLoginToken(deviceCode);
+      if (attempt !== attemptRef.current) return; // 取消 / 重开已经作废了这一次
       if (done) {
         stopPolling();
         onLoggedIn();
@@ -99,6 +106,7 @@ export function LoginDialog({
         setError(t("remoteDevices.login.errors.expired"));
       }
     } catch (e: unknown) {
+      if (attempt !== attemptRef.current) return;
       stopPolling();
       setPhase("form");
       setError(friendlyLoginError(e, t));
@@ -106,6 +114,7 @@ export function LoginDialog({
   };
 
   const start = async () => {
+    stopPolling(); // 作废上一次尝试还在飞的轮询,再开新的一次
     setError(null);
     setPhase("starting");
     try {
@@ -122,8 +131,9 @@ export function LoginDialog({
       deadlineRef.current = Date.now() + Math.max(0, res.ExpiresIn || 0) * 1000;
       const intervalMs =
         Math.max(1, res.Interval || FALLBACK_INTERVAL_S) * 1000;
+      const attempt = attemptRef.current;
       timerRef.current = window.setInterval(
-        () => void poll(res.DeviceCode),
+        () => void poll(res.DeviceCode, attempt),
         Math.max(MIN_INTERVAL_MS, intervalMs),
       );
     } catch (e: unknown) {

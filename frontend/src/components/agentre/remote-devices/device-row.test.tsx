@@ -105,6 +105,7 @@ describe("DeviceRow", () => {
         Capabilities: {},
         LastSeenAt: 1,
         Status: 1,
+        Online: true,
         IsThisDevice: false,
       },
       paths: [
@@ -143,6 +144,7 @@ describe("DeviceRow", () => {
         Capabilities: {},
         LastSeenAt: 1,
         Status: 1,
+        Online: true,
         IsThisDevice: false,
       },
       viaRelay: true,

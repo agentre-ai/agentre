@@ -81,7 +81,9 @@ export function mergeDeviceSources(
       ...d,
       account: acc,
       paths,
-      unclaimed: account.known && acc == null,
+      // 指纹为空的 LAN 行无从与账号清单对照(accountByFp 也不收空键),缺少依据时
+      // 不下「未认领」的结论 —— 否则一台已认领的机器会被标成别人看不到它。
+      unclaimed: account.known && !!d.daemonFingerprint && acc == null,
       viaRelay: relayInUse,
     };
   });

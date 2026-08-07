@@ -66,9 +66,11 @@ type Path struct {
 	// behind R5: switching path must not change the peer identity the daemon
 	// resolves to.
 	Fingerprint string
-	// Dial establishes the connection. It receives a context that is cancelled
-	// as soon as another path wins; a conforming Dial must return promptly
-	// after cancellation (closing any half-open connection) rather than block.
+	// Dial establishes the connection. It receives a per-path context that is
+	// canceled as soon as *another* path wins; a conforming Dial must return
+	// promptly after cancellation (closing any half-open connection) rather than
+	// block. The winning path's context is never canceled by Race — Dial hands
+	// it to the connection's Serve read loop, which outlives the race.
 	Dial func(ctx context.Context) (*Client, error)
 }
 
@@ -91,29 +93,43 @@ func Race(ctx context.Context, paths ...Path) (*Client, error) {
 		}
 	}
 
-	raceCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
 	type outcome struct {
 		idx int
 		c   *Client
 		err error
 	}
 	results := make(chan outcome, len(paths))
+	// 每条路径一个**独立**的可取消 ctx,而不是一个共享的 raceCtx:Dial 会把拿到的
+	// ctx 交给连接自己的 Serve 读循环(client.Dial / DialRelay 里的
+	// `go c.conn.Serve(ctx)`),而赢家那条连接活得比这场竞速久得多 —— ConnPool 按
+	// device 缓存它,daemon 之后所有反向请求(内置工具 MCP 隧道)都在它下面派发。
+	// 共享一个 `defer cancel()` 的 raceCtx 会让胜出的长连接一返回就带着已取消的 ctx。
+	cancels := make([]context.CancelFunc, len(paths))
 	for i, p := range paths {
 		i, p := i, p
+		//nolint:gosec // G118: 赢家那条的 cancel 故意不调用——它的 ctx 归胜出的长连接
+		// 所有(见 Path.Dial 注释),随父 ctx 结束而释放;败者的在 cancelExcept 里全部调用。
+		pathCtx, pathCancel := context.WithCancel(ctx)
+		cancels[i] = pathCancel
 		go func() {
-			c, err := p.Dial(raceCtx)
+			c, err := p.Dial(pathCtx)
 			results <- outcome{idx: i, c: c, err: err}
 		}()
 	}
+	// cancelExcept 取消除 keep 之外的每条路径;keep = -1 时全取消(无人胜出)。
+	cancelExcept := func(keep int) {
+		for i, cancel := range cancels {
+			if i != keep {
+				cancel()
+			}
+		}
+	}
 
 	var (
-		won       bool
-		winner    *Client
-		winnerIdx int
-		losers    []*Client
-		errs      []error
+		won    bool
+		winner *Client
+		losers []*Client
+		errs   []error
 	)
 	for range paths {
 		r := <-results
@@ -134,11 +150,10 @@ func Race(ctx context.Context, paths ...Path) (*Client, error) {
 		if !won {
 			won = true
 			winner = r.c
-			winnerIdx = r.idx
-			cancel() // stop in-flight losing dials
-		} else if r.idx != winnerIdx {
-			losers = append(losers, r.c)
+			cancelExcept(r.idx) // stop in-flight losing dials; the winner keeps its ctx
+			continue
 		}
+		losers = append(losers, r.c)
 	}
 
 	for _, l := range losers {
@@ -147,6 +162,8 @@ func Race(ctx context.Context, paths ...Path) (*Client, error) {
 	if won {
 		return winner, nil
 	}
+	// 无人胜出:每条路径都已返回,把它们的 ctx 一并释放,不留悬挂的子 context。
+	cancelExcept(-1)
 	if len(errs) == 1 {
 		return nil, errs[0]
 	}

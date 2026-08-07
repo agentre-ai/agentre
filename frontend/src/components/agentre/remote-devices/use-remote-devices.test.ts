@@ -118,6 +118,19 @@ describe("mergeDeviceSources (R15)", () => {
     expect(rows[0].paths).toEqual([{ kind: "lan", state: "in-use" }]);
   });
 
+  // 「未认领」是一句断言:这台机器不在账号清单里。指纹为空的 LAN 行(还没握过手 /
+  // 旧配对行)根本无从判断,accountByFp 也刻意不收空指纹键——拿空串去查必然 miss,
+  // 于是一台**已认领**的机器被标成「未认领 · 其它设备看不到它」。缺少依据时不下结论。
+  it("does not claim anything about a LAN row that carries no daemon fingerprint", () => {
+    const rows = mergeDeviceSources([lanDevice({ daemonFingerprint: "" })], {
+      known: true,
+      devices: [accountDevice()],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].account).toBeUndefined();
+    expect(rows[0].unclaimed).toBe(false);
+  });
+
   it("does not mark unclaimed when the account list is unknown (not logged in)", () => {
     const rows = mergeDeviceSources([lanDevice()], {
       known: false,

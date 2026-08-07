@@ -387,14 +387,20 @@ describe("buildTranscriptRows source device (R17)", () => {
     expect(rows[0].sourceDevice).toBeUndefined();
   });
 
+  // 连续 text block 会被 buildRenderItems 合并成一条 item,所以要真的产生多行,
+  // 必须混入一个 tool_use —— 否则「每一行」这句话根本没被检验过。
   it("propagates the source across every row of the message", () => {
     const { rows } = buildTranscriptRows({
-      displayMessages: [message(1, "user", [text("a"), text("b")])],
+      displayMessages: [
+        message(1, "user", [text("a"), toolUse("toolu-1"), text("b")]),
+      ],
       autonomousIds: new Set(),
       sourceByMessageId: new Map([[1, "iPhone"]]),
     });
-    expect(rows).toHaveLength(1);
-    expect(rows[0].sourceDevice).toBe("iPhone");
+    expect(rows.length).toBeGreaterThan(1);
+    for (const row of rows) {
+      expect(row.sourceDevice).toBe("iPhone");
+    }
   });
 });
 

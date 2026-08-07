@@ -97,6 +97,47 @@ func TestRace_GivenRelayWins_WhenBothPathsStart_ThenCancelsAndClosesLANLoser(t *
 	}
 }
 
+// Race hands each Dial a context, and Dial passes that same context to the
+// connection's Serve read loop (see client.Dial / DialRelay: `go c.conn.Serve(ctx)`).
+// The winning connection outlives Race by design — ConnPool keeps it for the whole
+// device-shared entry lifetime — so canceling the winner's context on return leaves
+// every reverse request the daemon later sends over it (the MCP built-in-tool tunnel)
+// dispatching under an already-canceled ctx.
+func TestRace_GivenAPathWins_WhenRaceReturns_ThenTheWinnersContextStaysAlive(t *testing.T) {
+	loserCanceled := make(chan struct{})
+	winnerCtx := make(chan context.Context, 1)
+	winner, _ := newCloseTrackingClient()
+	loser, _ := newCloseTrackingClient()
+
+	got, err := Race(context.Background(),
+		Path{Name: "direct", Fingerprint: "sha256:desktop", Dial: func(ctx context.Context) (*Client, error) {
+			winnerCtx <- ctx
+			return winner, nil
+		}},
+		Path{Name: "relay", Fingerprint: "sha256:desktop", Dial: func(ctx context.Context) (*Client, error) {
+			<-ctx.Done()
+			close(loserCanceled)
+			return loser, nil
+		}},
+	)
+	require.NoError(t, err)
+	assert.Same(t, winner, got)
+	select {
+	case <-loserCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("the losing path was not canceled")
+	}
+
+	ctx := <-winnerCtx
+	select {
+	case <-ctx.Done():
+		t.Fatal("the winning path's context was canceled when Race returned; " +
+			"the pooled connection's Serve loop dispatches reverse requests under it")
+	default:
+	}
+	assert.NoError(t, ctx.Err())
+}
+
 func TestRace_GivenDifferentFingerprints_WhenSelectingPath_ThenRejectsBeforeDialing(t *testing.T) {
 	called := false
 	_, err := Race(context.Background(),
