@@ -471,14 +471,28 @@ func TestConnRegistry_ClosedConnLeavesNoStaleEntry(t *testing.T) {
 }
 
 // recordingNotifier 记下推给它的通知,用来观察一条通知**实际落到了哪条连接**。
-type recordingNotifier struct{ got []string }
+// 带锁:扇出给订阅者的投递跑在各自的投递 goroutine 上(见 asyncNotifier),
+// 观察方与投递方是并发的。
+type recordingNotifier struct {
+	mu  sync.Mutex
+	got []string
+}
 
 func (n *recordingNotifier) Notify(method string, _ any) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	n.got = append(n.got, method)
 	return nil
 }
 
 func (n *recordingNotifier) Request(context.Context, string, any, any) error { return nil }
+
+// methods 交回此刻收到的全部通知方法名(副本)。
+func (n *recordingNotifier) methods() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]string(nil), n.got...)
+}
 
 // TestSessionRouter_RoutesByFrameSessionID 覆盖出口本身的契约:同一个对端出口上,每条
 // 通知按帧上的 sessionId 交给发起那条会话的连接(两条会话各归各的);帧上没有 sessionId、
@@ -497,15 +511,15 @@ func TestSessionRouter_RoutesByFrameSessionID(t *testing.T) {
 	require.NotNil(t, out)
 	require.NoError(t, out.Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7}))
 	require.NoError(t, out.Notify(wire.NotifyRunResultDone, &wire.RunResultDoneFrame{SessionID: 8}))
-	assert.Equal(t, []string{wire.NotifyEvent}, nA.got, "会话 7 的通知只落在发起它的那条连接")
-	assert.Equal(t, []string{wire.NotifyRunResultDone}, nB.got, "会话 8 的通知只落在发起它的那条连接")
+	assert.Equal(t, []string{wire.NotifyEvent}, nA.methods(), "会话 7 的通知只落在发起它的那条连接")
+	assert.Equal(t, []string{wire.NotifyRunResultDone}, nB.methods(), "会话 8 的通知只落在发起它的那条连接")
 
 	assert.Error(t, out.Notify(wire.NotifyEvent, map[string]any{"sessionId": 7}),
 		"帧上取不到 sessionId 时必须报错点名类型,而不是猜一条连接推过去")
 	r.remove(connA)
 	assert.Error(t, out.Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7}),
 		"属主断开后这条会话没有出口(通知已落库,等接管后补齐)")
-	assert.Equal(t, []string{wire.NotifyRunResultDone}, nB.got, "更不能改推给同设备的另一条连接")
+	assert.Equal(t, []string{wire.NotifyRunResultDone}, nB.methods(), "更不能改推给同设备的另一条连接")
 }
 
 // TestConnRegistry_TunnelTargetForSession_RoutesOnlyToTheOriginatingPeer covers R11:
@@ -532,6 +546,188 @@ func TestConnRegistry_TunnelTargetForSession_RoutesOnlyToTheOriginatingPeer(t *t
 	assert.Nil(t, r.tunnelTargetFor("fp-b", 7),
 		"the initiating peer offline remains unavailable even when the controller is live")
 	assert.Nil(t, r.tunnelTargetFor("fp-a", 8), "an unclaimed session has no fallback target")
+}
+
+// ── 多客户端扇出(用户流程「桌面与手机同时连着同一个会话」)────────────────────
+
+// claimedRegistry 造一台**已认领** daemon 的登记表:扇出的第一道门就是它 ——
+// 归属账号为空(未认领)时一条订阅者都不成立。
+func claimedRegistry(accountID string) *connRegistry {
+	return &connRegistry{claimedAccountID: func() string { return accountID }}
+}
+
+// registerAccountAuthed 登记一条走 auth.account 认证的连接:账号门(任务 6)把 daemon
+// 此刻的归属账号写进 AuthState.AccountID,订阅资格拿它与 state.AccountID 比。
+func registerAccountAuthed(r *connRegistry, fingerprint, accountID string) (*rpc.Conn, *recordingNotifier) {
+	c := rpc.NewConn(nil, rpc.NewRegistry())
+	c.SetAuth(rpc.AuthState{Authenticated: true, DeviceFingerprint: fingerprint, AccountID: accountID})
+	n := &recordingNotifier{}
+	r.add(c, n)
+	return c, n
+}
+
+// blockingNotifier 是一条**卡住**的订阅者:Notify 一直阻塞到 release 被关闭
+// (真机上就是对端 TCP 不收、写缓冲写满)。
+type blockingNotifier struct {
+	release chan struct{}
+	entered chan struct{}
+}
+
+func newBlockingNotifier() *blockingNotifier {
+	return &blockingNotifier{release: make(chan struct{}), entered: make(chan struct{}, 1)}
+}
+
+func (n *blockingNotifier) Notify(string, any) error {
+	select {
+	case n.entered <- struct{}{}:
+	default:
+	}
+	<-n.release
+	return nil
+}
+
+func (n *blockingNotifier) Request(context.Context, string, any, any) error { return nil }
+
+// awaitMethods 等某个订阅者收齐 want 条通知 —— 扇出给订阅者的投递是异步的
+// (慢订阅者不得阻塞会话),所以观察必须给它时间。
+func awaitMethods(t *testing.T, n *recordingNotifier, want []string, msg string) {
+	t.Helper()
+	require.Eventually(t, func() bool { return len(n.methods()) >= len(want) }, 2*time.Second, 5*time.Millisecond, msg)
+	assert.Equal(t, want, n.methods(), msg)
+}
+
+// TestConnRegistry_ClaimedDaemonFansOutSessionEventsToEverySameAccountConn 兑现用户
+// 流程「桌面与手机同时连着同一个会话,双方都收到实时事件」:已认领 daemon 上,一条会话
+// 的通知除了发起它的那条连接,还发给同账号的其余活连接。
+//
+// 同时钉死账号门:订阅资格 = 已认领 **且** 连接的 AuthState.AccountID == 归属账号。
+// 别的账号的连接、以及只走 LAN 配对(没有账号身份)的连接,一条也收不到 —— 前者是跨账号
+// 信息泄漏,后者是「配对 ≠ 账号级可见性」这条既有分界(R13)。
+func TestConnRegistry_ClaimedDaemonFansOutSessionEventsToEverySameAccountConn(t *testing.T) {
+	r := claimedRegistry("acct-1")
+	desktop, nDesktop := registerAccountAuthed(r, "fp-desktop", "acct-1")
+	_, nPhone := registerAccountAuthed(r, "fp-phone", "acct-1")
+	_, nStranger := registerAccountAuthed(r, "fp-stranger", "acct-2")
+	pairedOnly, nPairedOnly := authedConn("fp-lan"), &recordingNotifier{}
+	r.add(pairedOnly, nPairedOnly)
+	r.claim(desktop, 7)
+
+	out := r.routerFor("fp-desktop")
+	require.NotNil(t, out)
+	require.NoError(t, out.Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7, Seq: 1}))
+
+	awaitMethods(t, nDesktop, []string{wire.NotifyEvent}, "发起会话的那条连接照收")
+	awaitMethods(t, nPhone, []string{wire.NotifyEvent}, "同账号的另一条连接同时收到同一条事件")
+	assert.Never(t, func() bool { return len(nStranger.methods()) > 0 }, 200*time.Millisecond, 20*time.Millisecond,
+		"别的账号的连接不得收到本账号会话的事件")
+	assert.Empty(t, nPairedOnly.methods(), "只走 LAN 配对的连接没有账号身份,不构成订阅者")
+}
+
+// TestConnRegistry_UnclaimedDaemonKeepsPushingOnlyToTheOriginatingPeer 钉死 R13:
+// 未认领 daemon(归属账号为空)行为不变 —— 推送目标仍是发起会话的那**一条**连接,
+// 解析出来的就是它自己的端口本身,没有任何复合出口。
+func TestConnRegistry_UnclaimedDaemonKeepsPushingOnlyToTheOriginatingPeer(t *testing.T) {
+	var r connRegistry // 未认领
+	desktop, nDesktop := authedConn("fp-desktop"), &recordingNotifier{}
+	r.add(desktop, nDesktop)
+	other, nOther := authedConn("fp-phone"), &recordingNotifier{}
+	r.add(other, nOther)
+	r.claim(desktop, 7)
+
+	assertTarget(t, nDesktop, r.ownerOf(sessionKey{peer: "fp-desktop", sid: 7}),
+		"未认领时会话的推送端口就是发起连接自己的端口")
+
+	out := r.routerFor("fp-desktop")
+	require.NotNil(t, out)
+	require.NoError(t, out.Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7}))
+	assert.Never(t, func() bool { return len(nOther.methods()) > 0 }, 200*time.Millisecond, 20*time.Millisecond,
+		"未认领 daemon 上另一台已配对设备不得看到别人会话的事件")
+}
+
+// TestConnRegistry_FanoutDoesNotBroadcastTheMCPTunnel 钉死决策 9:扇出只作用于会话
+// 通知。MCP 反向隧道仍解析到**发起端那一条**连接 —— 内置工具的实现与数据在发起端本地,
+// 广播给同账号的其它客户端就是把 A 的工具请求发给 B。
+func TestConnRegistry_FanoutDoesNotBroadcastTheMCPTunnel(t *testing.T) {
+	r := claimedRegistry("acct-1")
+	desktop, nDesktop := registerAccountAuthed(r, "fp-desktop", "acct-1")
+	_, nPhone := registerAccountAuthed(r, "fp-phone", "acct-1")
+	r.claim(desktop, 7)
+
+	assertTarget(t, nDesktop, r.tunnelTargetFor("fp-desktop", 7),
+		"隧道目标是发起端那一条连接本身,不是订阅者集合")
+	assert.Empty(t, nPhone.methods(), "同账号的另一条连接不参与隧道")
+}
+
+// TestConnRegistry_SlowSubscriberBlocksNeitherTheSessionNorItsPeers 钉死扇出的隔离性:
+// 一个订阅者写不动(对端不收/网络卡住)时,会话本身与其余订阅者都不受影响。做不到的话,
+// 多接一个客户端就等于给每条会话加了一个能把整轮执行卡死的单点。
+func TestConnRegistry_SlowSubscriberBlocksNeitherTheSessionNorItsPeers(t *testing.T) {
+	r := claimedRegistry("acct-1")
+	desktop, nDesktop := registerAccountAuthed(r, "fp-desktop", "acct-1")
+	stuck := rpc.NewConn(nil, rpc.NewRegistry())
+	stuck.SetAuth(rpc.AuthState{Authenticated: true, DeviceFingerprint: "fp-stuck", AccountID: "acct-1"})
+	blocking := newBlockingNotifier()
+	r.add(stuck, blocking)
+	defer close(blocking.release)
+	_, nPhone := registerAccountAuthed(r, "fp-phone", "acct-1")
+	r.claim(desktop, 7)
+
+	out := r.routerFor("fp-desktop")
+	require.NotNil(t, out)
+	done := make(chan error, 1)
+	go func() {
+		for i := 0; i < 512; i++ {
+			if err := out.Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7, Seq: int64(i + 1)}); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("一个卡住的订阅者把会话的推送整个堵死了")
+	}
+
+	require.Len(t, nDesktop.methods(), 512, "会话自己的连接一条不少")
+	require.Eventually(t, func() bool { return len(nPhone.methods()) > 0 }, 2*time.Second, 5*time.Millisecond,
+		"另一个订阅者不受慢订阅者牵连")
+	select {
+	case <-blocking.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("卡住的那条从没被当成订阅者 —— 这个用例什么也没测到")
+	}
+}
+
+// TestConnRegistry_LosingOneSubscriberLeavesTheRestReceiving 钉死订阅者集合的生灭:
+// 掉一条连接只摘掉它自己那份订阅,其余照收;连发起会话的那条一起掉了也不算挂起 ——
+// 只要还有一个订阅者在,实时流就得继续。全部掉光才回到既有的「只落库不推送」。
+func TestConnRegistry_LosingOneSubscriberLeavesTheRestReceiving(t *testing.T) {
+	r := claimedRegistry("acct-1")
+	desktop, nDesktop := registerAccountAuthed(r, "fp-desktop", "acct-1")
+	phone, nPhone := registerAccountAuthed(r, "fp-phone", "acct-1")
+	tablet, nTablet := registerAccountAuthed(r, "fp-tablet", "acct-1")
+	r.claim(desktop, 7)
+
+	out := r.routerFor("fp-desktop")
+	require.NotNil(t, out)
+
+	r.remove(phone)
+	require.NoError(t, out.Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7, Seq: 1}))
+	awaitMethods(t, nDesktop, []string{wire.NotifyEvent}, "掉线的是别人,会话自己的连接照收")
+	awaitMethods(t, nTablet, []string{wire.NotifyEvent}, "另一个订阅者照收")
+	assert.Empty(t, nPhone.methods(), "掉线的那条不再收到任何东西")
+
+	r.remove(desktop)
+	require.NotNil(t, r.routerFor("fp-desktop"), "还有订阅者在,会话不算挂起")
+	require.NoError(t, r.routerFor("fp-desktop").Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7, Seq: 2}))
+	awaitMethods(t, nTablet, []string{wire.NotifyEvent, wire.NotifyEvent}, "发起端掉线后剩下的订阅者继续收")
+
+	r.remove(tablet)
+	assert.Nil(t, r.routerFor("fp-desktop"), "订阅者全掉光 → 回到只落库不推送")
+	assert.Nil(t, r.ownerOf(sessionKey{peer: "fp-desktop", sid: 7}))
 }
 
 // TestDaemon_BindConnDoesNotMakeUnauthenticatedConnATarget 钉死接线:bindConn 跑在鉴权

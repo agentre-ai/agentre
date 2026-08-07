@@ -2087,6 +2087,157 @@ func TestIntegration_MultiClientVisibility_GatesAllPeerAccessByClaimedAccount(t 
 	})
 }
 
+// twoClientApprovalRunner 停在一条待决策上,谁回答都由 backend 自己 emit
+// ToolPermissionResolved —— 这正是用户流程里「另一方通过事件流看到它被解决」的那条事件。
+type twoClientApprovalRunner struct {
+	mu     sync.Mutex
+	events chan agentruntime.Event
+	closed bool
+}
+
+const twoClientRequestID = "req-two-client"
+
+func (*twoClientApprovalRunner) Capabilities() capability.Capabilities {
+	return capability.Capabilities{}
+}
+
+func (r *twoClientApprovalRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	ch := make(chan agentruntime.Event, 8)
+	r.mu.Lock()
+	r.events = ch
+	r.mu.Unlock()
+	ch <- agentruntime.TextDelta{Text: "before"}
+	ch <- agentruntime.ToolPermissionRequest{
+		RequestID: twoClientRequestID, ToolName: "Bash", Input: json.RawMessage(`{"command":"ls"}`),
+	}
+	return ch, &agentruntime.RunResult{}, nil
+}
+
+func (r *twoClientApprovalRunner) SubmitToolPermission(_ context.Context, _ int64, requestID string, allow, _ bool, _ string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.events == nil || r.closed {
+		return agentruntime.ErrWaiterNotFound
+	}
+	if requestID != twoClientRequestID {
+		return agentruntime.ErrWaiterNotFound
+	}
+	r.events <- agentruntime.ToolPermissionResolved{RequestID: requestID, Allowed: allow}
+	r.events <- agentruntime.Done{}
+	close(r.events)
+	r.closed = true
+	return nil
+}
+
+// subscribeEventFrames 把一条连接收到的 runtime.event 帧收进 channel。
+func subscribeEventFrames(t *testing.T, cli *client.Client) <-chan wire.EventFrame {
+	t.Helper()
+	frames := make(chan wire.EventFrame, 64)
+	cli.Handle(wire.NotifyEvent, func(_ context.Context, p json.RawMessage) (any, error) {
+		var f wire.EventFrame
+		if err := json.Unmarshal(p, &f); err == nil {
+			select {
+			case frames <- f:
+			default:
+			}
+		}
+		return nil, nil
+	})
+	return frames
+}
+
+// awaitEventKind 等某条会话的某类事件到达这条连接;超时即失败(「收不到」正是会话被推去
+// 了别处 / 没有扇出时的表现:没有错误,只是永远没有下一条)。
+func awaitEventKind(t *testing.T, frames <-chan wire.EventFrame, sid int64, kind agentruntime.EventKind, msg string) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case f := <-frames:
+			if f.SessionID != sid {
+				continue
+			}
+			var probe struct {
+				Kind agentruntime.EventKind `json:"kind"`
+			}
+			if err := json.Unmarshal(f.Event, &probe); err == nil && probe.Kind == kind {
+				require.Positive(t, f.Seq, "推出去的帧必须带 seq")
+				return
+			}
+		case <-deadline:
+			t.Fatalf("%s: 会话 %d 的 %s 事件没有到达这条连接", msg, sid, kind)
+		}
+	}
+}
+
+// TestIntegration_MultiClientLiveEvents_SameAccountConnsShareOneSessionStream 兑现用户
+// 流程「桌面与手机同时连着同一个会话」:已认领 daemon 上同账号的两条连接同时收到同一
+// 会话的实时事件,任一方回答待决策,另一方从事件流里看到它被解决。
+//
+// 两段断言各钉一个方向:手机没发起、也没接管过这条会话就收到它的事件(扇出本身);
+// 手机接管并回答之后,已经不是属主的桌面端仍收到解决事件(接管不把另一方踢下线)。
+func TestIntegration_MultiClientLiveEvents_SameAccountConnsShareOneSessionStream(t *testing.T) {
+	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+	t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, &twoClientApprovalRunner{}))
+
+	credential := claimDaemonForIntegration(t, rig.d, "account-42")
+	const desktopFingerprint = "sha256:account-desktop"
+	desktop := accountClientForIntegration(t, rig.d, desktopFingerprint, credential)
+	phone := accountClientForIntegration(t, rig.d, "sha256:account-phone", credential)
+	desktopFrames := subscribeEventFrames(t, desktop)
+	phoneFrames := subscribeEventFrames(t, phone)
+
+	startRunAs(t, desktop, rig.dir, 501, "two-client")
+
+	awaitEventKind(t, desktopFrames, 501, agentruntime.EventToolPermissionRequest, "发起会话的那条连接")
+	awaitEventKind(t, phoneFrames, 501, agentruntime.EventToolPermissionRequest,
+		"同账号的另一条连接必须看到同一条待决策")
+
+	// 手机接管这条会话(接管把推送目标改到手机那条连接上)并回答待决策。
+	var attached wire.SessionAttachResult
+	require.NoError(t, callRig(t, phone, wire.MethodSessionAttach, wire.SessionAttachParams{
+		SessionID: 501, PeerFingerprint: desktopFingerprint,
+	}, &attached))
+	var ok wire.OK
+	require.NoError(t, callRig(t, phone, wire.MethodSubmitToolPermission, wire.SubmitToolPermissionParams{
+		SessionID: 501, PeerFingerprint: desktopFingerprint, RequestID: twoClientRequestID, Allow: true,
+	}, &ok))
+
+	awaitEventKind(t, phoneFrames, 501, agentruntime.EventToolPermissionResolved, "回答的那一方")
+	awaitEventKind(t, desktopFrames, 501, agentruntime.EventToolPermissionResolved,
+		"另一方必须从事件流里看到这条待决策被解决")
+	awaitLifecycle(t, desktop, 501, wire.SessionLifecycleIdle)
+}
+
+// TestIntegration_MultiClientLiveEvents_UnclaimedDaemonKeepsEventsWithTheOriginatingPeer
+// 钉死 R13 的另一半:未认领 daemon 上没有账号可言,第二台已配对设备既看不到会话列表,
+// 也收不到别人会话的实时事件 —— 扇出只在已认领 daemon 上成立。
+func TestIntegration_MultiClientLiveEvents_UnclaimedDaemonKeepsEventsWithTheOriginatingPeer(t *testing.T) {
+	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+	t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, &twoClientApprovalRunner{}))
+
+	other := pairSecondDevice(t, rig.d, "sha256:peer-b")
+	otherFrames := subscribeEventFrames(t, other)
+	ownFrames := subscribeEventFrames(t, rig.cli)
+
+	startRunAs(t, rig.cli, rig.dir, 502, "two-client")
+	awaitEventKind(t, ownFrames, 502, agentruntime.EventToolPermissionRequest, "发起会话的那条连接")
+
+	select {
+	case f := <-otherFrames:
+		t.Fatalf("未认领 daemon 把会话 %d 的事件推给了另一台配对设备", f.SessionID)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// 收尾:让这一轮跑完再退出,否则 fanout goroutine 会活过用例、在数据目录被删之后
+	// 还往库里写(见 TestIntegration_SessionCatchup_AttachRepointsTheLiveStream)。
+	var ok wire.OK
+	require.NoError(t, callRig(t, rig.cli, wire.MethodSubmitToolPermission, wire.SubmitToolPermissionParams{
+		SessionID: 502, RequestID: twoClientRequestID, Allow: true,
+	}, &ok))
+	awaitLifecycle(t, rig.cli, 502, wire.SessionLifecycleIdle)
+}
+
 func sessionIDs(sessions []wire.SessionSummary) []int64 {
 	ids := make([]int64, 0, len(sessions))
 	for _, session := range sessions {

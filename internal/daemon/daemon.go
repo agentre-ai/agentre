@@ -135,9 +135,17 @@ type sessionKey struct {
 //
 // 不变量:claims 里的连接必然同时在 live 里(remove 在同一把锁下一起清)。
 //
-// 多客户端可同时存在:每条会话仍只有一个推送目标(发起 / 已授权接管它的连接),
-// 但 claims 按 (peer, session) 键独立，因此一个客户端不会覆盖另一个客户端的会话。
+// 多客户端同时在场:一条会话的推送**目标**仍是 claims 里那一条(发起 / 已授权接管它
+// 的连接),但推送的**收件人**是一个集合 —— 已认领 daemon 上,同账号的每一条活连接都
+// 是订阅者(见 subscribersLocked),桌面与手机因此同时收到同一会话的实时事件。
+// 未认领 daemon 没有账号可言,一个订阅者都不成立,行为与单目标时代完全一致(R13)。
+// MCP 反向隧道不在扇出之列:它按会话解析到发起端那一条(tunnelTargetFor,决策 9)。
 type connRegistry struct {
+	// claimedAccountID 交回 daemon 此刻的归属账号(未认领为空)。订阅资格拿它与连接
+	// 自己的 AuthState.AccountID 比 —— 每次解析时现问,不缓存:解除归属(R19)之后
+	// 那些还连着的连接必须立刻失去订阅资格。留空(零值 connRegistry)= 未认领。
+	claimedAccountID func() string
+
 	mu     sync.Mutex
 	seq    uint64
 	live   map[*rpc.Conn]liveConn
@@ -145,7 +153,120 @@ type connRegistry struct {
 }
 
 // liveConn is an authenticated connection's push port.
-type liveConn struct{ n handlers.NotifierPort }
+//
+// n 是同步端口,会话属主走它 —— 推送失败要如实回到 sessionEmitter(「只落库不推送」
+// 的判定靠这个返回值)。fanout 是这条连接**作为订阅者**时的异步端口,只有带账号身份的
+// 连接才有:一个卡住的订阅者不得阻塞会话本身与其余订阅者,所以扇出那一路一律经它排队。
+type liveConn struct {
+	n      handlers.NotifierPort
+	fanout *asyncNotifier
+}
+
+// subscriberQueueDepth 是每个订阅者的投递缓冲深度。写满 = 这个订阅者已经落后这么多帧,
+// 继续排队只会无界吃内存:此时丢弃并记日志,客户端按帧上的 seq 看到跳号,走既有的游标
+// 补齐(R6)把缺口拉回来 —— 通知本来就已经落库了。
+const subscriberQueueDepth = 256
+
+// queuedNotification 是排队中的一条通知。params 在**入队时**就序列化好:调用方
+// (sessionEmitter)手里那个帧是可变的(SetSeq 写的就是它),留到投递时才 marshal
+// 会读到被后一条通知改过的内容。
+type queuedNotification struct {
+	method string
+	params json.RawMessage
+}
+
+// asyncNotifier 是一个订阅者的投递队列:一条 goroutine 顺序发,这个订阅者收到的帧因此
+// 仍是原序;入队不阻塞调用方,所以慢的、写不动的订阅者只影响它自己。
+type asyncNotifier struct {
+	n    handlers.NotifierPort
+	ch   chan queuedNotification
+	stop chan struct{}
+	once sync.Once
+}
+
+func newAsyncNotifier(n handlers.NotifierPort) *asyncNotifier {
+	a := &asyncNotifier{
+		n:    n,
+		ch:   make(chan queuedNotification, subscriberQueueDepth),
+		stop: make(chan struct{}),
+	}
+	go a.run()
+	return a
+}
+
+func (a *asyncNotifier) run() {
+	for {
+		select {
+		case <-a.stop:
+			return
+		case q := <-a.ch:
+			if err := a.n.Notify(q.method, q.params); err != nil {
+				log.Printf("daemon: fan-out to subscriber failed method=%s err=%v", q.method, err)
+			}
+		}
+	}
+}
+
+func (a *asyncNotifier) Notify(method string, params any) error {
+	payload, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+	select {
+	case a.ch <- queuedNotification{method: method, params: payload}:
+		return nil
+	default:
+		log.Printf("daemon: subscriber is %d frames behind; dropped %s (it catches up by cursor)",
+			subscriberQueueDepth, method)
+		return fmt.Errorf("daemon: subscriber queue full, dropped %s", method)
+	}
+}
+
+func (a *asyncNotifier) Request(context.Context, string, any, any) error {
+	// 反向请求(MCP 隧道)按会话解析到发起端那一条连接,从不经过订阅者(决策 9)。
+	return errors.New("daemon: subscriber ports do not carry reverse requests")
+}
+
+// close 停掉投递 goroutine。幂等:连接关闭与重新鉴权都会走到它。
+func (a *asyncNotifier) close() { a.once.Do(func() { close(a.stop) }) }
+
+// fanoutNotifier 是一条会话的推送出口:属主连接同步收,同账号的其余订阅者各自异步收。
+// 它只在真有订阅者时才出现 —— 单目标时 ownerOf 交回的仍是那条连接的端口本身。
+//
+// 属主那一路刻意保持同步:推送失败要如实回给 sessionEmitter(R2/R3 的「只落库不推送」
+// 判定就靠这个返回值),而未认领 daemon 上只有这一路,行为因此与扇出之前逐字节相同。
+// 新增的订阅者一律走异步端口,所以「多接一个客户端」不会给会话添一个能把它卡死的单点。
+type fanoutNotifier struct {
+	primary handlers.NotifierPort
+	extras  []handlers.NotifierPort
+}
+
+func (f fanoutNotifier) Notify(method string, params any) error {
+	var delivered bool
+	var lastErr error
+	for _, extra := range f.extras {
+		if err := extra.Notify(method, params); err != nil {
+			lastErr = err
+			continue
+		}
+		delivered = true
+	}
+	if f.primary != nil {
+		return f.primary.Notify(method, params)
+	}
+	// 属主已经断开,只剩订阅者:全都投递不出去才算这条通知没推出去。
+	if delivered {
+		return nil
+	}
+	return lastErr
+}
+
+func (f fanoutNotifier) Request(ctx context.Context, method string, params any, result any) error {
+	if f.primary == nil {
+		return errors.New("daemon: session has no owner connection for a reverse request")
+	}
+	return f.primary.Request(ctx, method, params, result)
+}
 
 // sessionClaim 记住会话此刻的属主连接本身:撤销要按**连接身份**做,不能按指纹 ——
 // 同一台设备的另一条连接来去,不得影响正在跑的会话。
@@ -201,7 +322,13 @@ func (r *connRegistry) add(c *rpc.Conn, n handlers.NotifierPort) {
 	if r.live == nil {
 		r.live = map[*rpc.Conn]liveConn{}
 	}
-	r.live[c] = liveConn{n: n}
+	entry := liveConn{n: n}
+	// 只有带账号身份的连接(auth.account,见任务 6 的账号门)才可能成为订阅者,
+	// 也只有它需要那条投递 goroutine —— 纯 LAN 配对的 daemon 因此一条也不起。
+	if c.Auth().AccountID != "" {
+		entry.fanout = newAsyncNotifier(n)
+	}
+	r.live[c] = entry
 }
 
 // claimTicket 是一次认领的回执,交给 undoClaim 还原用(见 trackSessionOwner:认领跑在
@@ -305,6 +432,9 @@ func (r *connRegistry) remove(c *rpc.Conn) {
 }
 
 func (r *connRegistry) dropLocked(c *rpc.Conn) {
+	if lc, ok := r.live[c]; ok && lc.fanout != nil {
+		lc.fanout.close() // 摘掉这一份订阅,其余订阅者与它们的队列不受影响
+	}
 	delete(r.live, c)
 	for k, cl := range r.claims {
 		if cl.conn == c {
@@ -313,19 +443,64 @@ func (r *connRegistry) dropLocked(c *rpc.Conn) {
 	}
 }
 
-// ownerOf 返回该会话此刻的推送端口,没有活属主时 nil。
+// ownerOf 返回该会话此刻的推送端口:属主连接 + 同账号的其余订阅者。一个收件人都没有
+// 时 nil。
 func (r *connRegistry) ownerOf(k sessionKey) handlers.NotifierPort {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	cl, ok := r.claims[k]
-	if !ok {
-		return nil
-	}
-	return r.live[cl.conn].n
+	return r.portForLocked(k)
 }
 
-// routerFor 返回该对端的会话通知出口;该对端此刻一条持有会话的活连接都没有时返回 nil
-// —— 调用方(handlers 的 sessionEmitter)据此走「只落库、不推送」的挂起路径。
+// portForLocked 解出该会话此刻的推送出口。属主可能已经不在(它断开了、而同账号的另一个
+// 客户端还连着),订阅者也可能一个都没有(未认领 daemon);两者都空才算这条会话没有出口。
+func (r *connRegistry) portForLocked(k sessionKey) handlers.NotifierPort {
+	if k.peer == "" { // 空指纹不是可匹配身份,不得据此解析出任何收件人
+		return nil
+	}
+	var primary handlers.NotifierPort
+	var owner *rpc.Conn
+	if cl, ok := r.claims[k]; ok {
+		owner = cl.conn
+		primary = r.live[cl.conn].n
+	}
+	extras := r.subscribersLocked(owner)
+	if len(extras) == 0 {
+		return primary // 单目标:交回那条连接的端口本身,不套壳
+	}
+	return fanoutNotifier{primary: primary, extras: extras}
+}
+
+// subscribersLocked 交回除 exclude(会话属主,它走同步端口)之外的全部订阅者端口。
+//
+// 订阅资格只有一条:daemon 已被某个账号认领,且这条连接是**同一个账号**认证进来的
+// (auth.account 把归属账号写进 AuthState.AccountID,见任务 6 的账号门)。归属账号每次
+// 现问,不缓存 —— 解除归属(R19)之后那些还连着的连接必须立刻失去订阅资格。
+//
+// 未认领 daemon 一个订阅者都没有;只走 LAN 配对的连接也没有:配对是设备级信任,不是
+// 账号级可见性,多个配对对端不保证属于同一个人(R13)。
+func (r *connRegistry) subscribersLocked(exclude *rpc.Conn) []handlers.NotifierPort {
+	if r.claimedAccountID == nil {
+		return nil
+	}
+	claimed := r.claimedAccountID()
+	if claimed == "" {
+		return nil
+	}
+	var out []handlers.NotifierPort
+	for c, lc := range r.live {
+		if c == exclude || lc.fanout == nil {
+			continue
+		}
+		if c.Auth().AccountID != claimed {
+			continue
+		}
+		out = append(out, lc.fanout)
+	}
+	return out
+}
+
+// routerFor 返回该对端的会话通知出口;该对端的会话此刻一个收件人都没有时返回 nil ——
+// 调用方(handlers 的 sessionEmitter)据此走「只落库、不推送」的挂起路径。
 func (r *connRegistry) routerFor(peer string) handlers.NotifierPort {
 	if peer == "" {
 		return nil
@@ -337,12 +512,18 @@ func (r *connRegistry) routerFor(peer string) handlers.NotifierPort {
 			return sessionRouter{reg: r, peer: peer}
 		}
 	}
+	// 属主都断开了,但同账号还有订阅者连着:会话不算挂起,实时流继续推给它们。
+	if len(r.subscribersLocked(nil)) > 0 {
+		return sessionRouter{reg: r, peer: peer}
+	}
 	return nil
 }
 
 // tunnelTargetFor resolves the exact session origin carried in the daemon-local
 // MCP URL. There is intentionally no newest-connection fallback: a missing
 // originating peer is an unavailable tool, not permission to cross-route it.
+// 会话通知的订阅者集合(见 subscribersLocked)在这里**没有**位置:内置工具的实现与数据
+// 在发起端本地,把工具请求扇出给同账号的其它客户端就是决策 9 明确否掉的那件事。
 func (r *connRegistry) tunnelTargetFor(peer string, sid int64) handlers.NotifierPort {
 	if peer == "" || sid <= 0 {
 		return nil
@@ -478,6 +659,8 @@ func New(opts Options) (*Daemon, error) {
 		registry: reg, auth: auth,
 		steerSource: newSteerSourceStore(),
 	}
+	// 订阅资格的账号门:登记表每次解析收件人时现问 daemon 此刻的归属账号。
+	d.conns.claimedAccountID = d.claimedAccountID
 	if st.IsClaimed() && opts.HubServerURL != "" {
 		credential := st.Snapshot().Credential
 		d.hub = rpc.NewHubLink(rpc.HubLinkOptions{
