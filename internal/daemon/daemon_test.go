@@ -596,21 +596,27 @@ func awaitMethods(t *testing.T, n *recordingNotifier, want []string, msg string)
 	assert.Equal(t, want, n.methods(), msg)
 }
 
-// TestConnRegistry_ClaimedDaemonFansOutSessionEventsToEverySameAccountConn 兑现用户
+// TestConnRegistry_ClaimedDaemonFansOutSessionEventsToEveryConnOnThatSession 兑现用户
 // 流程「桌面与手机同时连着同一个会话,双方都收到实时事件」:已认领 daemon 上,一条会话
-// 的通知除了发起它的那条连接,还发给同账号的其余活连接。
+// 的通知除了发起它的那条连接,还发给上过这条会话的其余同账号连接。
 //
 // 同时钉死账号门:订阅资格 = 已认领 **且** 连接的 AuthState.AccountID == 归属账号。
-// 别的账号的连接、以及只走 LAN 配对(没有账号身份)的连接,一条也收不到 —— 前者是跨账号
-// 信息泄漏,后者是「配对 ≠ 账号级可见性」这条既有分界(R13)。
-func TestConnRegistry_ClaimedDaemonFansOutSessionEventsToEverySameAccountConn(t *testing.T) {
+// 别的账号的连接、以及只走 LAN 配对(没有账号身份)的连接,即便点名了这条会话也一条
+// 收不到 —— 前者是跨账号信息泄漏,后者是「配对 ≠ 账号级可见性」这条既有分界(R13)。
+func TestConnRegistry_ClaimedDaemonFansOutSessionEventsToEveryConnOnThatSession(t *testing.T) {
 	r := claimedRegistry("acct-1")
 	desktop, nDesktop := registerAccountAuthed(r, "fp-desktop", "acct-1")
-	_, nPhone := registerAccountAuthed(r, "fp-phone", "acct-1")
-	_, nStranger := registerAccountAuthed(r, "fp-stranger", "acct-2")
+	phone, nPhone := registerAccountAuthed(r, "fp-phone", "acct-1")
+	stranger, nStranger := registerAccountAuthed(r, "fp-stranger", "acct-2")
 	pairedOnly, nPairedOnly := authedConn("fp-lan"), &recordingNotifier{}
 	r.add(pairedOnly, nPairedOnly)
 	r.claim(desktop, 7)
+	// 手机按 R12 接管这条会话 —— 「同时连着同一个会话」的那一步。别的账号的连接与只走
+	// LAN 配对的连接同样点名这条会话,验的就是它们过不了账号门。
+	r.claimFor(phone, "fp-desktop", 7)
+	r.claimFor(stranger, "fp-desktop", 7)
+	r.claimFor(pairedOnly, "fp-desktop", 7)
+	r.claim(desktop, 7) // 还原属主:接管只是为了进订阅者集合
 
 	out := r.routerFor("fp-desktop")
 	require.NotNil(t, out)
@@ -621,6 +627,50 @@ func TestConnRegistry_ClaimedDaemonFansOutSessionEventsToEverySameAccountConn(t 
 	assert.Never(t, func() bool { return len(nStranger.methods()) > 0 }, 200*time.Millisecond, 20*time.Millisecond,
 		"别的账号的连接不得收到本账号会话的事件")
 	assert.Empty(t, nPairedOnly.methods(), "只走 LAN 配对的连接没有账号身份,不构成订阅者")
+}
+
+// TestConnRegistry_FanoutReachesOnlyTheConnsOnThatSession 钉死扇出的边界:一条会话的
+// 订阅者是**上过这条会话的**那些连接(发起它、或按 R12 显式接管过它),不是同账号的
+// 每一条活连接。
+//
+// 为什么边界必须在这里:推出去的帧只带一个 sessionId(wire.EventFrame),而会话 id 是
+// 各客户端本地自增的 —— daemon 侧的会话主键是 (对端指纹, 会话 id) 两段(见 sessionKey
+// 的注释:「两个对端各自持有同一个 id 时是两条互不相干的会话」),帧上只剩后一段。把
+// 桌面端会话 7 的事件推给一条从没上过这条会话的同账号连接,对方只能按裸 7 去找,于是
+// 落进它**自己**那条同号会话里。R12 明写「放宽的是过滤条件,会话主键结构不变」:同账号
+// 客户端**可以**看到并操作全部会话(list / attach),不等于每条会话都无条件推给它。
+func TestConnRegistry_FanoutReachesOnlyTheConnsOnThatSession(t *testing.T) {
+	r := claimedRegistry("acct-1")
+	desktop, nDesktop := registerAccountAuthed(r, "fp-desktop", "acct-1")
+	_, nIdle := registerAccountAuthed(r, "fp-idle", "acct-1")
+	r.claim(desktop, 7)
+
+	out := r.routerFor("fp-desktop")
+	require.NotNil(t, out)
+	require.NoError(t, out.Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7, Seq: 1}))
+
+	awaitMethods(t, nDesktop, []string{wire.NotifyEvent}, "发起会话的那条连接照收")
+	assert.Never(t, func() bool { return len(nIdle.methods()) > 0 }, 200*time.Millisecond, 20*time.Millisecond,
+		"没上过这条会话的同账号连接不得收到它的事件 —— 它只会按裸 sessionId 落进自己的同号会话")
+}
+
+// TestConnRegistry_AttachJoinsTheSessionFanout 是上一条的另一半,也是用户流程
+// 「桌面与手机**同时连着同一个会话**」的正路:手机按 R12 接管(claimFor)之后,
+// 桌面端虽然不再是属主,仍留在这条会话的订阅者里,两边同收一条事件。
+func TestConnRegistry_AttachJoinsTheSessionFanout(t *testing.T) {
+	r := claimedRegistry("acct-1")
+	desktop, nDesktop := registerAccountAuthed(r, "fp-desktop", "acct-1")
+	phone, nPhone := registerAccountAuthed(r, "fp-phone", "acct-1")
+	r.claim(desktop, 7)
+	// 手机接管桌面端发起的那条会话:目标对端是桌面端的指纹(R12 的跨对端操作)。
+	r.claimFor(phone, "fp-desktop", 7)
+
+	out := r.routerFor("fp-desktop")
+	require.NotNil(t, out)
+	require.NoError(t, out.Notify(wire.NotifyEvent, &wire.EventFrame{SessionID: 7, Seq: 1}))
+
+	awaitMethods(t, nPhone, []string{wire.NotifyEvent}, "接管方是属主,同步收")
+	awaitMethods(t, nDesktop, []string{wire.NotifyEvent}, "接管不把另一方踢下线,它仍是这条会话的订阅者")
 }
 
 // TestConnRegistry_UnclaimedDaemonKeepsPushingOnlyToTheOriginatingPeer 钉死 R13:
@@ -669,8 +719,11 @@ func TestConnRegistry_SlowSubscriberBlocksNeitherTheSessionNorItsPeers(t *testin
 	blocking := newBlockingNotifier()
 	r.add(stuck, blocking)
 	defer close(blocking.release)
-	_, nPhone := registerAccountAuthed(r, "fp-phone", "acct-1")
+	phone, nPhone := registerAccountAuthed(r, "fp-phone", "acct-1")
 	r.claim(desktop, 7)
+	r.claimFor(stuck, "fp-desktop", 7)
+	r.claimFor(phone, "fp-desktop", 7)
+	r.claim(desktop, 7) // 还原属主
 
 	out := r.routerFor("fp-desktop")
 	require.NotNil(t, out)
@@ -710,6 +763,9 @@ func TestConnRegistry_LosingOneSubscriberLeavesTheRestReceiving(t *testing.T) {
 	phone, nPhone := registerAccountAuthed(r, "fp-phone", "acct-1")
 	tablet, nTablet := registerAccountAuthed(r, "fp-tablet", "acct-1")
 	r.claim(desktop, 7)
+	r.claimFor(phone, "fp-desktop", 7)
+	r.claimFor(tablet, "fp-desktop", 7)
+	r.claim(desktop, 7) // 还原属主
 
 	out := r.routerFor("fp-desktop")
 	require.NotNil(t, out)

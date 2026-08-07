@@ -136,10 +136,16 @@ type sessionKey struct {
 // 不变量:claims 里的连接必然同时在 live 里(remove 在同一把锁下一起清)。
 //
 // 多客户端同时在场:一条会话的推送**目标**仍是 claims 里那一条(发起 / 已授权接管它
-// 的连接),但推送的**收件人**是一个集合 —— 已认领 daemon 上,同账号的每一条活连接都
-// 是订阅者(见 subscribersLocked),桌面与手机因此同时收到同一会话的实时事件。
-// 未认领 daemon 没有账号可言,一个订阅者都不成立,行为与单目标时代完全一致(R13)。
-// MCP 反向隧道不在扇出之列:它按会话解析到发起端那一条(tunnelTargetFor,决策 9)。
+// 的连接),但推送的**收件人**是一个集合 —— subs 里登记的、**上过这条会话**的那些同账号
+// 连接(发起它的,以及按 R12 显式接管 / 控制过它的),桌面与手机因此同时收到同一会话的
+// 实时事件。未认领 daemon 没有账号可言,一个订阅者都不成立,行为与单目标时代完全一致
+// (R13)。MCP 反向隧道不在扇出之列:它按会话解析到发起端那一条(tunnelTargetFor,决策 9)。
+//
+// 收件人为什么必须按**会话**而不是按账号取:推出去的帧只带一个 sessionId
+// (wire.EventFrame / RunResultDoneFrame / AutonomousTurnStartedFrame),而会话主键是
+// sessionKey 的两段。把一条会话的事件推给一条从没上过它的同账号连接,对方只剩裸
+// sessionId 可用,只能落进它**自己**那条同号会话 —— 别人的转录被写进你的对话。R12 放宽
+// 的是可见性的**过滤条件**(list / attach 能看到并操作全部会话),「会话主键结构不变」。
 type connRegistry struct {
 	// claimedAccountID 交回 daemon 此刻的归属账号(未认领为空)。订阅资格拿它与连接
 	// 自己的 AuthState.AccountID 比 —— 每次解析时现问,不缓存:解除归属(R19)之后
@@ -150,6 +156,9 @@ type connRegistry struct {
 	seq    uint64
 	live   map[*rpc.Conn]liveConn
 	claims map[sessionKey]sessionClaim
+	// subs 是每条会话的订阅者集合:上过这条会话的那些连接。属主换人不清空它 ——
+	// 接管的语义是「此后由我消费」,不是「把另一方踢下线」。
+	subs map[sessionKey]map[*rpc.Conn]struct{}
 }
 
 // liveConn is an authenticated connection's push port.
@@ -335,9 +344,13 @@ func (r *connRegistry) add(c *rpc.Conn, n handlers.NotifierPort) {
 // handler 之前,handler 拒了这一条就得还原)。ok 为假表示这次调用什么都没改。
 type claimTicket struct {
 	key  sessionKey
+	conn *rpc.Conn
 	at   uint64
 	prev sessionClaim
 	ok   bool
+	// addedSub 记这次认领是不是**新**把这条连接加进该会话的订阅者集合。被拒的调用
+	// 不该让调用方留在会话里旁听,还原时按它撤回;它本来就在里面时不动。
+	addedSub bool
 }
 
 // claim records a caller's own-peer session target. Account-authorized cross-peer
@@ -383,7 +396,41 @@ func (r *connRegistry) claimFor(c *rpc.Conn, peer string, sid int64) claimTicket
 		}
 	}
 	r.claims[k] = sessionClaim{conn: c, mcpConn: mcpConn, at: r.seq}
-	return claimTicket{key: k, at: r.seq, prev: prev, ok: true}
+	added := r.addSubLocked(k, c)
+	return claimTicket{key: k, conn: c, at: r.seq, prev: prev, ok: true, addedSub: added}
+}
+
+// addSubLocked 把这条连接登记为该会话的订阅者,返回它是不是新加进去的。只有带账号
+// 身份的连接(有 fanout 端口)才构成订阅者 —— 纯 LAN 配对的连接不参与扇出(R13)。
+func (r *connRegistry) addSubLocked(k sessionKey, c *rpc.Conn) bool {
+	if r.live[c].fanout == nil {
+		return false
+	}
+	if r.subs == nil {
+		r.subs = map[sessionKey]map[*rpc.Conn]struct{}{}
+	}
+	set := r.subs[k]
+	if set == nil {
+		set = map[*rpc.Conn]struct{}{}
+		r.subs[k] = set
+	}
+	if _, ok := set[c]; ok {
+		return false
+	}
+	set[c] = struct{}{}
+	return true
+}
+
+// removeSubLocked 摘掉一份订阅;集合空了连键一起删,免得会话表随会话数无界长。
+func (r *connRegistry) removeSubLocked(k sessionKey, c *rpc.Conn) {
+	set := r.subs[k]
+	if set == nil {
+		return
+	}
+	delete(set, c)
+	if len(set) == 0 {
+		delete(r.subs, k)
+	}
 }
 
 // undoClaim 撤回一次认领,把属主还原成认领之前的那条连接(没有前主就还原成「无属主」)。
@@ -407,6 +454,9 @@ func (r *connRegistry) undoClaim(t claimTicket) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if t.addedSub {
+		r.removeSubLocked(t.key, t.conn)
+	}
 	if cur, exists := r.claims[t.key]; exists && cur.at != t.at {
 		return
 	}
@@ -441,10 +491,14 @@ func (r *connRegistry) dropLocked(c *rpc.Conn) {
 			delete(r.claims, k)
 		}
 	}
+	// 掉一条连接只摘掉它自己那份订阅:同一条会话上的其余客户端继续收实时事件。
+	for k := range r.subs {
+		r.removeSubLocked(k, c)
+	}
 }
 
-// ownerOf 返回该会话此刻的推送端口:属主连接 + 同账号的其余订阅者。一个收件人都没有
-// 时 nil。
+// ownerOf 返回该会话此刻的推送端口:属主连接 + **这条会话上**的其余同账号订阅者。
+// 一个收件人都没有时 nil。
 func (r *connRegistry) ownerOf(k sessionKey) handlers.NotifierPort {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -463,22 +517,25 @@ func (r *connRegistry) portForLocked(k sessionKey) handlers.NotifierPort {
 		owner = cl.conn
 		primary = r.live[cl.conn].n
 	}
-	extras := r.subscribersLocked(owner)
+	extras := r.subscribersLocked(k, owner)
 	if len(extras) == 0 {
 		return primary // 单目标:交回那条连接的端口本身,不套壳
 	}
 	return fanoutNotifier{primary: primary, extras: extras}
 }
 
-// subscribersLocked 交回除 exclude(会话属主,它走同步端口)之外的全部订阅者端口。
+// subscribersLocked 交回**这条会话**的订阅者端口,除 exclude(会话属主,它走同步端口)。
 //
-// 订阅资格只有一条:daemon 已被某个账号认领,且这条连接是**同一个账号**认证进来的
-// (auth.account 把归属账号写进 AuthState.AccountID,见任务 6 的账号门)。归属账号每次
-// 现问,不缓存 —— 解除归属(R19)之后那些还连着的连接必须立刻失去订阅资格。
+// 订阅资格两条,缺一不可:
+//   - 这条连接上过这条会话(在 subs[k] 里)—— 帧上只有裸 sessionId,推给没上过它的
+//     连接就是把别人的转录塞进对方自己那条同号会话(见 connRegistry 的注释);
+//   - daemon 已被某个账号认领,且这条连接是**同一个账号**认证进来的(auth.account 把
+//     归属账号写进 AuthState.AccountID,见任务 6 的账号门)。归属账号每次现问,不缓存
+//     —— 解除归属(R19)之后那些还连着的连接必须立刻失去订阅资格。
 //
 // 未认领 daemon 一个订阅者都没有;只走 LAN 配对的连接也没有:配对是设备级信任,不是
 // 账号级可见性,多个配对对端不保证属于同一个人(R13)。
-func (r *connRegistry) subscribersLocked(exclude *rpc.Conn) []handlers.NotifierPort {
+func (r *connRegistry) subscribersLocked(k sessionKey, exclude *rpc.Conn) []handlers.NotifierPort {
 	if r.claimedAccountID == nil {
 		return nil
 	}
@@ -487,8 +544,12 @@ func (r *connRegistry) subscribersLocked(exclude *rpc.Conn) []handlers.NotifierP
 		return nil
 	}
 	var out []handlers.NotifierPort
-	for c, lc := range r.live {
-		if c == exclude || lc.fanout == nil {
+	for c := range r.subs[k] {
+		if c == exclude {
+			continue
+		}
+		lc, live := r.live[c]
+		if !live || lc.fanout == nil {
 			continue
 		}
 		if c.Auth().AccountID != claimed {
@@ -512,9 +573,14 @@ func (r *connRegistry) routerFor(peer string) handlers.NotifierPort {
 			return sessionRouter{reg: r, peer: peer}
 		}
 	}
-	// 属主都断开了,但同账号还有订阅者连着:会话不算挂起,实时流继续推给它们。
-	if len(r.subscribersLocked(nil)) > 0 {
-		return sessionRouter{reg: r, peer: peer}
+	// 属主都断开了,但这个对端还有会话留着订阅者:会话不算挂起,实时流继续推给它们。
+	for k := range r.subs {
+		if k.peer != peer {
+			continue
+		}
+		if len(r.subscribersLocked(k, nil)) > 0 {
+			return sessionRouter{reg: r, peer: peer}
+		}
 	}
 	return nil
 }

@@ -2174,8 +2174,10 @@ func awaitEventKind(t *testing.T, frames <-chan wire.EventFrame, sid int64, kind
 // 流程「桌面与手机同时连着同一个会话」:已认领 daemon 上同账号的两条连接同时收到同一
 // 会话的实时事件,任一方回答待决策,另一方从事件流里看到它被解决。
 //
-// 两段断言各钉一个方向:手机没发起、也没接管过这条会话就收到它的事件(扇出本身);
-// 手机接管并回答之后,已经不是属主的桌面端仍收到解决事件(接管不把另一方踢下线)。
+// 三段断言各钉一个方向:手机按 R12 接管这条会话后回答待决策,已经不是属主的桌面端仍
+// 收到解决事件(接管不把另一方踢下线);而同账号的第三条连接从没上过这条会话,一条也
+// 收不到 —— 帧上只有裸 sessionId,推给它就是落进它自己那条同号会话(R12「会话主键结构
+// 不变」)。
 func TestIntegration_MultiClientLiveEvents_SameAccountConnsShareOneSessionStream(t *testing.T) {
 	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
 	t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, &twoClientApprovalRunner{}))
@@ -2184,14 +2186,14 @@ func TestIntegration_MultiClientLiveEvents_SameAccountConnsShareOneSessionStream
 	const desktopFingerprint = "sha256:account-desktop"
 	desktop := accountClientForIntegration(t, rig.d, desktopFingerprint, credential)
 	phone := accountClientForIntegration(t, rig.d, "sha256:account-phone", credential)
+	bystander := accountClientForIntegration(t, rig.d, "sha256:account-bystander", credential)
 	desktopFrames := subscribeEventFrames(t, desktop)
 	phoneFrames := subscribeEventFrames(t, phone)
+	bystanderFrames := subscribeEventFrames(t, bystander)
 
 	startRunAs(t, desktop, rig.dir, 501, "two-client")
 
 	awaitEventKind(t, desktopFrames, 501, agentruntime.EventToolPermissionRequest, "发起会话的那条连接")
-	awaitEventKind(t, phoneFrames, 501, agentruntime.EventToolPermissionRequest,
-		"同账号的另一条连接必须看到同一条待决策")
 
 	// 手机接管这条会话(接管把推送目标改到手机那条连接上)并回答待决策。
 	var attached wire.SessionAttachResult
@@ -2207,6 +2209,12 @@ func TestIntegration_MultiClientLiveEvents_SameAccountConnsShareOneSessionStream
 	awaitEventKind(t, desktopFrames, 501, agentruntime.EventToolPermissionResolved,
 		"另一方必须从事件流里看到这条待决策被解决")
 	awaitLifecycle(t, desktop, 501, wire.SessionLifecycleIdle)
+
+	select {
+	case f := <-bystanderFrames:
+		t.Fatalf("会话 %d 的事件推给了一条从没上过它的同账号连接", f.SessionID)
+	case <-time.After(300 * time.Millisecond):
+	}
 }
 
 // TestIntegration_MultiClientLiveEvents_UnclaimedDaemonKeepsEventsWithTheOriginatingPeer
