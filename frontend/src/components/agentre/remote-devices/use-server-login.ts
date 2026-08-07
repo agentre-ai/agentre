@@ -56,9 +56,16 @@ export function useServerLogin() {
     loggedIn: isLoggedIn(state),
     loading,
     refresh,
+    // refresh 放在 finally:ServerLogout 会真的失败(logout.go 的 ClearLoginFields
+    // 落库出错),而失败意味着登录状态一点没变。排在 await 之后的话这一步会被整个
+    // 跳过,界面就停在退登之前那一帧、与真相脱节。错误照常抛给调用方 —— 由它决定
+    // 怎么告诉用户,这里不吞。
     logout: async () => {
-      await ServerLogout();
-      await refresh();
+      try {
+        await ServerLogout();
+      } finally {
+        await refresh();
+      }
     },
     checkURL: ServerCheckURL,
     startLogin: ServerStartLogin,

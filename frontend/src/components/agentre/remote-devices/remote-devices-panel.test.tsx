@@ -133,8 +133,15 @@ describe("RemoteDevicesPanel", () => {
     await waitFor(() =>
       expect(screen.getAllByTestId("device-row")).toHaveLength(1),
     );
+    // 这一轮把 remoteDevices.panel.lanAll 从两份 locale 里一并删掉了,所以标签
+    // 若被重新加回 JSX,渲染出来的是**原始 key**而不是译文。译文断言只在「key 也
+    // 被加回来」时才可能命中,单靠它挡不住另一半;两条都要。
+    // (原先还有一条 /LAN 直连 · 全部/ —— setup.ts 在每个用例前强制 en,中文文案
+    // 永远不会被渲染,那条断言恒真、挡不住任何东西,已删。)
+    expect(
+      screen.queryByText("remoteDevices.panel.lanAll"),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText(/LAN direct · All/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/LAN 直连 · 全部/)).not.toBeInTheDocument();
   });
 
   // R15 测试接缝:同一指纹的两个来源合并为一行且路径标记正确。

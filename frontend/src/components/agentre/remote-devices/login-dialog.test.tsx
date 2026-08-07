@@ -128,6 +128,59 @@ describe("LoginDialog", () => {
     expect(pollLoginToken).not.toHaveBeenCalled();
   });
 
+  // b2) 卸载发生在 startLogin 还在飞的时候:迟到的那次 start 不得再装一个
+  // 谁也清不掉的 interval。stopPolling 只清**已经存在**的 timer,而 start 过去
+  // 是在 await 之后才读 attemptRef —— 读到的是卸载清理刚 +1 过的那个值,于是
+  // 身份校验反而放行,轮询就此每 5s 跑到进程结束(还会把 onLoggedIn 打进已死的父组件)。
+  it("does not leave a polling interval behind when it unmounts mid-start", async () => {
+    vi.useFakeTimers();
+    let releaseStart: (r: StartLoginResult) => void = () => {};
+    const startLogin = vi.fn(
+      () =>
+        new Promise<StartLoginResult>((resolve) => {
+          releaseStart = resolve;
+        }),
+    );
+    const pollLoginToken = vi.fn().mockResolvedValue(false);
+    const onLoggedIn = vi.fn();
+    const { unmount } = render(
+      <LoginDialog
+        open
+        initialUrl=""
+        onClose={vi.fn()}
+        onLoggedIn={onLoggedIn}
+        checkURL={vi.fn().mockResolvedValue("0.3.0")}
+        startLogin={startLogin}
+        pollLoginToken={pollLoginToken}
+        cancelLogin={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText(/hub\.example\.com/), {
+        target: { value: "https://hub.example.com" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(startLogin).toHaveBeenCalled();
+
+    // 用户在这一次网络往返还没回来的时候离开了设置页。
+    unmount();
+    await act(async () => {
+      releaseStart(RESULT);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(pollLoginToken).not.toHaveBeenCalled();
+    expect(onLoggedIn).not.toHaveBeenCalled();
+  });
+
   // c) cancelling stops the polling and calls ServerCancelLogin.
   it("cancelling stops polling and calls cancelLogin", async () => {
     vi.useFakeTimers();

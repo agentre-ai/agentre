@@ -92,4 +92,26 @@ describe("useServerLogin", () => {
     expect(mockLogout).toHaveBeenCalled();
     expect(result.current.loggedIn).toBe(false);
   });
+
+  // ServerLogout 会真的报错(logout.go 的 ClearLoginFields 落库失败)。此时登录
+  // 状态一点没变,界面必须照实说「还登录着」—— 而不是卡在退登之前那一帧。过去
+  // refresh() 排在 await 之后,一旦 ServerLogout 抛出就整个跳过,界面从此与真相
+  // 脱节(而调用方那边只剩一个 unhandled rejection)。
+  it("logout() still re-reads state when ServerLogout fails, and surfaces the failure", async () => {
+    mockGetState.mockResolvedValueOnce(loggedInState);
+    mockLogout.mockRejectedValueOnce(new Error("database is locked"));
+    const { result } = renderHook(() => useServerLogin());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.loggedIn).toBe(true);
+
+    mockGetState.mockClear();
+    mockGetState.mockResolvedValueOnce(loggedInState);
+    await act(async () => {
+      await expect(result.current.logout()).rejects.toThrow(
+        "database is locked",
+      );
+    });
+    expect(mockGetState).toHaveBeenCalled();
+    expect(result.current.loggedIn).toBe(true);
+  });
 });

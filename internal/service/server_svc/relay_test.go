@@ -34,7 +34,7 @@ func relayEndpointServer(t *testing.T, bearer string) *httptest.Server {
 		if err != nil {
 			return
 		}
-		defer ws.Close()
+		defer func() { _ = ws.Close() }()
 		for {
 			var f rpc.Frame
 			if err := ws.ReadJSON(&f); err != nil {
@@ -66,6 +66,60 @@ func TestDialDaemonRelay_NotLoggedIn(t *testing.T) {
 		svc := setupRelaySvc(t, &server_state_entity.ServerState{ID: 1}, "")
 		_, err := svc.DialDaemonRelay(context.Background(), "sha256:daemon", "sha256:desktop")
 		So(errors.Is(err, server_svc.ErrNotLoggedIn), ShouldBeTrue)
+	})
+}
+
+// Given server 部署在一个带路径前缀的 baseURL 下(反代常态:https://host/agentre),
+// When 桌面端走账号中转拨号,Then 它打的是 <前缀>/v1/relay/client —— 与同一个
+// baseURL 上的 HTTP 调用(serverClient.do 用 baseURL+path)以及 daemon 侧的
+// hubEndpoint(它保留前缀后拼 /v1/relay/daemon)一致。丢掉前缀会打到反代根下不存在
+// 的路径,server 从没见过这次请求,拨号却被归类成「这台 daemon 从未登记过」——
+// 用户被指向「先去认领这台机器」,而机器一直是认领着的。
+func TestDialDaemonRelay_PreservesServerBasePath(t *testing.T) {
+	Convey("baseURL 带路径前缀时,中转拨号必须打到前缀下的 /v1/relay/client", t, func() {
+		const prefix = "/agentre"
+		var gotPath string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			if r.URL.Path != prefix+"/v1/relay/client" {
+				http.NotFound(w, r)
+				return
+			}
+			up := &websocket.Upgrader{}
+			ws, err := up.Upgrade(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer func() { _ = ws.Close() }()
+			for {
+				var f rpc.Frame
+				if err := ws.ReadJSON(&f); err != nil {
+					return
+				}
+				_ = ws.WriteJSON(rpc.Frame{JSONRPC: "2.0", ID: f.ID,
+					Result: json.RawMessage(`{"ok":true,"instanceUUID":"uuid-1"}`)})
+			}
+		}))
+		defer srv.Close()
+
+		base := srv.URL + prefix
+		row := &server_state_entity.ServerState{
+			ID: 1, ServerURL: base, DeviceID: 1, ServerUserID: 1,
+			KeychainAccount: "agentre.server.refresh_token",
+		}
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+		mRepo := mock_server_state_repo.NewMockServerStateRepo(ctrl)
+		server_state_repo.RegisterServerState(mRepo)
+		mRepo.EXPECT().Get(gomock.Any()).Return(row, nil)
+		keychain.SetDefault(keychain.NewMemory())
+		svc := server_svc.New(server_svc.NewHTTPClient(base, "tok-9"), nil)
+
+		c, err := svc.DialDaemonRelay(context.Background(), "sha256:daemon", "sha256:desktop")
+		So(err, ShouldBeNil)
+		So(c, ShouldNotBeNil)
+		So(gotPath, ShouldEqual, prefix+"/v1/relay/client")
+		_ = c.Close()
 	})
 }
 

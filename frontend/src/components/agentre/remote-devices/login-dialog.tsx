@@ -115,28 +115,38 @@ export function LoginDialog({
 
   const start = async () => {
     stopPolling(); // 作废上一次尝试还在飞的轮询,再开新的一次
+    // 这一次尝试的身份**在起点就定下**,不能等两次 await 回来再读:stopPolling
+    // (卸载清理 / 关闭 / 再点一次)只清得掉**已经存在**的 timer,清不掉一次还在
+    // 飞的 start。若等 await 之后才读 attemptRef,读到的正是那次清理刚 +1 出来的
+    // 新值,身份校验于是放行,而这个 interval 已经没有任何人能清 —— 轮询会一直
+    // 跑到进程结束,一个迟到的 true 还会把 onLoggedIn/onClose 打进已经卸载的父组件。
+    const attempt = attemptRef.current;
+    const stale = () => attempt !== attemptRef.current;
     setError(null);
     setPhase("starting");
     try {
       await checkURL(url);
     } catch (e: unknown) {
+      if (stale()) return;
       setPhase("form");
       setError(friendlyLoginError(e, t));
       return;
     }
+    if (stale()) return;
     try {
       const res = await startLogin(url);
+      if (stale()) return;
       setLogin(res);
       setPhase("waiting");
       deadlineRef.current = Date.now() + Math.max(0, res.ExpiresIn || 0) * 1000;
       const intervalMs =
         Math.max(1, res.Interval || FALLBACK_INTERVAL_S) * 1000;
-      const attempt = attemptRef.current;
       timerRef.current = window.setInterval(
         () => void poll(res.DeviceCode, attempt),
         Math.max(MIN_INTERVAL_MS, intervalMs),
       );
     } catch (e: unknown) {
+      if (stale()) return;
       setPhase("form");
       setError(friendlyLoginError(e, t));
     }

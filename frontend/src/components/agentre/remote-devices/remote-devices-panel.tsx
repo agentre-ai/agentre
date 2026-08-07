@@ -100,7 +100,14 @@ export function RemoteDevicesPanel() {
             serverURL={serverLogin.state?.ServerURL ?? ""}
             onSignIn={() => setLoginOpen(true)}
             onSignOut={() => {
-              void serverLogin.logout().then(() => reload());
+              // logout() 如实抛出 ServerLogout 的失败,而它已经在自己的 finally
+              // 里把登录状态重读过了 —— 失败时账号仍是登录态,头部照实继续显示
+              // 「已登录」。这里只负责让设备列表也跟着重读,并且不留下一个
+              // unhandled rejection(过去 .then 链上没有任何 catch)。
+              void serverLogin
+                .logout()
+                .catch(() => {})
+                .finally(() => reload());
             }}
           />
           <Button onClick={() => setAddOpen(true)}>
