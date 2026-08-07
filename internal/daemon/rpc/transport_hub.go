@@ -112,16 +112,19 @@ func (l *HubLink) Run(ctx context.Context) error {
 	failures := 0
 	for {
 		if ctx.Err() != nil {
-			return nil
+			// Shutdown is Run's normal termination, not a relay failure.
+			return nil //nolint:nilerr // ctx cancellation ends Run cleanly: there is nothing left to dial or report
 		}
 		conn, err := l.dial(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil
+				// The dial was aborted by our own shutdown, so the daemon must not
+				// see it as a relay failure: no log, no backoff, no retry.
+				return nil //nolint:nilerr // this dial error is the shutdown surfacing through the dialer
 			}
 			log.Printf("rpc.HubLink: relay dial failed; retrying: %v", err)
 			if err := l.wait(ctx, failures); err != nil {
-				return nil
+				return l.stopRetrying(ctx, err)
 			}
 			failures++
 			continue
@@ -135,7 +138,9 @@ func (l *HubLink) Run(ctx context.Context) error {
 		_ = conn.Close()
 		if ctx.Err() != nil {
 			l.notifyDisconnect(ctx.Err())
-			return nil
+			// The read loop ended because we are shutting down; listeners already
+			// have ctx.Err(), and Run itself exits clean.
+			return nil //nolint:nilerr // shutdown, not a relay failure: the serve error is the cancellation surfacing
 		}
 		if renewed {
 			failures = 0
@@ -143,10 +148,22 @@ func (l *HubLink) Run(ctx context.Context) error {
 		l.notifyDisconnect(err)
 		log.Printf("rpc.HubLink: relay disconnected; retrying: %v", err)
 		if err := l.wait(ctx, failures); err != nil {
-			return nil
+			return l.stopRetrying(ctx, err)
 		}
 		failures++
 	}
+}
+
+// stopRetrying classifies why a backoff wait ended the reconnect loop. A wait
+// that ends because ctx was canceled is Run's normal shutdown, so it exits nil.
+// Any other wait failure means the retry clock itself is broken: swallowing it
+// would leave the relay permanently down with nobody told, so it propagates.
+func (l *HubLink) stopRetrying(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return nil //nolint:nilerr // the wait error is the shutdown surfacing through the clock seam; Run's contract is a clean nil exit
+	}
+	log.Printf("rpc.HubLink: relay retry clock failed; giving up: %v", err)
+	return fmt.Errorf("relay retry wait: %w", err)
 }
 
 // Send writes one raw relay frame. It does not queue while disconnected so the
@@ -231,7 +248,12 @@ func (l *HubLink) dial(ctx context.Context) (*websocket.Conn, error) {
 	}
 	headers := make(http.Header)
 	headers.Set("Authorization", "Bearer "+token)
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, endpoint, headers)
+	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, endpoint, headers)
+	// The handshake response body is a no-op reader on both outcomes (gorilla
+	// replaces it before returning); closing it keeps the HTTP contract explicit.
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("dial relay websocket: %w", err)
 	}

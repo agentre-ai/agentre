@@ -273,7 +273,7 @@ func (h *SessionCatchupHandlers) waitingForInput(ctx context.Context, row Sessio
 // pendingWaiters 问该会话的 backend 要一份 waiter 快照。backend 没注册、或没实现审批
 // 协议时回零值 —— 未实现者返回空列表而非报错是 R7 明写的。
 //
-// 问的是**按对端隔离过的会话键**(runtimeSID),不是客户端报的裸数字:backend 的 waiter
+// 问的是**按对端隔离过的会话键**(runtimeSessionID),不是客户端报的裸数字:backend 的 waiter
 // 表是进程内一份、只按会话 id 索引,而会话 id 各客户端本地自增、必然重号。拿裸 id 去问,
 // 拿回来的可能是别的对端那条同号会话的 requestID / 工具名 / 完整工具入参 —— 交出去等于
 // 泄漏别人的审批载荷,对方还能照着 requestID 替人回答(R16)。

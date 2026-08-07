@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
+
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -174,7 +175,7 @@ func relayDaemonServer(t *testing.T, bearer string) (*httptest.Server, chan rpc.
 		if err != nil {
 			return
 		}
-		defer ws.Close()
+		defer func() { _ = ws.Close() }()
 		for {
 			var f rpc.Frame
 			if err := ws.ReadJSON(&f); err != nil {
@@ -202,7 +203,7 @@ func TestDialRelay_GivenAccountToken_WhenAuthAccountSucceeds_ThenReturnsUsableCl
 		DeviceFingerprint: "sha256:desktop",
 	})
 	require.NoError(t, err)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	select {
 	case p := <-got:

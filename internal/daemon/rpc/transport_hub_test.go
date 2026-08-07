@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -116,6 +117,115 @@ func TestHubLink_GivenRelayDropsAndRecovers_WhenRunning_ThenReconnectsRenewsAndE
 	case <-time.After(time.Second):
 		t.Fatal("hub link did not send a heartbeat to renew the relay registration")
 	}
+}
+
+// TestHubLink_GivenRetryClockFailsOutsideShutdown_WhenTheRelayDialFails_ThenRunReportsIt
+// pins the one way the reconnect loop is allowed to end without a shutdown: the
+// retry clock itself failed. Returning nil there would leave the relay
+// permanently down while the daemon believes Run finished normally — the
+// silently-dead reconnect loop this transport exists to avoid.
+func TestHubLink_GivenRetryClockFailsOutsideShutdown_WhenTheRelayDialFails_ThenRunReportsIt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+
+	brokenClock := errors.New("retry clock stopped")
+	link := NewHubLink(HubLinkOptions{
+		ServerURL:   server.URL,
+		AccessToken: "device-access-token",
+		RetryWait: func(context.Context, time.Duration) error {
+			return brokenClock // not a cancellation: the clock seam itself is broken.
+		},
+	})
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- link.Run(context.Background()) }()
+	select {
+	case err := <-runDone:
+		require.ErrorIs(t, err, brokenClock,
+			"a retry wait that failed for a reason other than shutdown must reach the daemon, not look like a clean exit")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run never returned after the retry clock failed")
+	}
+}
+
+// TestHubLink_GivenShutdown_WhenItArrivesBeforeDuringOrBetweenDials_ThenRunExitsCleanly
+// covers the degraded outcome each //nolint:nilerr in Run preserves: once ctx is
+// canceled the swallowed error is only the shutdown surfacing through the dialer
+// or the retry clock, so Run reports success and stops — it must not retry, and
+// the daemon must not see shutdown as a relay failure.
+func TestHubLink_GivenShutdown_WhenItArrivesBeforeDuringOrBetweenDials_ThenRunExitsCleanly(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+
+	t.Run("already canceled before the first dial", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		link := NewHubLink(HubLinkOptions{
+			ServerURL: server.URL,
+			RetryWait: func(context.Context, time.Duration) error { return nil },
+			OnDial:    func() { t.Error("a canceled link must not dial the relay") },
+		})
+		before := requests.Load()
+		require.NoError(t, link.Run(ctx))
+		assert.Equal(t, before, requests.Load(), "a canceled link must not reach the relay at all")
+	})
+
+	t.Run("canceled while the dial is in flight", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		var retries atomic.Int32
+		link := NewHubLink(HubLinkOptions{
+			ServerURL: server.URL,
+			// The provider runs at the start of every dial (see HubLinkOptions):
+			// canceling here lands the shutdown inside the dial deterministically.
+			AccessTokenProvider: func() string {
+				cancel()
+				return "device-access-token"
+			},
+			RetryWait: func(context.Context, time.Duration) error {
+				retries.Add(1)
+				return nil
+			},
+			OnDial: func() { t.Error("a dial aborted by shutdown must not count as connected") },
+		})
+		runDone := make(chan error, 1)
+		go func() { runDone <- link.Run(ctx) }()
+		select {
+		case err := <-runDone:
+			require.NoError(t, err, "a dial aborted by our own shutdown is not a relay failure")
+		case <-time.After(2 * time.Second):
+			t.Fatal("Run never returned after the dial was aborted by shutdown")
+		}
+		assert.Zero(t, retries.Load(), "a dial aborted by shutdown must not be backed off and retried")
+	})
+
+	t.Run("canceled while backing off between dials", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		link := NewHubLink(HubLinkOptions{
+			ServerURL: server.URL,
+			// Production's waitForHubRetry reports cancellation exactly this way.
+			RetryWait: func(waitCtx context.Context, _ time.Duration) error {
+				cancel()
+				<-waitCtx.Done()
+				return waitCtx.Err()
+			},
+		})
+		runDone := make(chan error, 1)
+		go func() { runDone <- link.Run(ctx) }()
+		select {
+		case err := <-runDone:
+			require.NoError(t, err, "a backoff ended by shutdown is not a relay failure")
+		case <-time.After(2 * time.Second):
+			t.Fatal("Run never returned after the backoff was canceled")
+		}
+	})
 }
 
 // TestHubLink_GivenAccessTokenProvider_WhenRunning_ThenEachDialReResolvesTheToken

@@ -555,13 +555,6 @@ func peerName(ctx context.Context) string {
 
 // ── backend 会话键(按对端隔离)──────────────────────────────────────────────
 
-// runtimeSID 是 runtimeSessionID 在请求 ctx 上的取用形式:对端指纹取自那条连接的鉴权
-// 状态,不从参数读 —— 参数里的对端标识等于让任何已配对设备点名操作别人的会话(R16)。
-// 每一处把会话 id 交给 backend runtime 的地方都必须过它。
-func runtimeSID(ctx context.Context, sessionID int64) int64 {
-	return runtimeSessionID(peerFingerprint(ctx), sessionID)
-}
-
 // runtimeSessionID 把「客户端报的会话 id」翻成本 daemon 进程内唯一的 backend 会话键。
 //
 // 会话 id 是各客户端本地自增的主键:两台设备各自的 42 号会话是两条毫不相干的会话。而

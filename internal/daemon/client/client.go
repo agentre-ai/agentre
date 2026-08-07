@@ -44,7 +44,8 @@ func Dial(ctx context.Context, opts Options) (*Client, error) {
 	d := *websocket.DefaultDialer
 	d.TLSClientConfig = opts.TLSConfig
 	d.Subprotocols = []string{rpc.Subprotocol}
-	ws, _, err := d.DialContext(ctx, u.String(), nil)
+	ws, resp, err := d.DialContext(ctx, u.String(), nil)
+	closeHandshakeBody(resp)
 	if err != nil {
 		return nil, err
 	}
@@ -53,6 +54,17 @@ func Dial(ctx context.Context, opts Options) (*Client, error) {
 	c.conn = rpc.NewConn(rpc.NewWebSocketFrameConn(ws), reg)
 	go c.conn.Serve(ctx)
 	return c, nil
+}
+
+// closeHandshakeBody releases the WebSocket handshake response. gorilla replaces
+// the body with a no-op reader on both outcomes (success and ErrBadHandshake),
+// so this closes nothing that the live connection needs — it keeps the HTTP
+// contract explicit and leaves the status line, which classifyRelayDialError
+// reads, untouched.
+func closeHandshakeBody(resp *http.Response) {
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 }
 
 // Path is one candidate way to reach the same daemon peer. Race dials every
@@ -76,7 +88,7 @@ type Path struct {
 
 // Race concurrently dials every path and returns the first Client whose Dial
 // succeeds (R6: first to succeed wins, the rest are closed immediately). The
-// winner is returned to the caller; every losing path is cancelled and any
+// winner is returned to the caller; every losing path is canceled and any
 // client it already produced is closed before Race returns.
 //
 // It is a hard invariant that every path resolves to the same peer fingerprint:
@@ -106,7 +118,6 @@ func Race(ctx context.Context, paths ...Path) (*Client, error) {
 	// 共享一个 `defer cancel()` 的 raceCtx 会让胜出的长连接一返回就带着已取消的 ctx。
 	cancels := make([]context.CancelFunc, len(paths))
 	for i, p := range paths {
-		i, p := i, p
 		//nolint:gosec // G118: 赢家那条的 cancel 故意不调用——它的 ctx 归胜出的长连接
 		// 所有(见 Path.Dial 注释),随父 ctx 结束而释放;败者的在 cancelExcept 里全部调用。
 		pathCtx, pathCancel := context.WithCancel(ctx)
@@ -221,7 +232,10 @@ func DialRelay(ctx context.Context, opts RelayOptions) (*Client, error) {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+opts.AccessToken)
 	ws, resp, err := d.DialContext(ctx, opts.URL, headers)
+	closeHandshakeBody(resp)
 	if err != nil {
+		// classifyRelayDialError only reads the status line, which stays valid
+		// after the body is closed.
 		return nil, classifyRelayDialError(err, resp)
 	}
 	reg := rpc.NewRegistry()
