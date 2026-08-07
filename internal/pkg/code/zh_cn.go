@@ -210,4 +210,12 @@ var zhCN = map[int]string{
 	DataImportDuplicateLocal:     "本地存在多条同名记录,无法自动覆盖",
 	DataImportRollback:           "导入失败,所有改动已回滚",
 	DataImportInvalidAction:      "未知的导入 action 类型",
+
+	// 会话工作目录浏览(workspacefs)
+	WorkspaceFsNoCwd:            "这个会话没有工作目录",
+	WorkspaceFsPathRefused:      "路径超出了会话工作目录",
+	WorkspaceFsReadFailed:       "读取工作目录失败",
+	WorkspaceFsBaselineRequired: "缺少对比基线,请先选择一个基线分支",
+	WorkspaceFsDeviceOffline:    "远端设备不在线",
+	WorkspaceFsDaemonOutdated:   "远端 agentred 版本过旧,请升级后再用这个视图",
 }

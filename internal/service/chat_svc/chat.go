@@ -82,6 +82,10 @@ type ChatSvc interface {
 	LoadSession(ctx context.Context, req *LoadSessionRequest) (*LoadSessionResponse, error)
 	GetLaunchCommand(ctx context.Context, req *LaunchCommandRequest) (*LaunchCommandResponse, error)
 	GetSessionGitState(ctx context.Context, req *GetSessionGitStateRequest) (*GetSessionGitStateResponse, error)
+	// ResolveSessionWorkspace 把 sessionID 解析成 {deviceID, cwd}(deviceID 为 0
+	// 即本机会话)。实现 workspace_fs_svc 的 SessionWorkspaceResolver 窄接口,
+	// 由 bootstrap 注入 —— 让那个服务不必跨域读 chat / agent / agent_backend 表。
+	ResolveSessionWorkspace(ctx context.Context, sessionID int64) (deviceID int64, cwd string, err error)
 	// ResolveLocalCommandScope 为已有 session 或未持久化的 agent/project 目标解析历史作用域。
 	ResolveLocalCommandScope(ctx context.Context, req *ResolveLocalCommandScopeRequest) (*LocalCommandScope, error)
 	Send(ctx context.Context, req *SendRequest) (*SendResponse, error)

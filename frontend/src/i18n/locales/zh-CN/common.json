@@ -612,7 +612,52 @@
       "openFile": "打开文件",
       "openFailed": "打开文件失败：{{error}}",
       "expandFolder": "展开 {{name}}",
-      "collapseFolder": "收起 {{name}}"
+      "collapseFolder": "收起 {{name}}",
+      "modes": {
+        "label": "视图模式",
+        "changes": "变动",
+        "directory": "目录",
+        "git": "Git"
+      }
+    },
+    "directory": {
+      "showIgnored": "显示忽略项",
+      "showIgnoredOn": "隐藏被忽略的文件",
+      "showIgnoredOff": "显示被忽略的文件",
+      "loading": "正在读取目录…",
+      "empty": "这个目录是空的",
+      "truncated": "只显示了前 {{limit}} 项",
+      "noCwd": "这个会话没有工作目录",
+      "readFailed": "读取目录失败",
+      "retry": "重试"
+    },
+    "git": {
+      "scope": {
+        "label": "对比范围",
+        "uncommitted": "未提交",
+        "branch": "本分支"
+      },
+      "baseline": "对比基线：{{ref}}",
+      "pickBaseline": "选择基线",
+      "noBranches": "没有可选的分支",
+      "loading": "正在读取 git 变动…",
+      "notARepo": "这个目录不是 git 仓库",
+      "notARepoHint": "切到「变动」看本次对话改过的文件",
+      "cleanUncommitted": "工作区干净，没有未提交的改动",
+      "cleanBranch": "相对 {{ref}} 没有改动",
+      "noBaseline": "推断不出默认分支",
+      "noBaselineHint": "点上方的基线按钮选一个对比基线",
+      "noCwd": "这个会话没有工作目录",
+      "readFailed": "读取 git 变动失败",
+      "retry": "重试",
+      "truncated": "只显示了前 {{limit}} 个变动文件",
+      "status": {
+        "modified": "已修改",
+        "added": "新增",
+        "deleted": "已删除",
+        "renamed": "已重命名",
+        "untracked": "未跟踪"
+      }
     },
     "outline": {
       "empty": "本会话还没有消息",
