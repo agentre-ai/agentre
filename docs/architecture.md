@@ -125,6 +125,8 @@ The table is the installed-app default. `wails dev` / `make dev` uses the siblin
 ```text
 <AppDataDir>/
   agentre.db          ← SQLite business database (gorm + gormigrate)
+  agentre.db-wal      ← WAL journal, created next to the database (see Database and migrations)
+  agentre.db-shm      ← WAL shared-memory index, same
   logs/
     agentre.log       ← full log (info+, dropped to debug+ when Debug Logging is enabled)
     error.log         ← error+ only
@@ -145,7 +147,9 @@ Debug logging no longer goes through an environment variable: it is controlled b
 ## Database and migrations
 
 - Driver: pure-Go SQLite (`github.com/glebarez/sqlite`, no CGO required), registered to cago's `db` component via the anonymous import `_ "github.com/cago-frame/cago/database/db/sqlite"`.
-- Initialization is handled uniformly by `internal/bootstrap.Init`: register the `db.Database()` component → call `migrations.RunMigrations(db.Default())`. At runtime, get the database via `db.Ctx(ctx)`, and use `db.WithContextDB(ctx, tx)` for transactions spanning functions.
+- Initialization is handled uniformly by `internal/bootstrap.Init`: register the `db.Database()` component → convert the database to WAL journal mode once (`convertToWAL`) → call `migrations.RunMigrations(db.Default())`. At runtime, get the database via `db.Ctx(ctx)`, and use `db.WithContextDB(ctx, tx)` for transactions spanning functions.
+- Connection settings live in `bootstrap.sqliteDSN`: `_txlock=immediate` (every transaction opens with `BEGIN IMMEDIATE`, so a write-lock conflict goes through the busy handler instead of failing instantly the way a deferred transaction's write upgrade does) and `_pragma=synchronous(NORMAL)`. Do not add `busy_timeout` — the driver hardcodes `5000` on every connection already.
+- **Journal mode is WAL**, converted once at startup outside the DSN (a `_pragma` runs on *every* connection, and a first conversion that loses the race would then break connection setup itself). The conversion is persistent, so it is a no-op afterwards; when it fails it only logs a warning and startup continues on the current mode, retrying next launch. WAL puts `agentre.db-wal` / `agentre.db-shm` next to the database — the operational consequences of that are in [debugging.md](./debugging.md#common-mistakes).
 
 Adding a migration:
 

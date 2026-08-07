@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,11 +81,33 @@ func TestInitCreatesCagoRuntime(t *testing.T) {
 	}
 }
 
-// 回归(dev group-3 并发群轮 SQLITE_BUSY):并发 turn 流式写库时,另一条写
-// 0.5ms 即报 database is locked —— 连接没配 busy_timeout。DSN 必须带
-// _pragma=busy_timeout(glebarez 驱动 per-connection 生效;启动后 Exec PRAGMA
-// 只作用连接池里单个连接,不可用)。用真驱动验证 pragma 实际生效。
-func TestSQLiteDSNSetsBusyTimeout(t *testing.T) {
+// TestSQLiteDSNShape 回归(design decisions 1/2/5, docs/specs/2026-08-07-autonomous-turn-resilience.md
+// 「SQLite 事务与锁定行为」):DSN 必须带 _txlock=immediate,令所有事务以 BEGIN
+// IMMEDIATE 开启 —— 写锁在 BEGIN 时即取,冲突走 busy handler 等锁,而不是像默认的
+// deferred 事务那样在写升级时撞 SQLITE_BUSY 立即失败(实测 0.2ms 内即报错,busy
+// handler 根本不参与)。同时带 _pragma=synchronous(NORMAL)(WAL 下仍崩溃安全),且不
+// 再带 busy_timeout —— glebarez 驱动在每个连接建立时无条件硬编码执行
+// `pragma BUSY_TIMEOUT(5000)`(glebarez/go-sqlite@v1.21.2/sqlite.go:880,早于处理
+// _pragma),该 DSN 参数从未改变过任何行为,保留只会让读代码的人误以为超时是本项目
+// 配置的、可调的。
+func TestSQLiteDSNShape(t *testing.T) {
+	dsn := sqliteDSN(filepath.Join(t.TempDir(), "x.db"))
+
+	if !strings.Contains(dsn, "_txlock=immediate") {
+		t.Fatalf("dsn = %q, want it to contain _txlock=immediate", dsn)
+	}
+	if !strings.Contains(dsn, "_pragma=synchronous(NORMAL)") {
+		t.Fatalf("dsn = %q, want it to contain _pragma=synchronous(NORMAL)", dsn)
+	}
+	if strings.Contains(dsn, "busy_timeout") {
+		t.Fatalf("dsn = %q, must not contain busy_timeout (driver hardcodes it unconditionally on every connection)", dsn)
+	}
+}
+
+// TestSQLiteDSNAppliesPragmas 用真驱动验证 _pragma 参数确实生效,而不只是字符串拼对:
+// synchronous 落到 NORMAL(=1)。busy_timeout 保持驱动硬编码的 5000 不变 —— 证明拿掉
+// DSN 里冗余的 busy_timeout 参数没有回归实际行为(问题 2)。
+func TestSQLiteDSNAppliesPragmas(t *testing.T) {
 	gormDB, err := gorm.Open(sqlite.Open(sqliteDSN(filepath.Join(t.TempDir(), "x.db"))), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("gorm.Open() error = %v", err)
@@ -95,12 +118,95 @@ func TestSQLiteDSNSetsBusyTimeout(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
-	var v int
-	if err := gormDB.Raw("PRAGMA busy_timeout").Scan(&v).Error; err != nil {
+	var sync int
+	if err := gormDB.Raw("PRAGMA synchronous").Scan(&sync).Error; err != nil {
+		t.Fatalf("PRAGMA synchronous query error = %v", err)
+	}
+	if sync != 1 {
+		t.Fatalf("synchronous = %d, want 1 (NORMAL)", sync)
+	}
+
+	var busyTimeout int
+	if err := gormDB.Raw("PRAGMA busy_timeout").Scan(&busyTimeout).Error; err != nil {
 		t.Fatalf("PRAGMA busy_timeout query error = %v", err)
 	}
-	if v != 5000 {
-		t.Fatalf("busy_timeout = %d, want 5000", v)
+	if busyTimeout != 5000 {
+		t.Fatalf("busy_timeout = %d, want 5000 (driver default, unaffected by removing the DSN param)", busyTimeout)
+	}
+}
+
+// TestConvertToWALSucceedsOnFreshDatabase 回归(design decisions 3/4,规范「journal
+// 模式」):启动时对数据库执行一次 WAL 转换,无竞争时必须成功生效。
+func TestConvertToWALSucceedsOnFreshDatabase(t *testing.T) {
+	gormDB, err := gorm.Open(sqlite.Open(sqliteDSN(filepath.Join(t.TempDir(), "x.db"))), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("gorm.Open() error = %v", err)
+	}
+	sqlDB, err := gormDB.DB()
+	if err != nil {
+		t.Fatalf("DB() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	convertToWAL(context.Background(), gormDB)
+
+	var mode string
+	if err := gormDB.Raw("PRAGMA journal_mode").Scan(&mode).Error; err != nil {
+		t.Fatalf("PRAGMA journal_mode query error = %v", err)
+	}
+	if mode != "wal" {
+		t.Fatalf("journal_mode = %q, want wal", mode)
+	}
+}
+
+// TestConvertToWALContinuesOnFailure 回归(design decision 4):转换失败(典型是转换
+// 时刻另有连接持有写锁,见规范「journal 模式」)不当作致命错误 —— 这只是一次性能优
+// 化,应用可用性不能靠它;失败只记警告、不返回错误,数据库继续以当前 journal 模式运
+// 行,下次启动重试。用真驱动:开一条独立连接以 BEGIN IMMEDIATE(DSN _txlock=immediate)
+// 持有写锁不提交,验证 convertToWAL 在冲突下既不 panic 也不改变现有 journal 模式。
+func TestConvertToWALContinuesOnFailure(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "x.db")
+
+	victim, err := gorm.Open(sqlite.Open(sqliteDSN(dbPath)), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("gorm.Open(victim) error = %v", err)
+	}
+	victimSQL, err := victim.DB()
+	if err != nil {
+		t.Fatalf("victim.DB() error = %v", err)
+	}
+	t.Cleanup(func() { _ = victimSQL.Close() })
+	if err := victim.Exec("CREATE TABLE t (id INTEGER)").Error; err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	blocker, err := gorm.Open(sqlite.Open(sqliteDSN(dbPath)), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("gorm.Open(blocker) error = %v", err)
+	}
+	blockerSQL, err := blocker.DB()
+	if err != nil {
+		t.Fatalf("blocker.DB() error = %v", err)
+	}
+	t.Cleanup(func() { _ = blockerSQL.Close() })
+
+	tx := blocker.Begin()
+	if tx.Error != nil {
+		t.Fatalf("blocker.Begin() error = %v", tx.Error)
+	}
+	if err := tx.Exec("INSERT INTO t (id) VALUES (1)").Error; err != nil {
+		t.Fatalf("blocker insert: %v", err)
+	}
+	t.Cleanup(func() { tx.Rollback() })
+
+	convertToWAL(context.Background(), victim) // 冲突下不得 panic
+
+	var mode string
+	if err := victim.Raw("PRAGMA journal_mode").Scan(&mode).Error; err != nil {
+		t.Fatalf("PRAGMA journal_mode query error = %v", err)
+	}
+	if mode == "wal" {
+		t.Fatalf("journal_mode = wal, want unchanged — conversion should have failed while blocker holds the write lock")
 	}
 }
 
