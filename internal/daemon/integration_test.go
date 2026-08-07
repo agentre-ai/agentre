@@ -419,9 +419,23 @@ func TestIntegration_UnauthGuard(t *testing.T) {
 	// 未授权应回 -32001。
 	err = c.Call(callCtx, workspacefswire.MethodListDir, workspacefswire.ListDirReq{}, &workspacefswire.ListDirResp{})
 	require.Error(t, err, "workspacefs.listDir must be rejected without auth")
-	var wfsErr *rpc.Error
-	require.True(t, errors.As(err, &wfsErr), "error must be *rpc.Error")
-	assert.Equal(t, -32001, wfsErr.Code)
+	rpcErr = nil
+	require.True(t, errors.As(err, &rpcErr), "error must be *rpc.Error")
+	assert.Equal(t, -32001, rpcErr.Code)
+
+	// readFile / gitFileContent 同属 workspacefs.* 方法族,同样套 requireAuth
+	// 闭包,未授权应回 -32001。
+	err = c.Call(callCtx, workspacefswire.MethodReadFile, workspacefswire.ReadFileReq{}, &workspacefswire.ReadFileResp{})
+	require.Error(t, err, "workspacefs.readFile must be rejected without auth")
+	rpcErr = nil
+	require.True(t, errors.As(err, &rpcErr), "error must be *rpc.Error")
+	assert.Equal(t, -32001, rpcErr.Code)
+
+	err = c.Call(callCtx, workspacefswire.MethodGitFileContent, workspacefswire.GitFileContentReq{}, &workspacefswire.GitFileContentResp{})
+	require.Error(t, err, "workspacefs.gitFileContent must be rejected without auth")
+	rpcErr = nil
+	require.True(t, errors.As(err, &rpcErr), "error must be *rpc.Error")
+	assert.Equal(t, -32001, rpcErr.Code)
 }
 
 // TestIntegration_WorkspaceFsListDir_EndToEnd 验证 workspacefs.listDir 在鉴权
@@ -453,6 +467,30 @@ func TestIntegration_WorkspaceFsListDir_EndToEnd(t *testing.T) {
 	}
 	assert.Contains(t, names, "a.txt")
 	assert.False(t, names["a.txt"].IsDir)
+}
+
+// TestIntegration_WorkspaceFsReadFile_EndToEnd 验证 workspacefs.readFile 在鉴权
+// 后能端到端跑通一跳:配对拿 deviceToken,用它对 daemon 真实文件系统上的一个
+// 临时目录读文件内容,断言拿到真实正文而不是错误。未鉴权已由
+// TestIntegration_UnauthGuard 覆盖,这里只覆盖“鉴权后可用”这一半。gitFileContent
+// 与 readFile 共享同一套传输 / 鉴权 / 翻译管线,handler 层已单测,不再重复一跳。
+func TestIntegration_WorkspaceFsReadFile_EndToEnd(t *testing.T) {
+	dir, err := os.MkdirTemp("", "ard-wsfs")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	rig := bootRigInDir(t, dir)
+
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.txt"), []byte("hello world"), 0o644))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var resp workspacefswire.ReadFileResp
+	require.NoError(t, rig.cli.Call(ctx, workspacefswire.MethodReadFile, workspacefswire.ReadFileReq{Root: root, RelPath: "a.txt"}, &resp))
+	assert.Equal(t, "hello world", resp.Content)
+	assert.False(t, resp.Binary)
+	assert.False(t, resp.TooLarge)
 }
 
 // pacedBackendRunner emits events one at a time with a small inter-event gap so

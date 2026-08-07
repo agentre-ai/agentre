@@ -91,6 +91,7 @@ export function FilesPanel({
       <div className="min-h-0 flex-1 overflow-auto">
         {mode === "changes" ? (
           <FilesView
+            sessionId={sessionId}
             files={files}
             cwd={cwd}
             remote={remote}
@@ -107,6 +108,7 @@ export function FilesPanel({
         ) : null}
         {mode === "git" ? (
           <GitView
+            sessionId={sessionId}
             cwd={cwd}
             remote={remote}
             scope={git.scope}

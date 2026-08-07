@@ -46,4 +46,48 @@ func TestRegister_AllThreeMethods_TranslateSentinel(t *testing.T) {
 	resp, ok := res.(*wire.GitBranchesResp)
 	require.True(t, ok)
 	assert.True(t, resp.NotARepo)
+
+	// readFile 越界 relPath 触发 wire.ErrPathRefused,客户端拿到 *rpc.Error。
+	raw, _ = json.Marshal(wire.ReadFileReq{Root: dir, RelPath: "../etc"})
+	_, err = reg.Dispatch(context.Background(), wire.MethodReadFile, raw)
+	rpcErr = nil
+	require.ErrorAs(t, err, &rpcErr)
+	assert.Equal(t, wire.ErrCodePathRefused, rpcErr.Code)
+
+	// readFile 空 root 触发 wire.ErrNoCwd(会话配置问题,与越界区分)。
+	raw, _ = json.Marshal(wire.ReadFileReq{Root: ""})
+	_, err = reg.Dispatch(context.Background(), wire.MethodReadFile, raw)
+	rpcErr = nil
+	require.ErrorAs(t, err, &rpcErr)
+	assert.Equal(t, wire.ErrCodeNoCwd, rpcErr.Code)
+
+	// gitFileContent 在非仓库上降级(不报错),确认它也真的挂上了 registry。
+	raw, _ = json.Marshal(wire.GitFileContentReq{Root: dir, RelPath: "a.txt"})
+	res, err = reg.Dispatch(context.Background(), wire.MethodGitFileContent, raw)
+	require.NoError(t, err)
+	gfcResp, ok := res.(*wire.GitFileContentResp)
+	require.True(t, ok)
+	assert.True(t, gfcResp.NotARepo)
+}
+
+func TestRegister_ReadFileGitFileContent_TranslateSentinel(t *testing.T) {
+	reg := rpc.NewRegistry()
+	h := workspacefs.NewHandlers(workspacefs.Options{})
+	workspacefs.Register(reg, h, func(fn rpc.HandlerFunc) rpc.HandlerFunc { return fn })
+
+	// gitFileContent 越界 relPath 触发 wire.ErrPathRefused,与 readFile 同一道
+	// 边界(真仓库里仍先过路径闸门)。
+	repoDir := initRepo(t)
+	raw, _ := json.Marshal(wire.GitFileContentReq{Root: repoDir, RelPath: "../etc"})
+	_, err := reg.Dispatch(context.Background(), wire.MethodGitFileContent, raw)
+	var rpcErr *rpc.Error
+	require.ErrorAs(t, err, &rpcErr)
+	assert.Equal(t, wire.ErrCodePathRefused, rpcErr.Code)
+
+	// gitFileContent 空 root 触发 wire.ErrNoCwd。
+	raw, _ = json.Marshal(wire.GitFileContentReq{Root: ""})
+	_, err = reg.Dispatch(context.Background(), wire.MethodGitFileContent, raw)
+	rpcErr = nil
+	require.ErrorAs(t, err, &rpcErr)
+	assert.Equal(t, wire.ErrCodeNoCwd, rpcErr.Code)
 }
