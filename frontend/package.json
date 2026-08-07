@@ -36,6 +36,7 @@
     "cmdk": "^1.1.1",
     "i18next": "^26.3.0",
     "lucide-react": "^0.400.0",
+    "monaco-editor": "^0.56.0",
     "pinyin-pro": "^3.28.1",
     "radix-ui": "^1.4.3",
     "react": "^19.2.6",
