@@ -612,7 +612,24 @@
       "openFile": "Open file",
       "openFailed": "Failed to open file: {{error}}",
       "expandFolder": "Expand {{name}}",
-      "collapseFolder": "Collapse {{name}}"
+      "collapseFolder": "Collapse {{name}}",
+      "modes": {
+        "label": "View mode",
+        "changes": "Changes",
+        "directory": "Directory",
+        "git": "Git"
+      }
+    },
+    "directory": {
+      "showIgnored": "Show ignored",
+      "showIgnoredOn": "Hide ignored files",
+      "showIgnoredOff": "Show ignored files",
+      "loading": "Loading directory…",
+      "empty": "This directory is empty",
+      "truncated": "Showing the first {{limit}} entries only",
+      "noCwd": "This session has no working directory",
+      "readFailed": "Failed to read the directory",
+      "retry": "Retry"
     },
     "outline": {
       "empty": "No messages in this session",

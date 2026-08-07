@@ -9,7 +9,7 @@ import { ResizableSidebar } from "../resizable-sidebar";
 
 import { deriveFiles, deriveOutline } from "./derive";
 import { TabBar } from "./tab-bar";
-import { FilesView } from "./views/files-view";
+import { FilesPanel } from "./views/files-panel";
 import { OutlineView } from "./views/outline-view";
 
 type Msg = chat_svc.ChatMessage;
@@ -24,7 +24,7 @@ type Props = {
 };
 
 export function ChatContextSidebar({
-  sessionId: _sessionId,
+  sessionId,
   messages,
   activeMessageId,
   onJumpToMessage,
@@ -94,25 +94,30 @@ export function ChatContextSidebar({
         outlineCount={outline.length}
         filesCount={files.length}
       />
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
-        {activeTab === "outline" ? (
+      {/*
+        「文件」页自带模式控件与上下文条，滚动容器在 FilesPanel 内部；「大纲」页
+        仍用这里的滚动容器（scrollRef 要拿它做 scrollIntoView）。
+      */}
+      {activeTab === "outline" ? (
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
           <OutlineView
             items={outline}
             activeMessageId={resolvedActiveId}
             onSelect={onJumpToMessage}
           />
-        ) : (
-          <FilesView
-            files={files}
-            cwd={cwd}
-            remote={remote}
-            onJumpToTurn={(turn) => {
-              const mid = turnToMessageId.get(turn);
-              if (mid != null) onJumpToMessage(mid);
-            }}
-          />
-        )}
-      </div>
+        </div>
+      ) : (
+        <FilesPanel
+          sessionId={sessionId}
+          files={files}
+          cwd={cwd}
+          remote={remote}
+          onJumpToTurn={(turn) => {
+            const mid = turnToMessageId.get(turn);
+            if (mid != null) onJumpToMessage(mid);
+          }}
+        />
+      )}
     </ResizableSidebar>
   );
 }

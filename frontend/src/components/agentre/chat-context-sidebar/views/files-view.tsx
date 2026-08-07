@@ -7,12 +7,10 @@ import {
 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
-
-import { OpenPath } from "@/../wailsjs/go/app/App";
-import { classifyLink } from "@/lib/link-classify";
 
 import { deriveFileTree, type FileEntry, type FileTreeNode } from "../derive";
+
+import { useOpenFile } from "./use-open-file";
 
 type Props = {
   files: FileEntry[];
@@ -43,14 +41,6 @@ function indentStyle(depth: number): React.CSSProperties {
   return { paddingLeft: `${8 + depth * 14}px` };
 }
 
-function openTarget(path: string, cwd: string): string {
-  const link = classifyLink(path, cwd);
-  if (link.kind === "local-internal" || link.kind === "local-external") {
-    return link.fullPath;
-  }
-  return `${cwd}/${path}`;
-}
-
 export function FilesView({ files, cwd, remote, onJumpToTurn }: Props) {
   const { t } = useTranslation();
   const tree = React.useMemo(() => deriveFileTree(files), [files]);
@@ -72,16 +62,7 @@ export function FilesView({ files, cwd, remote, onJumpToTurn }: Props) {
   };
 
   const canOpen = cwd !== "" && !remote;
-
-  const openFile = (path: string) => {
-    OpenPath(openTarget(path, cwd)).catch((err: unknown) => {
-      toast.error(
-        t("chatContext.files.openFailed", {
-          error: err instanceof Error ? err.message : String(err),
-        }),
-      );
-    });
-  };
+  const openFile = useOpenFile(cwd);
 
   if (files.length === 0) {
     return (
