@@ -2,6 +2,7 @@ import {
   ChevronDown,
   ChevronRight,
   ExternalLink,
+  Eye,
   FileCode,
   Folder,
 } from "lucide-react";
@@ -12,9 +13,12 @@ import { WorkspaceFsListDir } from "@/../wailsjs/go/app/App";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
 import { useSessionStatus } from "@/stores/session-status-store";
 
 import type { workspace_fs_svc } from "@/../wailsjs/go/models";
+
+import { resolvePreviewRelPath } from "../previewable";
 
 import { errorText, PanelNotice, PanelSkeleton } from "./panel-feedback";
 import { indentStyle } from "./tree-indent";
@@ -132,6 +136,11 @@ export function DirectoryView({ sessionId, cwd, remote, showIgnored }: Props) {
 
   const canOpen = cwd !== "" && !remote;
   const openFile = useOpenFile(cwd);
+  // 当前被预览文件的 relPath(按会话);与某文件行预览按钮同路径时高亮它。
+  const previewPath = useChatSidebarStore(
+    (s) => s.previewBySession[sessionId]?.path,
+  );
+  const openPreview = useChatSidebarStore((s) => s.openPreview);
 
   if (cwd === "") {
     return <PanelNotice text={t("chatContext.directory.noCwd")} />;
@@ -158,36 +167,53 @@ export function DirectoryView({ sessionId, cwd, remote, showIgnored }: Props) {
     );
   }
 
-  const renderFile = (entry: Entry, relPath: string, depth: number) => (
-    <div
-      key={relPath}
-      data-testid="directory-row"
-      data-name={entry.name}
-      data-git-ignored={entry.gitIgnored ? "true" : undefined}
-      className={cn("flex items-center", entry.gitIgnored && "opacity-50")}
-      style={indentStyle(depth)}
-    >
-      <div className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-2.5 text-xs text-muted-foreground">
-        {/* 与目录 chevron 等宽的槽位，让同级目录名 / 文件名对齐。 */}
-        <span className="size-3.5 shrink-0" aria-hidden="true" />
-        <FileCode className="size-3.5 shrink-0" aria-hidden="true" />
-        <span className="min-w-0 flex-1 truncate font-mono" title={relPath}>
-          {entry.name}
-        </span>
+  const renderFile = (entry: Entry, relPath: string, depth: number) => {
+    const previewRelPath = resolvePreviewRelPath(relPath, cwd);
+    return (
+      <div
+        key={relPath}
+        data-testid="directory-row"
+        data-name={entry.name}
+        data-git-ignored={entry.gitIgnored ? "true" : undefined}
+        className={cn("flex items-center", entry.gitIgnored && "opacity-50")}
+        style={indentStyle(depth)}
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-2.5 text-xs text-muted-foreground">
+          {/* 与目录 chevron 等宽的槽位，让同级目录名 / 文件名对齐。 */}
+          <span className="size-3.5 shrink-0" aria-hidden="true" />
+          <FileCode className="size-3.5 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 flex-1 truncate font-mono" title={relPath}>
+            {entry.name}
+          </span>
+        </div>
+        {previewRelPath !== null ? (
+          <button
+            type="button"
+            aria-label={t("chatContext.filePreview.open")}
+            title={t("chatContext.filePreview.open")}
+            onClick={() => openPreview(sessionId, previewRelPath)}
+            className={cn(
+              "ml-1 shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground",
+              previewPath === previewRelPath && "text-primary",
+            )}
+          >
+            <Eye className="size-3" aria-hidden="true" />
+          </button>
+        ) : null}
+        {canOpen ? (
+          <button
+            type="button"
+            aria-label={t("chatContext.files.openFile")}
+            title={t("chatContext.files.openFile")}
+            onClick={() => openFile(relPath)}
+            className="ml-1 shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ExternalLink className="size-3" aria-hidden="true" />
+          </button>
+        ) : null}
       </div>
-      {canOpen ? (
-        <button
-          type="button"
-          aria-label={t("chatContext.files.openFile")}
-          title={t("chatContext.files.openFile")}
-          onClick={() => openFile(relPath)}
-          className="ml-1 shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <ExternalLink className="size-3" aria-hidden="true" />
-        </button>
-      ) : null}
-    </div>
-  );
+    );
+  };
 
   const renderDir = (entry: Entry, relPath: string, depth: number) => {
     const isOpen = expanded.has(relPath);

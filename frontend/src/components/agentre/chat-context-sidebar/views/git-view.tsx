@@ -1,18 +1,23 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
 
 import type { TFunction } from "i18next";
 
 import { deriveGitRows, type GitRow } from "../git-rows";
+import { resolvePreviewRelPath } from "../previewable";
 
 import { PanelNotice, PanelSkeleton } from "./panel-feedback";
 import type { GitChangesState, GitScope } from "./use-git-changes";
 import { useOpenFile } from "./use-open-file";
 
 type Props = {
+  /** 会话 id：预览选中按会话存储。 */
+  sessionId: number;
   /** 会话工作目录；空串表示这个会话没有工作目录，直接出空态。 */
   cwd: string;
   remote: boolean;
@@ -57,6 +62,7 @@ function statusLabel(t: TFunction, status: string): string {
  * 行点击与「变动」模式一致：本地会话用系统默认应用打开，远端会话不提供打开。
  */
 export function GitView({
+  sessionId,
   cwd,
   remote,
   scope,
@@ -67,6 +73,11 @@ export function GitView({
   const { t } = useTranslation();
   const openFile = useOpenFile(cwd);
   const canOpen = cwd !== "" && !remote;
+  // 当前被预览文件的 relPath(按会话);与某行预览按钮同路径时高亮它。
+  const previewPath = useChatSidebarStore(
+    (s) => s.previewBySession[sessionId]?.path,
+  );
+  const openPreview = useChatSidebarStore((s) => s.openPreview);
 
   const changes = state.status === "loaded" ? state.view.changes : null;
   const rows = React.useMemo(() => deriveGitRows(changes), [changes]);
@@ -127,13 +138,22 @@ export function GitView({
 
   return (
     <div className="flex flex-col gap-0.5 px-2 py-2.5">
-      {rows.map((row) => (
-        <Row
-          key={row.path}
-          row={row}
-          onOpen={canOpen ? () => openFile(row.path) : null}
-        />
-      ))}
+      {rows.map((row) => {
+        const previewRelPath = resolvePreviewRelPath(row.path, cwd);
+        return (
+          <Row
+            key={row.path}
+            row={row}
+            onOpen={canOpen ? () => openFile(row.path) : null}
+            previewActive={previewPath === previewRelPath}
+            onPreview={
+              previewRelPath !== null
+                ? () => openPreview(sessionId, previewRelPath)
+                : null
+            }
+          />
+        );
+      })}
       {state.view.truncated ? (
         <div className="py-1.5 pr-2.5 pl-2 text-[11px] text-muted-foreground">
           {t("chatContext.git.truncated", { limit: rows.length })}
@@ -143,7 +163,17 @@ export function GitView({
   );
 }
 
-function Row({ row, onOpen }: { row: GitRow; onOpen: (() => void) | null }) {
+function Row({
+  row,
+  onOpen,
+  previewActive,
+  onPreview,
+}: {
+  row: GitRow;
+  onOpen: (() => void) | null;
+  previewActive: boolean;
+  onPreview: (() => void) | null;
+}) {
   const { t } = useTranslation();
   const meta = STATUS_META[row.status] ?? STATUS_META.modified;
   const body = (
@@ -175,29 +205,41 @@ function Row({ row, onOpen }: { row: GitRow; onOpen: (() => void) | null }) {
     </>
   );
   const className =
-    "flex w-full items-center gap-1.5 rounded-md py-1.5 pr-2.5 pl-2 text-left text-xs text-muted-foreground";
-  const shared = {
-    "data-testid": "git-row",
-    "data-path": row.path,
-    "data-status": row.status,
-    title: row.oldPath ? `${row.oldPath} → ${row.path}` : row.path,
-  };
-  if (!onOpen) {
-    return (
-      <div {...shared} className={className}>
-        {body}
-      </div>
-    );
-  }
+    "flex min-w-0 flex-1 items-center gap-1.5 rounded-md py-1.5 pr-2.5 pl-2 text-left text-xs text-muted-foreground";
   return (
-    <button
-      type="button"
-      {...shared}
-      onClick={onOpen}
-      className={cn(className, "transition-colors hover:bg-muted/50")}
+    <div
+      data-testid="git-row"
+      data-path={row.path}
+      data-status={row.status}
+      title={row.oldPath ? `${row.oldPath} → ${row.path}` : row.path}
+      className="flex items-center"
     >
-      {body}
-    </button>
+      {onOpen ? (
+        <button
+          type="button"
+          onClick={onOpen}
+          className={cn(className, "transition-colors hover:bg-muted/50")}
+        >
+          {body}
+        </button>
+      ) : (
+        <div className={className}>{body}</div>
+      )}
+      {onPreview ? (
+        <button
+          type="button"
+          aria-label={t("chatContext.filePreview.open")}
+          title={t("chatContext.filePreview.open")}
+          onClick={onPreview}
+          className={cn(
+            "ml-1 shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground",
+            previewActive && "text-primary",
+          )}
+        >
+          <Eye className="size-3" aria-hidden="true" />
+        </button>
+      ) : null}
+    </div>
   );
 }
 
