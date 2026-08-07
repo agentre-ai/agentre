@@ -1045,6 +1045,17 @@ func (r *Runtime) sessionSummaries(ctx context.Context) (map[int64]wire.SessionS
 	r.setDurability(durabilitySupported)
 	out := make(map[int64]wire.SessionSummary, len(res.Sessions))
 	for _, s := range res.Sessions {
+		// 账号级清单(R12)里两个对端各有一条**同号**会话是常态而非例外:会话 id 是各
+		// 客户端本地自增的主键。这张表按裸 id 索引,所以同号时必须让**自己**那条(daemon
+		// 在清单里把它的 origin 留空)胜出,别的对端那条不得覆盖它 —— R12 放宽的是可见性
+		// 的过滤条件,「会话主键结构不变」,主键仍是 (对端指纹, 会话 id) 两段。
+		//
+		// 覆盖了会同时坏两处:turnStartFloor 把别人的高水位当成自己会话的下限,自己此后
+		// 每一条通知都低于下限被判成重复丢弃(会话不报错地冻住);补齐三步则会带着别人的
+		// origin 去 attach / pull,把别人的通知日志重放进自己的转录。
+		if _, dup := out[s.SessionID]; dup && s.PeerFingerprint != "" {
+			continue
+		}
 		out[s.SessionID] = s
 		r.rememberOrigin(s.SessionID, s.PeerFingerprint)
 	}

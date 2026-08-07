@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 	"github.com/agentre-ai/agentre/internal/daemon/state"
 	"github.com/agentre-ai/agentre/internal/pkg/paths"
 )
@@ -115,8 +116,14 @@ func newLoginCmdWithDeps(deps loginDeps) *cobra.Command {
 func login(cmd *cobra.Command, deps loginDeps, st *state.State, serverURL string) error {
 	authorize := deviceAuthorizeResponse{}
 	if _, err := doLoginJSON(cmd, deps.http, http.MethodPost, serverURL+"/v1/oauth/device/authorize", map[string]any{
-		"device_kind":  "agentred",
-		"fingerprint":  st.InstanceUUID(),
+		"device_kind": "agentred",
+		// 账号侧的设备指纹与 auth.pair 交给桌面端做 TOFU 的那一个是同一个东西:
+		// rpc.DaemonFingerprint(instance uuid)。桌面端手上只有这个形态 —— 它按本地
+		// 配对行里的 DaemonFingerprint 向 server 点名中转目标(server 拿它查
+		// devices.fingerprint),也按它把 LAN 与账号两个来源合并成设备面板的一行(R15)。
+		// 登记裸 uuid 会让两边永远对不上:中转恒报「这台 daemon 从未登记过」,面板恒把
+		// 已认领的机器标成未认领。
+		"fingerprint":  rpc.DaemonFingerprint(st.InstanceUUID()),
 		"platform":     deps.platform,
 		"version":      deps.version,
 		"capabilities": map[string]bool{"compute": true},

@@ -306,6 +306,14 @@ export const ServerCancelLogin = windowBackedMock("ServerCancelLogin", () =>
 export const ServerLogout = windowBackedMock("ServerLogout", () =>
   Promise.resolve(),
 );
+// use-remote-devices.ts reads the account device list to decide which rows are
+// 未认领. The default rejects like ServerStartLogin because ServerGetState's
+// default is the logged-out row: a logged-out desktop cannot know the account
+// list, and the hook treats that as known=false rather than marking every
+// machine unclaimed.
+export const ServerListDevices = windowBackedMock("ServerListDevices", () =>
+  missingWailsBinding("ServerListDevices"),
+);
 
 // Data backup bindings
 export const ExportData = windowBackedMock("ExportData", () =>

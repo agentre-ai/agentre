@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 	"github.com/agentre-ai/agentre/internal/daemon/state"
 )
 
@@ -32,7 +33,12 @@ func TestLoginCompletesDeviceFlowAndPersistsOpaqueAccountClaim(t *testing.T) {
 			var body map[string]any
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 			assert.Equal(t, "agentred", body["device_kind"])
-			assert.Equal(t, st.InstanceUUID(), body["fingerprint"])
+			// 账号侧登记的指纹必须就是 auth.pair 交给桌面端做 TOFU 的那一个
+			// (rpc.DaemonFingerprint(uuid) = "sha256:<hex>"),不是裸 instance uuid:
+			// devices.fingerprint 与它「本就是同一个概念」。桌面端按本地配对行里的
+			// DaemonFingerprint 向 server 点名中转目标,也按它与账号清单合并设备面板的
+			// 一行(R15);登记成另一个值,中转永远解析不到这台 daemon,面板也永远合不上。
+			assert.Equal(t, rpc.DaemonFingerprint(st.InstanceUUID()), body["fingerprint"])
 			assert.Equal(t, "linux", body["platform"])
 			assert.Equal(t, "dev", body["version"])
 			assert.Equal(t, true, body["capabilities"].(map[string]any)["compute"])

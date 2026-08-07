@@ -149,6 +149,57 @@ func TestCatchUpSessions_PeerOrigin_CarriedIntoRequests(t *testing.T) {
 	}
 }
 
+// Given 账号级清单里两个对端各有一条**同号**会话(会话 id 是各客户端本地自增的,重号是
+// 常态而非例外),When 本客户端问一眼清单,Then 这一格留的是**自己**那条 —— 别的对端那条
+// 不得覆盖它。R12 放宽的是可见性的过滤条件,「会话主键结构不变」:会话主键是
+// (对端指纹, 会话 id) 两段,按裸 id 索引会让别的对端那条把自己的顶掉。
+func TestSessionSummaries_CollidingSessionID_OwnPeerWins(t *testing.T) {
+	const collided int64 = 42
+	conn := restartConn([]wire.SessionSummary{
+		{SessionID: collided, LifecycleState: wire.SessionLifecycleRunning, LatestSeq: 3},
+		{SessionID: collided, PeerFingerprint: "peer-B",
+			LifecycleState: wire.SessionLifecycleRunning, LatestSeq: 900},
+	}, nil)
+	rt, _, _ := newRestartRuntime(t, conn, 0)
+
+	summaries, err := rt.sessionSummaries(context.Background())
+	require.NoError(t, err)
+	// 高水位取错的后果:turnStartFloor 把别的对端的 900 当成自己会话的下限,自己此后
+	// 每一条通知(seq 4、5……)都低于下限被判成重复丢弃 —— 会话没有报错地冻住。
+	assert.Equal(t, int64(3), summaries[collided].LatestSeq,
+		"同号会话必须留自己那条的高水位")
+	assert.Empty(t, rt.originFor(collided),
+		"自己那条会话的 origin 必须是空,记成别的对端会让 attach/pull 点名别人的会话")
+}
+
+// Given 同上的同号会话清单,When 为自己那条会话跑补齐三步,Then attach / pull /
+// pendingWaiters 一律省略 origin(补的是自己那条),而不是点名别的对端 —— 否则拉回来的
+// 是别人的通知日志,会被原样重放进自己的转录。
+func TestCatchUpSessions_CollidingSessionID_CatchesUpOwnSession(t *testing.T) {
+	const collided int64 = 42
+	conn := restartConn([]wire.SessionSummary{
+		{SessionID: collided, LifecycleState: wire.SessionLifecycleRunning, LatestSeq: 3},
+		{SessionID: collided, PeerFingerprint: "peer-B",
+			LifecycleState: wire.SessionLifecycleRunning, LatestSeq: 900},
+	}, nil)
+	rt, _, _ := newRestartRuntime(t, conn, 0)
+
+	_, err := rt.CatchUpSessions(context.Background(), []int64{collided})
+	require.NoError(t, err)
+
+	for _, method := range []string{
+		wire.MethodSessionAttach, wire.MethodSessionPull, wire.MethodSessionPendingWaiters,
+	} {
+		calls := conn.methodCalls(method)
+		require.NotEmpty(t, calls, "%s 必须发出", method)
+		for _, c := range calls {
+			sid, fp := catchUpRequest(t, c)
+			assert.Equal(t, collided, sid)
+			assert.Empty(t, fp, "%s 补的是自己那条同号会话,不得点名别的对端", method)
+		}
+	}
+}
+
 // ── F6:App 重启后的补齐 ────────────────────────────────────────────────────
 
 // Given 桌面 App 退出后重开,本进程内一轮都没有在跑,而 daemon 上这条会话在这段时间
