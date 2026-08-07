@@ -1767,14 +1767,9 @@ func (s *chatSvc) Stop(ctx context.Context, req *StopRequest) (*StopResponse, er
 	if !gracefulAbort {
 		if sess, err := chat_repo.Session().Find(ctx, req.SessionID); err == nil && sess != nil {
 			if _, be, _, berr := s.resolveAgentBackend(ctx, sess.AgentID); berr == nil && be != nil {
-				if aerr := s.abortActiveTurn(ctx, be, req.SessionID); aerr != nil &&
-					!errors.Is(aerr, agentruntime.ErrNoActiveTurn) {
-					// Abort 失败不致命(前面已 cancel ctx 兜底),但要留底。
-					logger.Ctx(ctx).Warn("chat_svc.Stop: runner.Abort failed",
-						zap.Int64("sessionId", req.SessionID),
-						zap.String("backendType", be.Type),
-						zap.Error(aerr))
-				}
+				// 中断没下发下去不致命(前面已 cancel turnCtx 兜底),布尔判据这里
+				// 无人可报;失败的留底由 requestRuntimeAbort 自己记。
+				_ = s.requestRuntimeAbort(ctx, be, req.SessionID)
 			}
 		}
 	}
@@ -1844,8 +1839,10 @@ func (s *chatSvc) abortOutOfBandTurn(ctx context.Context, sess *chat_entity.Sess
 // requestRuntimeAbort 把「中断该会话当前活跃的那一轮」尽力下发给 runtime,报告是否
 // 真有一轮被中断:Abort 返 nil = 确有一轮被中断;ErrNoActiveTurn / 解析不出 runner /
 // runner 不支持中断 = 内存里没有可中断的轮。任何一步失败都只记日志、不返回错误 ——
-// 两个调用方(Stop 的遗孤路径 abortOutOfBandTurn、自主续轮落库失败处置
-// failAutonomousTurnPersist)都只要这一个布尔判据,失败各自另有兜底。
+// 三个调用方(Stop 里活跃用户轮的 best-effort 中断、Stop 的遗孤路径
+// abortOutOfBandTurn、自主续轮落库失败处置 failAutonomousTurnPersist)要么只要这一个
+// 布尔判据、要么连它都不要,失败各自另有兜底(已 cancel turnCtx / 交回遗孤 reconcile /
+// 前两步的可观察结果已经产生)。
 //
 // **会阻塞**:claudecode 的 Abort 写完 control_request 后要等 CLI 的 control_response,
 // 而那条回执要常驻 readLoop 前进才派发得了。调用方若同时还担着「让帧流继续被消费」的
