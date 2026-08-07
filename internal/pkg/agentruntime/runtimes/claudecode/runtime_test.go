@@ -877,7 +877,11 @@ func TestRuntime_Abort_ErrInterruptPending(t *testing.T) {
 		_, err := r.Abort(context.Background(), 602, 0)
 
 		So(err, ShouldNotBeNil)
-		So(atomic.LoadInt32(&h.closeCalls), ShouldEqual, 1) // 真错误应 Close 子进程
+		// 真错误应 Close 子进程:显式 a.handle.Close 一次,且 cache.Remove 还会异步 close
+		// 被逐出的 handle(CLISessionPool.Remove 里 go closeWithTimeout),故 closeCalls 是
+		// 1 或 2 —— 钉死「至少一次 Close + 缓存被逐出」这条与 ErrInterruptPending(0 次
+		// Close)可区分的判据,不钉死可能被异步 close 竞态的精确次数。
+		So(atomic.LoadInt32(&h.closeCalls), ShouldBeGreaterThanOrEqualTo, 1)
 		_, ok := r.cache.Get(sessionKey(602))
 		So(ok, ShouldBeFalse) // 真错误应逐出缓存
 	})
