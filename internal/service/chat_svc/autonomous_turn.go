@@ -2,7 +2,6 @@ package chat_svc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -237,8 +236,8 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 //     (应用层重试已被本轮决策 1 拒绝,重试属于驱动层 busy handler 的职责)。
 //  2. 经会话级流(AutonomousStreamName)推一条错误事件,不依赖数据库就能让前端
 //     看到这一轮出错;文案复用既有 mapTurnError,与用户发起的轮次一致。
-//  3. 主动中断 CLI 当前这一轮,让子进程解除等待(镜像 chat.go Stop 里
-//     `runner.(agentruntime.Aborter)` 的既有先例)。selectRunner / Abort 失败
+//  3. 主动中断 CLI 当前这一轮,让子进程解除等待(与 Stop 遗孤路径共用
+//     chat.go 的 requestRuntimeAbort)。selectRunner / Abort 失败
 //     (含子进程已消失,即 ErrNoActiveTurn)只记日志,不影响前两步已产生的结果。
 //     **必须异步发出**:Abort → Session.Interrupt 写完 control_request 后要阻塞等
 //     CLI 的 control_response,而那条回执只能由常驻 readLoop 派发,readLoop 又停在
@@ -276,24 +275,10 @@ func (s *chatSvc) failAutonomousTurnPersist(
 	})
 
 	// 3. 主动中断 CLI 当前这一轮 —— 异步发出,让第 4 步的抽干得以进行(见函数注释:
-	// 中断要等的回执反过来依赖抽干)。selectRunner / Abort 失败(含子进程已消失)只
-	// 记日志,不影响前两步已经产生的结果。
-	go func() {
-		runner, err := s.selectRunner(ctx, be, sessionID)
-		if err != nil {
-			logger.Ctx(ctx).Warn("chat_svc.failAutonomousTurnPersist: selectRunner failed, cannot interrupt CLI turn",
-				zap.Int64("sessionId", sessionID), zap.Error(err))
-			return
-		}
-		aborter, ok := runner.(agentruntime.Aborter)
-		if !ok {
-			return
-		}
-		if aerr := aborter.Abort(ctx, sessionID); aerr != nil && !errors.Is(aerr, agentruntime.ErrNoActiveTurn) {
-			logger.Ctx(ctx).Warn("chat_svc.failAutonomousTurnPersist: runner.Abort failed",
-				zap.Int64("sessionId", sessionID), zap.Error(aerr))
-		}
-	}()
+	// 中断要等的回执反过来依赖抽干)。走与 Stop 遗孤路径同一个 requestRuntimeAbort:
+	// selectRunner / Abort 失败(含子进程已消失)在那里只记日志,不影响前两步已经产
+	// 生的结果,这里的布尔判据也就无人可报,直接丢弃。
+	go func() { _ = s.requestRuntimeAbort(ctx, be, sessionID) }()
 
 	// 4. Hard invariant:抽干事件 channel,别让 Session reader 阻塞。
 	drainAndDiscard(events)
