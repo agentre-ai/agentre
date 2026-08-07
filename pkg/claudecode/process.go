@@ -47,6 +47,7 @@ func startProcess(ctx context.Context, spec processSpec) (*process, error) {
 	// 由 agentruntime 装配)，不接受用户输入。
 	cmd := exec.CommandContext(ctx, binary, spec.args...)
 	procattr.ApplyNoConsoleWindow(cmd)
+	setProcessGroup(cmd)
 	if spec.cwd != "" {
 		cmd.Dir = spec.cwd
 	}
@@ -142,13 +143,14 @@ func (p *process) exitErrIfDone() error {
 	return p.exitErr
 }
 
-// kill 给子进程发 SIGKILL（不可被忽略），用于子进程卡死、优雅 Close(关 stdin)
-// 救不回来的场景（典型：CLI 卡在 MCP 初始化连不上、根本不读 stdin）。进程死亡后
-// reaper 的 cmd.Wait 返回、parent-side stdout pipe 关闭 → scanner 拿到 EOF →
-// readLoop 收尾未决轮。多次调用幂等（Kill 已死进程返错，忽略）。
+// kill 给子进程所在进程组发 SIGKILL（不可被忽略），用于子进程卡死、优雅 Close(关 stdin)
+// 救不回来的场景（典型：CLI 卡在 MCP 初始化连不上、根本不读 stdin）。整组硬杀会连带
+// CLI 派生的孙进程（它们继承并握住 stdout pipe）一起终止，否则 reaper 的 io.Copy 等
+// 不到 EOF、exit channel 永不关闭。进程死亡后 reaper 的 cmd.Wait 返回、parent-side
+// stdout pipe 关闭 → scanner 拿到 EOF → readLoop 收尾未决轮。多次调用幂等。
 func (p *process) kill() {
 	if p.cmd != nil && p.cmd.Process != nil {
-		_ = p.cmd.Process.Kill()
+		_ = killProcessGroup(p.cmd)
 	}
 }
 

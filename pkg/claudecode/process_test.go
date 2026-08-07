@@ -2,7 +2,12 @@ package claudecode
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -68,26 +73,80 @@ func TestProcess_StreamsStdoutAndWaitsForExit(t *testing.T) {
 	assert.Equal(t, "a\nb\n", out)
 }
 
-// TestProcess_KillTerminatesWedgedSubprocess 钉死硬杀路径:对一个长睡、不读 stdin
-// 的子进程(模拟 CLI 卡在 MCP 初始化、Close 关 stdin 救不回来)调 kill() 必须 SIGKILL
-// 掉它,reaper 的 cmd.Wait 随即返回 → exit channel close,上层 readLoop 拿 EOF 解阻塞。
-func TestProcess_KillTerminatesWedgedSubprocess(t *testing.T) {
+// TestProcess_KillTerminatesProcessGroup 钉死硬杀路径:对一个长睡、且派生了一个后台
+// 孙进程(模拟 CLI 卡在 MCP 初始化、孙进程握着 stdout pipe)的进程组调 kill(),必须
+// 整组 SIGKILL 掉:reaper 的 cmd.Wait 随即返回 → exit channel close,上层 readLoop 拿
+// EOF 解阻塞,孙进程也必须一起死掉。
+//
+// 脚本必须是 `sleep 60 & wait`:后台孙进程继承并持有 stdout pipe,shell 死在 wait 上。
+// 若只杀 shell 不杀孙进程,io.Copy 永远等不到 EOF → reaper 永不收尾。旧的 `sleep 60`
+// 前台写法在 macOS 上孙进程恰好不握 pipe,只有 Linux CI 红;`& wait` 让 macOS 和 Linux
+// 行为一致,把「只杀 shell 不杀孙进程」的 bug 稳定复现出来。
+func TestProcess_KillTerminatesProcessGroup(t *testing.T) {
 	ctx := context.Background()
+	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
+	// #nosec G204 -- fixed shell script; the only argument is a test-owned temp path.
 	p, err := startProcess(ctx, processSpec{
 		binary: "/bin/sh",
-		args:   []string{"-c", "sleep 60"},
+		args:   []string{"-c", fmt.Sprintf(`sleep 60 & printf '%%s\n' "$!" > "%s"; wait`, pidFile)},
 	})
 	require.NoError(t, err)
 	require.False(t, p.hasExited(), "子进程应先存活")
+
+	grandchild := readPIDEventually(t, pidFile)
+	t.Cleanup(func() { terminatePID(grandchild) }) // 失败路径兜底,避免遗留孙进程
 
 	p.kill()
 
 	select {
 	case <-p.exit:
 	case <-time.After(5 * time.Second):
-		t.Fatal("kill() 没能终止长睡子进程")
+		t.Fatal("kill() 没能终止整棵进程树(孙进程仍握着 stdout pipe,reaper 卡死)")
 	}
 	assert.True(t, p.hasExited(), "kill 后 reaper 应已收尾")
+	assertProcessGoneEventually(t, grandchild)
+}
+
+func readPIDEventually(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path) //nolint:gosec // G304: path is a test-owned file under t.TempDir.
+		if err == nil {
+			pid, convErr := strconv.Atoi(strings.TrimSpace(string(data)))
+			if convErr == nil && pid > 0 {
+				return pid
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("process pid file %s was not written", path)
+	return 0
+}
+
+func assertProcessGoneEventually(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if !processAlive(pid) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("process %d remained alive after the termination bound", pid)
+}
+
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	return exec.Command("kill", "-0", strconv.Itoa(pid)).Run() == nil //nolint:gosec // G204: fixed executable with an OS-assigned test PID.
+}
+
+func terminatePID(pid int) {
+	if pid > 0 {
+		_ = exec.Command("kill", "-9", strconv.Itoa(pid)).Run() //nolint:gosec // G204: fixed executable with an OS-assigned test PID.
+	}
 }
 
 // TestProcess_EnvInheritsOSEnviron 验证传入 spec.env 时不会把整个进程环境清空。
