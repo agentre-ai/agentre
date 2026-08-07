@@ -278,13 +278,21 @@ type fakeCCHandle struct {
 	// interruptCalls 原子计数 Interrupt 调用次数,断言 Abort 是否真下发中断
 	// (决策 8:Abort 放宽到带外轮活跃也执行中断)。
 	interruptCalls int32
+	// interruptErr 非 nil 时 Interrupt 返回它(注入 ErrInterruptPending / 写帧失败等
+	// 真错误,断言 Abort 走不杀 / Close+evict 哪条路)。
+	interruptErr error
+	// closeCalls 原子计数 Close 调用次数,断言 ErrInterruptPending 不走 Close+evict 兜底。
+	closeCalls int32
 }
 
-func (f *fakeCCHandle) ID() string                  { return f.id }
-func (f *fakeCCHandle) Close(context.Context) error { return nil }
+func (f *fakeCCHandle) ID() string { return f.id }
+func (f *fakeCCHandle) Close(context.Context) error {
+	atomic.AddInt32(&f.closeCalls, 1)
+	return nil
+}
 func (f *fakeCCHandle) Interrupt(context.Context) error {
 	atomic.AddInt32(&f.interruptCalls, 1)
-	return nil
+	return f.interruptErr
 }
 func (f *fakeCCHandle) Kill(context.Context) error {
 	atomic.AddInt32(&f.killCalls, 1)
@@ -831,6 +839,47 @@ func TestRuntime_Abort_TurnToken(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(atomic.LoadInt32(&h.interruptCalls), ShouldEqual, 1)
 		So(outcome.TurnKind, ShouldEqual, agentruntime.TurnKindUser)
+	})
+}
+
+// TestRuntime_Abort_ErrInterruptPending 钉死决策 2:Interrupt 有界超时返回的
+// ErrInterruptPending 被 Abort 视为「中断已下发、ack 异步到」→ 返回 nil、不 Close
+// 子进程、不逐出缓存;只有写帧失败 / session closed / CLI 拒绝等**真错误**才保留
+// runtime.go:248-252 的 Close+evict 兜底。
+func TestRuntime_Abort_ErrInterruptPending(t *testing.T) {
+	Convey("Interrupt 返 ErrInterruptPending → 返回 nil、不 Close、不逐出缓存", t, func() {
+		r := New()
+		h := &fakeCCHandle{interruptErr: claudecode.ErrInterruptPending}
+		a := &claudeActive{handle: h}
+		a.enterOutOfBand()
+		a.nextTurnToken(agentruntime.TurnKindAutonomous)
+		r.cache.Put(sessionKey(601), a)
+
+		outcome, err := r.Abort(context.Background(), 601, 0)
+
+		So(err, ShouldBeNil)
+		So(outcome.TurnKind, ShouldEqual, agentruntime.TurnKindAutonomous)
+		So(atomic.LoadInt32(&h.interruptCalls), ShouldEqual, 1)
+		So(atomic.LoadInt32(&h.closeCalls), ShouldEqual, 0) // ErrInterruptPending 不应 Close 子进程
+		v, ok := r.cache.Get(sessionKey(601))
+		So(ok, ShouldBeTrue) // ErrInterruptPending 不应逐出缓存
+		So(v, ShouldEqual, a)
+	})
+
+	Convey("真错误(写帧失败)→ 保留 Close+evict 兜底", t, func() {
+		r := New()
+		h := &fakeCCHandle{interruptErr: errors.New("claudecode: write frame: broken pipe")}
+		a := &claudeActive{handle: h}
+		a.enterOutOfBand()
+		a.nextTurnToken(agentruntime.TurnKindAutonomous)
+		r.cache.Put(sessionKey(602), a)
+
+		_, err := r.Abort(context.Background(), 602, 0)
+
+		So(err, ShouldNotBeNil)
+		So(atomic.LoadInt32(&h.closeCalls), ShouldEqual, 1) // 真错误应 Close 子进程
+		_, ok := r.cache.Get(sessionKey(602))
+		So(ok, ShouldBeFalse) // 真错误应逐出缓存
 	})
 }
 

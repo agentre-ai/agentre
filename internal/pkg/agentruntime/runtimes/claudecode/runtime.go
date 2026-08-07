@@ -255,6 +255,13 @@ func (r *Runtime) Abort(ctx context.Context, sessionID int64, turnToken uint64) 
 	}
 	if a.handle != nil {
 		if err := a.handle.Interrupt(ctx); err != nil {
+			if errors.Is(err, claudecode.ErrInterruptPending) {
+				// 中断已下发、ack 异步到（CLI 卡在别的处理上，interruptAckBound 内没回执）。
+				// **不** Close、**不** 逐出缓存 —— 帧已写、在途，readLoop 追平后 CLI 会
+				// 发 result 帧让本轮自然收尾。只有真错误（写帧失败 / session closed /
+				// CLI 拒绝）才走下方 Close+evict 兜底。
+				return agentruntime.AbortOutcome{TurnKind: a.currentTurnKind()}, nil
+			}
 			_ = a.handle.Close(ctx)
 			r.cache.Remove(sessionKey(sessionID))
 			return agentruntime.AbortOutcome{TurnKind: agentruntime.TurnKindNone}, err

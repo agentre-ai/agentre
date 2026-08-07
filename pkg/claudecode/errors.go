@@ -16,6 +16,11 @@ var (
 	// ErrAPIError 标记 CLI 合成的 API 错误消息帧（isApiErrorMessage:true）。上层用
 	// errors.Is 把「turn 被 API 错误终止」这一类与普通子进程退出错误区分开。
 	ErrAPIError = errors.New("claudecode: api error")
+	// ErrInterruptPending 标记 control_request（interrupt / stop_task）帧已写入
+	// CLI stdin、但 ack 在 interruptAckBound 内未到达。帧已写、请求在途,CLI 处理到
+	// 后会自然收尾 —— 上层（claudecode Runtime.Abort）把它视为「中断已下发」而不是
+	// 「失败」,不得因此杀子进程 / 逐出缓存。
+	ErrInterruptPending = errors.New("claudecode: interrupt pending, ack not received within bound")
 )
 
 // APIError 承载 CLI isApiErrorMessage 帧的错误文本与顶层 error 分类码。
