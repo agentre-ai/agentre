@@ -117,16 +117,19 @@ const ABS_WINDOWS = /^[A-Za-z]:[\\/]/;
 
 /**
  * 把文件面板一条路径解析成可交给后端 ReadFile/GitFileContent 的会话级 relPath。
- * 返回 null 表示该文件不出预览按钮（扩展名不在 allowlist，或绝对路径越出 cwd）。
- * 相对路径（目录 / Git 模式）原样通过。
+ * 返回 null 表示该文件不出预览按钮（扩展名不在 allowlist，绝对路径越出 cwd，或
+ * 会话根本没有 cwd）。相对路径（目录 / Git 模式）原样通过。
  */
 export function resolvePreviewRelPath(
   path: string,
   cwd: string,
 ): string | null {
   if (previewKind(path) === null) return null;
-  if (!ABS_POSIX.test(path) && !ABS_WINDOWS.test(path)) return path;
+  // 无 cwd(自由会话 / 远端未配路径)时后端必然回 WorkspaceFsNoCwd,预览按钮
+  // 随行消失(spec「预览面板与入口」)——目录 / Git 模式本就不渲染行,这里覆盖
+  // 「变动」模式里消息派生出的相对路径行。
   if (cwd === "") return null;
+  if (!ABS_POSIX.test(path) && !ABS_WINDOWS.test(path)) return path;
   const sep = cwd.includes("\\") ? "\\" : "/";
   const prefix = cwd.endsWith("/") || cwd.endsWith("\\") ? cwd : `${cwd}${sep}`;
   if (path === cwd || !path.startsWith(prefix)) return null;

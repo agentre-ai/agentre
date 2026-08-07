@@ -95,6 +95,13 @@ describe("resolvePreviewRelPath", () => {
     expect(resolvePreviewRelPath("/Users/me/proj/README.md", "")).toBeNull();
   });
 
+  it("rejects relative paths too when there is no cwd", () => {
+    // 「变动」模式的行可能来自消息派生,即使会话没有 cwd 也会渲染;没有 cwd 后端
+    // 必回 WorkspaceFsNoCwd,预览按钮随行消失(spec「无 cwd ... 预览按钮随行消失」)。
+    expect(resolvePreviewRelPath("README.md", "")).toBeNull();
+    expect(resolvePreviewRelPath("internal/a.go", "")).toBeNull();
+  });
+
   it("rejects non-previewable files regardless of path shape", () => {
     expect(resolvePreviewRelPath("archive.zip", CWD)).toBeNull();
     expect(resolvePreviewRelPath("/Users/me/proj/archive.zip", CWD)).toBeNull();
