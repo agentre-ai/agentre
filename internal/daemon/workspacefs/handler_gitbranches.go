@@ -26,7 +26,9 @@ func (h *Handlers) GitBranches(ctx context.Context, req wire.GitBranchesReq) (*w
 		branches[i] = wire.Branch{Name: b.Name, Remote: b.Remote}
 	}
 	return &wire.GitBranchesResp{
-		NotARepo: res.NotARepo,
-		Branches: branches,
+		NotARepo:        res.NotARepo,
+		Branches:        branches,
+		CurrentBranch:   res.CurrentBranch,
+		DefaultBaseline: res.DefaultBaseline,
 	}, nil
 }

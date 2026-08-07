@@ -11,6 +11,9 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
 )
 
@@ -69,4 +72,51 @@ func resolveSessionCwd(ctx context.Context, sess *chat_entity.Session, be *agent
 // device cwd resolution rules without re-implementing them.
 func ResolveSessionCwd(ctx context.Context, sess *chat_entity.Session, be *agent_backend_entity.AgentBackend) (string, error) {
 	return resolveSessionCwd(ctx, sess, be)
+}
+
+// ResolveSessionWorkspace 把 sessionID 解析成 {deviceID, cwd},实现
+// workspace_fs_svc 自己声明的 SessionWorkspaceResolver 窄接口(在 bootstrap
+// 注入)。放在 chat_svc 是因为这里本来就持有 session → agent → backend 的查询
+// 与 resolveSessionCwd 的本地/远端规则;workspace_fs_svc 因此不必跨域去读
+// chat / agent / agent_backend 三张表。
+//
+// deviceID 为 0 表示本机会话。远端 backend 的 DeviceID 解析不出整数时直接报
+// 错,而不是回落 0 —— 那会让调用方拿着远端机器上的路径去列本机文件系统。
+func (s *chatSvc) ResolveSessionWorkspace(ctx context.Context, sessionID int64) (int64, string, error) {
+	if sessionID <= 0 {
+		return 0, "", i18n.NewError(ctx, code.InvalidParameter)
+	}
+	sess, err := chat_repo.Session().Find(ctx, sessionID)
+	if err != nil {
+		return 0, "", operationFailedWithCause(ctx, err)
+	}
+	if sess == nil {
+		return 0, "", i18n.NewError(ctx, code.ChatSessionNotFound)
+	}
+	a, err := agent_repo.Agent().Find(ctx, sess.AgentID)
+	if err != nil {
+		return 0, "", operationFailedWithCause(ctx, err)
+	}
+	var be *agent_backend_entity.AgentBackend
+	if a != nil && a.AgentBackendID > 0 {
+		be, err = agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
+		if err != nil {
+			return 0, "", operationFailedWithCause(ctx, err)
+		}
+	}
+
+	var deviceID int64
+	if be.IsRemote() {
+		id, ok := be.DeviceIDInt()
+		if !ok {
+			return 0, "", i18n.NewError(ctx, code.RemoteDeviceNotFound)
+		}
+		deviceID = id
+	}
+
+	cwd, err := resolveSessionCwd(ctx, sess, be)
+	if err != nil {
+		return 0, "", err
+	}
+	return deviceID, cwd, nil
 }

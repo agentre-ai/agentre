@@ -265,4 +265,42 @@ func TestGitBranches_NonRepo_Degrades(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, res.NotARepo)
 	assert.Empty(t, res.Branches)
+	assert.Empty(t, res.CurrentBranch)
+	assert.Empty(t, res.DefaultBaseline)
+}
+
+// GitBranches 一次调用就要带回"当前分支"与"推断出的默认基线" —— 远端会话
+// 只能通过 workspacefs.gitBranches RPC 拿到这两个值(DefaultBaseline /
+// RefExists 是 in-process API,跨不过 daemon 边界)。
+func TestGitBranches_ReportsCurrentBranchAndDefaultBaseline(t *testing.T) {
+	dir := setupDivergedBranches(t) // 停在 feature 分支上,存在本地 main
+
+	res, err := workspacefs.GitBranches(context.Background(), dir)
+	require.NoError(t, err)
+	assert.False(t, res.NotARepo)
+	assert.Equal(t, "feature", res.CurrentBranch)
+	assert.Equal(t, "main", res.DefaultBaseline, "与 DefaultBaseline() 同一套三级回退")
+}
+
+func TestGitBranches_DefaultBaselinePrefersOriginHEAD(t *testing.T) {
+	dir := initRepo(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git", "refs", "remotes", "origin"), 0o755))
+	runGit(t, dir, "update-ref", "refs/remotes/origin/main", "HEAD")
+	runGit(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+
+	res, err := workspacefs.GitBranches(context.Background(), dir)
+	require.NoError(t, err)
+	assert.Equal(t, "origin/main", res.DefaultBaseline)
+}
+
+// detached HEAD 下没有"当前分支"可言,留空而不是回显 "HEAD" 这种伪分支名。
+func TestGitBranches_DetachedHead_CurrentBranchEmpty(t *testing.T) {
+	dir := initRepo(t)
+	runGit(t, dir, "checkout", "-q", "--detach")
+
+	res, err := workspacefs.GitBranches(context.Background(), dir)
+	require.NoError(t, err)
+	assert.False(t, res.NotARepo)
+	assert.Empty(t, res.CurrentBranch)
+	assert.Equal(t, "main", res.DefaultBaseline, "detached 不影响基线推断")
 }

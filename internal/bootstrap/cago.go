@@ -45,6 +45,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/service/project_svc"
 	"github.com/agentre-ai/agentre/internal/service/skill_svc"
 	"github.com/agentre-ai/agentre/internal/service/subagent_svc"
+	"github.com/agentre-ai/agentre/internal/service/workspace_fs_svc"
 	"github.com/agentre-ai/agentre/migrations"
 
 	"github.com/cago-frame/cago"
@@ -125,6 +126,13 @@ func Init(ctx context.Context) (*Runtime, error) {
 	// 把 project_svc 的 cwd 解析注入 chat_svc —— chat_svc 不直接 import project_svc，
 	// 避免 project_svc → chat_repo 与 chat_svc → project_svc 形成环。
 	chat_svc.RegisterCwdResolver(project_svc.Default().ResolveSessionCwd)
+	// 把 chat_svc 的会话解析注入 workspace_fs_svc（它自己声明的窄接口），让它不必
+	// 跨域读 chat / agent / agent_backend 三张表。这里懒解析 chat_svc.Chat()：
+	// RegisterChat 在 app.go registerChatService() 里才执行，此刻还是 nil。
+	workspace_fs_svc.RegisterSessionWorkspaceResolver(
+		func(ctx context.Context, sessionID int64) (int64, string, error) {
+			return chat_svc.Chat().ResolveSessionWorkspace(ctx, sessionID)
+		})
 
 	// 启动时按持久化的开关恢复 Debug 日志级别（取代旧 AGENTRE_DEBUG 环境变量）。
 	applyDebugLoggingOnBoot(ctx)

@@ -37,4 +37,18 @@ func TestGitBranches_NonRepo_Degrades(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, resp.NotARepo)
 	assert.Empty(t, resp.Branches)
+	assert.Empty(t, resp.CurrentBranch)
+	assert.Empty(t, resp.DefaultBaseline)
+}
+
+// 当前分支与默认基线必须过得了 wire —— host 侧远端分支没有别的途径拿到它们。
+func TestGitBranches_CarriesCurrentBranchAndDefaultBaseline(t *testing.T) {
+	h := workspacefs.NewHandlers(workspacefs.Options{})
+	dir := initRepo(t) // 建在 main 上
+	runGit(t, dir, "checkout", "-q", "-b", "feature/x")
+
+	resp, err := h.GitBranches(context.Background(), wire.GitBranchesReq{Root: dir})
+	require.NoError(t, err)
+	assert.Equal(t, "feature/x", resp.CurrentBranch)
+	assert.Equal(t, "main", resp.DefaultBaseline)
 }

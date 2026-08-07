@@ -87,7 +87,16 @@ type Branch struct {
 }
 
 // GitBranchesResult 是 GitBranches 的返回结果。
+//
+// CurrentBranch / DefaultBaseline 随分支清单一起返回,而不是让调用方另调
+// DefaultBaseline():后者是 in-process API,跨不过 daemon 边界,远端会话只能
+// 从这一次 workspacefs.gitBranches RPC 里拿到基线推断结果。两端因此共用同一
+// 套推断规则(设计决策 4),而不是 host 侧照着分支清单再猜一遍。
 type GitBranchesResult struct {
-	NotARepo bool     // dir 不在任何 git 工作树内;为 true 时 Branches 恒为空
+	NotARepo bool     // dir 不在任何 git 工作树内;为 true 时其余字段恒为零值
 	Branches []Branch //
+	// CurrentBranch 是当前分支短名;detached HEAD 时为空(不回显 "HEAD" 伪分支名)。
+	CurrentBranch string
+	// DefaultBaseline 是 DefaultBaseline() 推断出的默认基线,三级都不命中时为空。
+	DefaultBaseline string
 }

@@ -210,4 +210,12 @@ var enUS = map[int]string{
 	DataImportDuplicateLocal:     "Multiple local records share the same name, cannot auto-overwrite",
 	DataImportRollback:           "Import failed, all changes rolled back",
 	DataImportInvalidAction:      "Unknown import action",
+
+	// workspacefs (session working directory browsing)
+	WorkspaceFsNoCwd:            "This session has no working directory",
+	WorkspaceFsPathRefused:      "Path is outside the session working directory",
+	WorkspaceFsReadFailed:       "Failed to read the working directory",
+	WorkspaceFsBaselineRequired: "No comparison baseline; pick a baseline branch first",
+	WorkspaceFsDeviceOffline:    "Remote device offline",
+	WorkspaceFsDaemonOutdated:   "Remote agentred is too old; please upgrade to use this view",
 }

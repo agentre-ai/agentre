@@ -148,7 +148,13 @@ type Branch struct {
 	Remote bool   `json:"remote,omitempty"`
 }
 
+// GitBranchesResp 一次带回分支清单 + 当前分支 + 推断出的默认基线:基线推断
+// (origin/HEAD → main → master)只能在仓库所在机器上做,host 侧远端分支没有
+// 别的途径拿到它,所以它必须过 wire,而不是让 host 照着 Branches 再猜一遍
+// (那会让本地与远端的推断规则分叉)。
 type GitBranchesResp struct {
-	NotARepo bool     `json:"notARepo,omitempty"` // true 时 Branches 恒为空
-	Branches []Branch `json:"branches"`
+	NotARepo        bool     `json:"notARepo,omitempty"` // true 时其余字段恒为零值
+	Branches        []Branch `json:"branches"`
+	CurrentBranch   string   `json:"currentBranch,omitempty"`   // detached HEAD 时为空
+	DefaultBaseline string   `json:"defaultBaseline,omitempty"` // 三级都不命中时为空
 }

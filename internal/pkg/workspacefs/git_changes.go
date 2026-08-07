@@ -104,7 +104,18 @@ func GitBranches(ctx context.Context, dir string) (*GitBranchesResult, error) {
 	branches = append(branches, local...)
 	branches = append(branches, remote...)
 	sort.Slice(branches, func(i, j int) bool { return branches[i].Name < branches[j].Name })
-	return &GitBranchesResult{Branches: branches}, nil
+	return &GitBranchesResult{
+		Branches:        branches,
+		CurrentBranch:   currentBranch(ctx, dir),
+		DefaultBaseline: DefaultBaseline(ctx, dir),
+	}, nil
+}
+
+// currentBranch 取当前分支短名。用 symbolic-ref 而非 rev-parse --abbrev-ref:
+// detached HEAD 下前者失败(经 gitOutputSafe 落成空串),后者会返回字符串
+// "HEAD",那不是一个分支名。
+func currentBranch(ctx context.Context, dir string) string {
+	return strings.TrimSpace(gitOutputSafe(ctx, dir, "symbolic-ref", "--short", "HEAD"))
 }
 
 // refBranches 列举 prefix 下的分支短名。remote==true 时跳过 "<remote>/HEAD"
