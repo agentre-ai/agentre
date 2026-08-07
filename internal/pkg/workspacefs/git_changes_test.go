@@ -115,6 +115,36 @@ func TestGitChanges_UntrackedInsideNewDirectory_ListsEachFile(t *testing.T) {
 	}
 }
 
+// 「被忽略的文件不出现在此列表」是两档共用的约定。它靠 status 不带 --ignored
+// 成立,而未跟踪文件的枚举范围恰恰是 -u 这一族开关在管的——上面那条 -uall 的
+// 修复就动过它,所以这里给忽略语义留一条独立的守卫,别只靠人工跑一次 git 确认。
+func TestGitChanges_IgnoredEntries_NeverListed(t *testing.T) {
+	dir := initRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("ignored/\nsecret.txt\n"), 0o644))
+	runGit(t, dir, "add", ".gitignore")
+	runGit(t, dir, "commit", "-q", "-m", "add gitignore")
+
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "ignored"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ignored", "inner.txt"), []byte("x\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("x\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "visible.txt"), []byte("x\n"), 0o644))
+
+	for _, scope := range []workspacefs.GitChangesScope{workspacefs.ScopeUncommitted, workspacefs.ScopeBranch} {
+		baseline := ""
+		if scope == workspacefs.ScopeBranch {
+			baseline = "main"
+		}
+		res, err := workspacefs.GitChanges(context.Background(), dir, scope, baseline, workspacefs.DefaultMaxEntries)
+		require.NoError(t, err)
+		byPath := changesByPath(res.Changes)
+
+		require.Containsf(t, byPath, "visible.txt", "scope=%s", scope)
+		assert.NotContainsf(t, byPath, "secret.txt", "ignored file must not be listed (scope=%s)", scope)
+		assert.NotContainsf(t, byPath, "ignored/inner.txt", "file inside an ignored directory must not be listed (scope=%s)", scope)
+		assert.NotContainsf(t, byPath, "ignored/", "the ignored directory itself must not be listed (scope=%s)", scope)
+	}
+}
+
 func TestGitChanges_UntrackedBinary_NULByte(t *testing.T) {
 	dir := initRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin.dat"), []byte("a\x00b"), 0o644))
