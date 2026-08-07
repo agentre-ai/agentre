@@ -14,8 +14,13 @@ import (
 var ErrPathRefused = errors.New("workspacefs: path refused")
 
 // ErrBaselineRequired 表示调用 GitChanges 时 scope==ScopeBranch 但未提供
-// baseline。baseline 的推断/持久化/校验是调用方职责(DefaultBaseline /
-// RefExists),GitChanges 本身不对空 baseline 做静默兜底。
+// baseline。baseline 的推断/持久化/校验是调用方职责,GitChanges 本身不对空
+// baseline 做静默兜底。
+//
+// 调用方要拿基线,走 GitBranches 返回的 DefaultBaseline / Branches 两个字段,
+// 而不是直接调本包的 DefaultBaseline / RefExists —— 后两个是 in-process API,
+// 跨不过 daemon 边界,远端会话照着它们写就会本地一套规则、远端另一套(设计
+// 决策 4)。它们仍然导出,是因为本机分支与 GitBranches 自身都要用。
 var ErrBaselineRequired = errors.New("workspacefs: baseline required for branch scope")
 
 // DefaultMaxEntries 是单层目录列举 / git 变动列举的条目上限,与

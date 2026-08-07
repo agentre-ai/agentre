@@ -38,6 +38,11 @@ const maxUntrackedTextSize = 1 << 20 // 1 MiB
 // 两档共用:未跟踪文件恒来自 status --porcelain 的 "??" 条目(diff 系命令
 // 看不到未跟踪文件),新增行数由 Go 侧读文件计行得出,>1MiB 或含 NUL 字节
 // 判为二进制;变动数超过 maxEntries 时截断。
+//
+// dir 可以只是仓库里的一个子目录(项目路径指到 monorepo 的 frontend/ 之类)。
+// git 两条命令的路径恒相对仓库根、且覆盖整个仓库,所以结果先经 workspacePrefix
+// 折回 dir 相对路径,子树之外的变动不列 —— Change.Path 的契约是"相对 dir",
+// 本包自己拿它读文件、前端拿它拼 cwd 打开文件,都只有这一种解释。
 func GitChanges(ctx context.Context, dir string, scope GitChangesScope, baseline string, maxEntries int) (*GitChangesResult, error) {
 	if !isInsideWorkTree(ctx, dir) {
 		return &GitChangesResult{NotARepo: true}, nil
@@ -73,18 +78,33 @@ func GitChanges(ctx context.Context, dir string, scope GitChangesScope, baseline
 	}
 
 	numstat := parseNumstat(gitOutputSafe(ctx, dir, "diff", "--numstat", "-z", diffRef))
+	prefix := workspacePrefix(ctx, dir)
 
 	changes := make([]Change, 0, len(statuses)+len(untrackedPaths))
 	for path, meta := range statuses {
-		c := Change{Path: path, OldPath: meta.oldPath, Status: meta.status}
+		rel, inside := trimWorkspacePrefix(path, prefix)
+		if !inside {
+			continue
+		}
+		// 旧路径可能落在工作目录之外(从子树外面重命名进来);它只进 tooltip,
+		// 不参与任何路径拼接,折不回来时原样保留仓库根相对值。
+		oldPath := meta.oldPath
+		if oldRel, ok := trimWorkspacePrefix(oldPath, prefix); ok {
+			oldPath = oldRel
+		}
+		c := Change{Path: rel, OldPath: oldPath, Status: meta.status}
 		if ns, ok := numstat[path]; ok {
 			c.Added, c.Deleted, c.Binary = ns.added, ns.deleted, ns.binary
 		}
 		changes = append(changes, c)
 	}
 	for _, p := range untrackedPaths {
-		added, binary := countUntrackedFileLines(filepath.Join(dir, p))
-		changes = append(changes, Change{Path: p, Status: ChangeUntracked, Added: added, Binary: binary})
+		rel, inside := trimWorkspacePrefix(p, prefix)
+		if !inside {
+			continue
+		}
+		added, binary := countUntrackedFileLines(filepath.Join(dir, rel))
+		changes = append(changes, Change{Path: rel, Status: ChangeUntracked, Added: added, Binary: binary})
 	}
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
 

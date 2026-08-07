@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 
 import { deriveFileTree, type FileEntry, type FileTreeNode } from "../derive";
 
+import { indentStyle } from "./tree-indent";
 import { useOpenFile } from "./use-open-file";
 
 type Props = {
@@ -35,10 +36,6 @@ function DiffBadge({ plus, minus }: { plus: number; minus: number }) {
 function basename(path: string): string {
   const parts = path.split(/[\\/]/);
   return parts[parts.length - 1] ?? path;
-}
-
-function indentStyle(depth: number): React.CSSProperties {
-  return { paddingLeft: `${8 + depth * 14}px` };
 }
 
 export function FilesView({ files, cwd, remote, onJumpToTurn }: Props) {

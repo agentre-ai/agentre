@@ -95,6 +95,26 @@ func isInsideWorkTree(ctx context.Context, dir string) bool {
 	return err == nil
 }
 
+// workspacePrefix 返回 dir 相对仓库根的路径前缀:dir 就是仓库根时为空串,是子
+// 目录时形如 "sub/"(git 用 "/" 分隔,与它自己输出的路径同一形状)。
+//
+// 需要它是因为 `git status --porcelain` 与 `git diff` 的路径恒相对仓库根、且覆盖
+// 整个仓库,无视命令是在哪个子目录里跑的;而本包对外的路径契约是"相对 dir"。
+// 拿不到前缀(非 git 目录、git 调用失败)时返回空串,退化成"dir 即仓库根"的旧
+// 行为,与本包其余单条 git 子命令的容错约定一致。
+func workspacePrefix(ctx context.Context, dir string) string {
+	return strings.TrimSpace(gitOutputSafe(ctx, dir, "rev-parse", "--show-prefix"))
+}
+
+// trimWorkspacePrefix 把仓库根相对路径折成 dir 相对路径;path 不在 dir 子树内时
+// 第二个返回值为 false。prefix 为空(dir 即仓库根)时恒原样放行。
+func trimWorkspacePrefix(path, prefix string) (string, bool) {
+	if prefix == "" {
+		return path, true
+	}
+	return strings.CutPrefix(path, prefix)
+}
+
 // isRefName 挡掉不能当 git 位置参数使的值:空串,以及 "-" 开头的值——后者会被
 // git 当选项解析(`git merge-base --octopus HEAD` 退出码 0 且返回 HEAD 自己,
 // 「本分支档」就静默变成了「对 HEAD 比较」)。基线 ref 是过 wire 进来的调用方

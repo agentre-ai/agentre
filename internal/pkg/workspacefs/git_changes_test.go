@@ -191,6 +191,48 @@ func TestGitChanges_UntrackedSymlink_NotFollowed(t *testing.T) {
 	assert.False(t, byPath["link.txt"].Binary)
 }
 
+// 会话工作目录常常只是仓库里的一个子目录(项目路径指到 monorepo 的
+// frontend/ 之类)。git status --porcelain / git diff 的路径恒相对仓库根、且
+// 覆盖整个仓库,而本包对外的 Change.Path 相对 dir —— countUntrackedFileLines
+// 拿它 filepath.Join(dir, path) 读文件,前端拿它拼 cwd 打开文件。两者只在
+// dir 恰是仓库根时重合,所以子目录这一档要单独钉死。
+func TestGitChanges_WorkspaceInRepoSubdir_PathsRelativeToWorkspace(t *testing.T) {
+	root := initRepo(t)
+	require.NoError(t, os.Mkdir(filepath.Join(root, "sub"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "outside.txt"), []byte("o\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "sub", "inner.txt"), []byte("i\n"), 0o644))
+	runGit(t, root, "add", "outside.txt", "sub/inner.txt")
+	runGit(t, root, "commit", "-q", "-m", "seed")
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, "outside.txt"), []byte("o\nchanged\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "sub", "inner.txt"), []byte("i\nchanged\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "outside-new.txt"), []byte("x\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "sub", "fresh.txt"), []byte("a\nb\n"), 0o644))
+
+	dir := filepath.Join(root, "sub")
+	for _, scope := range []workspacefs.GitChangesScope{workspacefs.ScopeUncommitted, workspacefs.ScopeBranch} {
+		baseline := ""
+		if scope == workspacefs.ScopeBranch {
+			baseline = "main"
+		}
+		res, err := workspacefs.GitChanges(context.Background(), dir, scope, baseline, workspacefs.DefaultMaxEntries)
+		require.NoError(t, err)
+		byPath := changesByPath(res.Changes)
+
+		require.Containsf(t, byPath, "inner.txt", "跟踪文件的路径要相对工作目录,而不是仓库根 (scope=%s)", scope)
+		assert.Equal(t, workspacefs.ChangeModified, byPath["inner.txt"].Status)
+		assert.Equal(t, 1, byPath["inner.txt"].Added)
+
+		require.Containsf(t, byPath, "fresh.txt", "未跟踪文件同样相对工作目录 (scope=%s)", scope)
+		assert.Equalf(t, 2, byPath["fresh.txt"].Added,
+			"行数靠 filepath.Join(dir, path) 读文件,路径错了就恒为 0 (scope=%s)", scope)
+
+		assert.NotContainsf(t, byPath, "sub/inner.txt", "仓库根相对路径不能漏出去 (scope=%s)", scope)
+		assert.NotContainsf(t, byPath, "outside.txt", "工作目录之外的变动不属于这个面板 (scope=%s)", scope)
+		assert.NotContainsf(t, byPath, "outside-new.txt", "工作目录之外的未跟踪文件同样不列 (scope=%s)", scope)
+	}
+}
+
 // setupDivergedBranches builds: main (init commit) -> feature branch checked
 // out with one committed change on top of main, plus a further uncommitted
 // worktree edit to the same file, a staged new file, and an untracked file.

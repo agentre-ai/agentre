@@ -17,6 +17,7 @@ import { useSessionStatus } from "@/stores/session-status-store";
 import type { workspace_fs_svc } from "@/../wailsjs/go/models";
 
 import { errorText, PanelNotice, PanelSkeleton } from "./panel-feedback";
+import { indentStyle } from "./tree-indent";
 import { useOpenFile } from "./use-open-file";
 
 type Entry = workspace_fs_svc.EntryView;
@@ -295,8 +296,4 @@ function sortEntries(entries: Entry[]): Entry[] {
     if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
-}
-
-function indentStyle(depth: number): React.CSSProperties {
-  return { paddingLeft: `${8 + depth * 14}px` };
 }
