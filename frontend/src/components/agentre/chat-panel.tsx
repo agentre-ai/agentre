@@ -90,6 +90,7 @@ import {
 } from "./chat-panel-catchup-state";
 import { computeComposerContextUsage } from "./chat-panel-context-usage";
 import { PermissionModePill, usePermissionMode } from "./permission-mode";
+import { ModelPill, useModelPill } from "./model-pill";
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
 import { AgentAvatar, DeviceTag, StatusDot } from "./primitives";
 import { QueuedMessagesBar } from "./queued-messages-bar";
@@ -1242,6 +1243,32 @@ function ChatPanel({
       session?.agentStatus === "running" ||
       session?.agentStatus === "waiting");
 
+  // ModelPill：会话级模型覆盖。已绑 provider（llmProviderKey 非空）→ /v1/models 列表；
+  // 未绑 + 已有会话 → 灰显；未绑 + 新建会话 → 自由输入。新建会话的瞬态选择经
+  // doSend 的 SendRequest.ModelOverride 透传给后端落库（已有会话走 SetChatSessionModel）。
+  // 会话级模型切换 v1 只覆盖四个有实测依据的后端(builtin/claudecode/codex/piagent,
+  // 见规格决策 6);openclaw 切换记为 follow-up,不在 v1 范围 —— 不渲染 ModelPill,
+  // 否则新建 openclaw 会话会出现自由输入 pill,override 被 openclaw runtime 忽略,
+  // 每轮还会误报偏离提示。
+  const modelSwitchable =
+    activeBackendType === "builtin" ||
+    activeBackendType === "claudecode" ||
+    activeBackendType === "codex" ||
+    activeBackendType === "piagent";
+
+  // provider key 也随 modelSwitchable 门控:useModelPill 一拿到 key 就会去拉
+  // /v1/models（ListLLMModels 是对供应商的真实鉴权 HTTP 请求,不是本地目录）。
+  // 不门控的话,打开任意一个绑了 provider 的 openclaw 会话都会白打一次供应商 API,
+  // 结果没有任何 pill 能消费。
+  const modelPill = useModelPill({
+    sessionId,
+    llmProviderKey: modelSwitchable
+      ? (session?.llmProviderKey ?? newSessionAgent?.llmProviderKey ?? "")
+      : "",
+    initialOverride: session?.modelOverride,
+    providerDefaultModel: session?.providerDefaultModel,
+  });
+
   // prop 优先，无 prop 时降级到内部派生值。
   const effectiveTopline = headerTopline ?? derivedTopline;
 
@@ -1534,6 +1561,9 @@ function ChatPanel({
         permissionMode:
           permissionModeOverride ??
           (isModeSwitchable ? permissionMode.mode : ""),
+        // 新建会话首发前预选：瞬态模型随 SendRequest.ModelOverride 透传落库。
+        // 已有会话忽略（走 SetChatSessionModel），后端 Send 已约定该字段只读新建路径。
+        ...(targetSessionId === 0 ? { modelOverride: modelPill.override } : {}),
       };
       if (images.length > 0) {
         sendPayload.images = images.map((image) => ({
@@ -2677,6 +2707,9 @@ function ChatPanel({
                     />
                   ) : null
                 }
+                modelSlot={
+                  modelSwitchable ? <ModelPill {...modelPill} /> : null
+                }
                 onShiftTab={
                   isModeSwitchable && !modeSwitchingDisabled
                     ? permissionMode.cycleMode
@@ -2814,6 +2847,8 @@ function ChatPanel({
                 sessionId={session?.id ?? 0}
                 messages={messages}
                 activeMessageId={activeMessageId}
+                cwd={session?.cwd ?? ""}
+                remote={Boolean(session?.deviceID)}
                 onJumpToMessage={(mid) => {
                   transcriptHandleRef.current?.scrollToMessage(mid);
                 }}

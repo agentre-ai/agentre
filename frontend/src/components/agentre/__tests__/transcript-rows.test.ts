@@ -189,6 +189,52 @@ describe("buildRenderItems", () => {
     });
   });
 
+  it("notice block 产出一个 notice 渲染项(结构化模型 id 透传)", () => {
+    const noticeBlock = {
+      type: "notice",
+      level: "info",
+      selectedModel: "selected-model",
+      actualModel: "actual-model",
+    } as unknown as ChatBlockData;
+
+    const items = buildRenderItems({
+      messageId: 8,
+      blocks: [noticeBlock],
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("notice");
+    const block = (items[0] as { block: ChatBlockData }).block;
+    expect(block.selectedModel).toBe("selected-model");
+    expect(block.actualModel).toBe("actual-model");
+  });
+
+  it("OpenClaw exec_approval block keeps its own lifecycle and stable approval identity", () => {
+    const items = buildRenderItems({
+      messageId: 9,
+      blocks: [
+        {
+          type: "exec_approval",
+          execApproval: {
+            id: "exec-approval-1",
+            commandText: "git status --short",
+            allowedDecisions: ["allow-once", "deny"],
+            status: "pending",
+          },
+        } as unknown as ChatBlockData,
+      ],
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      type: "exec_approval",
+      block: {
+        execApproval: { id: "exec-approval-1", status: "pending" },
+      },
+      uiStateKey: "message:9:exec_approval:exec-approval:exec-approval-1",
+    });
+  });
+
   it("agent.spawn 归集 parentToolUseId 子块到 childBlocks,子块不再上顶层", () => {
     const items = buildRenderItems({
       messageId: 1,
@@ -258,22 +304,25 @@ describe("buildRenderItems", () => {
     ]);
   });
 
-  it("合成顺序:persisted → liveThinking → liveBlocks → liveTail;thinking 的 streaming 只在无后续输出时为 true", () => {
-    // case A:liveBlocks 已有 tool → 思考已结束 (streaming=false),且 thinking 排在 tool 前。
+  it("合成顺序:persisted → liveBlocks(含已冻结 thinking) → liveThinking → liveTail;thinking 的 streaming 只看 liveTail", () => {
+    // case A:liveBlocks 已有 tool → 未冻结的 liveThinking 排在其后(时间顺序),
+    // 且 thinking 的 streaming 为 false(liveTail 有 text,本轮思考已结束)。
     const withTool = buildRenderItems({
       messageId: 1,
       blocks: [text("done part")],
       liveThinking: "reasoning…",
+      liveTail: " tail",
       liveBlocks: [toolUse("toolu-live")],
     });
     expect(withTool.map((item) => item.type)).toEqual([
       "text",
-      "thinking",
       "tool",
+      "thinking",
+      "text",
     ]);
-    expect(withTool[1]).toMatchObject({ type: "thinking", streaming: false });
+    expect(withTool[2]).toMatchObject({ type: "thinking", streaming: false });
 
-    // case B:纯思考阶段 → streaming=true。
+    // case B:纯思考阶段(liveBlocks 空、liveTail 空)→ 仍排在最前,streaming=true。
     const thinkingOnly = buildRenderItems({
       messageId: 1,
       liveThinking: "reasoning…",
@@ -285,6 +334,64 @@ describe("buildRenderItems", () => {
       streaming: true,
       startedAt: 1234,
     });
+
+    // case C:liveBlocks 里有前一轮工具、当前轮思考还没出 text → streaming 仍为 true
+    // (过去用 liveBlocks.length===0 判定,会把「第 2 轮思考」误标成已结束)。
+    const round2Thinking = buildRenderItems({
+      messageId: 1,
+      liveThinking: "round2…",
+      liveBlocks: [
+        toolUse("toolu-1"),
+        { type: "tool_result", toolUseId: "toolu-1" } as ChatBlockData,
+      ],
+    });
+    expect(round2Thinking.map((item) => item.type)).toEqual([
+      "tool",
+      "thinking",
+    ]);
+    expect(round2Thinking[1]).toMatchObject({
+      type: "thinking",
+      streaming: true,
+    });
+  });
+
+  it("工具循环里后一轮 thinking 穿插在 tool_result 之后,不再全堆最顶", () => {
+    const items = buildRenderItems({
+      messageId: 1,
+      // liveBlocks 已含 round1 冻结段(thinking/text/tool_use/tool_result)
+      // + round2 冻结段(thinking/text/tool_use)。
+      liveBlocks: [
+        { type: "thinking", text: "thought1" } as ChatBlockData,
+        { type: "text", text: "text1" } as ChatBlockData,
+        toolUse("toolu-1"),
+        {
+          type: "tool_result",
+          toolUseId: "toolu-1",
+          text: "r1",
+        } as ChatBlockData,
+        { type: "thinking", text: "thought2" } as ChatBlockData,
+        { type: "text", text: "text2" } as ChatBlockData,
+        toolUse("toolu-2"),
+      ],
+    });
+    const flat = items.map((item) =>
+      item.type === "thinking"
+        ? `thinking:${(item as { block: ChatBlockData }).block.text}`
+        : item.type === "tool"
+          ? `tool:${item.toolBlock?.toolName}`
+          : item.type === "text"
+            ? `text:${(item as { text: string }).text}`
+            : item.type,
+    );
+    // round1 思考 → text1 → tool1 → round2 思考 → text2 → tool2(时间顺序)
+    expect(flat).toEqual([
+      "thinking:thought1",
+      "text:text1",
+      "tool:Bash",
+      "thinking:thought2",
+      "text:text2",
+      "tool:Bash",
+    ]);
   });
 
   it("liveTail 与前面已冻结的 text 段合并为同一 item 并整体标记 streaming", () => {

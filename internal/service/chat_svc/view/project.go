@@ -67,6 +67,10 @@ func ProjectMessageBlocks(bs []cagoblocks.ContentBlock) []ChatBlock {
 			out = append(out, ChatBlock{Type: "tool_permission", ToolPermission: t})
 		case blocks.ToolPermissionBlock:
 			out = append(out, ChatBlock{Type: "tool_permission", ToolPermission: &t})
+		case *blocks.ExecApprovalBlock:
+			out = append(out, ChatBlock{Type: "exec_approval", ExecApproval: t})
+		case blocks.ExecApprovalBlock:
+			out = append(out, ChatBlock{Type: "exec_approval", ExecApproval: &t})
 		case *blocks.SubagentStateBlock:
 			out = append(out, ChatBlock{Type: "subagent_state", Subagent: t})
 		case blocks.SubagentStateBlock:

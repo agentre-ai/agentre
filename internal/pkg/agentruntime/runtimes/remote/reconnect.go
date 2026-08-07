@@ -896,6 +896,11 @@ func (r *Runtime) failSession(sid int64) {
 func closeSessionWithErr(sess *remoteSession, cause error) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
+	// generation ctx 与会话同生共死:即便这一轮已经收过尾,也要让还在飞的
+	// 准备 / 启动 RPC 立刻返回,不留下没人接的远端 generation。
+	if sess.cancel != nil {
+		sess.cancel()
+	}
 	if sess.closed {
 		return
 	}

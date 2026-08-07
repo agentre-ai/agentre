@@ -56,3 +56,15 @@ func TestProjectMessageBlocks_UserAsk(t *testing.T) {
 		So(out[0].UserAsk.RequestID, ShouldEqual, "r")
 	})
 }
+
+func TestProjectMessageBlocks_ExecApproval(t *testing.T) {
+	Convey("ExecApprovalBlock projects to a dedicated exec_approval card instead of a completed tool", t, func() {
+		out := ProjectMessageBlocks([]cagoblocks.ContentBlock{
+			&blocks.ExecApprovalBlock{ID: "approval-1", Status: "pending", AllowedDecisions: []string{"deny"}},
+		})
+		So(out, ShouldHaveLength, 1)
+		So(out[0].Type, ShouldEqual, "exec_approval")
+		So(out[0].ExecApproval, ShouldNotBeNil)
+		So(out[0].ExecApproval.ID, ShouldEqual, "approval-1")
+	})
+}

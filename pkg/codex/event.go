@@ -16,6 +16,7 @@ const (
 	EventPostToolUse      EventKind = "post_tool_use"
 	EventApprovalRequest  EventKind = "approval_request"
 	EventRequestUserInput EventKind = "request_user_input"
+	EventRequestResolved  EventKind = "request_resolved"
 	EventPlanUpdated      EventKind = "plan_updated"
 	EventUsage            EventKind = "usage"
 	EventCompactBoundary  EventKind = "compact_boundary"
@@ -84,6 +85,21 @@ type RequestUserInputEvent struct {
 	Questions []RequestUserInputQuestion
 }
 
+type RequestKind string
+
+const (
+	RequestKindUserInput RequestKind = "user_input"
+	RequestKindApproval  RequestKind = "approval"
+)
+
+// RequestResolvedEvent means app-server reports that a prior server request is
+// no longer pending (for example, it timed out or another client resolved it).
+// It deliberately carries no fabricated answer or approval decision.
+type RequestResolvedEvent struct {
+	RequestID string
+	Kind      RequestKind
+}
+
 type PlanStep struct {
 	Step   string
 	Status string
@@ -96,6 +112,7 @@ type Event struct {
 	Tool             *ToolEvent
 	Approval         *ApprovalRequestEvent
 	RequestUserInput *RequestUserInputEvent
+	RequestResolved  *RequestResolvedEvent
 	Plan             []PlanStep
 	PlanText         string
 	Retry            *RetryEvent

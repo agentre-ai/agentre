@@ -23,6 +23,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	piagentrt "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 )
 
@@ -1080,12 +1081,43 @@ func TestRuntime_Run_BuiltinBackend_Rejected(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestRuntime_Run_OpenClawRemoteSecretUnavailable(t *testing.T) {
+	ctx, _, _, _, h := setupRuntimeTest(t, nil)
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend:   backendJSON(t, agent_backend_entity.AgentBackend{ID: 9, Type: string(agent_backend_entity.TypeOpenClaw), DeviceID: "7"}),
+		SessionID: 91,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "remote secret enrollment is unavailable")
+}
+
 func TestRuntime_Run_UnknownBackendType_Errors(t *testing.T) {
 	// runtimeFor returns nil for unknown type.
 	ctx, _, _, _, h := setupRuntimeTest(t, nil)
 	be := agent_backend_entity.AgentBackend{Type: "ghost"}
 	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be)})
 	require.Error(t, err)
+}
+
+// TestRuntime_Run_ForwardsModelOverride 钉死 daemon 侧组装 RunRequest 时把
+// wire.RunParams.ModelOverride 回填到 req.ModelOverride(远端会话换模型生效)。
+func TestRuntime_Run_ForwardsModelOverride(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event)
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	ctx, _, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)}
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend:       backendJSON(t, be),
+		SessionID:     42,
+		ModelOverride: "claude-haiku-4-5",
+	})
+	require.NoError(t, err)
+	require.Len(t, rt.runReqs, 1)
+	assert.Equal(t, "claude-haiku-4-5", rt.runReqs[0].req.ModelOverride)
 }
 
 func TestRuntime_Run_ProviderLookupMissing_ReturnsProviderMissingCode(t *testing.T) {
@@ -2131,3 +2163,1003 @@ func TestRuntime_Run_OfflinePeerJournalsAndResumesPushingOnReconnect(t *testing.
 	assert.Len(t, notif.resolvedPeers(), 3,
 		"每条通知都要重新解析一次推送目标(解析一次就缓存下来的实现会一直推给旧连接)")
 }
+
+type blockingPreparedPiRT struct {
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingPreparedPiRT) Run(ctx context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	r.once.Do(func() { close(r.entered) })
+	<-ctx.Done()
+	return nil, nil, ctx.Err()
+}
+
+func (r *blockingPreparedPiRT) PrepareRun(ctx context.Context, _ agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	r.once.Do(func() { close(r.entered) })
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+type blockingStartPreparedPiRT struct {
+	prepared *blockingStartPreparedPiRun
+}
+
+func newBlockingStartPreparedPiRT() *blockingStartPreparedPiRT {
+	return &blockingStartPreparedPiRT{prepared: &blockingStartPreparedPiRun{
+		entered: make(chan struct{}),
+		closed:  make(chan struct{}),
+	}}
+}
+
+func (r *blockingStartPreparedPiRT) PrepareRun(context.Context, agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	return r.prepared, nil
+}
+
+type blockingStartPreparedPiRun struct {
+	entered   chan struct{}
+	closed    chan struct{}
+	enterOnce sync.Once
+	closeOnce sync.Once
+}
+
+func (p *blockingStartPreparedPiRun) Start(ctx context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	p.enterOnce.Do(func() { close(p.entered) })
+	<-ctx.Done()
+	return nil, nil, ctx.Err()
+}
+
+func (*blockingStartPreparedPiRun) ProviderSessionID() string { return "pi-session-new" }
+
+func (p *blockingStartPreparedPiRun) Close(context.Context) error {
+	p.closeOnce.Do(func() { close(p.closed) })
+	return nil
+}
+
+type cancelReturningStartPiRT struct {
+	prepared *cancelReturningStartPiRun
+}
+
+func newCancelReturningStartPiRT() *cancelReturningStartPiRT {
+	return &cancelReturningStartPiRT{prepared: &cancelReturningStartPiRun{
+		started:  make(chan struct{}),
+		closeErr: errors.New("prepared close failed"),
+	}}
+}
+
+func (r *cancelReturningStartPiRT) PrepareRun(context.Context, agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	return r.prepared, nil
+}
+
+type cancelReturningStartPiRun struct {
+	mu        sync.Mutex
+	started   chan struct{}
+	startOnce sync.Once
+	closeErr  error
+	closes    int
+}
+
+func (p *cancelReturningStartPiRun) Start(ctx context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	p.startOnce.Do(func() { close(p.started) })
+	<-ctx.Done()
+	events := make(chan agentruntime.Event)
+	close(events)
+	return events, &agentruntime.RunResult{ProviderSessionID: p.ProviderSessionID()}, nil
+}
+
+func (*cancelReturningStartPiRun) ProviderSessionID() string { return "pi-session-cancel-race" }
+
+func (p *cancelReturningStartPiRun) Close(context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closes++
+	return p.closeErr
+}
+
+func (p *cancelReturningStartPiRun) closeCalls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.closes
+}
+
+type settlingAcceptedPiRT struct {
+	prepared *settlingAcceptedPiRun
+}
+
+func newSettlingAcceptedPiRT() *settlingAcceptedPiRT {
+	return &settlingAcceptedPiRT{prepared: &settlingAcceptedPiRun{
+		events:       make(chan agentruntime.Event),
+		result:       &agentruntime.RunResult{ProviderSessionID: "pi-session-accepted"},
+		closeEntered: make(chan struct{}),
+	}}
+}
+
+func (r *settlingAcceptedPiRT) PrepareRun(context.Context, agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	return r.prepared, nil
+}
+
+func (r *settlingAcceptedPiRT) Abort(context.Context, int64) error {
+	r.prepared.result.UserAnchor = "pi-user-anchor-after-stop"
+	r.prepared.result.StopErr = agentruntime.ErrAborted
+	r.prepared.finish()
+	return nil
+}
+
+type settlingAcceptedPiRun struct {
+	mu           sync.Mutex
+	events       chan agentruntime.Event
+	result       *agentruntime.RunResult
+	closeEntered chan struct{}
+	finishOnce   sync.Once
+	closeOnce    sync.Once
+	closeCalls   int
+}
+
+type blockingAbortAcceptedPiRT struct {
+	prepared     *settlingAcceptedPiRun
+	abortEntered chan struct{}
+	allowAbort   chan struct{}
+	abortOnce    sync.Once
+}
+
+func newBlockingAbortAcceptedPiRT() *blockingAbortAcceptedPiRT {
+	return &blockingAbortAcceptedPiRT{
+		prepared: &settlingAcceptedPiRun{
+			events:       make(chan agentruntime.Event),
+			result:       &agentruntime.RunResult{ProviderSessionID: "pi-session-concurrent"},
+			closeEntered: make(chan struct{}),
+		},
+		abortEntered: make(chan struct{}),
+		allowAbort:   make(chan struct{}),
+	}
+}
+
+func (r *blockingAbortAcceptedPiRT) PrepareRun(context.Context, agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	return r.prepared, nil
+}
+
+func (r *blockingAbortAcceptedPiRT) Abort(context.Context, int64) error {
+	r.abortOnce.Do(func() { close(r.abortEntered) })
+	<-r.allowAbort
+	r.prepared.finish()
+	return nil
+}
+
+func (p *settlingAcceptedPiRun) Start(context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return p.events, p.result, nil
+}
+
+func (*settlingAcceptedPiRun) ProviderSessionID() string { return "pi-session-accepted" }
+
+func (p *settlingAcceptedPiRun) Close(context.Context) error {
+	p.mu.Lock()
+	p.closeCalls++
+	p.mu.Unlock()
+	p.closeOnce.Do(func() { close(p.closeEntered) })
+	p.finish()
+	return nil
+}
+
+func (p *settlingAcceptedPiRun) finish() {
+	p.finishOnce.Do(func() { close(p.events) })
+}
+
+func (p *settlingAcceptedPiRun) closes() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.closeCalls
+}
+
+type scriptedPreparedPiRT struct {
+	mu       sync.Mutex
+	prepared []*scriptedPreparedPiRun
+	requests []agentruntime.RunRequest
+	active   *scriptedPreparedPiRun
+}
+
+func newScriptedPreparedPiRT(ids ...string) *scriptedPreparedPiRT {
+	r := &scriptedPreparedPiRT{}
+	for _, id := range ids {
+		r.prepared = append(r.prepared, &scriptedPreparedPiRun{
+			owner:             r,
+			providerSessionID: id,
+			events:            make(chan agentruntime.Event),
+			result:            &agentruntime.RunResult{ProviderSessionID: id},
+			closed:            make(chan struct{}),
+		})
+	}
+	return r
+}
+
+func (r *scriptedPreparedPiRT) PrepareRun(_ context.Context, req agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.requests = append(r.requests, req)
+	idx := len(r.requests) - 1
+	if idx >= len(r.prepared) {
+		return nil, errors.New("unexpected Pi preparation")
+	}
+	return r.prepared[idx], nil
+}
+
+// gatedPreparedPiRT 把 PrepareRun 停在中途直到测试放行,用于制造「准备期间这条会话
+// 被别人接管」的时序。
+type gatedPreparedPiRT struct {
+	*scriptedPreparedPiRT
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newGatedPreparedPiRT(id string) *gatedPreparedPiRT {
+	return &gatedPreparedPiRT{
+		scriptedPreparedPiRT: newScriptedPreparedPiRT(id),
+		entered:              make(chan struct{}),
+		release:              make(chan struct{}),
+	}
+}
+
+func (r *gatedPreparedPiRT) PrepareRun(ctx context.Context, req agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	r.once.Do(func() { close(r.entered) })
+	<-r.release
+	return r.scriptedPreparedPiRT.PrepareRun(ctx, req)
+}
+
+func (r *scriptedPreparedPiRT) Abort(context.Context, int64) error {
+	r.mu.Lock()
+	active := r.active
+	r.mu.Unlock()
+	if active == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	active.result.StopErr = agentruntime.ErrAborted
+	active.finish()
+	return nil
+}
+
+type scriptedPreparedPiRun struct {
+	mu                sync.Mutex
+	owner             *scriptedPreparedPiRT
+	providerSessionID string
+	events            chan agentruntime.Event
+	result            *agentruntime.RunResult
+	closed            chan struct{}
+	finishOnce        sync.Once
+	closeOnce         sync.Once
+	startCalls        int
+	closeCalls        int
+}
+
+func (p *scriptedPreparedPiRun) ProviderSessionID() string { return p.providerSessionID }
+
+func (p *scriptedPreparedPiRun) Start(context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	p.mu.Lock()
+	p.startCalls++
+	p.mu.Unlock()
+	p.owner.mu.Lock()
+	p.owner.active = p
+	p.owner.mu.Unlock()
+	return p.events, p.result, nil
+}
+
+func (p *scriptedPreparedPiRun) Close(context.Context) error {
+	p.mu.Lock()
+	p.closeCalls++
+	p.mu.Unlock()
+	p.closeOnce.Do(func() { close(p.closed) })
+	p.finish()
+	return nil
+}
+
+func (p *scriptedPreparedPiRun) counts() (start, closed int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.startCalls, p.closeCalls
+}
+
+func (p *scriptedPreparedPiRun) finish() {
+	p.finishOnce.Do(func() { close(p.events) })
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+type trackingGenerationRegistry struct {
+	mu       sync.Mutex
+	owners   map[int64]string
+	releases map[string]int
+}
+
+func newTrackingGenerationRegistry() *trackingGenerationRegistry {
+	return &trackingGenerationRegistry{
+		owners:   map[int64]string{},
+		releases: map[string]int{},
+	}
+}
+
+func (r *trackingGenerationRegistry) ClaimRuntimeGeneration(_ *rpc.Conn, sessionID int64, generation string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.owners[sessionID] != "" {
+		return false
+	}
+	r.owners[sessionID] = generation
+	return true
+}
+
+func (r *trackingGenerationRegistry) ReleaseRuntimeGeneration(_ *rpc.Conn, sessionID int64, generation string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.owners[sessionID] != generation {
+		return false
+	}
+	delete(r.owners, sessionID)
+	r.releases[generation]++
+	return true
+}
+
+func (r *trackingGenerationRegistry) owner(sessionID int64) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.owners[sessionID]
+}
+
+func (r *trackingGenerationRegistry) releaseCount(generation string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.releases[generation]
+}
+
+type blockingTerminalNotifier struct {
+	recording *recordingOutbound
+	entered   chan struct{}
+	allow     chan struct{}
+	once      sync.Once
+}
+
+type doneObservingContext struct {
+	context.Context
+	observed chan struct{}
+	done     chan struct{}
+	once     sync.Once
+}
+
+func newDoneObservingContext() *doneObservingContext {
+	return &doneObservingContext{
+		Context:  context.Background(),
+		observed: make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+}
+
+func (c *doneObservingContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.observed) })
+	return c.done
+}
+
+func (n *blockingTerminalNotifier) Notify(method string, params any) error {
+	if method == wire.NotifyRunResultDone {
+		n.once.Do(func() { close(n.entered) })
+		<-n.allow
+	}
+	return n.recording.Notify(method, params)
+}
+
+func TestRuntime_PiPendingGenerationIsAbortableBeforePreparationReturns(t *testing.T) {
+	rt := &blockingPreparedPiRT{entered: make(chan struct{})}
+	ctx, _, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	params := wire.RunParams{Backend: backendJSON(t, be), SessionID: 41, PermissionMode: "generation-41"}
+	_, err := h.Run(runCtx, params)
+	require.NoError(t, err)
+	errC := make(chan error, 1)
+	go func() {
+		_, err := h.Run(runCtx, params)
+		errC <- err
+	}()
+	<-rt.entered
+
+	_, err = h.Abort(ctx, wire.AbortParams{SessionID: 41})
+	require.NoError(t, err)
+	require.ErrorIs(t, <-errC, context.Canceled)
+}
+
+func TestRuntime_ConnectionCloseCancelsPendingPiPreparation(t *testing.T) {
+	rt := &blockingPreparedPiRT{entered: make(chan struct{})}
+	ctx, _, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{Backend: backendJSON(t, be), SessionID: 141, PermissionMode: "generation-141"}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	prepareErrC := make(chan error, 1)
+	go func() {
+		_, prepareErr := h.Run(ctx, params)
+		prepareErrC <- prepareErr
+	}()
+	<-rt.entered
+
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), time.Second)
+	defer cancelCleanup()
+	require.NoError(t, h.Close(cleanupCtx))
+	require.ErrorIs(t, <-prepareErrC, context.Canceled)
+	_, err = h.Abort(ctx, wire.AbortParams{SessionID: 141})
+	require.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
+}
+
+func TestRuntime_ConnectionCloseClosesPreparedPiResourcesBeforeStart(t *testing.T) {
+	rt := newScriptedPreparedPiRT("pi-session-prepared")
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{Backend: backendJSON(t, be), SessionID: 142, PermissionMode: "generation-142"}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	_, err = h.Run(ctx, params)
+	require.NoError(t, err)
+
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), time.Second)
+	defer cancelCleanup()
+	require.NoError(t, h.Close(cleanupCtx))
+	started, closed := rt.prepared[0].counts()
+	assert.Zero(t, started)
+	assert.Equal(t, 1, closed, "disconnect must close the exact prepared Pi process")
+	assert.Empty(t, notif.snapshot(), "prepared cleanup must not emit terminal frames to the closed connection")
+}
+
+func TestRuntime_ConnectionCloseClosesRunningPiResourcesWithoutTerminalNotify(t *testing.T) {
+	rt := newScriptedPreparedPiRT("pi-session-running")
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{Backend: backendJSON(t, be), SessionID: 143, PermissionMode: "generation-143"}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	ack, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	params.ProviderSessionID = ack.ProviderSessionID
+	_, err = h.Run(ctx, params)
+	require.NoError(t, err)
+
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), time.Second)
+	defer cancelCleanup()
+	require.NoError(t, h.Close(cleanupCtx))
+	started, closed := rt.prepared[0].counts()
+	assert.Equal(t, 1, started)
+	assert.Equal(t, 1, closed, "disconnect must close the running Pi process/tool tree")
+	assert.Empty(t, notif.snapshot(), "disconnect cleanup must suppress terminal fanout to the closed connection")
+}
+
+func TestRuntime_ConnectionCloseWaitsForConcurrentExplicitAbortWithoutDeadlock(t *testing.T) {
+	rt := newBlockingAbortAcceptedPiRT()
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{Backend: backendJSON(t, be), SessionID: 144, PermissionMode: "generation-144"}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	ack, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	params.ProviderSessionID = ack.ProviderSessionID
+	_, err = h.Run(ctx, params)
+	require.NoError(t, err)
+
+	abortErrC := make(chan error, 1)
+	go func() {
+		_, abortErr := h.Abort(ctx, wire.AbortParams{SessionID: 144})
+		abortErrC <- abortErr
+	}()
+	<-rt.abortEntered
+
+	cleanupErrC := make(chan error, 1)
+	go func() {
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), time.Second)
+		defer cancelCleanup()
+		cleanupErrC <- h.Close(cleanupCtx)
+	}()
+	select {
+	case <-rt.prepared.closeEntered:
+	case <-time.After(time.Second):
+		t.Fatal("disconnect cleanup did not close the exact prepared resource while Stop was in flight")
+	}
+	assert.Empty(t, notif.snapshot(), "disconnect must suppress terminal fanout before Stop settles")
+	close(rt.allowAbort)
+
+	require.NoError(t, <-abortErrC)
+	require.NoError(t, <-cleanupErrC)
+	assert.Equal(t, 1, rt.prepared.closes())
+	assert.Empty(t, notif.snapshot(), "concurrent Stop and disconnect must not emit to the closed connection")
+}
+
+func TestRuntime_PiAbortStartRaceFinalizesOwnerAndAllowsRetry(t *testing.T) {
+	for iteration := 0; iteration < 25; iteration++ {
+		t.Run(fmt.Sprintf("iteration-%d", iteration), func(t *testing.T) {
+			rt := newCancelReturningStartPiRT()
+			ctrl := gomock.NewController(t)
+			t.Cleanup(ctrl.Finish)
+			registry := newTrackingGenerationRegistry()
+			outbound := newRecordingOutbound()
+			sessions := newRecordingSessions()
+			h := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
+				NotifyFor:          outbound.notifierFor,
+				Journal:            outbound,
+				Sessions:           sessions,
+				SessionQuery:       sessions,
+				Gateway:            mock_handlers.NewMockGatewayPort(ctrl),
+				Lookup:             mock_handlers.NewMockLLMProviderLookupPort(ctrl),
+				GenerationRegistry: registry,
+				RuntimeFor: func(_ agent_backend_entity.BackendType) agentruntime.Runtime {
+					return rt
+				},
+			})
+			ctx := context.Background()
+			be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+			params := wire.RunParams{
+				Backend: backendJSON(t, be), SessionID: 244, PermissionMode: "generation-racing",
+			}
+
+			_, err := h.Run(ctx, params)
+			require.NoError(t, err)
+			ack, err := h.Run(ctx, params)
+			require.NoError(t, err)
+			params.ProviderSessionID = ack.ProviderSessionID
+			startErrC := make(chan error, 1)
+			go func() {
+				_, startErr := h.Run(ctx, params)
+				startErrC <- startErr
+			}()
+			<-rt.prepared.started
+
+			_, abortErr := h.Abort(ctx, wire.AbortParams{SessionID: params.SessionID})
+			require.ErrorContains(t, abortErr, "prepared close failed")
+			require.ErrorIs(t, <-startErrC, context.Canceled)
+			assert.Equal(t, 1, rt.prepared.closeCalls(), "the exact prepared owner must close once")
+			assert.Equal(t, 1, registry.releaseCount("generation-racing"))
+
+			retry := params
+			retry.ProviderSessionID = ""
+			retry.PermissionMode = "generation-retry"
+			_, err = h.Run(ctx, retry)
+			require.NoError(t, err, "cancel completion must release registration for an exact retry")
+			assert.Equal(t, "generation-retry", registry.owner(retry.SessionID))
+			_, err = h.Abort(ctx, wire.AbortParams{SessionID: retry.SessionID})
+			require.NoError(t, err)
+			assert.Empty(t, registry.owner(retry.SessionID))
+		})
+	}
+}
+
+func TestRuntime_PiAbortDuringPromptAcknowledgementClosesExactPreparedProcess(t *testing.T) {
+	rt := newBlockingStartPreparedPiRT()
+	ctx, _, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{
+		Backend: backendJSON(t, be), SessionID: 44, ProviderSessionID: "pi-session-old", PermissionMode: "generation-44",
+	}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	ack, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	params.ProviderSessionID = ack.ProviderSessionID
+	startErrC := make(chan error, 1)
+	go func() {
+		_, err := h.Run(ctx, params)
+		startErrC <- err
+	}()
+	<-rt.prepared.entered
+
+	_, err = h.Abort(ctx, wire.AbortParams{SessionID: 44})
+	require.NoError(t, err)
+	require.ErrorIs(t, <-startErrC, context.Canceled)
+	<-rt.prepared.closed
+}
+
+func TestRuntime_PiPrepareReturnsIdentityBeforeSecondRunStartsPrompt(t *testing.T) {
+	rt := newScriptedPreparedPiRT("pi-session-new")
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{
+		Backend:           backendJSON(t, be),
+		SessionID:         42,
+		ProviderSessionID: "pi-session-old",
+		ForkAnchor:        "pi-entry-1",
+		UserText:          "replacement",
+		PermissionMode:    "generation-42",
+	}
+
+	registrationAck, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	assert.Empty(t, registrationAck.ProviderSessionID)
+	ack, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	assert.Equal(t, "pi-session-new", ack.ProviderSessionID)
+	require.Len(t, rt.requests, 1)
+	assert.Empty(t, rt.requests[0].PermissionMode, "transport generation ownership must not reach Pi runtime")
+	assert.Equal(t, "pi-session-old", rt.requests[0].ProviderSessionID)
+	assert.Equal(t, "pi-entry-1", rt.requests[0].ForkAnchor)
+	startCalls, _ := rt.prepared[0].counts()
+	assert.Zero(t, startCalls, "the preparation response must precede prompt Start")
+	assert.Empty(t, notif.snapshot(), "registration and preparation must not emit turn events")
+
+	params.ProviderSessionID = ack.ProviderSessionID
+	startAck, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	assert.Equal(t, "pi-session-new", startAck.ProviderSessionID)
+	startCalls, _ = rt.prepared[0].counts()
+	assert.Equal(t, 1, startCalls)
+
+	rt.prepared[0].finish()
+	frames := notif.waitFrames(t, 1)
+	assert.Equal(t, wire.NotifyRunResultDone, frames[0].method)
+}
+
+func TestRuntime_PiAbortSettlesAcceptedTurnBeforeClosingPreparedProcess(t *testing.T) {
+	rt := newSettlingAcceptedPiRT()
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{
+		Backend: backendJSON(t, be), SessionID: 53, PermissionMode: "generation-53",
+	}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	ack, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	params.ProviderSessionID = ack.ProviderSessionID
+	_, err = h.Run(ctx, params)
+	require.NoError(t, err)
+
+	_, err = h.Abort(ctx, wire.AbortParams{SessionID: 53})
+	require.NoError(t, err)
+	frames := notif.waitFrames(t, 1)
+	require.Len(t, frames, 1)
+	assert.Equal(t, wire.NotifyRunResultDone, frames[0].method)
+	done := frames[0].params.(*wire.RunResultDoneFrame)
+	assert.Equal(t, "pi-session-accepted", done.ProviderSessionID)
+	assert.Equal(t, "pi-user-anchor-after-stop", done.UserAnchor)
+	assert.Equal(t, wire.ErrCodeAborted, done.StopErrCode)
+	assert.Equal(t, 1, rt.prepared.closes(),
+		"exact-owner finalization closes the accepted prepared process after runtime settlement")
+}
+
+func TestRuntime_PiAbortBoundsWaitForClaimedTerminalNotification(t *testing.T) {
+	rt := newScriptedPreparedPiRT("shared-native-session")
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	notif := &blockingTerminalNotifier{
+		recording: newRecordingOutbound(),
+		entered:   make(chan struct{}),
+		allow:     make(chan struct{}),
+	}
+	sessions := newRecordingSessions()
+	h := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
+		NotifyFor:    func(string) handlers.NotifierPort { return notif },
+		Journal:      notif.recording,
+		Sessions:     sessions,
+		SessionQuery: sessions,
+		Gateway:      mock_handlers.NewMockGatewayPort(ctrl),
+		Lookup:       mock_handlers.NewMockLLMProviderLookupPort(ctrl),
+		RuntimeFor: func(_ agent_backend_entity.BackendType) agentruntime.Runtime {
+			return rt
+		},
+	})
+	ctx := context.Background()
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{
+		Backend: backendJSON(t, be), SessionID: 154, PermissionMode: "generation-154",
+	}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	ack, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	params.ProviderSessionID = ack.ProviderSessionID
+	_, err = h.Run(ctx, params)
+	require.NoError(t, err)
+	rt.prepared[0].finish()
+	<-notif.entered
+
+	abortErrC := make(chan error, 1)
+	go func() {
+		_, abortErr := h.Abort(context.Background(), wire.AbortParams{SessionID: params.SessionID})
+		abortErrC <- abortErr
+	}()
+	select {
+	case abortErr := <-abortErrC:
+		require.ErrorIs(t, abortErr, context.DeadlineExceeded,
+			"terminal delivery already owns finalization, but Abort must still have an internal bound")
+	case <-time.After(3 * time.Second):
+		close(notif.allow)
+		<-abortErrC
+		t.Fatal("Abort waited without an internal bound for the claimed terminal notification")
+	}
+	close(notif.allow)
+	_ = notif.recording.waitFrames(t, 1)
+	select {
+	case <-rt.prepared[0].closed:
+	case <-time.After(time.Second):
+		t.Fatal("claimed terminal delivery did not complete exact-owner finalization")
+	}
+}
+
+func TestRuntime_PiAbortWaitsForClaimedTerminalNotification(t *testing.T) {
+	rt := newScriptedPreparedPiRT("shared-native-session")
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	notif := &blockingTerminalNotifier{
+		recording: newRecordingOutbound(),
+		entered:   make(chan struct{}),
+		allow:     make(chan struct{}),
+	}
+	generationRegistry := newTrackingGenerationRegistry()
+	sessions := newRecordingSessions()
+	h := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
+		NotifyFor:          func(string) handlers.NotifierPort { return notif },
+		Journal:            notif.recording,
+		Sessions:           sessions,
+		SessionQuery:       sessions,
+		Gateway:            mock_handlers.NewMockGatewayPort(ctrl),
+		Lookup:             mock_handlers.NewMockLLMProviderLookupPort(ctrl),
+		GenerationRegistry: generationRegistry,
+		RuntimeFor: func(_ agent_backend_entity.BackendType) agentruntime.Runtime {
+			return rt
+		},
+	})
+	ctx := context.Background()
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{
+		Backend: backendJSON(t, be), SessionID: 54, PermissionMode: "generation-54",
+	}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	ack, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	params.ProviderSessionID = ack.ProviderSessionID
+	_, err = h.Run(ctx, params)
+	require.NoError(t, err)
+	rt.prepared[0].finish()
+	<-notif.entered
+
+	abortCtx := newDoneObservingContext()
+	abortErrC := make(chan error, 1)
+	go func() {
+		_, abortErr := h.Abort(abortCtx, wire.AbortParams{SessionID: 54})
+		abortErrC <- abortErr
+	}()
+	<-abortCtx.observed
+	close(notif.allow)
+	require.NoError(t, <-abortErrC)
+	frames := notif.recording.waitFrames(t, 1)
+	require.Len(t, frames, 1)
+	assert.Equal(t, wire.NotifyRunResultDone, frames[0].method)
+	assert.Equal(t, 1, generationRegistry.releaseCount("generation-54"))
+
+	retry := params
+	retry.ProviderSessionID = ""
+	retry.PermissionMode = "generation-54-retry"
+	_, err = h.Run(ctx, retry)
+	require.NoError(t, err, "terminal completion must release registration before Abort returns")
+	assert.Equal(t, "generation-54-retry", generationRegistry.owner(retry.SessionID))
+	_, err = h.Abort(ctx, wire.AbortParams{SessionID: retry.SessionID})
+	require.NoError(t, err)
+}
+
+func TestRuntime_PiAbortSettlementCannotTerminateOrNotifyForNewerGeneration(t *testing.T) {
+	rt := newScriptedPreparedPiRT("shared-native-session", "shared-native-session")
+	rt.prepared[0].result.Model = "stale-model"
+	rt.prepared[1].result.Model = "current-model"
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{Backend: backendJSON(t, be), SessionID: 55, PermissionMode: "generation-55-1"}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	firstAck, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	params.ProviderSessionID = firstAck.ProviderSessionID
+	_, err = h.Run(ctx, params)
+	require.NoError(t, err)
+	_, err = h.Abort(ctx, wire.AbortParams{SessionID: 55})
+	require.NoError(t, err)
+	firstFrames := notif.waitFrames(t, 1)
+	require.Len(t, firstFrames, 1)
+	firstDone := firstFrames[0].params.(*wire.RunResultDoneFrame)
+	assert.Equal(t, "stale-model", firstDone.Model)
+	assert.Equal(t, wire.ErrCodeAborted, firstDone.StopErrCode)
+
+	params.ProviderSessionID = firstAck.ProviderSessionID
+	params.PermissionMode = "generation-55-2"
+	_, err = h.Run(ctx, params)
+	require.NoError(t, err)
+	staleParams := params
+	staleParams.PermissionMode = "generation-55-1"
+	_, err = h.Run(ctx, staleParams)
+	require.ErrorContains(t, err, "stale Pi generation")
+	rt.mu.Lock()
+	assert.Len(t, rt.requests, 1, "a delayed old preparation request must not prepare the retry")
+	rt.mu.Unlock()
+	secondAck, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	assert.Equal(t, "shared-native-session", secondAck.ProviderSessionID)
+	params.ProviderSessionID = secondAck.ProviderSessionID
+	_, err = h.Run(ctx, params)
+	require.NoError(t, err)
+
+	rt.prepared[1].finish()
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		_, steerErr := h.Steer(ctx, wire.SteerParams{SessionID: 55, Text: "after completion"})
+		assert.ErrorIs(c, steerErr, agentruntime.ErrNoActiveTurn)
+	}, time.Second, 10*time.Millisecond)
+
+	frames := notif.waitFrames(t, 2)
+	require.Len(t, frames, 2, "each exact generation may emit one terminal result")
+	assert.Equal(t, wire.NotifyRunResultDone, frames[1].method)
+	done := frames[1].params.(*wire.RunResultDoneFrame)
+	assert.Equal(t, "current-model", done.Model)
+
+	_, firstClosed := rt.prepared[0].counts()
+	_, secondClosed := rt.prepared[1].counts()
+	assert.Equal(t, 1, firstClosed, "the stale generation must finalize its own resource exactly once")
+	assert.Equal(t, 1, secondClosed, "natural completion must finalize the retry resource exactly once")
+}
+
+// 断连重连后的 runtime.session.attach(Adopt)会把内存会话表里那一格换成一条新行,
+// 而 Daemon 级 generation 属主表里的预约仍然记在**被顶替的** owner 名下。preparePi
+// 返回时发现自己已经不是当前行,按 canceled 收尾 —— 这条收尾路径必须照样交还预约,
+// 否则这条会话的 generation 永久被占,之后谁都开不出新一轮。
+func TestRuntime_ReadoptedPiSessionStillReleasesTheOverwrittenGeneration(t *testing.T) {
+	rt := newGatedPreparedPiRT("pi-session-readopted")
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	notif := newRecordingOutbound()
+	sessions := newRecordingSessions()
+	registry := newTrackingGenerationRegistry()
+	h := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
+		NotifyFor:          notif.notifierFor,
+		Journal:            notif,
+		Sessions:           sessions,
+		SessionQuery:       sessions,
+		Gateway:            mock_handlers.NewMockGatewayPort(ctrl),
+		Lookup:             mock_handlers.NewMockLLMProviderLookupPort(ctrl),
+		GenerationRegistry: registry,
+		RuntimeFor: func(_ agent_backend_entity.BackendType) agentruntime.Runtime {
+			return rt
+		},
+	})
+	ctx := context.Background()
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{Backend: backendJSON(t, be), SessionID: 57, PermissionMode: "generation-57"}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	require.Equal(t, "generation-57", registry.owner(57))
+
+	prepareErrC := make(chan error, 1)
+	go func() {
+		_, prepareErr := h.Run(ctx, params)
+		prepareErrC <- prepareErr
+	}()
+	<-rt.entered
+	h.Adopt(ctx, 57, agent_backend_entity.TypePiAgent)
+	close(rt.release)
+
+	require.ErrorIs(t, <-prepareErrC, context.Canceled)
+	assert.Equal(t, 1, registry.releaseCount("generation-57"))
+	assert.Empty(t, registry.owner(57), "被顶替的 owner 也必须交还 generation 预约")
+	_, closed := rt.prepared[0].counts()
+	assert.Equal(t, 1, closed, "被顶替的这一轮仍要关掉自己那个 Pi 进程")
+
+	retry := params
+	retry.PermissionMode = "generation-57-retry"
+	_, err = h.Run(ctx, retry)
+	require.NoError(t, err, "预约交还后这条会话必须还能开新一轮")
+	assert.Equal(t, "generation-57-retry", registry.owner(57))
+}
+
+func TestRuntime_FanoutLogsEventClassificationWithoutSerializedPayload(t *testing.T) {
+	const secret = "secret-tool-input-and-private-prompt"
+	var logs lockedBuffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousWriter) })
+
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.ErrorEvent{Err: errors.New(secret)}
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)}
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 66})
+	require.NoError(t, err)
+	_ = notif.waitFrames(t, 2)
+
+	assert.Contains(t, logs.String(), "kind=ErrorEvent")
+	assert.NotContains(t, logs.String(), secret)
+	assert.NotContains(t, logs.String(), "payload=")
+}
+
+func (*blockingPreparedPiRT) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{
+		capability.CapAbort:       true,
+		capability.CapForkSession: true,
+	}}
+}
+
+func (*blockingStartPreparedPiRT) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{
+		capability.CapAbort:       true,
+		capability.CapForkSession: true,
+	}}
+}
+
+func (*blockingStartPreparedPiRT) Run(context.Context, agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, errors.New("blocking-start Pi runtime must use PrepareRun")
+}
+
+func (*cancelReturningStartPiRT) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{
+		capability.CapAbort:       true,
+		capability.CapForkSession: true,
+	}}
+}
+
+func (*cancelReturningStartPiRT) Run(context.Context, agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, errors.New("cancel-returning Pi runtime must use PrepareRun")
+}
+
+func (*settlingAcceptedPiRT) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{
+		capability.CapAbort:       true,
+		capability.CapForkSession: true,
+	}}
+}
+
+func (*settlingAcceptedPiRT) Run(context.Context, agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, errors.New("settling accepted Pi runtime must use PrepareRun")
+}
+
+func (*blockingAbortAcceptedPiRT) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{
+		capability.CapAbort:       true,
+		capability.CapForkSession: true,
+	}}
+}
+
+func (*blockingAbortAcceptedPiRT) Run(context.Context, agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, errors.New("blocking-abort Pi runtime must use PrepareRun")
+}
+
+func (*scriptedPreparedPiRT) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{
+		capability.CapAbort:       true,
+		capability.CapForkSession: true,
+	}}
+}
+
+func (*scriptedPreparedPiRT) Run(context.Context, agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, errors.New("scripted Pi runtime must use PrepareRun")
+}
+
+func (*blockingTerminalNotifier) Request(context.Context, string, any, any) error { return nil }

@@ -34,6 +34,7 @@ import { CompactBoundaryDivider } from "./compact-boundary-divider";
 import { LocalCommandCard } from "./local-command/card";
 import { MarkdownText, StreamingMarkdown } from "./markdown-text";
 import { MessageRow, MessageCopyButton } from "./message-row";
+import { OpenClawExecApprovalCard } from "./openclaw-exec-approval/card";
 import { ToolApprovalCard } from "./tool-approval/card";
 import { ThinkingBlock } from "./thinking-block";
 import type { TranscriptRow, TranscriptRowItem } from "./transcript-rows";
@@ -169,19 +170,36 @@ function MessageMeta({
 }: MessageMetaProps) {
   const { t } = useTranslation();
   const durationLabel = `${(durationMs / 1000).toFixed(1)}s`;
+  // 后端一个 token 数都没上报时（如 OpenClaw 网关不发 usage 帧），渲染「↑0 ↓0」
+  // 等于把「没上报」说成「用了 0 个 token」。这种情况整块隐藏计数，只留耗时。
+  const hasUsage =
+    promptTokens > 0 ||
+    completionTokens > 0 ||
+    cachedTokens > 0 ||
+    cacheCreationTokens > 0 ||
+    reasoningTokens > 0;
 
   // tooltip 里需要拆分展示，所以这里给一个稳定的 row 渲染器避免重复。
   const rows: { label: string; value: string }[] = [
     { label: t("chat.meta.model"), value: model || "—" },
-    {
-      label: t("chat.meta.prompt"),
-      value: promptTokens.toLocaleString(),
-    },
-    {
-      label: t("chat.meta.completion"),
-      value: completionTokens.toLocaleString(),
-    },
   ];
+  if (hasUsage) {
+    rows.push(
+      {
+        label: t("chat.meta.prompt"),
+        value: promptTokens.toLocaleString(),
+      },
+      {
+        label: t("chat.meta.completion"),
+        value: completionTokens.toLocaleString(),
+      },
+    );
+  } else {
+    rows.push({
+      label: t("chat.meta.usage"),
+      value: t("chat.meta.usageUnavailable"),
+    });
+  }
   if (cachedTokens > 0) {
     rows.push({
       label: t("chat.meta.cacheHit"),
@@ -217,15 +235,22 @@ function MessageMeta({
                 <span className="text-border-strong">·</span>
               </>
             ) : null}
-            <span className="inline-flex items-center gap-0.5">
-              <ArrowUp className="size-2.5" aria-hidden="true" />
-              {promptTokens.toLocaleString()}
-            </span>
-            <span className="inline-flex items-center gap-0.5">
-              <ArrowDown className="size-2.5" aria-hidden="true" />
-              {completionTokens.toLocaleString()}
-            </span>
-            <span className="text-border-strong">·</span>
+            {hasUsage ? (
+              <span
+                data-testid="message-token-counts"
+                className="inline-flex items-center gap-1.5"
+              >
+                <span className="inline-flex items-center gap-0.5">
+                  <ArrowUp className="size-2.5" aria-hidden="true" />
+                  {promptTokens.toLocaleString()}
+                </span>
+                <span className="inline-flex items-center gap-0.5">
+                  <ArrowDown className="size-2.5" aria-hidden="true" />
+                  {completionTokens.toLocaleString()}
+                </span>
+                <span className="text-border-strong">·</span>
+              </span>
+            ) : null}
             <span>{durationLabel}</span>
           </button>
         </TooltipTrigger>
@@ -657,6 +682,13 @@ function RenderItemView({
           sessionId={ctx?.sessionId ?? 0}
         />
       ) : null;
+    case "exec_approval":
+      return item.block.execApproval ? (
+        <OpenClawExecApprovalCard
+          approval={item.block.execApproval}
+          sessionId={ctx?.sessionId ?? 0}
+        />
+      ) : null;
     case "compact_boundary": {
       const trig = item.block.compact?.trigger;
       const trigger: "auto" | "manual" | undefined =
@@ -667,6 +699,47 @@ function RenderItemView({
           trigger={trigger}
           at={item.block.compact?.at ?? 0}
         />
+      );
+    }
+    case "notice": {
+      const selected = item.block.selectedModel;
+      const actual = item.block.actualModel;
+      // 结构化偏离提示:两个模型 id 由后端投影填充(SelectedModel/ActualModel),文案走
+      // t()、模型名以等宽字体展示。旧的非结构化 notice 无这两个字段 → 回退 Text 原样渲染。
+      if (selected && actual) {
+        return (
+          <section
+            role="status"
+            aria-label={t("chat.notice.modelDeviation.sentence", {
+              selected,
+              actual,
+            })}
+            data-testid="model-deviation-notice"
+            className="flex w-full max-w-measure items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-aux text-muted-foreground"
+          >
+            <TriangleAlert
+              className="mt-0.5 size-3.5 shrink-0 text-status-warning"
+              aria-hidden="true"
+            />
+            <span className="min-w-0 flex-1 break-words">
+              {t("chat.notice.modelDeviation.selected")}{" "}
+              <span className="font-mono">{selected}</span>{" "}
+              {t("chat.notice.modelDeviation.actual")}{" "}
+              <span className="font-mono">{actual}</span>
+            </span>
+          </section>
+        );
+      }
+      return (
+        <section
+          role="status"
+          data-testid="model-deviation-notice"
+          className="flex w-full max-w-measure items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-aux text-muted-foreground"
+        >
+          <span className="min-w-0 flex-1 break-words">
+            {item.block.text ?? ""}
+          </span>
+        </section>
       );
     }
     case "unknown":

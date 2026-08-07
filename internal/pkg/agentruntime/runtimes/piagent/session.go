@@ -3,6 +3,7 @@ package piagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 
@@ -22,12 +23,30 @@ type stream interface {
 	Err() error
 }
 
+type userAnchorStream interface {
+	UserAnchor() string
+}
+
+type turnSpec struct {
+	forkAnchor string
+}
+
 type steerStream interface {
 	Steer(ctx context.Context, text string) error
 }
 
 type interruptable interface {
 	Interrupt(ctx context.Context) error
+}
+
+type preparedTurnStream interface {
+	Start(context.Context) (stream, error)
+	SessionID() string
+	Close(context.Context) error
+}
+
+type turnStreamPreparer interface {
+	PrepareStreamTurn(ctx context.Context, prompt string, mode string, images []piagent.Image, turn turnSpec) (preparedTurnStream, error)
 }
 
 type clientAdapter struct {
@@ -53,24 +72,93 @@ func (a *clientAdapter) Close(ctx context.Context) error {
 }
 
 func (a *clientAdapter) Stream(ctx context.Context, prompt string, mode string, images []piagent.Image) (stream, error) {
-	// Resume 不在这里下发：会话复用走 Client 级 --session（WithSession），这里只
-	// 负责本轮 prompt + 多模态图片 + 可选 permission mode。
+	return a.startStream(ctx, prompt, mode, images, nil)
+}
+
+func (a *clientAdapter) StreamTurn(ctx context.Context, prompt string, mode string, images []piagent.Image, turn turnSpec) (stream, error) {
+	return a.startStream(ctx, prompt, mode, images, &turn)
+}
+
+func (a *clientAdapter) startStream(ctx context.Context, prompt string, mode string, images []piagent.Image, turn *turnSpec) (stream, error) {
+	opts, err := turnRunOptions(mode, images, turn)
+	if err != nil {
+		return nil, err
+	}
+	s, err := a.client.Stream(ctx, prompt, opts...)
+	if err != nil {
+		return nil, err
+	}
+	a.setActiveStream(s)
+	return s, nil
+}
+
+func (a *clientAdapter) PrepareStreamTurn(
+	ctx context.Context,
+	prompt string,
+	mode string,
+	images []piagent.Image,
+	turn turnSpec,
+) (preparedTurnStream, error) {
+	opts, err := turnRunOptions(mode, images, &turn)
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := a.client.PrepareStream(ctx, prompt, opts...)
+	if err != nil {
+		return nil, err
+	}
+	a.sid = prepared.SessionID()
+	return &clientPreparedTurn{adapter: a, prepared: prepared}, nil
+}
+
+func turnRunOptions(mode string, images []piagent.Image, turn *turnSpec) ([]piagent.RunOption, error) {
+	// Resume 不在这里下发：会话复用走 Client 级 --session（WithSession）。每个
+	// runtime turn 都记录原生 user anchor；分叉 turn 由同一个 per-turn option
+	// 在当前 RPC 进程里先 fork，再发送 prompt。
 	var opts []piagent.RunOption
+	if turn != nil {
+		switch {
+		case turn.forkAnchor == "":
+			opts = append(opts, piagent.RunCaptureUserAnchor())
+		case strings.TrimSpace(turn.forkAnchor) != turn.forkAnchor:
+			return nil, errors.New("piagent runtime: invalid fork anchor")
+		default:
+			opts = append(opts, piagent.RunForkAnchor(turn.forkAnchor))
+		}
+	}
 	if strings.TrimSpace(mode) != "" {
 		opts = append(opts, piagent.RunPermissionMode(piagent.PermissionMode(strings.TrimSpace(mode))))
 	}
 	if len(images) > 0 {
 		opts = append(opts, piagent.WithImages(images))
 	}
-	s, err := a.client.Stream(ctx, prompt, opts...)
-	if err != nil {
-		return nil, err
-	}
+	return opts, nil
+}
+
+func (a *clientAdapter) setActiveStream(s *piagent.Stream) {
 	a.sid = s.SessionID()
 	a.streamMu.Lock()
 	a.stream = s
 	a.streamMu.Unlock()
+}
+
+type clientPreparedTurn struct {
+	adapter  *clientAdapter
+	prepared *piagent.PreparedStream
+}
+
+func (p *clientPreparedTurn) Start(ctx context.Context) (stream, error) {
+	s, err := p.prepared.Start(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p.adapter.setActiveStream(s)
 	return s, nil
+}
+
+func (p *clientPreparedTurn) SessionID() string { return p.prepared.SessionID() }
+func (p *clientPreparedTurn) Close(ctx context.Context) error {
+	return p.prepared.Close(ctx)
 }
 
 func (a *clientAdapter) Compact(ctx context.Context) (stream, error) {
@@ -111,6 +199,7 @@ type sessionHandle interface {
 	Close(context.Context) error
 	ID() string
 	Stream(ctx context.Context, prompt string, mode string, images []piagent.Image) (stream, error)
+	StreamTurn(ctx context.Context, prompt string, mode string, images []piagent.Image, turn turnSpec) (stream, error)
 	Compact(ctx context.Context) (stream, error)
 	RewindTo(ctx context.Context, anchor string) (string, error)
 	ActiveStream() steerStream
@@ -118,8 +207,11 @@ type sessionHandle interface {
 }
 
 // piRawFrameSink reports only safe metadata for each pi-agent stdout frame.
-// The callback remains controlled by Debug Logging through logger.Default(), but
-// complete RPC frames never enter the operational log sink.
+// pkg/piagent already hands over a sanitized diagnostic summary — prompts, images,
+// session content and credentials never reach here — and this sink narrows it
+// further to frame type/command. It stays controlled by Debug Logging through
+// logger.Default() (hot reload therefore takes effect immediately), and complete
+// RPC frames never enter the operational log sink.
 func piRawFrameSink(sessionID int64, providerSessionID string) func([]byte) {
 	return func(line []byte) {
 		fields := []zap.Field{
@@ -168,23 +260,85 @@ func safePiResponseCommand(command string) (string, bool) {
 }
 
 // providerRunConfig 装配绑定供应商时的 provider 会话参数（APIKey 校验与 env 注入在
-// Run 层完成，见 runtime.go）：返回 --model 值（Provider.Model 非空时为
-// "agentre-<key>/<model>"）与物化后的 provider 扩展绝对路径。Provider.Model 为空
-// （保存时已拦截，此处仅兜底）时沿用现状：返回零值不报错，不注入模型也不物化扩展。
-// 模型名（Type 不可识别 / Model 空）出错一律显式返回，不静默吞掉后走无绑定运行。
-func providerRunConfig(p *llm_provider_entity.LLMProvider) (model string, extPath string, err error) {
-	if p == nil || strings.TrimSpace(p.Model) == "" {
+// Run 层完成，见 runtime.go）：返回 --model 值（effectiveModel = firstNonEmpty(
+// modelOverride, p.Model) 非空时为 "agentre-<key>/<model>"）与物化后的 provider
+// 扩展绝对路径。Provider.Model 与 override 均为空（保存时已拦截，此处仅兜底）时沿用
+// 现状：返回零值不报错，不注入模型也不物化扩展。
+// 模型名（Type 不可识别 / 模型空）出错一律显式返回，不静默吞掉后走无绑定运行。
+func providerRunConfig(p *llm_provider_entity.LLMProvider, modelOverride string) (model string, extPath string, err error) {
+	if p == nil {
 		return "", "", nil
 	}
-	model, err = agentruntime.PiAgentProviderModelName(p)
+	m := strings.TrimSpace(modelOverride)
+	if m == "" {
+		m = strings.TrimSpace(p.Model)
+	}
+	if m == "" {
+		return "", "", nil
+	}
+	// 复用 PiAgentProviderModelName 的 "agentre-<key>/<model>" 拼装 + Type 校验；
+	// override 替换 provider.Model 时用浅拷贝避免改共享实体。
+	q := *p
+	q.Model = m
+	model, err = agentruntime.PiAgentProviderModelName(&q)
 	if err != nil {
 		return "", "", err
 	}
-	extPath, err = MaterializeProviderExtension(p)
+	// 扩展与 --model 必须出自同一个 effectiveModel(都用 q):PiAgentProviderExtension
+	// 渲染的 registerProvider 只声明 models:[<q.Model>]，若这里传原始 p，pi 拿到的
+	// --model agentre-<key>/<override> 就是一个自己没注册过的 model id，绑 provider
+	// 的会话级切换直接用不了。扩展按内容哈希落盘，不同模型天然是不同文件。
+	extPath, err = MaterializeProviderExtension(&q)
 	if err != nil {
 		return "", "", err
 	}
 	return model, extPath, nil
+}
+
+// piModelFallback 未绑 provider（或 provider.Model 空）时的 --model 兜底：
+// effectiveModel = firstNonEmpty(req.ModelOverride, defaultModelForBackend)。
+// override 是裸 CLI 模型 id，直接作 --model 下发（走 pi 自身登录/配置），不经 agentre
+// 网关（specs §模型解析与各后端生效 - 未绑 provider 路径）。
+func piModelFallback(req agentruntime.RunRequest) string {
+	if m := strings.TrimSpace(req.ModelOverride); m != "" {
+		return m
+	}
+	return defaultModelForBackend(req.Backend)
+}
+
+// piResultModelPlaceholder 是 RunResult.Model 在 pi 真实 usage 帧上报前的占位：
+// effectiveModel = firstNonEmpty(override, provider.Model, backendDefault)。pi 每轮
+// 在 usage 帧上报真实模型 id 会覆盖它（runtime.go result.Model = raw.Model）；仅当 pi
+// 不报模型（极少）时落到这里 —— 若占位沿用 provider.Model 而用户设了 override，会误报
+// 「所选 X 未生效，实际 Y」偏离提示。
+func piResultModelPlaceholder(req agentruntime.RunRequest) string {
+	if m := strings.TrimSpace(req.ModelOverride); m != "" {
+		return m
+	}
+	if req.Provider != nil {
+		if pm := strings.TrimSpace(req.Provider.Model); pm != "" {
+			return pm
+		}
+	}
+	return defaultModelForBackend(req.Backend)
+}
+
+// piUserModelID 把 pi 上报的模型 id 归一为面向用户的原始模型 id。
+// 绑 provider 时 pi 实际运行的是 "agentre-<key>/<model>"(PiAgentProviderModelName 拼装
+// 的 --model 值),usage 帧上报的模型也带这个前缀 —— 若直接吐给 chat_svc,偏离提示会把
+// 「所选 X 未生效,实际 agentre-<key>/X」误报成真偏差(前缀两边对不上)。剥掉与当前
+// provider 匹配的前缀后,上报值才与 override 同语义。未绑 provider / 前缀不匹配时原样
+// 返回,不误伤 CLI 登录态的裸模型名。
+func piUserModelID(req agentruntime.RunRequest, reported string) string {
+	reported = strings.TrimSpace(reported)
+	if reported == "" || req.Provider == nil {
+		return reported
+	}
+	prefix := "agentre-" + req.Provider.ProviderKey + "/"
+	if strings.HasPrefix(reported, prefix) {
+		return strings.TrimPrefix(reported, prefix)
+	}
+	return reported
 }
 
 var sessionFactory = func(req agentruntime.RunRequest, env map[string]string, cwd string) (sessionHandle, error) {
@@ -196,13 +350,13 @@ var sessionFactory = func(req agentruntime.RunRequest, env map[string]string, cw
 	var providerExtPath string
 	if req.Provider != nil {
 		var err error
-		model, providerExtPath, err = providerRunConfig(req.Provider)
+		model, providerExtPath, err = providerRunConfig(req.Provider, req.ModelOverride)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if model == "" {
-		model = defaultModelForBackend(req.Backend)
+		model = piModelFallback(req)
 	}
 	// MCP 注入：有 RunRequest.MCPServers 时，materialize 内嵌桥扩展 + 渲染会话私有
 	// config，扩展路径走 --extension、config 路径走 AGENTRE_PI_MCP_CONFIG env。

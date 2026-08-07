@@ -57,6 +57,9 @@ const (
 	// 时 emit。前端渲染审批卡片，用户决策后调 AnswerToolPermission 回灌。
 	// Resolved=true 的事件代表"已审批"态切换（按 RequestID 找到既有 block 更新）。
 	StreamToolPermissionRequest ChatStreamEventKind = "tool_permission_request"
+	// StreamExecApproval carries OpenClaw Gateway approval requested/resolved
+	// cards. A resolved card is not an exec/tool completion event.
+	StreamExecApproval ChatStreamEventKind = "exec_approval"
 	// StreamSessionStatus 推送 session 级 status patch（agentStatus + needsAttention）。
 	// 用于 turn 进行中遇到 ask / 审批等待时把 toolbar 翻成橙色 WAITING，应答后翻回
 	// RUNNING。前端按 stream name 已知 sessionId，patch 体只带新状态。
@@ -171,6 +174,7 @@ type ChatStreamEvent struct {
 
 	// StreamToolPermissionRequest 事件填充：审批载荷或审批后的状态切换。
 	ToolPermission *ChatBlockToolPermission `json:"toolPermission,omitempty"`
+	ExecApproval   *ChatBlockExecApproval   `json:"execApproval,omitempty"`
 
 	// StreamRetry 事件填充：后端/上游的非终态重试通知。本轮 turn 继续运行。
 	RetryAttempt     int    `json:"retryAttempt,omitempty"`
@@ -275,11 +279,18 @@ type ChatSessionStatusPatch struct {
 }
 
 // ChatBlock 是 backend → 前端的简化投影：把 cago/agents StoredBlock 拍平。
-// 已支持的 Type：text / thinking / tool_use / tool_result / ask_user_question / unknown（兜底）。
+// 已支持的 Type：text / thinking / tool_use / tool_result / notice / ask_user_question / unknown（兜底）。
 type ChatBlock struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text,omitempty"` // text / thinking / tool_result 文本
-	Image *ChatBlockImage `json:"image,omitempty"`
+	Type  string `json:"type"`
+	Text  string `json:"text,omitempty"`  // text / thinking / tool_result / notice 文本
+	Level string `json:"level,omitempty"` // notice 级别
+
+	// notice 块专用:结构化偏离提示的模型 id(selected=override, actual=实际运行模型)。
+	// 持久化时编码进 cago blocks.NoticeBlock.Text 的小 JSON,投影(noticeBlockToChatBlock)
+	// 解回这里;旧的非结构化 notice 无此字段,前端回退到 Text 原样渲染。
+	SelectedModel string          `json:"selectedModel,omitempty"`
+	ActualModel   string          `json:"actualModel,omitempty"`
+	Image         *ChatBlockImage `json:"image,omitempty"`
 
 	// tool_use:
 	ToolUseID string         `json:"toolUseId,omitempty"`
@@ -309,6 +320,9 @@ type ChatBlock struct {
 
 	// tool_permission_request block 专用：工具审批载荷与决策状态。
 	ToolPermission *ChatBlockToolPermission `json:"toolPermission,omitempty"`
+
+	// exec_approval block 专用：OpenClaw Gateway exec 审批生命周期。
+	ExecApproval *ChatBlockExecApproval `json:"execApproval,omitempty"`
 
 	// tool_approval block 专用：agent 内置工具(org / hook 等)写操作审批卡。
 	ToolApproval *ChatBlockToolApproval `json:"toolApproval,omitempty"`
@@ -373,6 +387,22 @@ type ChatBlockToolPermission struct {
 	Resolved    bool           `json:"resolved,omitempty"`
 	Allowed     bool           `json:"allowed,omitempty"`
 	AlwaysAllow bool           `json:"alwaysAllow,omitempty"`
+}
+
+type ChatBlockExecApproval struct {
+	ID               string   `json:"id"`
+	CommandText      string   `json:"commandText"`
+	CommandPreview   string   `json:"commandPreview,omitempty"`
+	AllowedDecisions []string `json:"allowedDecisions,omitempty"`
+	Host             string   `json:"host,omitempty"`
+	NodeID           string   `json:"nodeId,omitempty"`
+	AgentID          string   `json:"agentId,omitempty"`
+	Status           string   `json:"status"`
+	Decision         string   `json:"decision,omitempty"`
+	ResolvedBy       string   `json:"resolvedBy,omitempty"`
+	CreatedAtMs      int64    `json:"createdAtMs,omitempty"`
+	ExpiresAtMs      int64    `json:"expiresAtMs,omitempty"`
+	ResolvedAtMs     int64    `json:"resolvedAtMs,omitempty"`
 }
 
 // ChatBlockToolApproval agent 内置工具(org / hook 等)写操作审批卡的前端投影。
@@ -463,8 +493,13 @@ type ChatSessionDetail struct {
 	// 的 PromptTokens 只含未缓存输入，要叠加 CachedTokens + CacheCreationTokens 才是
 	// 总上下文；OpenAI 系的 PromptTokens 已是总数。空串表示后端未绑定 provider（CLI 登录态）。
 	LLMProviderType string `json:"llmProviderType"`
-	Title           string `json:"title"`
-	AgentStatus     string `json:"agentStatus"`
+	// LLMProviderKey 是 backend 绑定的 provider key；空串 = 未绑（CLI 登录态）。
+	// 前端 ModelPill 用它与 ListLLMProviders() 匹配 provider id 拉 /v1/models 列表。
+	LLMProviderKey       string `json:"llmProviderKey"`
+	ModelOverride        string `json:"modelOverride"`
+	ProviderDefaultModel string `json:"providerDefaultModel"`
+	Title                string `json:"title"`
+	AgentStatus          string `json:"agentStatus"`
 	// ActiveStream 仅在 LoadSession 时填:该会话有正在跑的 turn 时,给出其 per-turn
 	// wails 事件名("chat:event:<sessionID>:<assistantMessageID>"),让中途打开本会话的
 	// 前端 openStream 重挂到实时流。子 agent 调用轮 / 自主轮等"非前端发起"的 turn 没有 Send
@@ -523,16 +558,20 @@ type ChatAgentItem struct {
 	// （codex / builtin）一律留空。前端新会话场景下用它作为 pill 起手值兜底，并把
 	// 同值随 SendChatMessage.permissionMode 透回，让 chat_svc.createPermissionMode
 	// 的「raw 非空就直接用」分支照样落到管理员预设上。
-	DefaultPermissionMode string            `json:"defaultPermissionMode"`
-	Chattable             bool              `json:"chattable"`
-	Pinned                bool              `json:"pinned"`
-	ChattableHint         string            `json:"chattableHint"`
-	ActiveCount           int               `json:"activeCount"`
-	RecentCount           int               `json:"recentCount"`
-	TotalSessions         int64             `json:"totalSessions"`
-	SessionIDs            []int64           `json:"sessionIds"`
-	Sessions              []ChatSessionLite `json:"sessions"`
-	AttentionSessions     []ChatSessionLite `json:"attentionSessions"`
+	DefaultPermissionMode string `json:"defaultPermissionMode"`
+	// LLMProviderKey 是 backend 绑定的 provider key；空串 = 未绑（CLI 登录态）。
+	// 前端无会话 composer ModelPill 用它判定新会话已绑/未绑：非空 → 走 /v1/models 列表；
+	// 空 → 弹层内自由输入模型 id。
+	LLMProviderKey    string            `json:"llmProviderKey"`
+	Chattable         bool              `json:"chattable"`
+	Pinned            bool              `json:"pinned"`
+	ChattableHint     string            `json:"chattableHint"`
+	ActiveCount       int               `json:"activeCount"`
+	RecentCount       int               `json:"recentCount"`
+	TotalSessions     int64             `json:"totalSessions"`
+	SessionIDs        []int64           `json:"sessionIds"`
+	Sessions          []ChatSessionLite `json:"sessions"`
+	AttentionSessions []ChatSessionLite `json:"attentionSessions"`
 
 	// 远端 device 归属 — 给前端 DeviceTag 渲染本地/远端 chip 用。
 	// 空 DeviceID = 本地 backend；非空 = paired_agentred.id 字符串化。
@@ -643,6 +682,8 @@ type SendRequest struct {
 	//   - codex: default / plan
 	// 空串表示不改已有会话；新建 codex 会话空串按 default 落库。
 	PermissionMode string `json:"permissionMode,omitempty"`
+	// ModelOverride 仅新建会话时生效；已有会话通过 SetSessionModel 切换。
+	ModelOverride string `json:"modelOverride,omitempty"`
 	// EmitTurnStartedBypass 表示本轮由"非查看者"发起(子 agent 调用经 subagent_svc
 	// 阻塞起轮),需经会话级旁路 chat:autonomous:<sessionId> 把 per-turn 流名推给该会话
 	// 已打开(可能在后台)的 ChatPanel, 让它翻 running + openStream —— 否则只有发起者

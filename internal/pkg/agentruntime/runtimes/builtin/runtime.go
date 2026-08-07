@@ -30,6 +30,17 @@ func init() {
 	agentruntime.RegisterRuntime(agent_backend_entity.TypeBuiltin, defaultRuntime)
 }
 
+// builtinEffectiveModel 统一模型解析规则(builtin 版):effectiveModel =
+// firstNonEmpty(req.ModelOverride, req.Provider.Model)。builtin 强制要求绑 provider
+// (Run 里 nil 检查),且 backend 无默认模型字段(DefaultModel 仅 claudecode 用),
+// 所以规则只取前两项。进程内每轮读取,无子进程/缓存问题。
+func builtinEffectiveModel(req agentruntime.RunRequest) string {
+	if m := strings.TrimSpace(req.ModelOverride); m != "" {
+		return m
+	}
+	return strings.TrimSpace(req.Provider.Model)
+}
+
 // builtinProviderBuilder 是 agentprovider.Build 的间接引用;测试时换成 fake provider,
 // 避免真打 LLM 网络。
 var builtinProviderBuilder = func(p *llm_provider_entity.LLMProvider) (provider.Provider, error) {
@@ -205,7 +216,7 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	if sys := strings.TrimSpace(req.SystemPrompt); sys != "" {
 		opts = append(opts, coding.AppendSystem(sys))
 	}
-	if model := strings.TrimSpace(req.Provider.Model); model != "" {
+	if model := builtinEffectiveModel(req); model != "" {
 		opts = append(opts, coding.WithModel(model))
 	}
 	if eff := req.Backend.ReasoningEffort; eff != "" {
@@ -265,7 +276,7 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	out := make(chan agentruntime.Event, 32)
 	result := &agentruntime.RunResult{
 		ProviderSessionID: convID,
-		Model:             strings.TrimSpace(req.Provider.Model),
+		Model:             builtinEffectiveModel(req),
 	}
 	go func() {
 		defer close(out)

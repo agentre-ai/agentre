@@ -71,7 +71,9 @@ export type RenderItem =
       type: "tool_permission_request";
     }
   | { block: ChatBlockData; type: "tool_approval" }
+  | { block: ChatBlockData; type: "exec_approval" }
   | { block: ChatBlockData; type: "unknown" }
+  | { block: ChatBlockData; type: "notice" }
   | { block: ChatBlockData; type: "compact_boundary" };
 
 // VisibleRenderItem = 过滤掉已 merge 审批后的渲染项 + 预计算的 uiStateKey。
@@ -275,11 +277,23 @@ export function buildRenderItems({
         // expired),前端不按会话活跃度推断。
         items.push({ block: b, type: "tool_approval" });
         break;
+      case "exec_approval":
+        // Gateway approval resolution is deliberately not paired with a
+        // tool_result: approval terminal and command execution terminal are
+        // separate protocol lifecycles.
+        items.push({ block: b, type: "exec_approval" });
+        break;
       case "compact_boundary":
         // CLI 通报上下文已压缩 (manual /compact 或 auto)。在 transcript 中嵌一条
         // 分隔卡片;最后一条 compact_boundary 之前的所有内容会被 ChatTranscript 顶层
         // 折叠成"查看历史"按钮。
         items.push({ block: b, type: "compact_boundary" });
+        break;
+      case "notice":
+        // 偏离提示 block:结构化 selectedModel/actualModel 由后端投影填充,
+        // 渲染走 transcript-row-view 的 notice 分支(t() 文案 + 等宽模型名);
+        // 旧数据无结构化字段时同分支回退到 Text 原样渲染。
+        items.push({ block: b, type: "notice" });
         break;
       default:
         items.push({ block: b, type: "unknown" });
@@ -288,21 +302,22 @@ export function buildRenderItems({
   };
   blocks.forEach(consumeBlock);
 
-  // 合成 thinking 必须排在本轮 liveBlocks(tool_use/tool_result/已冻结 text)之前 —
-  // Anthropic 协议里 thinking 永远在 turn 开头,store 也是单一 liveThinking 字段不穿插。
-  // 摆错位置会出现「思考 14s 还在转,但工具卡已经在它上方」的视觉错乱。
-  // streaming 判定:本轮一旦冒出任何非思考的输出(tool_use 进 liveBlocks 或文本开始流到
-  // liveTail),思考阶段就结束;只看 liveTail 会漏掉「思考完→直接发 tool」那一帧,徽标
-  // 一直 pulse、计时定格。
+  // 合成 thinking 排在本轮 liveBlocks(含已冻结的 thinking/text/tool)之后 ——
+  // store 在 tool_use/plan/ask 等边界把上一段 liveThinking 冻进 liveBlocks,
+  // 所以 liveBlocks 里已经按真实时间顺序含了前几轮的思考;这里只剩当前轮还没
+  // 冻结的 liveThinking(thinking→text 尚未遇到下一个边界),排在末尾的 text 前。
+  // 摆错位置会出现「第 2 轮思考压在第 1 轮工具卡上方」的视觉错乱。
+  // streaming 判定:当前轮一旦冒出非思考输出(text 开始流到 liveTail),思考就
+  // 结束。liveBlocks 里有前几轮的工具不意味着本轮思考已结束,不能再用它判断。
+  liveBlocks.forEach(consumeBlock);
   if (liveThinking) {
     items.push({
       block: { text: liveThinking, type: "thinking" } as ChatBlockData,
       startedAt: liveThinkingStartedAt ?? undefined,
-      streaming: !liveTail && liveBlocks.length === 0,
+      streaming: !liveTail,
       type: "thinking",
     });
   }
-  liveBlocks.forEach(consumeBlock);
   // liveTail 是本轮仍在生长的尾巴文本 —— 标记 streaming,走 StreamingMarkdown 增量渲染。
   appendText(liveTail, true);
 
@@ -632,6 +647,8 @@ export function estimateRowSize(row: TranscriptRow): number {
       return scaleRowSize(40); // 45
     case "compact_boundary":
       return scaleRowSize(48); // 54
+    case "notice":
+      return scaleRowSize(48); // 54
     case "local_command":
       return scaleRowSize(120); // 135
     default:
@@ -704,6 +721,9 @@ export function stableBlockIdentity(block?: ChatBlockData): string | undefined {
   }
   if (block.toolApproval?.requestId) {
     return `tool-approval:${block.toolApproval.requestId}`;
+  }
+  if (block.execApproval?.id) {
+    return `exec-approval:${block.execApproval.id}`;
   }
   const canonical = (block as { canonical?: unknown }).canonical;
   if (!canonical || typeof canonical !== "object") return undefined;

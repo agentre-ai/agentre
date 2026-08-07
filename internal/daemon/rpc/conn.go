@@ -65,6 +65,12 @@ type Conn struct {
 
 	authMu sync.RWMutex
 	auth   AuthState
+
+	// closed/closeErr 让 Close 幂等且在动传输之前先标记:标记后再发通知不再向
+	// 已死的对端发起写入(见 write 的守卫)。真正关掉底层传输仍是 transport 的事。
+	closed    atomic.Bool
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // AuthState captures who is on the other end of this connection after the
@@ -132,7 +138,12 @@ func (c *Conn) SetAuth(a AuthState) {
 // Notification handlers MUST therefore be non-blocking (or bounded) —
 // they share back-pressure with the read loop.
 func (c *Conn) Serve(ctx context.Context) {
-	defer func() { _ = c.transport.Close() }()
+	// Dial/upgrade callers commonly use ctx only as a handshake deadline. The
+	// concrete transport, not that caller deadline, owns dispatched request
+	// lifetime; daemon shutdown closes tracked connections explicitly.
+	requestCtx, cancelRequests := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelRequests()
+	defer func() { _ = c.Close() }()
 	for {
 		var f Frame
 		if err := c.transport.ReadFrame(&f); err != nil {
@@ -142,9 +153,9 @@ func (c *Conn) Serve(ctx context.Context) {
 		case f.IsResponse():
 			c.deliverResponse(f)
 		case f.IsRequest():
-			go c.handleRequest(ctx, f)
+			go c.handleRequest(requestCtx, f)
 		case f.IsNotification():
-			nctx := context.WithValue(ctx, connCtxKey{}, c)
+			nctx := context.WithValue(requestCtx, connCtxKey{}, c)
 			_, _ = c.reg.Dispatch(nctx, f.Method, f.Params)
 		}
 	}
@@ -175,7 +186,16 @@ func (c *Conn) handleRequest(ctx context.Context, f Frame) {
 func (c *Conn) write(f Frame) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	return c.transport.WriteFrame(f)
+	if c.closed.Load() {
+		return ErrConnClosed
+	}
+	if err := c.transport.WriteFrame(f); err != nil {
+		if c.closed.Load() {
+			return ErrConnClosed
+		}
+		return err
+	}
+	return nil
 }
 
 // Notify sends a fire-and-forget JSON-RPC notification to the peer.
@@ -237,7 +257,13 @@ func (c *Conn) deliverResponse(f Frame) {
 	}
 }
 
-// Close closes the underlying frame transport.
+// Close closes the underlying frame transport. It is idempotent and marks the
+// connection closed before touching the transport so later notifications cannot
+// begin a write to a dead peer.
 func (c *Conn) Close() error {
-	return c.transport.Close()
+	c.closeOnce.Do(func() {
+		c.closed.Store(true)
+		c.closeErr = c.transport.Close()
+	})
+	return c.closeErr
 }

@@ -230,6 +230,31 @@ func TestConn_HandlerSeesConnInContext(t *testing.T) {
 	}
 }
 
+func TestConn_PeerDisconnectCancelsInFlightRequestContext(t *testing.T) {
+	reg := NewRegistry()
+	entered := make(chan struct{})
+	canceled := make(chan struct{})
+	reg.Register("waitForDisconnect", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		close(entered)
+		<-ctx.Done()
+		close(canceled)
+		return nil, ctx.Err()
+	})
+	_, url := testServer(t, reg)
+	cl := dialClient(t, url)
+	require.NoError(t, cl.WriteJSON(Frame{
+		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: "waitForDisconnect",
+	}))
+	<-entered
+	require.NoError(t, cl.Close())
+
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("request context survived the concrete WebSocket connection")
+	}
+}
+
 // TestConn_NotificationsAreOrdered 钉死 notification 必须按发送顺序 dispatch。
 // 历史 bug:Serve 对每条 notification 都 go func() dispatch,Go 调度器不保证
 // goroutine 启动 = 抢锁顺序,导致 runtime.event (TextDelta) 在客户端乱序到达,

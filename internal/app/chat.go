@@ -123,6 +123,12 @@ func (a *App) SetChatPermissionMode(req *chat_svc.SetPermissionModeRequest) (*ch
 	return chat_svc.Chat().SetPermissionMode(a.ctx, req)
 }
 
+// SetChatSessionModel sets or clears the model override for an existing chat session.
+// An empty model follows the provider default again.
+func (a *App) SetChatSessionModel(sessionID int64, model string) error {
+	return chat_svc.Chat().SetSessionModel(a.ctx, sessionID, model)
+}
+
 // RegenerateChatMessage 截掉指定 assistant 消息之前的 user 锚点后，用同一段
 // user 文本重新走一遍 turn。Step 1：仅 builtin 后端实际工作；CLI 后端在 runner
 // 接入 Rewinder 之前返回 ChatRegenerateUnsupported。
@@ -166,6 +172,12 @@ func (a *App) AnswerUserQuestion(req *chat_svc.AnswerUserQuestionRequest) (*chat
 // 让 SDK 内化为后续 allow rule。当前仅 claudecode 后端支持。
 func (a *App) AnswerToolPermission(req *chat_svc.AnswerToolPermissionRequest) (*chat_svc.AnswerToolPermissionResponse, error) {
 	return chat_svc.Chat().AnswerToolPermission(a.ctx, req)
+}
+
+// ResolveExecApproval returns an OpenClaw exec approval decision through the
+// active Gateway runtime. The service validates the session/backend/decision.
+func (a *App) ResolveExecApproval(req *chat_svc.ResolveExecApprovalRequest) (*chat_svc.ResolveExecApprovalResponse, error) {
+	return chat_svc.Chat().ResolveExecApproval(a.ctx, req)
 }
 
 // AnswerToolApproval agent 内置工具(org / hook 等)写操作的审批决策

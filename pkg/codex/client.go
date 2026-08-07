@@ -44,6 +44,7 @@ type Session struct {
 	threadReady bool
 	closed      bool
 	active      *Stream
+	history     *turnHistory
 }
 
 func New(opts ...Option) *Client {
@@ -104,7 +105,8 @@ func (c *Client) StreamInput(ctx context.Context, input []UserInput, opts ...Run
 		return nil, errors.New("codex: turn/start response missing id")
 	}
 	stream := newStream(app, c.killGrace, thread.ThreadID, turn.Turn.ID, "")
-	go stream.drain(ctx)
+	// The stream is intentionally scoped to the caller's context so cancellation interrupts the active turn.
+	go stream.drain(ctx) //nolint:gosec // G118: request context defines this goroutine's lifecycle.
 	return stream, nil
 }
 
@@ -140,7 +142,8 @@ func (c *Client) Compact(ctx context.Context, threadID string) (*Stream, error) 
 		return nil, err
 	}
 	stream := newStream(app, c.killGrace, thread.ThreadID, "", "manual")
-	go stream.drain(ctx)
+	// Compaction follows the caller's context; cancellation must stop the app-server stream.
+	go stream.drain(ctx) //nolint:gosec // G118: request context defines this goroutine's lifecycle.
 	return stream, nil
 }
 
@@ -160,7 +163,7 @@ func (c *Client) OpenSession(ctx context.Context, opts ...RunOption) (*Session, 
 		cleanup()
 		return nil, err
 	}
-	return &Session{client: c, app: app, sid: spec.resumeID}, nil
+	return &Session{client: c, app: app, sid: spec.resumeID, history: newTurnHistory()}, nil
 }
 
 func (s *Session) ID() string {
@@ -218,6 +221,7 @@ func (s *Session) StreamInput(ctx context.Context, input []UserInput, opts ...Ru
 	}
 	stream := newStream(s.app, s.client.killGrace, thread.ThreadID, turn.Turn.ID, "")
 	stream.closeAppOnDrain = false
+	stream.history = s.history
 	s.setActive(stream)
 	go func() {
 		defer s.turnMu.Unlock()
@@ -258,6 +262,7 @@ func (s *Session) Compact(ctx context.Context) (*Stream, error) {
 	}
 	stream := newStream(s.app, s.client.killGrace, thread.ThreadID, "", "manual")
 	stream.closeAppOnDrain = false
+	stream.history = s.history
 	s.setActive(stream)
 	go func() {
 		defer s.turnMu.Unlock()
@@ -531,18 +536,26 @@ type Stream struct {
 	err           error
 	usage         provider.Usage
 	contextWindow int
+	state         *turnStateMachine
+	reusable      bool
+	history       *turnHistory
 
 	userInputMu       sync.Mutex
 	userInputRequests map[string]json.RawMessage
 	approvalRequests  map[string]approvalRequest
 	compactSeen       map[string]struct{}
+	completedItems    map[string]struct{}
+	planText          map[string]string
 	compactTrigger    string
+	interruptSignal   chan struct{}
 
 	closeOnce       sync.Once
 	closeAppOnDrain bool
 }
 
 func newStream(app *appClient, killGrace time.Duration, threadID, turnID, compactTrigger string) *Stream {
+	state := newTurnStateMachine()
+	_, _ = state.Transition(TurnStateRunning)
 	return &Stream{
 		app:               app,
 		killGrace:         killGrace,
@@ -552,7 +565,13 @@ func newStream(app *appClient, killGrace time.Duration, threadID, turnID, compac
 		userInputRequests: map[string]json.RawMessage{},
 		approvalRequests:  map[string]approvalRequest{},
 		compactSeen:       map[string]struct{}{},
+		completedItems:    map[string]struct{}{},
+		planText:          map[string]string{},
 		compactTrigger:    compactTrigger,
+		interruptSignal:   make(chan struct{}, 1),
+		state:             state,
+		reusable:          true,
+		history:           newTurnHistory(),
 		closeAppOnDrain:   true,
 	}
 }
@@ -578,6 +597,24 @@ func (s *Stream) Err() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.err
+}
+
+func (s *Stream) State() TurnState {
+	if s == nil || s.state == nil {
+		return TurnStateFailed
+	}
+	return s.state.State()
+}
+
+// Reusable reports whether a persistent Session may safely start another turn
+// on this Stream's app-server process.
+func (s *Stream) Reusable() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.reusable
 }
 
 func (s *Stream) Close(ctx context.Context) error {

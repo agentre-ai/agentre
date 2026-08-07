@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +23,41 @@ import (
 // TestCodexCapabilities 钉死 codex runtime 的能力矩阵 + permission mode 元数据。
 // 与 claudecode 的关键差异:CapCancelSteer/CapDrainSteer=false;
 // CapReportContextWindow=true;PermissionModeMeta 仅 default/plan,SwitchableDuringTurn=false。
+// TestRecordLaunchedModel_Bounded 锁住 launchedModel 的容量裁剪:池按 LRU 上限逐出
+// 空闲会话时不回调本包,若不加上限,map 会随进程内用过的会话数无界增长。裁掉的是
+// 最旧的 key —— 它若日后回池,modelChanged 只会误判一次无谓重 spawn,不产错误结果。
+func TestRecordLaunchedModel_Bounded(t *testing.T) {
+	Convey("Given 一个 codex runtime", t, func() {
+		r := New()
+
+		Convey("When 记录超过上限的会话数 Then map 被 FIFO 裁剪到上限以内", func() {
+			for i := 0; i < maxTrackedLaunchedModels+64; i++ {
+				r.recordLaunchedModel(fmt.Sprintf("sess-%d", i), "gpt-5.5")
+			}
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			So(len(r.launchedModel), ShouldBeLessThanOrEqualTo, maxTrackedLaunchedModels)
+			So(len(r.launchedModelOrder), ShouldEqual, len(r.launchedModel))
+			// 最旧 64 个被裁掉,最新 512 个保留。
+			_, evicted := r.launchedModel["sess-0"]
+			_, kept := r.launchedModel[fmt.Sprintf("sess-%d", maxTrackedLaunchedModels+63)]
+			So(evicted, ShouldBeFalse)
+			So(kept, ShouldBeTrue)
+		})
+
+		Convey("When forgetLaunchedModel 剔除已记录 key Then map 与 FIFO 序同步删除", func() {
+			r.recordLaunchedModel("a", "m1")
+			r.recordLaunchedModel("b", "m2")
+			r.forgetLaunchedModel("a")
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			_, aGone := r.launchedModel["a"]
+			So(aGone, ShouldBeFalse)
+			So(r.launchedModelOrder, ShouldResemble, []string{"b"})
+		})
+	})
+}
+
 func TestCodexCapabilities(t *testing.T) {
 	Convey("codex Capabilities 矩阵", t, func() {
 		r := New()
@@ -154,7 +192,7 @@ func TestRun_ModelResolution(t *testing.T) {
 			So(result.Model, ShouldEqual, "gpt-5.5")
 		})
 
-		Convey("Given provider model is configured, when app-server reports a different model, then provider model wins", func() {
+		Convey("Given provider model is configured, when app-server reports a different model, then thread actual model (sess.Model) wins (design decision 9)", func() {
 			restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
 				return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-provider", model: "gpt-5.6-sol"}, nil
 			})
@@ -174,7 +212,138 @@ func TestRun_ModelResolution(t *testing.T) {
 			for range events {
 			}
 
-			So(result.Model, ShouldEqual, "gpt-5.4")
+			So(result.Model, ShouldEqual, "gpt-5.6-sol")
+		})
+
+		// sess.Model() 只在 app-server 的 thread start/resume 结果里带 model 时才有值
+		// (pkg/codex ensureThread → s.model = thread.Model)。观测不到时不能拿死常量
+		// defaultModelID 冒充实际模型:那既会把一个从没跑过的模型 id 写进
+		// assistantMsg.Model,又会让 chat_svc 的偏离提示把「观测不到」误判成
+		// 「所选 X 未生效,实际 gpt-5.5」——每一轮都误报。
+		Convey("Given app-server does not report model, when a provider model is configured, then it is reported instead of the hardcoded default", func() {
+			restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+				return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-silent"}, nil
+			})
+			defer restore()
+
+			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:    string(agent_backend_entity.TypeCodex),
+					EnvJSON: "{}",
+				},
+				Provider:  &llm_provider_entity.LLMProvider{Model: "glm-4.6"},
+				SessionID: 1,
+				Cwd:       t.TempDir(),
+				UserText:  "hello",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+
+			So(result.Model, ShouldEqual, "glm-4.6")
+		})
+
+		Convey("Given app-server does not report model, when an override is requested, then the override is reported (no false deviation notice)", func() {
+			restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+				return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-silent"}, nil
+			})
+			defer restore()
+
+			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:    string(agent_backend_entity.TypeCodex),
+					EnvJSON: "{}",
+				},
+				Provider:      &llm_provider_entity.LLMProvider{Model: "gpt-5.4"},
+				ModelOverride: "glm-4.6",
+				SessionID:     1,
+				Cwd:           t.TempDir(),
+				UserText:      "hello",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+
+			So(result.Model, ShouldEqual, "glm-4.6")
+		})
+
+		Convey("Given ModelOverride resumes the thread onto a new model, then RunResult.Model reports the thread actual (sess.Model)", func() {
+			restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+				return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-override", model: "gpt-5.5"}, nil
+			})
+			defer restore()
+
+			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:    string(agent_backend_entity.TypeCodex),
+					EnvJSON: "{}",
+				},
+				Provider:      &llm_provider_entity.LLMProvider{Model: "gpt-5.4"},
+				ModelOverride: "gpt-5.5",
+				SessionID:     1,
+				Cwd:           t.TempDir(),
+				UserText:      "hello",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+
+			So(result.Model, ShouldEqual, "gpt-5.5")
+		})
+	})
+}
+
+// TestRun_ModelChangeEvictsAndRespawns 锁住会话级模型覆盖在 codex 的语义:app-server
+// 进程会被 CLISessionPool 跨轮复用,而 WithModel 绑定在 Client 创建时 —— 模型变了必须
+// 像 claudecode 的 launchedEffort/launchedModel 先例那样 evict + 重 spawn,否则下一轮
+// 复用池里旧模型进程,切换不生效(RunResult.Model 仍旧模型,偏离提示误报)。
+func TestRun_ModelChangeEvictsAndRespawns(t *testing.T) {
+	Convey("Given 同一 codex 会话两轮用不同 ModelOverride", t, func() {
+		var spawnCount int32
+		restore := SetSessionFactoryForTest(func(req agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+			atomic.AddInt32(&spawnCount, 1)
+			model := "gpt-5.5"
+			if om := strings.TrimSpace(req.ModelOverride); om != "" {
+				model = om
+			}
+			return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-x", model: model}, nil
+		})
+		defer restore()
+
+		r := New()
+		run := func(override string) *agentruntime.RunResult {
+			events, result, err := r.Run(context.Background(), agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:    string(agent_backend_entity.TypeCodex),
+					EnvJSON: "{}",
+				},
+				SessionID:     77,
+				Cwd:           t.TempDir(),
+				UserText:      "hi",
+				ModelOverride: override,
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+			return result
+		}
+
+		Convey("When 首轮 override=A, Then 线程模型为 A", func() {
+			So(run("gpt-5.5").Model, ShouldEqual, "gpt-5.5")
+			So(atomic.LoadInt32(&spawnCount), ShouldEqual, 1)
+		})
+
+		Convey("When 同模型再来一轮, Then 复用不重 spawn", func() {
+			run("gpt-5.5")
+			run("gpt-5.5")
+			So(atomic.LoadInt32(&spawnCount), ShouldEqual, 1)
+		})
+
+		Convey("When 第二轮 override 变化为 B, Then evict + 重 spawn,线程模型为 B", func() {
+			run("gpt-5.5")
+			second := run("gpt-5.6")
+			So(second.Model, ShouldEqual, "gpt-5.6")
+			So(atomic.LoadInt32(&spawnCount), ShouldEqual, 2)
 		})
 	})
 }
@@ -609,6 +778,326 @@ func TestRun_ErrorFollowedOnlyByMetadataKeepsStopErr(t *testing.T) {
 	})
 }
 
+func TestRun_DuplicateSessionTurnDoesNotReplaceActiveOwner(t *testing.T) {
+	Convey("Given a Codex turn owns a chat session, when another Run starts for the same session, then it is rejected without replacing the first owner", t, func() {
+		pool := agentruntime.NewCLISessionPool(8)
+		stream := newBlockingRuntimeStream()
+		fake := &fakeRuntimeSession{stream: stream, sid: "thread-owner"}
+		factoryCalls := 0
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+			factoryCalls++
+			return fake, nil
+		})
+		defer restore()
+
+		r := NewWithPool(pool)
+		req := agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeCodex), EnvJSON: "{}"},
+			SessionID: 707,
+			Cwd:       t.TempDir(),
+			UserText:  "first",
+		}
+		firstEvents, _, err := r.Run(context.Background(), req)
+		So(err, ShouldBeNil)
+
+		req.UserText = "must not overlap"
+		secondEvents, _, secondErr := r.Run(context.Background(), req)
+
+		So(secondErr, ShouldNotBeNil)
+		So(secondErr.Error(), ShouldContainSubstring, "active turn")
+		So(secondEvents, ShouldBeNil)
+		So(factoryCalls, ShouldEqual, 1)
+
+		stream.finish()
+		for range firstEvents {
+		}
+	})
+}
+
+func TestRuntimeUnregister_StaleOwnerCannotDeleteReplacement(t *testing.T) {
+	Convey("Given a replacement owner is installed, when an old turn defers unregister, then only the expected owner can be removed", t, func() {
+		r := New()
+		oldOwner := &codexActive{}
+		newOwner := &codexActive{}
+		r.active[11] = newOwner
+
+		r.unregister(11, oldOwner)
+
+		So(r.active[11], ShouldEqual, newOwner)
+		r.unregister(11, newOwner)
+		_, exists := r.active[11]
+		So(exists, ShouldBeFalse)
+	})
+}
+
+func TestRun_ControlCallsAreRaceFreeWhileActiveOwnerInitializes(t *testing.T) {
+	// Given Run has claimed the session but the app-server has not returned its
+	// stream yet, control calls may concurrently observe that provisional owner.
+	stream := &interruptibleBlockingRuntimeStream{blockingRuntimeStream: newBlockingRuntimeStream()}
+	sess := &blockingStartRuntimeSession{
+		fakeRuntimeSession: &fakeRuntimeSession{stream: stream, sid: "thread-initializing"},
+		entered:            make(chan struct{}),
+		release:            make(chan struct{}),
+	}
+	restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+		return sess, nil
+	})
+	defer restore()
+
+	r := New()
+	type runResult struct {
+		events <-chan agentruntime.Event
+		err    error
+	}
+	runDone := make(chan runResult, 1)
+	go func() {
+		events, _, err := r.Run(context.Background(), agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeCodex), EnvJSON: "{}"},
+			SessionID: 707,
+			Cwd:       t.TempDir(),
+			UserText:  "initialize",
+		})
+		runDone <- runResult{events: events, err: err}
+	}()
+
+	<-sess.entered
+	stopControls := make(chan struct{})
+	controlsDone := make(chan struct{})
+	go func() {
+		defer close(controlsDone)
+		for {
+			select {
+			case <-stopControls:
+				return
+			default:
+				_ = r.Abort(context.Background(), 707)
+			}
+		}
+	}()
+	close(sess.release)
+	result := <-runDone
+	close(stopControls)
+	<-controlsDone
+	if result.err != nil {
+		t.Fatalf("Run failed after initialization: %v", result.err)
+	}
+	stream.finish()
+	for range result.events {
+	}
+}
+
+func TestRun_FailedCachedSessionIsEvictedBeforeNextTurn(t *testing.T) {
+	Convey("Given a cached Codex process fails to start a turn, when the next turn runs, then a fresh session is created", t, func() {
+		pool := agentruntime.NewCLISessionPool(8)
+		bad := &startFailRuntimeSession{sid: "thread-dead", err: pkgcodex.ErrProcessDead}
+		good := &countingRuntimeSession{sid: "thread-restarted", streams: []cxStream{&emptyRuntimeStream{}}}
+		factoryCalls := 0
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+			factoryCalls++
+			if factoryCalls == 1 {
+				return bad, nil
+			}
+			return good, nil
+		})
+		defer restore()
+
+		r := NewWithPool(pool)
+		req := agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeCodex), EnvJSON: "{}"},
+			SessionID: 808,
+			Cwd:       t.TempDir(),
+		}
+		_, _, firstErr := r.Run(context.Background(), req)
+		So(firstErr, ShouldNotBeNil)
+
+		events, _, secondErr := r.Run(context.Background(), req)
+		So(secondErr, ShouldBeNil)
+		for range events {
+		}
+		So(factoryCalls, ShouldEqual, 2)
+		So(good.streamCalls, ShouldEqual, 1)
+	})
+}
+
+func TestResolvedEventDelivery_DoesNotDropWhenOutputBufferIsFull(t *testing.T) {
+	Convey("Given the runtime event buffer is full, when a request resolves, then the state event waits for delivery instead of being silently dropped", t, func() {
+		out := make(chan agentruntime.Event, 1)
+		out <- agentruntime.TextDelta{Text: "occupy"}
+		active := &codexActive{}
+		active.setOut(out)
+		delivered := make(chan struct{})
+
+		go func() {
+			_ = emitUserAskResolved(active, "request-1", true, nil)
+			close(delivered)
+		}()
+
+		select {
+		case <-delivered:
+			So("resolved event returned before there was capacity", ShouldBeBlank)
+		case <-time.After(30 * time.Millisecond):
+		}
+		<-out
+		select {
+		case <-delivered:
+		case <-time.After(time.Second):
+			So("resolved event was never delivered", ShouldBeBlank)
+		}
+		resolved := <-out
+		_, ok := resolved.(agentruntime.UserAskResolved)
+		So(ok, ShouldBeTrue)
+	})
+}
+
+func TestSubmitResolution_DoesNotAnswerAfterRuntimeOutputClosed(t *testing.T) {
+	Convey("Given the turn output is already closed, when user input is submitted, then backend response and waiter state stay untouched", t, func() {
+		backend := &recordingUserInputStream{}
+		active := &codexActive{userInput: backend}
+		active.registerAskWaiter("input-closed", []agentruntime.AskQuestion{{ID: "q1", Question: "Continue?"}})
+		r := New()
+		r.active[911] = active
+
+		err := r.SubmitAnswer(context.Background(), 911, "input-closed", nil, nil, true)
+
+		So(err, ShouldEqual, agentruntime.ErrNoActiveTurn)
+		So(backend.called, ShouldBeFalse)
+		So(active.askWaiter("input-closed"), ShouldNotBeNil)
+	})
+
+	Convey("Given the turn output is already closed, when approval is submitted, then backend response and waiter state stay untouched", t, func() {
+		backend := newApprovalRuntimeStream(pkgcodex.Event{})
+		active := &codexActive{approval: backend}
+		active.registerPermWaiter("approval-closed", "shell", json.RawMessage(`{}`))
+		r := New()
+		r.active[912] = active
+
+		err := r.SubmitToolPermission(context.Background(), 912, "approval-closed", true, false, "")
+
+		So(err, ShouldEqual, agentruntime.ErrNoActiveTurn)
+		So(backend.submittedRequestID, ShouldBeBlank)
+		So(active.hasPermWaiter("approval-closed"), ShouldBeTrue)
+	})
+}
+
+func TestRun_ServerResolvedRequestsConvergeRuntimeWaiters(t *testing.T) {
+	Convey("Given request_user_input is pending, when app-server resolves it externally, then runtime emits a skipped resolution and releases waiting state", t, func() {
+		pool := agentruntime.NewCLISessionPool(8)
+		defer pool.RemoveAll()
+		stream := newBlockingEventRuntimeStream(
+			pkgcodex.Event{
+				Kind: pkgcodex.EventRequestUserInput,
+				RequestUserInput: &pkgcodex.RequestUserInputEvent{
+					RequestID: "input-auto-resolved",
+					ItemID:    "question-item",
+					Questions: []pkgcodex.RequestUserInputQuestion{{
+						ID:       "question-1",
+						Header:   "Choice",
+						Question: "Continue?",
+					}},
+				},
+			},
+			pkgcodex.Event{
+				Kind: pkgcodex.EventRequestResolved,
+				RequestResolved: &pkgcodex.RequestResolvedEvent{
+					RequestID: "input-auto-resolved",
+					Kind:      pkgcodex.RequestKindUserInput,
+				},
+			},
+		)
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+			return &fakeRuntimeSession{stream: stream, sid: "thread-input-resolved"}, nil
+		})
+		defer restore()
+
+		r := NewWithPool(pool)
+		events, _, err := r.Run(context.Background(), agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeCodex), EnvJSON: "{}"},
+			SessionID: 901,
+			Cwd:       t.TempDir(),
+			UserText:  "ask",
+		})
+		So(err, ShouldBeNil)
+
+		request, ok := (<-events).(agentruntime.UserAskRequest)
+		So(ok, ShouldBeTrue)
+		So(request.RequestID, ShouldEqual, "input-auto-resolved")
+		resolved, ok := (<-events).(agentruntime.UserAskResolved)
+		So(ok, ShouldBeTrue)
+		So(resolved.RequestID, ShouldEqual, "input-auto-resolved")
+		So(resolved.Skipped, ShouldBeTrue)
+
+		r.mu.Lock()
+		active := r.active[901]
+		r.mu.Unlock()
+		if active == nil {
+			t.Fatal("runtime removed the active turn before the request resolution was observed")
+		}
+		So(active.askWaiter("input-auto-resolved"), ShouldBeNil)
+		stream.finish()
+		for range events {
+		}
+		So(pool.IdleLen(), ShouldEqual, 1)
+	})
+
+	Convey("Given approval is pending, when app-server resolves it externally, then runtime emits a neutral denial and releases waiting state", t, func() {
+		pool := agentruntime.NewCLISessionPool(8)
+		defer pool.RemoveAll()
+		stream := newBlockingEventRuntimeStream(
+			pkgcodex.Event{
+				Kind: pkgcodex.EventApprovalRequest,
+				Approval: &pkgcodex.ApprovalRequestEvent{
+					RequestID: "approval-auto-resolved",
+					ItemID:    "command-item",
+					ToolName:  "Bash",
+					Input:     []byte(`{"command":"pwd"}`),
+				},
+			},
+			pkgcodex.Event{
+				Kind: pkgcodex.EventRequestResolved,
+				RequestResolved: &pkgcodex.RequestResolvedEvent{
+					RequestID: "approval-auto-resolved",
+					Kind:      pkgcodex.RequestKindApproval,
+				},
+			},
+		)
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+			return &fakeRuntimeSession{stream: stream, sid: "thread-approval-resolved"}, nil
+		})
+		defer restore()
+
+		r := NewWithPool(pool)
+		events, _, err := r.Run(context.Background(), agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeCodex), EnvJSON: "{}"},
+			SessionID: 902,
+			Cwd:       t.TempDir(),
+			UserText:  "run",
+		})
+		So(err, ShouldBeNil)
+
+		request, ok := (<-events).(agentruntime.ToolPermissionRequest)
+		So(ok, ShouldBeTrue)
+		So(request.RequestID, ShouldEqual, "approval-auto-resolved")
+		resolved, ok := (<-events).(agentruntime.ToolPermissionResolved)
+		So(ok, ShouldBeTrue)
+		So(resolved.RequestID, ShouldEqual, "approval-auto-resolved")
+		So(resolved.Allowed, ShouldBeFalse)
+		So(resolved.AlwaysAllow, ShouldBeFalse)
+		So(resolved.DenyReason, ShouldEqual, "approval request resolved by Codex app-server without a decision")
+
+		r.mu.Lock()
+		active := r.active[902]
+		r.mu.Unlock()
+		if active == nil {
+			t.Fatal("runtime removed the active turn before the approval resolution was observed")
+		}
+		So(active.hasPermWaiter("approval-auto-resolved"), ShouldBeFalse)
+		stream.finish()
+		for range events {
+		}
+		So(pool.IdleLen(), ShouldEqual, 1)
+	})
+}
+
 type fakeRuntimeSession struct {
 	stream cxStream
 	sid    string
@@ -616,6 +1105,46 @@ type fakeRuntimeSession struct {
 
 	setGoalReq pkgcodex.GoalUpdate
 }
+
+type blockingStartRuntimeSession struct {
+	*fakeRuntimeSession
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingStartRuntimeSession) Stream(context.Context, string, string) (cxStream, error) {
+	close(s.entered)
+	<-s.release
+	return s.stream, nil
+}
+
+type startFailRuntimeSession struct {
+	sid string
+	err error
+}
+
+func (s *startFailRuntimeSession) Close(context.Context) error { return nil }
+func (s *startFailRuntimeSession) ID() string                  { return s.sid }
+func (*startFailRuntimeSession) Model() string                 { return "" }
+func (s *startFailRuntimeSession) Stream(context.Context, string, string) (cxStream, error) {
+	return nil, s.err
+}
+func (s *startFailRuntimeSession) StreamInput(context.Context, []pkgcodex.UserInput, string) (cxStream, error) {
+	return nil, s.err
+}
+func (s *startFailRuntimeSession) Compact(context.Context) (cxStream, error) {
+	return nil, s.err
+}
+func (*startFailRuntimeSession) GetGoal(context.Context) (*pkgcodex.Goal, error) { return nil, nil }
+func (*startFailRuntimeSession) SetGoal(context.Context, pkgcodex.GoalUpdate) (*pkgcodex.Goal, error) {
+	return nil, nil
+}
+func (*startFailRuntimeSession) ClearGoal(context.Context) (bool, error) { return true, nil }
+func (s *startFailRuntimeSession) RewindTo(context.Context, string) (string, error) {
+	return s.sid, nil
+}
+func (*startFailRuntimeSession) ActiveStream() cxSteerStream        { return nil }
+func (*startFailRuntimeSession) ActiveInterruptor() cxInterruptable { return nil }
 
 func (s *fakeRuntimeSession) Close(context.Context) error { return nil }
 func (s *fakeRuntimeSession) ID() string                  { return s.sid }
@@ -717,6 +1246,12 @@ func (*blockingRuntimeStream) Event() pkgcodex.Event { return pkgcodex.Event{} }
 func (*blockingRuntimeStream) SessionID() string     { return "" }
 func (s *blockingRuntimeStream) finish()             { close(s.done) }
 
+type interruptibleBlockingRuntimeStream struct {
+	*blockingRuntimeStream
+}
+
+func (*interruptibleBlockingRuntimeStream) Interrupt(context.Context) error { return nil }
+
 type eventRuntimeStream struct {
 	events []pkgcodex.Event
 	idx    int
@@ -732,6 +1267,29 @@ func (s *eventRuntimeStream) Next() bool {
 
 func (s *eventRuntimeStream) Event() pkgcodex.Event { return s.events[s.idx-1] }
 func (s *eventRuntimeStream) SessionID() string     { return "" }
+
+type blockingEventRuntimeStream struct {
+	events []pkgcodex.Event
+	idx    int
+	done   chan struct{}
+}
+
+func newBlockingEventRuntimeStream(events ...pkgcodex.Event) *blockingEventRuntimeStream {
+	return &blockingEventRuntimeStream{events: events, done: make(chan struct{})}
+}
+
+func (s *blockingEventRuntimeStream) Next() bool {
+	if s.idx < len(s.events) {
+		s.idx++
+		return true
+	}
+	<-s.done
+	return false
+}
+
+func (s *blockingEventRuntimeStream) Event() pkgcodex.Event { return s.events[s.idx-1] }
+func (s *blockingEventRuntimeStream) SessionID() string     { return "" }
+func (s *blockingEventRuntimeStream) finish()               { close(s.done) }
 
 type approvalRuntimeStream struct {
 	event pkgcodex.Event
@@ -767,6 +1325,15 @@ func (s *approvalRuntimeStream) SubmitApproval(_ context.Context, requestID stri
 }
 
 func (s *approvalRuntimeStream) finish() { close(s.done) }
+
+type recordingUserInputStream struct {
+	called bool
+}
+
+func (s *recordingUserInputStream) SubmitUserInput(context.Context, string, map[string][]string) error {
+	s.called = true
+	return nil
+}
 
 // TestCodexPendingWaiters 覆盖 R7 的 codex 一半:codex 的 Capabilities 里
 // CapToolPermission=true(app-server requestApproval 协议),drainStream 会为

@@ -69,7 +69,25 @@ type Runtime struct {
 	mu     sync.Mutex
 	active map[int64]*codexActive
 	pool   *agentruntime.CLISessionPool
+
+	// launchedModel 记录每个 chat 会话(spawn 时)下发的 effectiveModel,
+	// key 与 CLISessionPool 一致(sessionKey)。--model 是启动期 flag(WithModel
+	// 绑定在 Client 创建时),app-server 进程又会被池跨轮复用 —— 模型变了必须 evict +
+	// 重 spawn(镜像 claudecode 的 launchedEffort/launchedModel 先例),否则下一轮
+	// 复用旧模型进程,会话级切换不生效(RunResult.Model 仍旧模型,偏离提示误报)。
+	//
+	// 池按 LRU 上限(MarkIdle 的 prune)逐出空闲会话时不会回调这里,故条目可能只增不减
+	// (逐出后该 key 再 spawn 会被 recordLaunchedModel 覆盖)。为防长驻进程里 map 随
+	// 会话累积无界增长,recordLaunchedModel 用 FIFO 上限裁剪:被裁掉的 key 若日后回到
+	// 池,modelChanged 只会把它当成「未记录」,最多导致一次无谓重 spawn,绝不产生错误结果。
+	launchedModel map[string]string
+	// launchedModelOrder 是 launchedModel 的 FIFO 插入序,用于容量裁剪。
+	launchedModelOrder []string
 }
+
+// maxTrackedLaunchedModels 是 launchedModel 的上限。池空闲容量 8,同时活跃的 key
+// 远小于此;超过上限的多是已被池逐出的死 key,裁掉只省内存、不影响判定。
+const maxTrackedLaunchedModels = 512
 
 func New() *Runtime {
 	return NewWithPool(agentruntime.NewCLISessionPool(agentruntime.DefaultCLISessionIdleCap))
@@ -79,7 +97,55 @@ func NewWithPool(pool *agentruntime.CLISessionPool) *Runtime {
 	if pool == nil {
 		pool = agentruntime.NewCLISessionPool(agentruntime.DefaultCLISessionIdleCap)
 	}
-	return &Runtime{active: map[int64]*codexActive{}, pool: pool}
+	return &Runtime{
+		active:             map[int64]*codexActive{},
+		pool:               pool,
+		launchedModel:      map[string]string{},
+		launchedModelOrder: []string{},
+	}
+}
+
+// modelChanged 报告该会话已 spawn 的 effectiveModel 是否与新一轮不同。
+// 新会话(未记录过)视为未变化,正常创建。
+func (r *Runtime) modelChanged(key, effective string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.launchedModel[key] != effective
+}
+
+// recordLaunchedModel 在 spawn 成功后记录本次下发的 effectiveModel。
+// 超过 maxTrackedLaunchedModels 时按 FIFO 裁掉最旧条目(池逐出会话不回调本包,
+// 必须在这里兜底防 map 无界增长)。
+func (r *Runtime) recordLaunchedModel(key, effective string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.launchedModel[key]; !exists {
+		r.launchedModelOrder = append(r.launchedModelOrder, key)
+	}
+	r.launchedModel[key] = effective
+	for len(r.launchedModelOrder) > maxTrackedLaunchedModels {
+		oldest := r.launchedModelOrder[0]
+		r.launchedModelOrder = r.launchedModelOrder[1:]
+		delete(r.launchedModel, oldest)
+	}
+}
+
+// forgetLaunchedModel 在池逐出会话时清理记录,避免只增不减。
+func (r *Runtime) forgetLaunchedModel(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.launchedModel, key)
+	r.launchedModelOrder = removeOrderKey(r.launchedModelOrder, key)
+}
+
+// removeOrderKey 从 FIFO 序里剔除 key(可空切片,返回新切片)。
+func removeOrderKey(order []string, key string) []string {
+	for i, k := range order {
+		if k == key {
+			return append(order[:i], order[i+1:]...)
+		}
+	}
+	return order
 }
 
 // Capabilities 返回 codex runtime 的能力矩阵。
@@ -225,21 +291,27 @@ func goalFromCodex(goal *codex.Goal) *agentruntime.Goal {
 	}
 }
 
-func (r *Runtime) register(sessionID int64, a *codexActive) {
+func (r *Runtime) register(sessionID int64, a *codexActive) error {
 	if sessionID <= 0 {
-		return
+		return nil
 	}
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.active[sessionID] != nil {
+		return fmt.Errorf("agentruntime/runtimes/codex: session %d already has an active turn", sessionID)
+	}
 	r.active[sessionID] = a
-	r.mu.Unlock()
+	return nil
 }
 
-func (r *Runtime) unregister(sessionID int64) {
+func (r *Runtime) unregister(sessionID int64, expected *codexActive) {
 	if sessionID <= 0 {
 		return
 	}
 	r.mu.Lock()
-	delete(r.active, sessionID)
+	if r.active[sessionID] == expected {
+		delete(r.active, sessionID)
+	}
 	r.mu.Unlock()
 }
 
@@ -268,6 +340,16 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 			zap.Int64("sessionID", req.SessionID), zap.Error(err))
 		return nil, nil, err
 	}
+	active := &codexActive{}
+	if err := r.register(req.SessionID, active); err != nil {
+		return nil, nil, err
+	}
+	releaseClaim := true
+	defer func() {
+		if releaseClaim {
+			r.unregister(req.SessionID, active)
+		}
+	}()
 
 	sess, err := r.acquireSession(req, env, cwd)
 	if err != nil {
@@ -303,7 +385,13 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		stream, err = sess.Stream(ctx, req.UserText, req.CollaborationMode)
 	}
 	if err != nil {
-		closeEphemeralSession(req, sess)
+		if requiresEphemeralSession(req) {
+			closeEphemeralSession(req, sess)
+		} else if req.SessionID > 0 {
+			key := sessionKey(req.SessionID)
+			r.pool.Remove(key)
+			r.forgetLaunchedModel(key)
+		}
 		logger.Ctx(ctx).Error("codex runtime: session run failed",
 			zap.Int64("sessionID", req.SessionID),
 			zap.Bool("compact", req.Compact),
@@ -319,12 +407,11 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	if req.SessionID > 0 && !requiresEphemeralSession(req) {
 		key = sessionKey(req.SessionID)
 	}
-	active := &codexActive{
-		stream:      sess.ActiveStream(),
-		interrupter: sess.ActiveInterruptor(),
-		pool:        r.pool,
-		poolKey:     key,
-	}
+	active.mu.Lock()
+	active.stream = sess.ActiveStream()
+	active.interrupter = sess.ActiveInterruptor()
+	active.pool = r.pool
+	active.poolKey = key
 	if st, ok := stream.(cxSteerStream); ok {
 		active.stream = st
 	}
@@ -337,17 +424,21 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	if ap, ok := stream.(cxApprovalStream); ok {
 		active.approval = ap
 	}
-	r.register(req.SessionID, active)
-
+	active.mu.Unlock()
 	out := make(chan agentruntime.Event, 32)
 	active.setOut(out)
 
-	modelID := ""
-	if req.Provider != nil {
-		modelID = strings.TrimSpace(req.Provider.Model)
-	}
+	// RunResult.Model 上报线程实际模型(sess.Model()),而非启动请求模型(设计决策 9):
+	// codex 的 thread/resume 返回线程当前 model,override 经 --model 生效后 sess.Model()
+	// 即实际运行模型 —— 偏离提示(决策 5)依赖这个信号;无 override 时两者同值,不回归。
+	modelID := strings.TrimSpace(sess.Model())
 	if modelID == "" {
-		modelID = strings.TrimSpace(sess.Model())
+		// app-server 没在 thread start/resume 结果里带 model 时 sess.Model() 为空 ——
+		// 此时「观测不到」不等于「跑的是 defaultModelID」:直接落死常量会把一个从没跑过
+		// 的 model id 写进 assistantMsg.Model,还会让 chat_svc 的偏离提示每轮误报
+		// 「所选 X 未生效,实际 gpt-5.5」。回落到本轮请求的 effectiveModel(override →
+		// provider.Model),观测不到就按「请求值已生效」处理。
+		modelID = codexEffectiveModel(req)
 	}
 	if modelID == "" {
 		modelID = defaultModelID
@@ -362,16 +453,23 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		if cleanupInputs != nil {
 			defer cleanupInputs()
 		}
-		defer r.unregister(req.SessionID)
+		defer r.unregister(req.SessionID, active)
 		defer active.setOut(nil)
 		drainStream(stream, out, result, active, req.CollaborationMode)
+		active.clearWaiters()
 		if sid := stream.SessionID(); sid != "" {
 			result.ProviderSessionID = sid
 		}
 		if key != "" {
-			r.pool.MarkIdle(key)
+			if codexStreamReusable(stream, result.StopErr) {
+				r.pool.MarkIdle(key)
+			} else {
+				r.pool.Remove(key)
+				r.forgetLaunchedModel(key)
+			}
 		}
 	}()
+	releaseClaim = false
 	return out, result, nil
 }
 
@@ -382,8 +480,15 @@ func (r *Runtime) acquireSession(req agentruntime.RunRequest, env map[string]str
 	if req.SessionID > 0 {
 		key := sessionKey(req.SessionID)
 		if v, ok := r.pool.Get(key); ok {
-			r.pool.MarkActive(key)
-			return v.(cxSessionHandle), nil
+			// 模型是启动期 flag:effectiveModel 变化 → evict + 重 spawn(镜像 claudecode
+			// launchedEffort/launchedModel 先例)。模型未变则复用池内 app-server。
+			if r.modelChanged(key, codexEffectiveModel(req)) {
+				r.pool.Remove(key)
+				r.forgetLaunchedModel(key)
+			} else {
+				r.pool.MarkActive(key)
+				return v.(cxSessionHandle), nil
+			}
 		}
 	}
 	sess, err := cxSessionFactory(req, env, cwd)
@@ -394,6 +499,7 @@ func (r *Runtime) acquireSession(req agentruntime.RunRequest, env map[string]str
 		key := sessionKey(req.SessionID)
 		r.pool.Put(key, sess)
 		r.pool.MarkActive(key)
+		r.recordLaunchedModel(key, codexEffectiveModel(req))
 	}
 	return sess, nil
 }
@@ -413,11 +519,17 @@ func (r *Runtime) CloseSession(_ context.Context, sessionID int64) {
 	if sessionID <= 0 {
 		return
 	}
-	r.pool.Remove(sessionKey(sessionID))
+	key := sessionKey(sessionID)
+	r.pool.Remove(key)
+	r.forgetLaunchedModel(key)
 }
 
 func (r *Runtime) CloseAllSessions(_ context.Context) {
 	r.pool.RemoveAll()
+	r.mu.Lock()
+	r.launchedModel = map[string]string{}
+	r.launchedModelOrder = []string{}
+	r.mu.Unlock()
 }
 
 // Abort 软中断当前 turn。语义同顶层 codex.go.Abort。
@@ -444,11 +556,17 @@ func (r *Runtime) Steer(ctx context.Context, sessionID int64, queuedID string, t
 	r.mu.Lock()
 	a := r.active[sessionID]
 	r.mu.Unlock()
-	if a == nil || a.stream == nil {
+	if a == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	a.mu.Lock()
+	stream := a.stream
+	a.mu.Unlock()
+	if stream == nil {
 		return agentruntime.ErrNoActiveTurn
 	}
 	a.addPendingSteer(queuedID, text)
-	if err := a.stream.Steer(ctx, text); err != nil {
+	if err := stream.Steer(ctx, text); err != nil {
 		a.removePendingSteer(queuedID)
 		if errors.Is(err, codex.ErrNoActiveTurn) {
 			return agentruntime.ErrNoActiveTurn
@@ -471,7 +589,13 @@ func (r *Runtime) SubmitAnswer(ctx context.Context, sessionID int64, requestID s
 	r.mu.Lock()
 	a := r.active[sessionID]
 	r.mu.Unlock()
-	if a == nil || a.userInput == nil {
+	if a == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	a.mu.Lock()
+	userInput := a.userInput
+	a.mu.Unlock()
+	if userInput == nil {
 		return agentruntime.ErrNoActiveTurn
 	}
 	waiter := a.askWaiter(requestID)
@@ -482,23 +606,21 @@ func (r *Runtime) SubmitAnswer(ctx context.Context, sessionID int64, requestID s
 		return fmt.Errorf("agentruntime/runtimes/codex: client supplied %d questions but waiter recorded %d", len(questions), len(waiter.questions))
 	}
 	if skipped {
-		if err := a.userInput.SubmitUserInput(ctx, requestID, map[string][]string{}); err != nil {
-			return err
-		}
-		a.removeAskWaiter(requestID)
-		emitUserAskResolved(a, requestID, true, nil)
-		return nil
+		return a.submitResolved(
+			func() error { return userInput.SubmitUserInput(ctx, requestID, map[string][]string{}) },
+			agentruntime.UserAskResolved{RequestID: requestID, Skipped: true},
+			func() { a.removeAskWaiter(requestID) },
+		)
 	}
 	payload, err := buildUserInputAnswers(waiter.questions, answers)
 	if err != nil {
 		return err
 	}
-	if err := a.userInput.SubmitUserInput(ctx, requestID, payload); err != nil {
-		return err
-	}
-	a.removeAskWaiter(requestID)
-	emitUserAskResolved(a, requestID, false, answers)
-	return nil
+	return a.submitResolved(
+		func() error { return userInput.SubmitUserInput(ctx, requestID, payload) },
+		agentruntime.UserAskResolved{RequestID: requestID, Answers: answers},
+		func() { a.removeAskWaiter(requestID) },
+	)
 }
 
 func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, requestID string, allow, alwaysAllowSession bool, _ string) error {
@@ -511,18 +633,27 @@ func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, req
 	r.mu.Lock()
 	a := r.active[sessionID]
 	r.mu.Unlock()
-	if a == nil || a.approval == nil {
+	if a == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	a.mu.Lock()
+	approval := a.approval
+	a.mu.Unlock()
+	if approval == nil {
 		return agentruntime.ErrNoActiveTurn
 	}
 	if !a.hasPermWaiter(requestID) {
 		return fmt.Errorf("agentruntime/runtimes/codex: no waiting approval for requestID %s: %w", requestID, agentruntime.ErrWaiterNotFound)
 	}
-	if err := a.approval.SubmitApproval(ctx, requestID, allow, alwaysAllowSession); err != nil {
-		return err
-	}
-	a.removePermWaiter(requestID)
-	emitToolPermissionResolved(a, requestID, allow, alwaysAllowSession)
-	return nil
+	return a.submitResolved(
+		func() error { return approval.SubmitApproval(ctx, requestID, allow, alwaysAllowSession) },
+		agentruntime.ToolPermissionResolved{
+			RequestID:   requestID,
+			Allowed:     allow,
+			AlwaysAllow: alwaysAllowSession,
+		},
+		func() { a.removePermWaiter(requestID) },
+	)
 }
 
 // PendingWaiters 实现 agentruntime.WaiterLister(R7):codex 的 app-server 协议
@@ -576,6 +707,12 @@ func (a *codexActive) pendingWaiters() agentruntime.WaiterSnapshot {
 func drainStream(stream cxStream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *codexActive, collaborationMode string) {
 	for stream.Next() {
 		ev := stream.Event()
+		if ev.Kind == codex.EventRequestResolved && ev.RequestResolved != nil {
+			if active != nil {
+				active.resolveServerRequest(*ev.RequestResolved)
+			}
+			continue
+		}
 		if result.StopErr != nil && codexEventShowsProgressAfterError(ev.Kind) {
 			result.StopErr = nil
 		}
@@ -768,47 +905,98 @@ func (a *codexActive) setOut(out chan<- agentruntime.Event) {
 	a.outMu.Unlock()
 }
 
-func (a *codexActive) outChan() chan<- agentruntime.Event {
-	if a == nil {
-		return nil
-	}
-	a.outMu.Lock()
-	defer a.outMu.Unlock()
-	return a.out
-}
-
-// emitUserAskResolved 把答案终态 emit 给 drain 通道。out nil 或 channel 满时
-// 不阻塞(前端有乐观更新)。
-func emitUserAskResolved(a *codexActive, requestID string, skipped bool, answers []agentruntime.AskAnswer) {
-	out := a.outChan()
-	if out == nil {
-		return
-	}
+// emitUserAskResolved serializes terminal request events with setOut(nil), so
+// an accepted response cannot be silently dropped or race a channel close.
+func emitUserAskResolved(a *codexActive, requestID string, skipped bool, answers []agentruntime.AskAnswer) error {
 	ev := agentruntime.UserAskResolved{
 		RequestID: requestID,
 		Skipped:   skipped,
 		Answers:   answers,
 	}
-	select {
-	case out <- ev:
-	default:
-	}
+	return a.emitResolved(ev)
 }
 
-func emitToolPermissionResolved(a *codexActive, requestID string, allowed, alwaysAllow bool) {
-	out := a.outChan()
-	if out == nil {
-		return
-	}
+func emitToolPermissionResolved(a *codexActive, requestID string, allowed, alwaysAllow bool, denyReason ...string) error {
 	ev := agentruntime.ToolPermissionResolved{
 		RequestID:   requestID,
 		Allowed:     allowed,
 		AlwaysAllow: alwaysAllow,
 	}
-	select {
-	case out <- ev:
-	default:
+	if len(denyReason) > 0 {
+		ev.DenyReason = denyReason[0]
 	}
+	return a.emitResolved(ev)
+}
+
+func (a *codexActive) emitResolved(ev agentruntime.Event) error {
+	if a == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	a.outMu.Lock()
+	defer a.outMu.Unlock()
+	if a.out == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	a.out <- ev
+	return nil
+}
+
+func (a *codexActive) submitResolved(submit func() error, ev agentruntime.Event, onSuccess func()) error {
+	if a == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	a.outMu.Lock()
+	defer a.outMu.Unlock()
+	if a.out == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	if err := submit(); err != nil {
+		return err
+	}
+	if onSuccess != nil {
+		onSuccess()
+	}
+	a.out <- ev
+	return nil
+}
+
+func (a *codexActive) resolveServerRequest(resolved codex.RequestResolvedEvent) {
+	switch resolved.Kind {
+	case codex.RequestKindUserInput:
+		if a.askWaiter(resolved.RequestID) == nil {
+			return
+		}
+		a.removeAskWaiter(resolved.RequestID)
+		_ = emitUserAskResolved(a, resolved.RequestID, true, nil)
+	case codex.RequestKindApproval:
+		if !a.hasPermWaiter(resolved.RequestID) {
+			return
+		}
+		a.removePermWaiter(resolved.RequestID)
+		_ = emitToolPermissionResolved(a, resolved.RequestID, false, false, "approval request resolved by Codex app-server without a decision")
+	}
+}
+
+func (a *codexActive) clearWaiters() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	clear(a.askWaiters)
+	clear(a.permWaiters)
+	a.pending = nil
+	a.mu.Unlock()
+}
+
+func codexStreamReusable(stream cxStream, stopErr error) bool {
+	if reusable, ok := stream.(interface{ Reusable() bool }); ok && !reusable.Reusable() {
+		return false
+	}
+	if errors.Is(stopErr, codex.ErrProcessDead) || errors.Is(stopErr, codex.ErrProtocol) {
+		return false
+	}
+	var exitErr *codex.ExitError
+	return !errors.As(stopErr, &exitErr)
 }
 
 // buildUserInputAnswers 把前端 AskAnswer 列表拼成 codex 期望的

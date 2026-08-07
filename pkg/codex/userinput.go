@@ -19,8 +19,11 @@ func (s *Stream) SubmitUserInput(ctx context.Context, requestID string, answers 
 		return errors.New("codex: empty request user input id")
 	}
 	s.userInputMu.Lock()
+	defer s.userInputMu.Unlock()
+	if s.state != nil && (s.state.Terminal() || s.state.State() == TurnStateInterrupting) {
+		return ErrNoActiveTurn
+	}
 	rawID := s.userInputRequests[requestID]
-	s.userInputMu.Unlock()
 	if len(rawID) == 0 {
 		return ErrNoActiveTurn
 	}
@@ -37,9 +40,8 @@ func (s *Stream) SubmitUserInput(ctx context.Context, requestID string, answers 
 	if err := app.Respond(ctx, rawID, map[string]any{"answers": payload}); err != nil {
 		return err
 	}
-	s.userInputMu.Lock()
 	delete(s.userInputRequests, requestID)
-	s.userInputMu.Unlock()
+	s.updateWaitStateLocked()
 	return nil
 }
 
@@ -53,6 +55,7 @@ func (s *Stream) registerUserInputRequest(id json.RawMessage) string {
 		s.userInputRequests = map[string]json.RawMessage{}
 	}
 	s.userInputRequests[key] = append(json.RawMessage(nil), id...)
+	s.updateWaitStateLocked()
 	s.userInputMu.Unlock()
 	return key
 }

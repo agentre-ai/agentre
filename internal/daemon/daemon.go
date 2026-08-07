@@ -29,6 +29,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/daemon/repository/notification_repo"
 	"github.com/agentre-ai/agentre/internal/daemon/repository/session_repo"
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/daemon/sessions"
 	"github.com/agentre-ai/agentre/internal/daemon/state"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
@@ -106,7 +107,20 @@ type Daemon struct {
 	// steerSource 是「queuedID → 提交方对端」的映射(R17),Daemon 级一份:Steer RPC
 	// 可能落在任意一条连接上,而 SteerConsumed 由发起会话那条连接的 fanout 发出。
 	steerSource *steerSourceStore
+
+	// generations 是 Daemon 级的 generation 属主表:一条会话上在飞的那一个 generation
+	// 属于创建它的那条连接 + 那个不透明 token。重连必须等旧属主完成清理才拿得到它,
+	// 而迟到的旧连接清理也顶不掉重连的 generation(见 sessions.Registry)。
+	generations *sessions.Registry
+
+	// runtimeHandlers 记住每条连接的 RuntimeHandlers,只为**关机时**能把每条连接
+	// 拥有的 Pi generation 逐个收掉(见 closeRuntimeConnections)。连接自己断开时
+	// 由 bindConn 的 Done 监视直接调它那一个 rh.Close。
+	runtimeMu       sync.RWMutex
+	runtimeHandlers map[*rpc.Conn]*handlers.RuntimeHandlers
 }
+
+const daemonConnectionCleanupTimeout = 3 * time.Second
 
 // sessionKey 是 daemon 侧的会话身份(R16):(对端设备指纹, 对端会话 id)。会话 id 是
 // 各客户端本地自增的,两个对端各自持有同一个 id 时是两条互不相干的会话。
@@ -723,7 +737,9 @@ func New(opts Options) (*Daemon, error) {
 		sessionStore: daemonSessionStore{db: gormDB},
 		pairing:      pm, ratelim: rl,
 		registry: reg, auth: auth,
-		steerSource: newSteerSourceStore(),
+		steerSource:     newSteerSourceStore(),
+		generations:     sessions.NewRegistry(),
+		runtimeHandlers: map[*rpc.Conn]*handlers.RuntimeHandlers{},
 	}
 	// 订阅资格的账号门:登记表每次解析收件人时现问 daemon 此刻的归属账号。
 	d.conns.claimedAccountID = d.claimedAccountID
@@ -951,7 +967,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.mu.Lock()
 	d.lan = lan
 	d.mu.Unlock()
-	return lan.Run(ctx)
+	runErr := lan.Run(ctx)
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), daemonConnectionCleanupTimeout)
+	defer cancelCleanup()
+	if err := d.closeRuntimeConnections(cleanupCtx); err != nil {
+		log.Printf("daemon.Run: connection cleanup failed errorType=%T", err)
+	}
+	return runErr
 }
 
 // runCredentialRefresh launches the R4/R14 credential refresher for the daemon's
@@ -1347,11 +1369,15 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 		SteerSource: d.steerSource,
 		// 同一个仓储的读侧:提交决策解不出会话时,靠它区分「轮次真的结束了」与
 		// 「这个 handler 从没拥有过这条会话」(见 idempotentSubmitResult)。
-		SessionQuery:     d.sessionStore,
-		Gateway:          d.gateway,
-		Lookup:           NewProviderLookup(d.state),
-		ClaimedAccountID: d.claimedAccountID,
+		SessionQuery:       d.sessionStore,
+		Gateway:            d.gateway,
+		Lookup:             NewProviderLookup(d.state),
+		ClaimedAccountID:   d.claimedAccountID,
+		GenerationRegistry: d.generations,
 	})
+	d.runtimeMu.Lock()
+	d.runtimeHandlers[c] = rh
+	d.runtimeMu.Unlock()
 	// runtime.* 全族都过 trackSessionOwner:哪条连接为某会话发了 runtime.*,该会话的
 	// 通知此后就推给它(见 connRegistry 的接管规则)。
 	regRuntime := func(method string, h rpc.HandlerFunc) {
@@ -1388,15 +1414,61 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 	reg.Register("terminal.write", wrapGuarded(termH.Write))
 	reg.Register("terminal.resize", wrapGuarded(termH.Resize))
 	reg.Register("terminal.close", wrapGuarded(termH.Close))
-	// When this connection drops, kill the PTYs it opened — otherwise the
-	// remote shells (and whatever they run) leak until daemon shutdown.
+	// When this connection drops, keep the existing PTY cleanup, drop its push
+	// registrations, and close every exact Pi generation owned by this handler.
+	// Cleanup is bounded and owner-scoped, so an old socket cannot sweep a
+	// reconnect by SessionID.
 	go func() {
 		<-c.Done()
 		termH.CloseAll()
 		// 连接断开 → 撤销它的登记与会话认领(避免对死连接推通知 / 发反向请求)。
 		// 按连接身份撤销:同一台设备的其它连接、以及重连后的新连接都不受影响。
 		d.conns.remove(c)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), daemonConnectionCleanupTimeout)
+		defer cancel()
+		if err := rh.Close(cleanupCtx); err != nil {
+			log.Printf("daemon.bindConn: runtime cleanup failed errorType=%T", err)
+		}
+		d.runtimeMu.Lock()
+		if d.runtimeHandlers[c] == rh {
+			delete(d.runtimeHandlers, c)
+		}
+		d.runtimeMu.Unlock()
 	}()
+}
+
+func (d *Daemon) closeRuntimeConnections(ctx context.Context) error {
+	type ownedRuntime struct {
+		connection *rpc.Conn
+		handler    *handlers.RuntimeHandlers
+	}
+	d.runtimeMu.RLock()
+	owned := make([]ownedRuntime, 0, len(d.runtimeHandlers))
+	for connection, runtimeHandler := range d.runtimeHandlers {
+		owned = append(owned, ownedRuntime{connection: connection, handler: runtimeHandler})
+	}
+	d.runtimeMu.RUnlock()
+	for _, current := range owned {
+		_ = current.connection.Close()
+	}
+	results := make(chan error, len(owned))
+	for _, current := range owned {
+		go func(runtimeHandler *handlers.RuntimeHandlers) {
+			results <- runtimeHandler.Close(ctx)
+		}(current.handler)
+	}
+	var cleanupErr error
+	for range owned {
+		select {
+		case err := <-results:
+			if err != nil {
+				cleanupErr = errors.Join(cleanupErr, err)
+			}
+		case <-ctx.Done():
+			return errors.Join(cleanupErr, ctx.Err())
+		}
+	}
+	return cleanupErr
 }
 
 // trackSessionOwner 包住 runtime.* 的注册:daemon **受理**了哪条连接为某会话发的

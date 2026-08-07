@@ -103,6 +103,62 @@ describe("chat-streams-store", () => {
     });
   });
 
+  it("appendLiveToolUse freezes pending liveThinking into a thinking block before text", () => {
+    // 回归 guard:工具循环里第 2 轮的 thinking 必须按时间顺序冻进 liveBlocks,
+    // 而不是留在 liveThinking 里被 renderer 抬到最顶(「思考完成过程都在最顶部叠加」)。
+    const {
+      openStream,
+      appendLiveThinking,
+      appendLiveText,
+      appendLiveToolUse,
+      appendLiveToolResult,
+    } = useChatStreamsStore.getState();
+    openStream(baseStream(7));
+    // round 1: thinking → text → tool_use
+    appendLiveThinking(7, 1, "thought1 ");
+    appendLiveText(7, 1, "text1 ");
+    appendLiveToolUse(7, 1, {
+      toolName: "Bash",
+      toolUseId: "t1",
+    });
+    let s = live(7);
+    expect(s!.liveThinking).toBe(""); // 已冻结
+    expect(s!.liveBlocks.map((b) => b.type)).toEqual([
+      "thinking",
+      "text",
+      "tool_use",
+    ]);
+    expect(s!.liveBlocks[0]).toMatchObject({
+      type: "thinking",
+      text: "thought1 ",
+    });
+
+    // round 2: 新一轮 thinking,在 tool_result 之后
+    appendLiveToolResult(7, 1, { toolUseId: "t1", text: "ok" });
+    appendLiveThinking(7, 1, "thought2 ");
+    appendLiveText(7, 1, "text2 ");
+    appendLiveToolUse(7, 1, {
+      toolName: "Read",
+      toolUseId: "t2",
+    });
+    s = live(7);
+    expect(s!.liveThinking).toBe("");
+    expect(s!.liveBlocks.map((b) => b.type)).toEqual([
+      "thinking",
+      "text",
+      "tool_use",
+      "tool_result",
+      "thinking",
+      "text",
+      "tool_use",
+    ]);
+    // round 2 的 thinking 排在 round 1 的 tool_result 之后(时间顺序)。
+    expect(s!.liveBlocks[4]).toMatchObject({
+      type: "thinking",
+      text: "thought2 ",
+    });
+  });
+
   it("appendLiveToolResult does NOT flush liveDelta", () => {
     // 设计上 tool_result 紧跟 tool_use 出现,中间不会有用户可见的文字增量。
     const { openStream, appendLiveText, appendLiveToolResult } =
@@ -452,6 +508,79 @@ describe("chat-streams-store", () => {
     expect(useChatStreamsStore.getState().streams).toBe(before);
     const block = live(7)!.liveBlocks[0];
     expect(block.toolApproval).toMatchObject({ status: "pending" });
+  });
+
+  // ── OpenClaw exec approval live path ──
+  it("Given pending text, When an exec approval arrives, Then text is flushed before one approval block", () => {
+    const { openStream, appendLiveText, appendLiveExecApproval } =
+      useChatStreamsStore.getState();
+    openStream(baseStream(7));
+    appendLiveText(7, 1, "Need approval first.");
+
+    appendLiveExecApproval(7, 1, {
+      id: "exec-1",
+      commandText: "pwd",
+      allowedDecisions: ["allow-once", "deny"],
+      status: "pending",
+    });
+
+    expect(live(7)?.liveDelta).toBe("");
+    expect(live(7)?.liveBlocks).toEqual([
+      expect.objectContaining({ type: "text", text: "Need approval first." }),
+      expect.objectContaining({
+        type: "exec_approval",
+        execApproval: expect.objectContaining({
+          id: "exec-1",
+          status: "pending",
+        }),
+      }),
+    ]);
+  });
+
+  it("Given a pending exec approval, When a terminal update arrives, Then it is merged by id without creating a completion block", () => {
+    const { openStream, appendLiveExecApproval, markExecApprovalResolved } =
+      useChatStreamsStore.getState();
+    openStream(baseStream(7));
+    appendLiveExecApproval(7, 1, {
+      id: "exec-2",
+      commandText: "false",
+      allowedDecisions: ["deny"],
+      status: "pending",
+    });
+
+    markExecApprovalResolved(7, 1, {
+      id: "exec-2",
+      commandText: "false",
+      status: "resolved",
+      decision: "deny",
+      resolvedBy: "operator-device-2",
+    });
+
+    expect(live(7)?.liveBlocks).toHaveLength(1);
+    expect(live(7)?.liveBlocks[0]).toMatchObject({
+      type: "exec_approval",
+      execApproval: {
+        id: "exec-2",
+        status: "resolved",
+        decision: "deny",
+        resolvedBy: "operator-device-2",
+      },
+    });
+  });
+
+  it("Given no matching exec approval, When a terminal update arrives, Then store identity is unchanged", () => {
+    const { openStream, markExecApprovalResolved } =
+      useChatStreamsStore.getState();
+    openStream(baseStream(7));
+    const before = useChatStreamsStore.getState().streams;
+
+    markExecApprovalResolved(7, 1, {
+      id: "missing",
+      commandText: "",
+      status: "expired",
+    });
+
+    expect(useChatStreamsStore.getState().streams).toBe(before);
   });
 
   // R4: subagent_model 事件只带 model 一个字段(不复用整份 Subagent 快照),调用方

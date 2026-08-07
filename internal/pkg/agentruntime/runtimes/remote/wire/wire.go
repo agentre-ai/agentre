@@ -232,6 +232,9 @@ type RunParams struct {
 	// LLMProviderKey 是 desktop 端关联的 provider stable key（UUID）。
 	// daemon 用它做 ProviderLookup（FindByKey），不需要 desktop 越线传 APIKey。
 	LLMProviderKey string `json:"llmProviderKey,omitempty"`
+	// ModelOverride 是本会话的模型覆盖值（''=跟随供应商默认），随 wire 过线，
+	// daemon 侧组装 RunRequest 时回填，让远端会话的模型切换同样生效。
+	ModelOverride string `json:"modelOverride,omitempty"`
 }
 
 // MCPProxyRequest 是 daemon→desktop 隧道里一次 MCP HTTP 请求的封装。daemon 把 CLI 子进程

@@ -1,0 +1,230 @@
+package chat_svc
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"github.com/cago-frame/agents/agent/blocks"
+	"github.com/cago-frame/cago/pkg/consts"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo/mock_agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo/mock_chat_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
+)
+
+func TestModelDeviationNotice_StructuredEmit(t *testing.T) {
+	// 结构化 emit:Text 里是 {"selected":..,"actual":..} 小 JSON,不烘死任何中文文案。
+	// 前端拿到投影后的 selectedModel/actualModel 再用 t() 渲染(见 transcript notice 分支)。
+	t.Run("mismatch encodes both ids as JSON with no baked text", func(t *testing.T) {
+		got := modelDeviationNotice("selected-model", "actual-model")
+		require.NotNil(t, got)
+		assert.Equal(t, "info", got.Level)
+		var payload struct {
+			Selected string `json:"selected"`
+			Actual   string `json:"actual"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(got.Text), &payload))
+		assert.Equal(t, "selected-model", payload.Selected)
+		assert.Equal(t, "actual-model", payload.Actual)
+		assert.NotContains(t, got.Text, "未生效")
+	})
+
+	tests := []struct {
+		name     string
+		override string
+		actual   string
+	}{
+		{name: "equal", override: "same", actual: "same"},
+		{name: "empty override", actual: "actual"},
+		{name: "empty actual", override: "selected"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Nil(t, modelDeviationNotice(tt.override, tt.actual))
+		})
+	}
+}
+
+type directModelOverrideRunner struct {
+	request     chan agentruntime.RunRequest
+	actualModel string
+}
+
+func (*directModelOverrideRunner) Capabilities() capability.Capabilities {
+	return capability.Capabilities{}
+}
+
+func (r *directModelOverrideRunner) Run(_ context.Context, req agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	r.request <- req
+	events := make(chan agentruntime.Event)
+	close(events)
+	return events, &agentruntime.RunResult{Model: r.actualModel}, nil
+}
+
+type directModelOverrideMocks struct {
+	agent    *mock_agent_repo.MockAgentRepo
+	backend  *mock_agent_backend_repo.MockAgentBackendRepo
+	provider *mock_llm_provider_repo.MockLLMProviderRepo
+	session  *mock_chat_repo.MockSessionRepo
+	message  *mock_chat_repo.MockMessageRepo
+}
+
+func setupDirectModelOverrideTest(t *testing.T) (*directModelOverrideMocks, context.Context) {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	m := &directModelOverrideMocks{
+		agent:    mock_agent_repo.NewMockAgentRepo(ctrl),
+		backend:  mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl),
+		provider: mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl),
+		session:  mock_chat_repo.NewMockSessionRepo(ctrl),
+		message:  mock_chat_repo.NewMockMessageRepo(ctrl),
+	}
+	agent_repo.RegisterAgent(m.agent)
+	agent_backend_repo.RegisterAgentBackend(m.backend)
+	llm_provider_repo.RegisterLLMProvider(m.provider)
+	chat_repo.RegisterSession(m.session)
+	chat_repo.RegisterMessage(m.message)
+	return m, context.Background()
+}
+
+// TestRunTurn_NonSwitchableBackendIgnoresOverride 锁住 openclaw 等非 v1 后端的会话级
+// 模型覆盖门禁:这类后端不消费 override,若 runTurn 仍把 sess.ModelOverride 塞进
+// RunRequest,openclaw runtime 会忽略它且每轮误报「所选 X 未生效,实际 Y」偏离提示 ——
+// override 必须被拦在 runTurn,不落 wire、不产出偏离 notice。
+func TestRunTurn_NonSwitchableBackendIgnoresOverride(t *testing.T) {
+	m, ctx := setupDirectModelOverrideTest(t)
+	s := NewChat(NoopEmitter{}).(*chatSvc)
+	runner := &directModelOverrideRunner{
+		request:     make(chan agentruntime.RunRequest, 1),
+		actualModel: "actual-model",
+	}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeOpenClaw, runner)
+	t.Cleanup(restore)
+
+	sess := &chat_entity.Session{
+		ID: 100, AgentID: 7, ModelOverride: "selected-model", Status: consts.ACTIVE,
+	}
+	a := &agent_entity.Agent{ID: 7, AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`}
+	be := &agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeOpenClaw), LLMProviderKey: "provider-key", Status: consts.ACTIVE,
+	}
+	prov := &llm_provider_entity.LLMProvider{
+		ProviderKey: "provider-key", Type: string(llm_provider_entity.TypeAnthropic), Model: "provider-default", Status: consts.ACTIVE,
+	}
+	assistant := &chat_entity.Message{ID: 1001, SessionID: 100, Role: "assistant", BlocksJSON: "[]"}
+
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+	var persisted *chat_entity.Message
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, msg *chat_entity.Message) error {
+			msgCopy := *msg
+			persisted = &msgCopy
+			return nil
+		}).AnyTimes()
+
+	s.runTurn(ctx, sess, a, be, prov, nil, assistant, "stream", "", false, nil, turnExtras{})
+
+	select {
+	case req := <-runner.request:
+		assert.Empty(t, req.ModelOverride, "非 v1 后端不得透传会话级模型覆盖")
+	default:
+		t.Fatal("runtime did not receive a request")
+	}
+	require.NotNil(t, persisted)
+	persistedBlocks, err := persisted.GetBlocks()
+	require.NoError(t, err)
+	require.Len(t, persistedBlocks, 0, "非 v1 后端忽略 override,不得产出偏离 notice")
+}
+
+func TestRunTurn_ModelOverrideReachesRunnerAndPersistsDeviationNotice(t *testing.T) {
+	m, ctx := setupDirectModelOverrideTest(t)
+	var streamEvents []ChatStreamEvent
+	s := NewChat(EmitterFunc(func(_ context.Context, _ string, payload any) {
+		if event, ok := payload.(ChatStreamEvent); ok {
+			streamEvents = append(streamEvents, event)
+		}
+	})).(*chatSvc)
+	runner := &directModelOverrideRunner{
+		request:     make(chan agentruntime.RunRequest, 1),
+		actualModel: "actual-model",
+	}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, runner)
+	t.Cleanup(restore)
+
+	sess := &chat_entity.Session{
+		ID: 100, AgentID: 7, ModelOverride: "selected-model", Status: consts.ACTIVE,
+	}
+	a := &agent_entity.Agent{ID: 7, AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`}
+	be := &agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "provider-key", Status: consts.ACTIVE,
+	}
+	prov := &llm_provider_entity.LLMProvider{
+		ProviderKey: "provider-key", Type: string(llm_provider_entity.TypeAnthropic), Model: "provider-default", Status: consts.ACTIVE,
+	}
+	assistant := &chat_entity.Message{ID: 1001, SessionID: 100, Role: "assistant", BlocksJSON: "[]"}
+
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+	var persisted *chat_entity.Message
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, msg *chat_entity.Message) error {
+			msgCopy := *msg
+			persisted = &msgCopy
+			return nil
+		}).AnyTimes()
+
+	s.runTurn(ctx, sess, a, be, prov, nil, assistant, "stream", "", false, nil, turnExtras{})
+
+	select {
+	case req := <-runner.request:
+		assert.Equal(t, "selected-model", req.ModelOverride)
+	default:
+		t.Fatal("runtime did not receive a request")
+	}
+	require.NotNil(t, persisted)
+	persistedBlocks, err := persisted.GetBlocks()
+	require.NoError(t, err)
+	require.Len(t, persistedBlocks, 1)
+	notice, ok := persistedBlocks[0].(blocks.NoticeBlock)
+	require.True(t, ok)
+	assert.Equal(t, "info", notice.Level)
+	// 持久化侧:两个模型 id 以结构化小 JSON 编码进 NoticeBlock.Text。
+	var payload struct {
+		Selected string `json:"selected"`
+		Actual   string `json:"actual"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(notice.Text), &payload))
+	assert.Equal(t, "selected-model", payload.Selected)
+	assert.Equal(t, "actual-model", payload.Actual)
+
+	var liveNotice bool
+	for _, event := range streamEvents {
+		if event.Kind != StreamDone || event.Message == nil {
+			continue
+		}
+		for _, block := range event.Message.Blocks {
+			// 下行侧:ChatBlock 携带结构化 selectedModel/actualModel(不含烘死文案)。
+			if block.Type == "notice" &&
+				block.SelectedModel == "selected-model" && block.ActualModel == "actual-model" {
+				liveNotice = true
+			}
+		}
+	}
+	assert.True(t, liveNotice, "the completed stream must carry the persisted notice")
+}

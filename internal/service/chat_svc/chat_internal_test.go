@@ -301,10 +301,8 @@ func TestConvertOldEventToNew_PreservesSubagentRunID(t *testing.T) {
 	assert.Equal(t, "run-1", result.SubagentRunID)
 }
 
-func TestToChatMessage_UnknownBlockFallback(t *testing.T) {
+func TestToChatMessage_NoticeBlockProjection(t *testing.T) {
 	m := &chat_entity.Message{ID: 1, SessionID: 9, Role: "assistant"}
-	// NoticeBlock has Audience=ToUI; toChatMessage doesn't have a dedicated case for it,
-	// so it should fall through to the "unknown" branch with the kind preserved.
 	require.NoError(t, m.SetBlocks([]blocks.ContentBlock{
 		blocks.NoticeBlock{Level: "info", Text: "hi"},
 	}))
@@ -312,8 +310,29 @@ func TestToChatMessage_UnknownBlockFallback(t *testing.T) {
 	cm, err := toChatMessage(m)
 	require.NoError(t, err)
 	require.Len(t, cm.Blocks, 1)
-	assert.Equal(t, "unknown", cm.Blocks[0].Type)
-	assert.Equal(t, "notice", cm.Blocks[0].Raw["kind"])
+	assert.Equal(t, "notice", cm.Blocks[0].Type)
+	assert.Equal(t, "info", cm.Blocks[0].Level)
+	// 非结构化文本(旧数据 / 其它来源的 notice)原样渲染 Text,不带模型字段。
+	assert.Equal(t, "hi", cm.Blocks[0].Text)
+	assert.Empty(t, cm.Blocks[0].SelectedModel)
+	assert.Empty(t, cm.Blocks[0].ActualModel)
+}
+
+func TestToChatMessage_NoticeBlockProjectionDecodesStructuredPayload(t *testing.T) {
+	m := &chat_entity.Message{ID: 1, SessionID: 9, Role: "assistant"}
+	require.NoError(t, m.SetBlocks([]blocks.ContentBlock{
+		blocks.NoticeBlock{Level: "info", Text: `{"selected":"selected-model","actual":"actual-model"}`},
+	}))
+
+	cm, err := toChatMessage(m)
+	require.NoError(t, err)
+	require.Len(t, cm.Blocks, 1)
+	assert.Equal(t, "notice", cm.Blocks[0].Type)
+	assert.Equal(t, "info", cm.Blocks[0].Level)
+	assert.Equal(t, "selected-model", cm.Blocks[0].SelectedModel)
+	assert.Equal(t, "actual-model", cm.Blocks[0].ActualModel)
+	// 结构化负载不把原始 JSON 泄漏给前端 —— 前端用 SelectedModel/ActualModel 走 t() 渲染。
+	assert.Empty(t, cm.Blocks[0].Text)
 }
 
 func TestAskQuestionsToDTO_PreservesRequestUserInputMetadata(t *testing.T) {
