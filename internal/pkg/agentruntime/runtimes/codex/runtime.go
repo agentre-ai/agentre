@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
@@ -50,6 +51,10 @@ type codexActive struct {
 	poolKey     string
 	outMu       sync.Mutex
 	out         chan<- agentruntime.Event
+	// turnToken 本会话当前活跃轮的 per-turn token(决策 1):每轮 Run 入口递增,值随
+	// RunResult 暴露给 chat_svc。Abort(turnToken!=0) 只在该 token 仍是当前活跃轮时
+	// 才中断,否则 stale no-op。codex 只有用户轮,上报类型恒为 userTurn。
+	turnToken atomic.Uint64
 }
 
 type codexAskWaiter struct {
@@ -443,7 +448,7 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	if modelID == "" {
 		modelID = defaultModelID
 	}
-	result := &agentruntime.RunResult{ProviderSessionID: sess.ID(), Model: modelID}
+	result := &agentruntime.RunResult{ProviderSessionID: sess.ID(), Model: modelID, TurnToken: active.turnToken.Add(1)}
 
 	go func() {
 		defer close(out)
@@ -533,21 +538,29 @@ func (r *Runtime) CloseAllSessions(_ context.Context) {
 }
 
 // Abort 软中断当前 turn。语义同顶层 codex.go.Abort。
-func (r *Runtime) Abort(ctx context.Context, sessionID int64) error {
+// turnToken 语义(决策 1):0 = 中断当前活跃轮;非 0 = 仅当该轮仍是当前活跃轮才中断,
+// 否则 stale no-op。codex 每会话同时至多一轮、只有用户轮,故被中断轮类型恒为 userTurn。
+func (r *Runtime) Abort(ctx context.Context, sessionID int64, turnToken uint64) (agentruntime.AbortOutcome, error) {
 	r.mu.Lock()
 	a := r.active[sessionID]
 	r.mu.Unlock()
 	if a == nil {
-		return agentruntime.ErrNoActiveTurn
+		return agentruntime.AbortOutcome{}, agentruntime.ErrNoActiveTurn
+	}
+	if turnToken != 0 && a.turnToken.Load() != turnToken {
+		return agentruntime.AbortOutcome{TurnKind: agentruntime.TurnKindNone}, nil
 	}
 	a.mu.Lock()
 	a.pending = nil
 	intr := a.interrupter
 	a.mu.Unlock()
 	if intr == nil {
-		return agentruntime.ErrNoActiveTurn
+		return agentruntime.AbortOutcome{}, agentruntime.ErrNoActiveTurn
 	}
-	return intr.Interrupt(ctx)
+	if err := intr.Interrupt(ctx); err != nil {
+		return agentruntime.AbortOutcome{}, err
+	}
+	return agentruntime.AbortOutcome{TurnKind: agentruntime.TurnKindUser}, nil
 }
 
 // Steer 把 text dispatch 给 active codex.Stream(turn/steer JSON-RPC)。

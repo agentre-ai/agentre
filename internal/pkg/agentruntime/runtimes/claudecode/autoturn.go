@@ -50,7 +50,8 @@ func (r *Runtime) AutonomousTurns(sessionID int64) <-chan agentruntime.Autonomou
 			}
 			// 先把这一轮交给 consumer(它并发 drain evOut),随后 inline 翻译填 evOut。
 			// inline(非 goroutine)保证多个自主轮之间顺序处理、不重叠。
-			out <- agentruntime.AutonomousTurn{Events: evOut, Result: result, Trigger: at.Trigger, CompletedTask: completed}
+			token := a.nextTurnToken(agentruntime.TurnKindAutonomous)
+			out <- agentruntime.AutonomousTurn{Events: evOut, Result: result, Trigger: at.Trigger, CompletedTask: completed, TurnToken: token}
 			stream := &ccChanStream{ch: at.Events, sidFn: func() string { return at.SessionID }}
 			// 自主续轮的子进程早已存活(由首轮 spawn),不存在「起步即卡死」, 不挂看门狗。
 			// 但本轮占着 Session 活跃槽位:期间起的 user turn 收不到任何帧,必须让它的
@@ -101,7 +102,7 @@ func (r *Runtime) SubagentActivity(sessionID int64) <-chan agentruntime.Subagent
 			result := &agentruntime.RunResult{ProviderSessionID: sa.SessionID}
 			// 先把这一轮活动交给 consumer(它并发 drain evOut),随后 inline 翻译填 evOut。
 			// inline(非 goroutine)保证多个活动轮之间顺序处理、不重叠。
-			out <- agentruntime.SubagentActivity{ToolUseID: sa.ToolUseID, Events: evOut}
+			out <- agentruntime.SubagentActivity{ToolUseID: sa.ToolUseID, Events: evOut, TurnToken: a.nextTurnToken(agentruntime.TurnKindSubagentActivity)}
 			stream := &ccChanStream{ch: sa.Events, sidFn: func() string { return sa.SessionID }}
 			// 活动轮的子进程早已存活(由首轮 spawn),不存在「起步即卡死」, 不挂看门狗。
 			// 与自主续轮同理:本轮占着 Session 活跃槽位,期间起的 user turn 收不到帧。

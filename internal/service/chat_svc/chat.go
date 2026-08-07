@@ -1755,7 +1755,7 @@ func (s *chatSvc) Stop(ctx context.Context, req *StopRequest) (*StopResponse, er
 	}
 	if gracefulAbort {
 		abortCtx, cancelAbort := context.WithTimeout(ctx, piStopAbortWriteBound)
-		abortErr := gracefulAborter.Abort(abortCtx, req.SessionID)
+		_, abortErr := gracefulAborter.Abort(abortCtx, req.SessionID, 0)
 		cancelAbort()
 		if abortErr != nil && !errors.Is(abortErr, agentruntime.ErrNoActiveTurn) {
 			logger.Ctx(ctx).Warn("chat_svc.Stop: local Pi abort failed",
@@ -1773,7 +1773,7 @@ func (s *chatSvc) Stop(ctx context.Context, req *StopRequest) (*StopResponse, er
 			if _, be, _, berr := s.resolveAgentBackend(ctx, sess.AgentID); berr == nil && be != nil {
 				// 中断没下发下去不致命(前面已 cancel turnCtx 兜底),布尔判据这里
 				// 无人可报;失败的留底由 requestRuntimeAbort 自己记。
-				_ = s.requestRuntimeAbort(ctx, be, req.SessionID)
+				_, _ = s.requestRuntimeAbort(ctx, be, req.SessionID, 0)
 			}
 		}
 	}
@@ -1784,10 +1784,13 @@ func (s *chatSvc) Stop(ctx context.Context, req *StopRequest) (*StopResponse, er
 //   - 会话查不到 / 已是终态(idle/error)→ turn 早就收尾,返 ChatStopNoActive(无害的
 //     「太晚了」,前端静默)。
 //   - 会话还停在 running/waiting,先问 runtime 有没有带外轮在飞(自主续轮 / 后台
-//     subagent 活动轮不进 activeCancels,却是此刻真正活跃的那一轮)→ 有就中断它,
-//     状态留给那一轮自己收尾。
-//   - runtime 也说没有活跃轮,才是真「重启遗孤」→ 翻回 idle(等同 abort 收尾)并落库,
-//     让前端那颗按 DB 状态一直亮着的「停止」按钮真能把会话停下来。
+//     subagent 活动轮不进 activeCancels,却是此刻真正活跃的那一轮)→ 有就中断它,再
+//     按被中断轮的类型决定谁 reconcile 会话状态(决策 3):
+//   - 中断的是自主轮 → 状态留给 driveAutonomousTurn 收尾(idle/error),Stop 不落库;
+//   - 中断的是 subagent 活动轮 → driveSubagentActivity 不写会话状态,由这里自己把
+//     running/waiting 翻回 idle 并持久化(复用遗孤路径的翻写逻辑),一次点停止即收干净;
+//   - runtime 报 ErrNoActiveTurn / 解析不出 runner → 才是真「重启遗孤」→ 翻回 idle 并
+//     落库(等同 abort 收尾),让前端那颗按 DB 状态一直亮着的「停止」按钮真能把会话停下来。
 //
 // 不去 emit StreamSessionStatus:遗孤会话没有活跃 stream 订阅(stream 名按
 // sessionID+assistantMsgID 双键),推了也送不到;前端 doStop 成功后会主动 reload
@@ -1800,58 +1803,79 @@ func (s *chatSvc) reconcileOrphanStop(ctx context.Context, sessionID int64) (*St
 	if sess.AgentStatus != "running" && sess.AgentStatus != "waiting" {
 		return nil, i18n.NewError(ctx, code.ChatStopNoActive)
 	}
-	if s.abortOutOfBandTurn(ctx, sess) {
+	outcome, interrupted := s.abortOutOfBandTurn(ctx, sess)
+	if interrupted {
+		// 确有一轮被中断,会话仍在跑。中断的是 subagent 活动轮时,会话的
+		// running/waiting 已无合法依据且那一轮不写状态 —— 由这里接管翻 idle 落库;
+		// 中断的是自主轮时状态留给它自己收尾,不落库。
+		if outcome.TurnKind == agentruntime.TurnKindSubagentActivity {
+			if perr := s.reconcileSessionToIdle(ctx, sess); perr != nil {
+				return nil, perr
+			}
+		}
 		return &StopResponse{Stopped: true}, nil
 	}
-	logger.Ctx(ctx).Info("chat_svc.Stop: reconciling orphan session to idle",
-		zap.Int64("sessionId", sessionID),
-		zap.String("prevStatus", sess.AgentStatus))
-	sess.AgentStatus = "idle"
-	sess.NeedsAttention = false
-	if perr := s.persistSessionStatus(ctx, sess); perr != nil {
+	if perr := s.reconcileSessionToIdle(ctx, sess); perr != nil {
 		return nil, perr
 	}
 	return &StopResponse{Stopped: true}, nil
 }
 
+// reconcileSessionToIdle 把会话 running/waiting 翻回 idle 并清 attention,复用
+// persistSessionStatus(重试一次 + 失败上抛不静默)。遗孤路径与「被中断的是 subagent
+// 活动轮」的接管路径共用这一份翻写逻辑。
+func (s *chatSvc) reconcileSessionToIdle(ctx context.Context, sess *chat_entity.Session) error {
+	logger.Ctx(ctx).Info("chat_svc.Stop: reconciling session to idle",
+		zap.Int64("sessionId", sess.ID),
+		zap.String("prevStatus", sess.AgentStatus))
+	sess.AgentStatus = "idle"
+	sess.NeedsAttention = false
+	return s.persistSessionStatus(ctx, sess)
+}
+
 // abortOutOfBandTurn 在「没有活跃用户轮」的前提下,把中断请求交给 runtime 试一次,
-// 报告是否真有一轮被中断。
+// 报告是否真有一轮被中断,以及被中断的那一轮的类型(AbortOutcome.TurnKind)。
 //
 // 带外轮(自主续轮 / 后台 subagent 活动轮)独占帧流期间不进 activeCancels —— 它就是
 // 该会话此刻活跃的那一轮,而 Abort 的契约正是「中断该会话当前活跃的那一轮」,两者
 // 都不活跃时才返回 ErrNoActiveTurn。因此这里可以直接拿 Abort 的返回值当判据:
-// nil = 确有一轮被中断,会话仍在跑,调用方不能再把它当遗孤 reconcile 成 idle(那会
+// 中断成功 = 确有一轮被中断,会话仍在跑,调用方不能再把它当遗孤 reconcile 成 idle(那会
 // 在 CLI 还在产帧时谎报 idle);ErrNoActiveTurn / 解析不出 runner = 内存里真的什么
-// 都没有,交回遗孤路径。
-func (s *chatSvc) abortOutOfBandTurn(ctx context.Context, sess *chat_entity.Session) bool {
+// 都没有,交回遗孤路径。被中断轮的类型由 reconcileOrphanStop 拿来分流:自主轮留给它
+// 自己收尾,subagent 活动轮则由 Stop 接管翻 idle(决策 3)。turnToken 固定传 0(中断
+// 当前活跃的带外轮,等价旧行为)。
+func (s *chatSvc) abortOutOfBandTurn(ctx context.Context, sess *chat_entity.Session) (agentruntime.AbortOutcome, bool) {
 	_, be, _, err := s.resolveAgentBackend(ctx, sess.AgentID)
 	if err != nil || be == nil {
 		logger.Ctx(ctx).Warn("chat_svc.Stop: cannot resolve backend to interrupt out-of-band turn",
 			zap.Int64("sessionId", sess.ID), zap.Error(err))
-		return false
+		return agentruntime.AbortOutcome{}, false
 	}
-	if !s.requestRuntimeAbort(ctx, be, sess.ID) {
-		return false
+	outcome, ok := s.requestRuntimeAbort(ctx, be, sess.ID, 0)
+	if !ok {
+		return agentruntime.AbortOutcome{}, false
 	}
 	logger.Ctx(ctx).Info("chat_svc.Stop: interrupted out-of-band turn",
 		zap.Int64("sessionId", sess.ID),
 		zap.String("backendType", be.Type),
+		zap.String("turnKind", string(outcome.TurnKind)),
 		zap.String("prevStatus", sess.AgentStatus))
-	return true
+	return outcome, true
 }
 
 // requestRuntimeAbort 把「中断该会话当前活跃的那一轮」尽力下发给 runtime,报告是否
-// 真有一轮被中断:Abort 返 nil = 确有一轮被中断;ErrNoActiveTurn / 解析不出 runner /
-// runner 不支持中断 = 内存里没有可中断的轮。任何一步失败都只记日志、不返回错误 ——
-// 三个调用方(Stop 里活跃用户轮的 best-effort 中断、Stop 的遗孤路径
-// abortOutOfBandTurn、自主续轮落库失败处置 failAutonomousTurnPersist)要么只要这一个
-// 布尔判据、要么连它都不要,失败各自另有兜底(已 cancel turnCtx / 交回遗孤 reconcile /
-// 前两步的可观察结果已经产生)。
+// 真有一轮被中断以及被中断轮的类型:Abort 返 nil = 确有一轮被中断(AbortOutcome 携带
+// 轮类型);ErrNoActiveTurn / 解析不出 runner / runner 不支持中断 = 内存里没有可中断
+// 的轮(返回零值 outcome + false)。任何一步失败都只记日志、不返回错误 —— 三个调用方
+// (Stop 里活跃用户轮的 best-effort 中断、Stop 的遗孤路径 abortOutOfBandTurn、自主续轮
+// 落库失败处置 failAutonomousTurnPersist)要么只要这个布尔判据 + 轮类型、要么连它都
+// 不要,失败各自另有兜底(已 cancel turnCtx / 交回遗孤 reconcile / 前两步的可观察结果
+// 已经产生)。
 //
 // **会阻塞**:claudecode 的 Abort 写完 control_request 后要等 CLI 的 control_response,
 // 而那条回执要常驻 readLoop 前进才派发得了。调用方若同时还担着「让帧流继续被消费」的
 // 责任(failAutonomousTurnPersist 的抽干),必须以非阻塞方式调用,否则两者互相等着。
-func (s *chatSvc) requestRuntimeAbort(ctx context.Context, be *agent_backend_entity.AgentBackend, sessionID int64) bool {
+func (s *chatSvc) requestRuntimeAbort(ctx context.Context, be *agent_backend_entity.AgentBackend, sessionID int64, turnToken uint64) (agentruntime.AbortOutcome, bool) {
 	backendType := ""
 	if be != nil {
 		backendType = be.Type
@@ -1860,20 +1884,21 @@ func (s *chatSvc) requestRuntimeAbort(ctx context.Context, be *agent_backend_ent
 	if err != nil {
 		logger.Ctx(ctx).Warn("chat_svc.requestRuntimeAbort: selectRunner failed, cannot interrupt turn",
 			zap.Int64("sessionId", sessionID), zap.String("backendType", backendType), zap.Error(err))
-		return false
+		return agentruntime.AbortOutcome{}, false
 	}
 	aborter, ok := runner.(agentruntime.Aborter)
 	if !ok {
-		return false
+		return agentruntime.AbortOutcome{}, false
 	}
-	if aerr := aborter.Abort(ctx, sessionID); aerr != nil {
+	outcome, aerr := aborter.Abort(ctx, sessionID, turnToken)
+	if aerr != nil {
 		if !errors.Is(aerr, agentruntime.ErrNoActiveTurn) {
 			logger.Ctx(ctx).Warn("chat_svc.requestRuntimeAbort: runner.Abort failed",
 				zap.Int64("sessionId", sessionID), zap.String("backendType", backendType), zap.Error(aerr))
 		}
-		return false
+		return agentruntime.AbortOutcome{}, false
 	}
-	return true
+	return outcome, true
 }
 
 // StopBackgroundTask 停掉某个后台任务 / 子 agent(run_in_background),而不是中断整个 turn。
@@ -3257,7 +3282,7 @@ func (s *chatSvc) discardPreparedTurn(sessionID int64, prepared *preparedTurnRun
 		cancel()
 	} else if prepared.events != nil {
 		if aborter, ok := prepared.runner.(agentruntime.Aborter); ok {
-			_ = aborter.Abort(context.Background(), sessionID)
+			_, _ = aborter.Abort(context.Background(), sessionID, 0)
 		}
 	}
 	if prepared.events == nil {

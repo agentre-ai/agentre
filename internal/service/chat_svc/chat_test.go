@@ -1365,11 +1365,11 @@ func (r *generationSafePreparedRunner) PrepareRun(context.Context, agentruntime.
 	return &generationSafePreparedRun{runner: r}, nil
 }
 
-func (r *generationSafePreparedRunner) Abort(context.Context, int64) error {
+func (r *generationSafePreparedRunner) Abort(context.Context, int64, uint64) (agentruntime.AbortOutcome, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.abortCalls++
-	return nil
+	return agentruntime.AbortOutcome{}, nil
 }
 
 func (r *generationSafePreparedRunner) Counts() (prepare, closed, abort int) {
@@ -1483,7 +1483,7 @@ func (r *stopOrderPiRunner) Run(ctx context.Context, req agentruntime.RunRequest
 	return events, result, nil
 }
 
-func (r *stopOrderPiRunner) Abort(context.Context, int64) error {
+func (r *stopOrderPiRunner) Abort(context.Context, int64, uint64) (agentruntime.AbortOutcome, error) {
 	r.mu.Lock()
 	r.abortCalls++
 	runCtx := r.runCtx
@@ -1503,7 +1503,7 @@ func (r *stopOrderPiRunner) Abort(context.Context, int64) error {
 		r.mu.Unlock()
 		r.finishOnce.Do(func() { close(events) })
 	}
-	return nil
+	return agentruntime.AbortOutcome{}, nil
 }
 
 func (r *stopOrderPiRunner) stopObservation() (int, bool) {
@@ -8632,11 +8632,16 @@ func TestStop_OrphanWaitingSessionReconciledToIdle(t *testing.T) {
 // 不进 activeCancels —— 只放宽 Runtime.Abort 的活跃判据够不着这条通路:Stop 在
 // activeCancels 取不到条目时直接走 reconcileOrphanStop,把一个真在跑的会话谎报成
 // idle 就返回,runner.Abort 一次都没下发,CLI 那一轮照跑。
+//
+// 决策 3(本轮)把它扩为按 Abort 返回的被中断轮类型断言:这里 runner 上报被中断的
+// 是自主轮 → 维持现状,状态留给 driveAutonomousTurn 收尾、Stop 不落库(刻意不
+// EXPECT Session().Update);被中断的是 subagent 活动轮 → 由 reconcileOrphanStop
+// 接管翻 idle 落库,见 TestStop_SubagentActivityTurnIsReconciledToIdle。
 func TestStop_OutOfBandTurnIsInterruptedNotReconciled(t *testing.T) {
-	convey.Convey("Stop 无活跃用户轮但带外轮在飞 → 真下发中断,且不按遗孤 reconcile 成 idle", t, func() {
+	convey.Convey("Stop 无活跃用户轮但自主轮在飞 → 真下发中断,状态留给那一轮收尾,不按遗孤 reconcile 成 idle", t, func() {
 		m := setupChatTest(t)
 
-		runner := &abortRecordingRunner{}
+		runner := &abortRecordingRunner{turnKind: agentruntime.TurnKindAutonomous}
 		restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, runner)
 		t.Cleanup(restore)
 
@@ -8648,7 +8653,7 @@ func TestStop_OutOfBandTurnIsInterruptedNotReconciled(t *testing.T) {
 			&agent_backend_entity.AgentBackend{
 				ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE,
 			}, nil)
-		// 刻意不 EXPECT Session().Update:带外轮仍在跑,状态归它自己收尾时落,
+		// 刻意不 EXPECT Session().Update:自主轮仍在跑,状态归它自己收尾时落,
 		// Stop 这里翻 idle 就是谎报(gomock 严格,真调了会直接判失败)。
 
 		resp, err := m.svc.Stop(m.ctx, &chat_svc.StopRequest{SessionID: 300})
@@ -8657,6 +8662,44 @@ func TestStop_OutOfBandTurnIsInterruptedNotReconciled(t *testing.T) {
 		assert.NotNil(t, resp)
 		assert.True(t, resp.Stopped, "带外轮被中断了就该回报已停止")
 		assert.Equal(t, []int64{300}, runner.Calls(), "必须真的把中断下发到 runtime")
+	})
+}
+
+// TestStop_SubagentActivityTurnIsReconciledToIdle 钉死决策 3 的新增接管:Stop 无活跃
+// 用户轮、runner 上报被中断的是 subagent 活动轮时,会话的 running/waiting 已无合法
+// 依据,且 driveSubagentActivity 不写会话状态 —— 由 reconcileOrphanStop 自己翻 idle
+// 并持久化(复用遗孤路径的翻写逻辑),一次点停止即收干净,无需第二次。
+func TestStop_SubagentActivityTurnIsReconciledToIdle(t *testing.T) {
+	convey.Convey("Stop 无活跃用户轮但 subagent 活动轮在飞 → 中断它并自己把会话 reconcile 回 idle 落库", t, func() {
+		m := setupChatTest(t)
+
+		runner := &abortRecordingRunner{turnKind: agentruntime.TurnKindSubagentActivity}
+		restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, runner)
+		t.Cleanup(restore)
+
+		m.session.EXPECT().Find(m.ctx, int64(310)).Return(
+			&chat_entity.Session{ID: 310, AgentID: 7, AgentStatus: "running", Status: consts.ACTIVE}, nil)
+		m.agent.EXPECT().Find(m.ctx, int64(7)).Return(
+			&agent_entity.Agent{ID: 7, AgentBackendID: 12, Status: consts.ACTIVE}, nil)
+		m.backend.EXPECT().Find(m.ctx, int64(12)).Return(
+			&agent_backend_entity.AgentBackend{
+				ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE,
+			}, nil)
+		var updated *chat_entity.Session
+		m.session.EXPECT().Update(m.ctx, gomock.Any()).DoAndReturn(
+			func(_ context.Context, s *chat_entity.Session) error {
+				updated = s
+				return nil
+			})
+
+		resp, err := m.svc.Stop(m.ctx, &chat_svc.StopRequest{SessionID: 310})
+
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+		assert.True(t, resp.Stopped, "subagent 活动轮被中断了就该回报已停止")
+		assert.Equal(t, []int64{310}, runner.Calls(), "必须真的把中断下发到 runtime")
+		assert.NotNil(t, updated, "subagent 活动轮被中断后要由 Stop 自己落库")
+		assert.Equal(t, "idle", updated.AgentStatus, "会话应被 reconcile 回 idle")
 	})
 }
 

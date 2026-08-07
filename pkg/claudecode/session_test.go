@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"regexp"
@@ -307,6 +308,81 @@ func TestSession_CloseStopsTurns(t *testing.T) {
 
 	_, err = sess.Turn(ctx, "after-close")
 	assert.Error(t, err)
+}
+
+// fakeInterruptNoAck 模拟 CLI 收到 control_request 但迟迟不回执（卡在别的处理上，
+// 既不回 control_response 也不发 result）。吞掉 stdin 所有行、绝不 ack —— 让
+// Interrupt / StopTask 的 ack 等待落在 interruptAckBound 的有界超时上。
+func fakeInterruptNoAck(gotLines chan<- string) fakeCLIFunc {
+	return func(stdin io.Reader, stdout io.Writer) {
+		sc := bufio.NewScanner(stdin)
+		sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
+		for sc.Scan() {
+			select {
+			case gotLines <- sc.Text():
+			default:
+			}
+		}
+	}
+}
+
+// TestSession_Interrupt_PendingAckIsBounded 钉死决策 2：CLI 不回执时 Interrupt 的
+// ack 等待**有界**（interruptAckBound=500ms），超时返回独立哨兵 ErrInterruptPending
+// （errors.Is 可判），control_request 帧只写一次 —— 而不是无界挂到子进程死。
+func TestSession_Interrupt_PendingAckIsBounded(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	got := make(chan string, 8)
+	c := New(WithBinary("fake"), pipeSpawner(t, fakeInterruptNoAck(got)))
+	sess, err := c.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	start := time.Now()
+	err = sess.Interrupt(ctx)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrInterruptPending), "应返回可 errors.Is 判定的 ErrInterruptPending,got: %v", err)
+	assert.Less(t, elapsed, 1500*time.Millisecond, "Interrupt 应在 interruptAckBound 内返回,got %v", elapsed)
+
+	// 帧只写一次：fake 收到的 control_request 恰好一条 interrupt。
+	var controlRequests []string
+	collectUntil := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(collectUntil) {
+		select {
+		case line := <-got:
+			if strings.Contains(line, `"type":"control_request"`) {
+				controlRequests = append(controlRequests, line)
+			}
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	require.Len(t, controlRequests, 1, "Interrupt 应恰好写一帧 control_request")
+	assert.Contains(t, controlRequests[0], `"subtype":"interrupt"`)
+}
+
+// TestSession_StopTask_PendingAckIsBounded 钉死决策 2 的同款修复：StopTask 的 ack
+// 等待同样有界,CLI 不回执时返回 ErrInterruptPending（不无界挂死）。
+func TestSession_StopTask_PendingAckIsBounded(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	got := make(chan string, 8)
+	c := New(WithBinary("fake"), pipeSpawner(t, fakeInterruptNoAck(got)))
+	sess, err := c.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	start := time.Now()
+	err = sess.StopTask(ctx, "b0n82mqaj")
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrInterruptPending), "StopTask 超时应同样返回 ErrInterruptPending,got: %v", err)
+	assert.Less(t, elapsed, 1500*time.Millisecond, "StopTask 应在 interruptAckBound 内返回,got %v", elapsed)
 }
 
 // TestSession_Interrupt 验证 control_request{interrupt} 路径：
