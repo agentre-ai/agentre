@@ -35,7 +35,11 @@ export function loadMonaco(): Promise<MonacoNS> {
   cached ??= (async () => {
     await import("./monaco-worker-env");
     await import("monaco-editor/basic-languages/monaco.contribution");
-    return import("monaco-editor/editor/editor.api");
+    const monaco = await import("monaco-editor/editor/editor.api");
+    // json 不在 basic-languages 里（0.56 起移出），补一个纯词法的 JSON 语言。
+    const { registerJsonLanguage } = await import("./monaco-json");
+    registerJsonLanguage(monaco);
+    return monaco;
   })();
   return cached;
 }

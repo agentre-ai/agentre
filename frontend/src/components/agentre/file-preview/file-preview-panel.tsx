@@ -136,11 +136,18 @@ export function FilePreviewPanel({ sessionId }: Props) {
   const [reloadKey, setReloadKey] = React.useState(0);
   const readGenRef = React.useRef(0);
   const gitGenRef = React.useRef(0);
+  // readPath/gitPath 记录当前 readState/gitState 对应的是哪个文件的结果。切换文件
+  // 后、effect 把状态重置成 loading 之前的那一帧,readState/gitState 还是旧文件
+  // 的内容——若不加这道「结果必须匹配当前 path」的闸门,那一帧会把旧文件正文渲染
+  // 在新文件名之下(一帧错内容,spec 决策 12 的切文件场景)。
+  const [readPath, setReadPath] = React.useState<string | null>(null);
+  const [gitPath, setGitPath] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (!path) return;
     readGenRef.current += 1;
     const gen = readGenRef.current;
+    setReadPath(path);
     setReadState({ status: "loading" });
     WorkspaceFsReadFile(sessionId, path).then(
       (view) => {
@@ -161,6 +168,7 @@ export function FilePreviewPanel({ sessionId }: Props) {
     }
     gitGenRef.current += 1;
     const gen = gitGenRef.current;
+    setGitPath(path);
     setGitState({ status: "loading" });
     WorkspaceFsGitFileContent(sessionId, path).then(
       (view) => {
@@ -197,10 +205,15 @@ export function FilePreviewPanel({ sessionId }: Props) {
     }
   };
 
+  const readSettled = readPath === path;
+  const gitSettled = gitPath === path;
   const isLoading =
     readState.status === "loading" ||
+    !readSettled ||
     (effectiveSegment === "diff" &&
-      (gitState.status === "idle" || gitState.status === "loading"));
+      (gitState.status === "idle" ||
+        gitState.status === "loading" ||
+        !gitSettled));
 
   // 正文容器按内容变化重挂载 → 150ms 淡入(motion-reduce 停用);骨架屏不参与。
   const contentKey = `${path}|${effectiveSegment}|${readState.status}|${gitState.status}`;

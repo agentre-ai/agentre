@@ -6,7 +6,11 @@ import type {
   MonacoNS,
 } from "@/lib/file-preview/monaco-loader";
 
-import { resolveMonacoTheme, useMonaco } from "./use-monaco";
+import {
+  resolveMonacoTheme,
+  useMonaco,
+  useMonacoThemeSync,
+} from "./use-monaco";
 
 export type CodePreviewProps = {
   /** 文件正文（UTF-8）。内容变化时原地更新模型，不重建编辑器（保留滚动位置）。 */
@@ -35,6 +39,7 @@ export function CodePreview({
   const editorRef = React.useRef<MonacoCodeEditor | null>(null);
   const ns = useMonaco(monaco);
   const lang = language ?? (path ? monacoLanguageForPath(path) : "plaintext");
+  useMonacoThemeSync(ns);
 
   // 编辑器只建一次：ns / 语言 / 无障碍标签变化才重建；value 刷新走下方
   // [value] effect 原地 setValue，避免轮次结束重读时重建编辑器丢滚动位置。

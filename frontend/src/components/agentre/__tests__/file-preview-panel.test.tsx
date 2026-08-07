@@ -39,6 +39,7 @@ type FakeMonaco = {
 
 function createFakeMonaco(): FakeMonaco {
   const editor = {
+    setTheme: vi.fn(),
     create: vi.fn(
       (_container: HTMLElement, options: Record<string, unknown>) => {
         const e: FakeEditor = {

@@ -7,6 +7,7 @@ import { MarkdownSourceView } from "../markdown-source-view";
 
 function createFakeMonaco() {
   const editor = {
+    setTheme: vi.fn(),
     create: vi.fn(
       (_container: HTMLElement, options: Record<string, unknown>) => ({
         options,

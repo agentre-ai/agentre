@@ -3,7 +3,11 @@ import * as React from "react";
 import { monacoLanguageForPath } from "@/lib/file-preview/monaco-language";
 import type { MonacoNS } from "@/lib/file-preview/monaco-loader";
 
-import { resolveMonacoTheme, useMonaco } from "./use-monaco";
+import {
+  resolveMonacoTheme,
+  useMonaco,
+  useMonacoThemeSync,
+} from "./use-monaco";
 
 export type DiffPreviewProps = {
   /** 左列 = HEAD 版本（未跟踪文件传空串 → 全部新增）。 */
@@ -37,6 +41,7 @@ export function DiffPreview({
   const containerRef = React.useRef<HTMLDivElement>(null);
   const ns = useMonaco(monaco);
   const lang = language ?? (path ? monacoLanguageForPath(path) : "plaintext");
+  useMonacoThemeSync(ns);
 
   React.useEffect(() => {
     if (!ns || !containerRef.current) return;

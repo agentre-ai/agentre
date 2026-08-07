@@ -35,3 +35,23 @@ export function resolveMonacoTheme(): "vs-dark" | "vs" {
     ? "vs-dark"
     : "vs";
 }
+
+// 让已创建的 Monaco 编辑器跟随应用明暗切换（terminal-panel 同款 MutationObserver
+// 先例）：编辑器建好后主题是全局的，app 在 documentElement 上翻转 .dark 时调
+// ns.editor.setTheme 重涂；不重建编辑器，保留滚动位置。单测 fake monaco 需带
+// editor.setTheme（见各组件测试的 fake 定义）。
+export function useMonacoThemeSync(ns: MonacoNS | null): void {
+  React.useEffect(() => {
+    if (!ns || typeof document === "undefined") return;
+    const apply = () => ns.editor.setTheme(resolveMonacoTheme());
+    // 挂载时先按当前主题涂一次（与 terminal 同一理由：App 的 layout effect 可能
+    // 晚于本组件首次 mount，observer 看不到那次 class 翻转）。
+    apply();
+    const observer = new MutationObserver(apply);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+    return () => observer.disconnect();
+  }, [ns]);
+}

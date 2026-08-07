@@ -22,6 +22,7 @@ type FakeEditor = {
 function createFakeMonaco() {
   const editors: FakeEditor[] = [];
   const editor = {
+    setTheme: vi.fn(),
     create: vi.fn(
       (
         _container: HTMLElement,
@@ -108,5 +109,25 @@ describe("CodePreview loadMonaco seam", () => {
 
     expect(loaderMocks.loadMonaco).toHaveBeenCalled();
     await waitFor(() => expect(editor.create).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("CodePreview theme following", () => {
+  it("sets the monaco theme on mount and re-themes when the app flips .dark", async () => {
+    document.documentElement.classList.remove("dark");
+    const { monaco, editor } = createFakeMonaco();
+
+    render(<CodePreview value="x" path="a.go" monaco={monaco} />);
+    await waitFor(() => expect(editor.create).toHaveBeenCalledTimes(1));
+    // 挂载时按当前主题涂一次（light）。
+    expect(editor.setTheme).toHaveBeenCalledWith("vs");
+
+    document.documentElement.classList.add("dark");
+    await waitFor(() =>
+      expect(editor.setTheme).toHaveBeenCalledWith("vs-dark"),
+    );
+
+    document.documentElement.classList.remove("dark");
+    await waitFor(() => expect(editor.setTheme).toHaveBeenLastCalledWith("vs"));
   });
 });

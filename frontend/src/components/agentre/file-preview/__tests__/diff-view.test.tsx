@@ -22,6 +22,7 @@ function createFakeMonaco() {
   const models: FakeModel[] = [];
   const diffs: FakeDiffEditor[] = [];
   const editor = {
+    setTheme: vi.fn(),
     createDiffEditor: vi.fn(
       (
         _container: HTMLElement,
