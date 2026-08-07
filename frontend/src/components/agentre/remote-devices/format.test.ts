@@ -2,7 +2,13 @@
 import { describe, it, expect } from "vitest";
 import type { TFunction } from "i18next";
 
-import { relativeTime, deriveDeviceName, friendlyLastError } from "./format";
+import {
+  relativeTime,
+  deriveDeviceName,
+  friendlyLastError,
+  hostOf,
+  friendlyLoginError,
+} from "./format";
 
 const t = ((key: string, params?: Record<string, unknown>) => {
   const values: Record<string, string> = {
@@ -15,6 +21,12 @@ const t = ((key: string, params?: Record<string, unknown>) => {
       "服务端身份指纹已变化，请确认安全后重新配对",
     "remoteDevices.errors.unauthorized": "凭据已失效，请重新配对",
     "remoteDevices.errors.dialFailed": `连接失败：${params?.message}`,
+    "remoteDevices.login.errors.unreachable":
+      "无法连接服务器，请检查地址后重试。",
+    "remoteDevices.login.errors.accessDenied": "登录已被拒绝。",
+    "remoteDevices.login.errors.expired": "验证码已过期，请重新登录。",
+    "remoteDevices.login.errors.inProgress": "已有登录流程正在进行。",
+    "remoteDevices.login.errors.generic": "登录失败。",
   };
   return values[key] ?? key;
 }) as TFunction;
@@ -76,5 +88,40 @@ describe("friendlyLastError", () => {
   });
   it("returns empty for empty", () => {
     expect(friendlyLastError("", t)).toBe("");
+  });
+});
+
+describe("hostOf", () => {
+  it("extracts host from a full URL", () => {
+    expect(hostOf("https://hub.example.com/rpc")).toBe("hub.example.com");
+  });
+  it("keeps a port suffix", () => {
+    expect(hostOf("http://localhost:8080")).toBe("localhost:8080");
+  });
+  it("falls back to the raw string when parsing fails", () => {
+    expect(hostOf("not a url")).toBe("not a url");
+  });
+});
+
+describe("friendlyLoginError (login error surfacing)", () => {
+  it("translates known server_svc sentinel errors", () => {
+    expect(friendlyLoginError(new Error("server: unreachable"), t)).toBe(
+      "无法连接服务器，请检查地址后重试。",
+    );
+    expect(friendlyLoginError(new Error("server: access denied"), t)).toBe(
+      "登录已被拒绝。",
+    );
+    expect(
+      friendlyLoginError(new Error("server: device code expired"), t),
+    ).toBe("验证码已过期，请重新登录。");
+    expect(
+      friendlyLoginError(new Error("server: login already in progress"), t),
+    ).toBe("已有登录流程正在进行。");
+  });
+  it("falls back to the raw message for unknown errors", () => {
+    expect(friendlyLoginError(new Error("boom"), t)).toBe("boom");
+  });
+  it("falls back to a generic message when there is no message at all", () => {
+    expect(friendlyLoginError({}, t)).toBe("登录失败。");
   });
 });

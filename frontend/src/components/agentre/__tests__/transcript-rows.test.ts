@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildRenderItems,
+  buildSourceByMessageId,
   buildTranscriptRows,
   estimateRowSize,
   estimateRowSizeWithSpacing,
@@ -459,6 +460,113 @@ describe("buildRenderItems", () => {
       "compact_boundary",
       "unknown",
     ]);
+  });
+});
+
+describe("buildTranscriptRows source device (R17)", () => {
+  it("attaches a source device to non-local user messages only", () => {
+    const { rows } = buildTranscriptRows({
+      displayMessages: [
+        message(1, "user", [text("hi from another device")]),
+        message(2, "assistant", [text("reply")]),
+      ],
+      autonomousIds: new Set(),
+      sourceByMessageId: new Map([[1, "iPhone"]]),
+    });
+    expect(rows.find((r) => r.messageId === 1)?.sourceDevice).toBe("iPhone");
+    expect(rows.find((r) => r.messageId === 2)?.sourceDevice).toBeUndefined();
+  });
+
+  it("leaves local user messages without a source identifier (single-client zero change)", () => {
+    const { rows } = buildTranscriptRows({
+      displayMessages: [message(1, "user", [text("hi")])],
+      autonomousIds: new Set(),
+    });
+    expect(rows[0].sourceDevice).toBeUndefined();
+  });
+
+  it("never attaches a source to non-user roles", () => {
+    const { rows } = buildTranscriptRows({
+      displayMessages: [message(1, "assistant", [text("hi")])],
+      autonomousIds: new Set(),
+      sourceByMessageId: new Map([[1, "iPhone"]]),
+    });
+    expect(rows[0].sourceDevice).toBeUndefined();
+  });
+
+  // 连续 text block 会被 buildRenderItems 合并成一条 item,所以要真的产生多行,
+  // 必须混入一个 tool_use —— 否则「每一行」这句话根本没被检验过。
+  it("propagates the source across every row of the message", () => {
+    const { rows } = buildTranscriptRows({
+      displayMessages: [
+        message(1, "user", [text("a"), toolUse("toolu-1"), text("b")]),
+      ],
+      autonomousIds: new Set(),
+      sourceByMessageId: new Map([[1, "iPhone"]]),
+    });
+    expect(rows.length).toBeGreaterThan(1);
+    for (const row of rows) {
+      expect(row.sourceDevice).toBe("iPhone");
+    }
+  });
+});
+
+describe("buildSourceByMessageId (R17 caller side)", () => {
+  const foreign = (
+    id: number,
+    sourceDevice: string,
+    sourceDeviceName?: string,
+  ) =>
+    ({
+      ...message(id, "user", [text("x")]),
+      sourceDevice,
+      sourceDeviceName,
+    }) as chat_svc.ChatMessage;
+
+  it("maps a foreign user message to its device name", () => {
+    const out = buildSourceByMessageId(
+      [foreign(1, "sha256:other", "iPhone")],
+      "sha256:self",
+    );
+    expect(out.get(1)).toBe("iPhone");
+  });
+
+  it("falls back to the fingerprint when no device name is available", () => {
+    const out = buildSourceByMessageId(
+      [foreign(2, "sha256:other")],
+      "sha256:self",
+    );
+    expect(out.get(2)).toBe("sha256:other");
+  });
+
+  it("never maps this device's own messages (single-client zero change)", () => {
+    const out = buildSourceByMessageId(
+      [foreign(3, "sha256:self")],
+      "sha256:self",
+    );
+    expect(out.size).toBe(0);
+  });
+
+  it("skips messages without a source and non-user roles", () => {
+    const out = buildSourceByMessageId(
+      [
+        message(4, "user", [text("no source")]),
+        {
+          ...message(5, "assistant", [text("assistant")]),
+          sourceDevice: "sha256:other",
+        } as chat_svc.ChatMessage,
+      ],
+      "sha256:self",
+    );
+    expect(out.size).toBe(0);
+  });
+
+  it("returns an empty map while the local fingerprint is unresolved", () => {
+    const out = buildSourceByMessageId(
+      [foreign(6, "sha256:other", "iPhone")],
+      undefined,
+    );
+    expect(out.size).toBe(0);
   });
 });
 

@@ -2,6 +2,7 @@ package state
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -53,6 +54,43 @@ func TestState_JSONRoundTrip(t *testing.T) {
 	var out State
 	require.NoError(t, json.Unmarshal(b, &out))
 	assert.Equal(t, in, &out)
+}
+
+func TestState_AccountClaimRoundTripStoresOnlyOpaqueAccountData(t *testing.T) {
+	credentialType := reflect.TypeFor[AccountCredential]()
+	credentialFields := make([]string, credentialType.NumField())
+	for i := 0; i < credentialType.NumField(); i++ {
+		credentialFields[i] = credentialType.Field(i).Name
+	}
+	assert.Equal(t, []string{
+		"DeviceID", "AccessToken", "AccessTokenExpiresAt", "RefreshToken", "RefreshTokenExpiresAt",
+	}, credentialFields, "account credentials must not acquire PII fields")
+
+	in := &State{
+		SchemaVersion:            1,
+		DaemonInstanceUUID:       "daemon-uuid",
+		AccountID:                "account-42",
+		VerificationPublicKeyPEM: "-----BEGIN PUBLIC KEY-----\\nkey",
+		Credential: AccountCredential{
+			DeviceID:              9,
+			AccessToken:           "access-token",
+			AccessTokenExpiresAt:  1716003600,
+			RefreshToken:          "refresh-token",
+			RefreshTokenExpiresAt: 1723776000,
+		},
+	}
+
+	b, err := json.Marshal(in)
+	require.NoError(t, err)
+	assert.NotContains(t, string(b), "email")
+	assert.NotContains(t, string(b), "avatar")
+	assert.NotContains(t, string(b), "displayName")
+
+	var out State
+	require.NoError(t, json.Unmarshal(b, &out))
+	assert.Equal(t, in.AccountID, out.AccountID)
+	assert.Equal(t, in.VerificationPublicKeyPEM, out.VerificationPublicKeyPEM)
+	assert.Equal(t, in.Credential, out.Credential)
 }
 
 func TestState_DefaultsAreSane(t *testing.T) {

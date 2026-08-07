@@ -1386,6 +1386,119 @@ func TestSubmitToolPermission_Success(t *testing.T) {
 	require.NoError(t, rt.SubmitToolPermission(context.Background(), 10, "p-1", true, true, ""))
 }
 
+// ── R12 桌面侧:对端 origin 传播 ─────────────────────────────────────────────
+
+const (
+	peerSid int64 = 77 // 对端 A 发起的会话
+	ownSid  int64 = 78 // 本客户端自己的会话(origin 空)
+)
+
+func strptr(s string) *string { return &s }
+
+// peerOriginRig 造一台已认领 daemon 的连接并完成一次账号级补齐:清单交回两条运行中的
+// 会话 —— 对端 A 发起(origin "peer-A")与本地自己的(origin 空),两者都被接管进 tracked。
+func peerOriginRig(t *testing.T) (*fakeConn, *Runtime) {
+	t.Helper()
+	conn := newFakeConn()
+	conn.script(func(method string, params, result any) error {
+		switch method {
+		case wire.MethodSessionList:
+			*(result.(*wire.SessionListResult)) = wire.SessionListResult{Sessions: []wire.SessionSummary{
+				{SessionID: peerSid, PeerFingerprint: "peer-A",
+					LifecycleState: wire.SessionLifecycleRunning},
+				{SessionID: ownSid, LifecycleState: wire.SessionLifecycleRunning},
+			}}
+		case wire.MethodSessionAttach:
+			p := params.(wire.SessionAttachParams)
+			*(result.(*wire.SessionAttachResult)) = wire.SessionAttachResult{
+				SessionID:      p.SessionID,
+				LifecycleState: wire.SessionLifecycleRunning,
+			}
+		case wire.MethodSessionPull:
+			p := params.(wire.SessionPullParams)
+			*(result.(*wire.SessionPullResult)) = wire.SessionPullResult{Cursor: p.Cursor}
+		case wire.MethodSessionPendingWaiters:
+			*(result.(*wire.SessionPendingWaitersResult)) = wire.SessionPendingWaitersResult{}
+		}
+		return nil
+	})
+	rt, _, _ := newRestartRuntime(t, conn, 0)
+	live, err := rt.CatchUpSessions(context.Background(), []int64{peerSid, ownSid})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []int64{peerSid, ownSid}, live)
+	return conn, rt
+}
+
+// peerFingerprintOf 从一条控制请求参数里抽出 PeerFingerprint。
+func peerFingerprintOf(t *testing.T, method string, params any) string {
+	t.Helper()
+	switch p := params.(type) {
+	case wire.SteerParams:
+		return p.PeerFingerprint
+	case wire.CancelSteerParams:
+		return p.PeerFingerprint
+	case wire.DrainParams:
+		return p.PeerFingerprint
+	case wire.AbortParams:
+		return p.PeerFingerprint
+	case wire.StopBackgroundTaskParams:
+		return p.PeerFingerprint
+	case wire.SetPermissionModeParams:
+		return p.PeerFingerprint
+	case wire.SubmitAnswerParams:
+		return p.PeerFingerprint
+	case wire.SubmitToolPermissionParams:
+		return p.PeerFingerprint
+	case wire.GoalParams:
+		return p.PeerFingerprint
+	default:
+		t.Fatalf("unexpected control params type %T for %s", params, method)
+		return ""
+	}
+}
+
+// Given 已认领 daemon 上同账号客户端要操作另一对端发起的会话,When 桌面端提交一条控制
+// 请求,Then 请求把清单里学到的 PeerFingerprint 原样带过去 —— daemon 据此解析到发起对端
+// (R12);本客户端自己的会话(origin 空)则省略该字段(向后兼容)。
+func TestControlRequests_CarryPeerOrigin(t *testing.T) {
+	conn, rt := peerOriginRig(t)
+
+	// 每条控制请求都驱动一次,并在 wire 参数里核对 origin。
+	drive := []struct {
+		name   string
+		drive  func() error
+		method string
+	}{
+		{"Steer", func() error { return rt.Steer(context.Background(), peerSid, "q-1", "stop") }, wire.MethodSteer},
+		{"CancelSteer", func() error { _, err := rt.CancelSteer(context.Background(), peerSid, "q-1"); return err }, wire.MethodCancelSteer},
+		{"DrainPending", func() error { rt.DrainPending(context.Background(), peerSid); return nil }, wire.MethodDrainPending},
+		{"Abort", func() error { return rt.Abort(context.Background(), peerSid) }, wire.MethodAbort},
+		{"StopBackgroundTask", func() error { return rt.StopBackgroundTask(context.Background(), peerSid, "t-1") }, wire.MethodStopBackgroundTask},
+		{"SetPermissionMode", func() error { return rt.SetPermissionMode(context.Background(), peerSid, "plan") }, wire.MethodSetPermissionMode},
+		{"SubmitAnswer", func() error { return rt.SubmitAnswer(context.Background(), peerSid, "r-1", nil, nil, true) }, wire.MethodSubmitAnswer},
+		{"SubmitToolPermission", func() error { return rt.SubmitToolPermission(context.Background(), peerSid, "p-1", true, false, "") }, wire.MethodSubmitToolPermission},
+		{"SetGoal", func() error {
+			_, err := rt.SetGoal(context.Background(), agentruntime.GoalRequest{SessionID: peerSid, Objective: strptr("x")})
+			return err
+		}, wire.MethodSetGoal},
+	}
+	for _, tc := range drive {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, tc.drive())
+			calls := conn.methodCalls(tc.method)
+			require.Len(t, calls, 1, "%s 应恰好发一次 RPC", tc.method)
+			assert.Equal(t, "peer-A", peerFingerprintOf(t, tc.method, calls[0].Params),
+				"%s 必须把对端 origin 带进请求", tc.method)
+		})
+	}
+
+	// 本地自己的会话:origin 空 → 省略该字段。
+	require.NoError(t, rt.Steer(context.Background(), ownSid, "q-2", "go"))
+	steers := conn.methodCalls(wire.MethodSteer)
+	require.Len(t, steers, 2)
+	assert.Empty(t, steers[1].Params.(wire.SteerParams).PeerFingerprint)
+}
+
 // ── Capabilities ────────────────────────────────────────────────────────────
 
 func TestCapabilities_DefaultBeforePrefetch(t *testing.T) {

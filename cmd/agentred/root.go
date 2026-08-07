@@ -32,6 +32,8 @@ remote desktops over a JSON-RPC over WebSocket control API on the LAN.`,
 		newRunCmd(),
 		newStatusCmd(),
 		newPairCmd(),
+		newLoginCmd(),
+		newUnclaimCmd(),
 		newLLMCmd(),
 		newClaudeCodeCmd(),
 	)

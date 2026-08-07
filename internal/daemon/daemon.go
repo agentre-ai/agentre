@@ -1,15 +1,19 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,6 +52,9 @@ type Options struct {
 	LANPort     int
 	TLSCertFile string
 	TLSKeyFile  string
+	// HubServerURL is the account server base URL used for the daemon's
+	// outbound relay connection. An empty URL leaves LAN-only operation intact.
+	HubServerURL string
 
 	// CCUsageFetcher 注入 claudecode.usage handler 用的 OAuth 拉取函数。
 	// 留空 → 走 ccoauth.NewLocalFetcher()(从当前机器环境读 token + 调真实 endpoint);
@@ -91,10 +98,16 @@ type Daemon struct {
 
 	mu  sync.RWMutex
 	lan *rpc.LANServer
+	hub *rpc.HubLink
+	mux *rpc.Multiplexer
 
 	// conns 是 daemon 的推送路由表:会话通知按**会话**解析到发起它的那条连接,
 	// MCP 反向隧道从同一份状态里解析目标,daemon 上没有第二个「当前连接」的全局。
 	conns connRegistry
+
+	// steerSource 是「queuedID → 提交方对端」的映射(R17),Daemon 级一份:Steer RPC
+	// 可能落在任意一条连接上,而 SteerConsumed 由发起会话那条连接的 fanout 发出。
+	steerSource *steerSourceStore
 
 	// generations 是 Daemon 级的 generation 属主表:一条会话上在飞的那一个 generation
 	// 属于创建它的那条连接 + 那个不透明 token。重连必须等旧属主完成清理才拿得到它,
@@ -118,7 +131,7 @@ type sessionKey struct {
 }
 
 // connRegistry 记录 daemon 此刻能把通知推给谁,两张互补的表:
-//   - live:已认证且还活着的连接。登记只发生在 auth.pair / auth.connect 成功那一刻
+//   - live:已认证且还活着的连接。登记只发生在 auth.pair / auth.connect / auth.account 成功那一刻
 //     (bindConn 是 LANServer 的 OnConn 回调,跑在鉴权**之前**),所以完成 WS 升级却
 //     从不认证的连接(LAN 扫描器 / 鉴权失败的客户端 / 掉队的重连)根本进不来;
 //   - claims:每条会话的推送目标 —— **发起该会话的那条连接**。
@@ -137,26 +150,157 @@ type sessionKey struct {
 //
 // 不变量:claims 里的连接必然同时在 live 里(remove 在同一把锁下一起清)。
 //
-// 本轮规格的非目标仍排除「多客户端同时接入同一台 daemon」:这两张表不做会话共享、
-// 不向多个客户端扇出,每条会话在任一时刻只有一个推送目标。
+// 多客户端同时在场:一条会话的推送**目标**仍是 claims 里那一条(发起 / 已授权接管它
+// 的连接),但推送的**收件人**是一个集合 —— subs 里登记的、**上过这条会话**的那些同账号
+// 连接(发起它的,以及按 R12 显式接管 / 控制过它的),桌面与手机因此同时收到同一会话的
+// 实时事件。未认领 daemon 没有账号可言,一个订阅者都不成立,行为与单目标时代完全一致
+// (R13)。MCP 反向隧道不在扇出之列:它按会话解析到发起端那一条(tunnelTargetFor,决策 9)。
+//
+// 收件人为什么必须按**会话**而不是按账号取:推出去的帧只带一个 sessionId
+// (wire.EventFrame / RunResultDoneFrame / AutonomousTurnStartedFrame),而会话主键是
+// sessionKey 的两段。把一条会话的事件推给一条从没上过它的同账号连接,对方只剩裸
+// sessionId 可用,只能落进它**自己**那条同号会话 —— 别人的转录被写进你的对话。R12 放宽
+// 的是可见性的**过滤条件**(list / attach 能看到并操作全部会话),「会话主键结构不变」。
 type connRegistry struct {
+	// claimedAccountID 交回 daemon 此刻的归属账号(未认领为空)。订阅资格拿它与连接
+	// 自己的 AuthState.AccountID 比 —— 每次解析时现问,不缓存:解除归属(R19)之后
+	// 那些还连着的连接必须立刻失去订阅资格。留空(零值 connRegistry)= 未认领。
+	claimedAccountID func() string
+
 	mu     sync.Mutex
 	seq    uint64
 	live   map[*rpc.Conn]liveConn
 	claims map[sessionKey]sessionClaim
+	// subs 是每条会话的订阅者集合:上过这条会话的那些连接。属主换人不清空它 ——
+	// 接管的语义是「此后由我消费」,不是「把另一方踢下线」。
+	subs map[sessionKey]map[*rpc.Conn]struct{}
 }
 
-// liveConn 是一条已认证活连接的推送端口 + 它完成鉴权的次序(隧道回落用)。
+// liveConn is an authenticated connection's push port.
+//
+// n 是同步端口,会话属主走它 —— 推送失败要如实回到 sessionEmitter(「只落库不推送」
+// 的判定靠这个返回值)。fanout 是这条连接**作为订阅者**时的异步端口,只有带账号身份的
+// 连接才有:一个卡住的订阅者不得阻塞会话本身与其余订阅者,所以扇出那一路一律经它排队。
 type liveConn struct {
-	n  handlers.NotifierPort
-	at uint64
+	n      handlers.NotifierPort
+	fanout *asyncNotifier
+}
+
+// subscriberQueueDepth 是每个订阅者的投递缓冲深度。写满 = 这个订阅者已经落后这么多帧,
+// 继续排队只会无界吃内存:此时丢弃并记日志,客户端按帧上的 seq 看到跳号,走既有的游标
+// 补齐(R6)把缺口拉回来 —— 通知本来就已经落库了。
+const subscriberQueueDepth = 256
+
+// queuedNotification 是排队中的一条通知。params 在**入队时**就序列化好:调用方
+// (sessionEmitter)手里那个帧是可变的(SetSeq 写的就是它),留到投递时才 marshal
+// 会读到被后一条通知改过的内容。
+type queuedNotification struct {
+	method string
+	params json.RawMessage
+}
+
+// asyncNotifier 是一个订阅者的投递队列:一条 goroutine 顺序发,这个订阅者收到的帧因此
+// 仍是原序;入队不阻塞调用方,所以慢的、写不动的订阅者只影响它自己。
+type asyncNotifier struct {
+	n    handlers.NotifierPort
+	ch   chan queuedNotification
+	stop chan struct{}
+	once sync.Once
+}
+
+func newAsyncNotifier(n handlers.NotifierPort) *asyncNotifier {
+	a := &asyncNotifier{
+		n:    n,
+		ch:   make(chan queuedNotification, subscriberQueueDepth),
+		stop: make(chan struct{}),
+	}
+	go a.run()
+	return a
+}
+
+func (a *asyncNotifier) run() {
+	for {
+		select {
+		case <-a.stop:
+			return
+		case q := <-a.ch:
+			if err := a.n.Notify(q.method, q.params); err != nil {
+				log.Printf("daemon: fan-out to subscriber failed method=%s err=%v", q.method, err)
+			}
+		}
+	}
+}
+
+func (a *asyncNotifier) Notify(method string, params any) error {
+	payload, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+	select {
+	case a.ch <- queuedNotification{method: method, params: payload}:
+		return nil
+	default:
+		log.Printf("daemon: subscriber is %d frames behind; dropped %s (it catches up by cursor)",
+			subscriberQueueDepth, method)
+		return fmt.Errorf("daemon: subscriber queue full, dropped %s", method)
+	}
+}
+
+func (a *asyncNotifier) Request(context.Context, string, any, any) error {
+	// 反向请求(MCP 隧道)按会话解析到发起端那一条连接,从不经过订阅者(决策 9)。
+	return errors.New("daemon: subscriber ports do not carry reverse requests")
+}
+
+// close 停掉投递 goroutine。幂等:连接关闭与重新鉴权都会走到它。
+func (a *asyncNotifier) close() { a.once.Do(func() { close(a.stop) }) }
+
+// fanoutNotifier 是一条会话的推送出口:属主连接同步收,同账号的其余订阅者各自异步收。
+// 它只在真有订阅者时才出现 —— 单目标时 ownerOf 交回的仍是那条连接的端口本身。
+//
+// 属主那一路刻意保持同步:推送失败要如实回给 sessionEmitter(R2/R3 的「只落库不推送」
+// 判定就靠这个返回值),而未认领 daemon 上只有这一路,行为因此与扇出之前逐字节相同。
+// 新增的订阅者一律走异步端口,所以「多接一个客户端」不会给会话添一个能把它卡死的单点。
+type fanoutNotifier struct {
+	primary handlers.NotifierPort
+	extras  []handlers.NotifierPort
+}
+
+func (f fanoutNotifier) Notify(method string, params any) error {
+	var delivered bool
+	var lastErr error
+	for _, extra := range f.extras {
+		if err := extra.Notify(method, params); err != nil {
+			lastErr = err
+			continue
+		}
+		delivered = true
+	}
+	if f.primary != nil {
+		return f.primary.Notify(method, params)
+	}
+	// 属主已经断开,只剩订阅者:全都投递不出去才算这条通知没推出去。
+	if delivered {
+		return nil
+	}
+	return lastErr
+}
+
+func (f fanoutNotifier) Request(ctx context.Context, method string, params any, result any) error {
+	if f.primary == nil {
+		return errors.New("daemon: session has no owner connection for a reverse request")
+	}
+	return f.primary.Request(ctx, method, params, result)
 }
 
 // sessionClaim 记住会话此刻的属主连接本身:撤销要按**连接身份**做,不能按指纹 ——
 // 同一台设备的另一条连接来去,不得影响正在跑的会话。
 type sessionClaim struct {
-	conn *rpc.Conn
-	at   uint64
+	// conn receives this session's notifications and may change on an authorized
+	// attach/control request. mcpConn remains the connection of the peer that
+	// initiated the session, so a cross-account control cannot reroute tools.
+	conn    *rpc.Conn
+	mcpConn *rpc.Conn
+	at      uint64
 }
 
 // peerIdentity 取连接的对端身份(设备指纹)。身份是鉴权成功那一刻才成立的,报了指纹
@@ -184,7 +328,7 @@ func connClosed(c *rpc.Conn) bool {
 	}
 }
 
-// add 在连接完成 auth.pair / auth.connect 之后登记它。同一条连接改认另一个指纹时,
+// add 在连接完成 auth.pair / auth.connect / auth.account 之后登记它。同一条连接改认另一个指纹时,
 // 它先前以旧指纹认领的会话一并作废 —— 否则旧对端的会话通知会推给一条已经属于别人的连接。
 func (r *connRegistry) add(c *rpc.Conn, n handlers.NotifierPort) {
 	if n == nil {
@@ -202,24 +346,42 @@ func (r *connRegistry) add(c *rpc.Conn, n handlers.NotifierPort) {
 	if r.live == nil {
 		r.live = map[*rpc.Conn]liveConn{}
 	}
-	r.seq++
-	r.live[c] = liveConn{n: n, at: r.seq}
+	entry := liveConn{n: n}
+	// 只有带账号身份的连接(auth.account,见任务 6 的账号门)才可能成为订阅者,
+	// 也只有它需要那条投递 goroutine —— 纯 LAN 配对的 daemon 因此一条也不起。
+	if c.Auth().AccountID != "" {
+		entry.fanout = newAsyncNotifier(n)
+	}
+	r.live[c] = entry
 }
 
 // claimTicket 是一次认领的回执,交给 undoClaim 还原用(见 trackSessionOwner:认领跑在
 // handler 之前,handler 拒了这一条就得还原)。ok 为假表示这次调用什么都没改。
 type claimTicket struct {
 	key  sessionKey
+	conn *rpc.Conn
 	at   uint64
 	prev sessionClaim
 	ok   bool
+	// addedSub 记这次认领是不是**新**把这条连接加进该会话的订阅者集合。被拒的调用
+	// 不该让调用方留在会话里旁听,还原时按它撤回;它本来就在里面时不动。
+	addedSub bool
 }
 
-// claim 把会话的推送目标记成这条连接(发起 / 接管该会话的那条)。只有已登记的活连接
-// 认得了,且认领的必然是它自己指纹下的那条会话 —— 跨对端接管在 key 上就不成立。
+// claim records a caller's own-peer session target. Account-authorized cross-peer
+// operations use claimFor after their origin discriminator has been checked.
 func (r *connRegistry) claim(c *rpc.Conn, sid int64) claimTicket {
 	peer, ok := peerIdentity(c)
-	if !ok || sid == 0 {
+	if !ok {
+		return claimTicket{}
+	}
+	return r.claimFor(c, peer, sid)
+}
+
+// claimFor records an already-authorized target peer. Normal callers use
+// claim; account-level controls reach this only after ResolveSessionPeer.
+func (r *connRegistry) claimFor(c *rpc.Conn, peer string, sid int64) claimTicket {
+	if peer == "" || sid == 0 {
 		return claimTicket{}
 	}
 	r.mu.Lock()
@@ -237,8 +399,53 @@ func (r *connRegistry) claim(c *rpc.Conn, sid int64) claimTicket {
 	r.seq++
 	k := sessionKey{peer: peer, sid: sid}
 	prev := r.claims[k]
-	r.claims[k] = sessionClaim{conn: c, at: r.seq}
-	return claimTicket{key: k, at: r.seq, prev: prev, ok: true}
+	mcpConn := prev.mcpConn
+	if _, live := r.live[mcpConn]; !live {
+		// A session run arrives from its own peer and pins that exact connection.
+		// A cross-peer attach/control may never substitute its caller: use an
+		// already-live connection of the persisted origin or leave it unavailable.
+		if callerPeer, ok := peerIdentity(c); ok && callerPeer == peer {
+			mcpConn = c
+		} else {
+			mcpConn = r.liveForPeerLocked(peer)
+		}
+	}
+	r.claims[k] = sessionClaim{conn: c, mcpConn: mcpConn, at: r.seq}
+	added := r.addSubLocked(k, c)
+	return claimTicket{key: k, conn: c, at: r.seq, prev: prev, ok: true, addedSub: added}
+}
+
+// addSubLocked 把这条连接登记为该会话的订阅者,返回它是不是新加进去的。只有带账号
+// 身份的连接(有 fanout 端口)才构成订阅者 —— 纯 LAN 配对的连接不参与扇出(R13)。
+func (r *connRegistry) addSubLocked(k sessionKey, c *rpc.Conn) bool {
+	if r.live[c].fanout == nil {
+		return false
+	}
+	if r.subs == nil {
+		r.subs = map[sessionKey]map[*rpc.Conn]struct{}{}
+	}
+	set := r.subs[k]
+	if set == nil {
+		set = map[*rpc.Conn]struct{}{}
+		r.subs[k] = set
+	}
+	if _, ok := set[c]; ok {
+		return false
+	}
+	set[c] = struct{}{}
+	return true
+}
+
+// removeSubLocked 摘掉一份订阅;集合空了连键一起删,免得会话表随会话数无界长。
+func (r *connRegistry) removeSubLocked(k sessionKey, c *rpc.Conn) {
+	set := r.subs[k]
+	if set == nil {
+		return
+	}
+	delete(set, c)
+	if len(set) == 0 {
+		delete(r.subs, k)
+	}
 }
 
 // undoClaim 撤回一次认领,把属主还原成认领之前的那条连接(没有前主就还原成「无属主」)。
@@ -247,12 +454,24 @@ func (r *connRegistry) claim(c *rpc.Conn, sid int64) claimTicket {
 //   - 前主此刻已经不在活连接表里(处理期间掉线 / 改认了别的指纹)→ 不写回去,
 //     否则表里留下一条指向死连接、或指向已属于别人的连接的条目;
 //   - 认领自己已经被撤销(属主连接刚关)→ 前主仍在线时把它还原回来,它才是属主。
+func (r *connRegistry) liveForPeerLocked(peer string) *rpc.Conn {
+	for c := range r.live {
+		if fingerprint, ok := peerIdentity(c); ok && fingerprint == peer {
+			return c
+		}
+	}
+	return nil
+}
+
 func (r *connRegistry) undoClaim(t claimTicket) {
 	if !t.ok {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if t.addedSub {
+		r.removeSubLocked(t.key, t.conn)
+	}
 	if cur, exists := r.claims[t.key]; exists && cur.at != t.at {
 		return
 	}
@@ -278,27 +497,86 @@ func (r *connRegistry) remove(c *rpc.Conn) {
 }
 
 func (r *connRegistry) dropLocked(c *rpc.Conn) {
+	if lc, ok := r.live[c]; ok && lc.fanout != nil {
+		lc.fanout.close() // 摘掉这一份订阅,其余订阅者与它们的队列不受影响
+	}
 	delete(r.live, c)
 	for k, cl := range r.claims {
 		if cl.conn == c {
 			delete(r.claims, k)
 		}
 	}
+	// 掉一条连接只摘掉它自己那份订阅:同一条会话上的其余客户端继续收实时事件。
+	for k := range r.subs {
+		r.removeSubLocked(k, c)
+	}
 }
 
-// ownerOf 返回该会话此刻的推送端口,没有活属主时 nil。
+// ownerOf 返回该会话此刻的推送端口:属主连接 + **这条会话上**的其余同账号订阅者。
+// 一个收件人都没有时 nil。
 func (r *connRegistry) ownerOf(k sessionKey) handlers.NotifierPort {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	cl, ok := r.claims[k]
-	if !ok {
-		return nil
-	}
-	return r.live[cl.conn].n
+	return r.portForLocked(k)
 }
 
-// routerFor 返回该对端的会话通知出口;该对端此刻一条持有会话的活连接都没有时返回 nil
-// —— 调用方(handlers 的 sessionEmitter)据此走「只落库、不推送」的挂起路径。
+// portForLocked 解出该会话此刻的推送出口。属主可能已经不在(它断开了、而同账号的另一个
+// 客户端还连着),订阅者也可能一个都没有(未认领 daemon);两者都空才算这条会话没有出口。
+func (r *connRegistry) portForLocked(k sessionKey) handlers.NotifierPort {
+	if k.peer == "" { // 空指纹不是可匹配身份,不得据此解析出任何收件人
+		return nil
+	}
+	var primary handlers.NotifierPort
+	var owner *rpc.Conn
+	if cl, ok := r.claims[k]; ok {
+		owner = cl.conn
+		primary = r.live[cl.conn].n
+	}
+	extras := r.subscribersLocked(k, owner)
+	if len(extras) == 0 {
+		return primary // 单目标:交回那条连接的端口本身,不套壳
+	}
+	return fanoutNotifier{primary: primary, extras: extras}
+}
+
+// subscribersLocked 交回**这条会话**的订阅者端口,除 exclude(会话属主,它走同步端口)。
+//
+// 订阅资格两条,缺一不可:
+//   - 这条连接上过这条会话(在 subs[k] 里)—— 帧上只有裸 sessionId,推给没上过它的
+//     连接就是把别人的转录塞进对方自己那条同号会话(见 connRegistry 的注释);
+//   - daemon 已被某个账号认领,且这条连接是**同一个账号**认证进来的(auth.account 把
+//     归属账号写进 AuthState.AccountID,见任务 6 的账号门)。归属账号每次现问,不缓存
+//     —— 解除归属(R19)之后那些还连着的连接必须立刻失去订阅资格。
+//
+// 未认领 daemon 一个订阅者都没有;只走 LAN 配对的连接也没有:配对是设备级信任,不是
+// 账号级可见性,多个配对对端不保证属于同一个人(R13)。
+func (r *connRegistry) subscribersLocked(k sessionKey, exclude *rpc.Conn) []handlers.NotifierPort {
+	if r.claimedAccountID == nil {
+		return nil
+	}
+	claimed := r.claimedAccountID()
+	if claimed == "" {
+		return nil
+	}
+	var out []handlers.NotifierPort
+	for c := range r.subs[k] {
+		if c == exclude {
+			continue
+		}
+		lc, live := r.live[c]
+		if !live || lc.fanout == nil {
+			continue
+		}
+		if c.Auth().AccountID != claimed {
+			continue
+		}
+		out = append(out, lc.fanout)
+	}
+	return out
+}
+
+// routerFor 返回该对端的会话通知出口;该对端的会话此刻一个收件人都没有时返回 nil ——
+// 调用方(handlers 的 sessionEmitter)据此走「只落库、不推送」的挂起路径。
 func (r *connRegistry) routerFor(peer string) handlers.NotifierPort {
 	if peer == "" {
 		return nil
@@ -310,34 +588,34 @@ func (r *connRegistry) routerFor(peer string) handlers.NotifierPort {
 			return sessionRouter{reg: r, peer: peer}
 		}
 	}
+	// 属主都断开了,但这个对端还有会话留着订阅者:会话不算挂起,实时流继续推给它们。
+	for k := range r.subs {
+		if k.peer != peer {
+			continue
+		}
+		if len(r.subscribersLocked(k, nil)) > 0 {
+			return sessionRouter{reg: r, peer: peer}
+		}
+	}
 	return nil
 }
 
-// tunnelTarget 解析 MCP 反向隧道的目标。隧道请求来自 daemon 本机的 CLI 子进程(是 HTTP
-// 不是 RPC),身上只有 desktop 签的不透明 MCP token,没有会话标识,所以这里按「最近被
-// 认领的那条会话的属主连接」定目标 —— 跑着会话的那台设备就是这些子进程的发起端。
-// 一条会话都还没被认领时(daemon 刚起、或客户端刚重连还没发 runtime.*)回落到最近完成
-// 鉴权的活连接:desktop 侧的隧道 handler 是无状态的(把请求重放到它本机 gateway),
-// 同一台设备的哪条连接送达都等价。表空 → nil(无目标的应答由 handlers 决定)。
-func (r *connRegistry) tunnelTarget() handlers.NotifierPort {
+// tunnelTargetFor resolves the exact session origin carried in the daemon-local
+// MCP URL. There is intentionally no newest-connection fallback: a missing
+// originating peer is an unavailable tool, not permission to cross-route it.
+// 会话通知的订阅者集合(见 subscribersLocked)在这里**没有**位置:内置工具的实现与数据
+// 在发起端本地,把工具请求扇出给同账号的其它客户端就是决策 9 明确否掉的那件事。
+func (r *connRegistry) tunnelTargetFor(peer string, sid int64) handlers.NotifierPort {
+	if peer == "" || sid <= 0 {
+		return nil
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var owner sessionClaim
-	for _, cl := range r.claims {
-		if cl.at > owner.at {
-			owner = cl
-		}
+	claim, ok := r.claims[sessionKey{peer: peer, sid: sid}]
+	if !ok {
+		return nil
 	}
-	if owner.conn != nil {
-		return r.live[owner.conn].n
-	}
-	var newest liveConn
-	for _, lc := range r.live {
-		if lc.at > newest.at {
-			newest = lc
-		}
-	}
-	return newest.n
+	return r.live[claim.mcpConn].n
 }
 
 // sessionRouter 是某个对端的会话通知出口:按帧上的 sessionId 把每条通知交给发起该会话
@@ -362,7 +640,8 @@ func (s sessionRouter) Notify(method string, params any) error {
 }
 
 func (s sessionRouter) Request(context.Context, string, any, any) error {
-	// 反向请求(MCP 隧道)不经这里:它的请求身上没有会话标识,由 tunnelTarget 解析。
+	// Reverse requests (the MCP tunnel) resolve their explicit peer/session URL
+	// discriminator through connRegistry.tunnelTargetFor instead.
 	return errors.New("daemon: reverse requests are not routable per session")
 }
 
@@ -387,9 +666,19 @@ func (d *Daemon) notifierForPeer(peer string) handlers.NotifierPort {
 	return d.conns.routerFor(peer)
 }
 
-// tunnelTarget 解析 MCP 反向隧道的目标(见 connRegistry.tunnelTarget)。
-func (d *Daemon) tunnelTarget() handlers.NotifierPort {
-	return d.conns.tunnelTarget()
+// tunnelTargetFor resolves a daemon-local MCP request to its originating
+// session owner; no global active-connection heuristic is permitted.
+func (d *Daemon) tunnelTargetFor(peer string, sid int64) handlers.NotifierPort {
+	return d.conns.tunnelTargetFor(peer, sid)
+}
+
+func (d *Daemon) claimedAccountID() string { return d.state.Snapshot().AccountID }
+
+// currentAccessToken returns the daemon's freshest stored access token. HubLink
+// re-resolves it at every dial (via HubLinkOptions.AccessTokenProvider), so a
+// token refreshed mid-connection is picked up by the next reconnect (R4/R14).
+func (d *Daemon) currentAccessToken() string {
+	return d.state.Snapshot().Credential.AccessToken
 }
 
 // New constructs a Daemon from Options. It loads persistent state, creates
@@ -449,25 +738,38 @@ func New(opts Options) (*Daemon, error) {
 		sessionStore: daemonSessionStore{db: gormDB},
 		pairing:      pm, ratelim: rl,
 		registry: reg, auth: auth,
+		steerSource:     newSteerSourceStore(),
 		generations:     sessions.NewRegistry(),
 		runtimeHandlers: map[*rpc.Conn]*handlers.RuntimeHandlers{},
 	}
+	// 订阅资格的账号门:登记表每次解析收件人时现问 daemon 此刻的归属账号。
+	d.conns.claimedAccountID = d.claimedAccountID
+	if st.IsClaimed() && opts.HubServerURL != "" {
+		credential := st.Snapshot().Credential
+		d.hub = rpc.NewHubLink(rpc.HubLinkOptions{
+			ServerURL:           opts.HubServerURL,
+			AccessToken:         credential.AccessToken,
+			AccessTokenProvider: d.currentAccessToken,
+		})
+		d.mux = rpc.NewMultiplexer(d.hub)
+	}
 	d.catchup = handlers.NewSessionCatchupHandlers(handlers.SessionCatchupDeps{
-		Sessions: d.sessionStore,
-		Journal:  journalReader{db: gormDB},
+		Sessions:         d.sessionStore,
+		Journal:          journalReader{db: gormDB},
+		ClaimedAccountID: d.claimedAccountID,
 	})
 	d.gateway = httpgateway.New("127.0.0.1", 0, NewProviderLookup(st))
 	// 内置工具 MCP(org/subagent/group/workflow)隧道:daemon 上 CLI 子进程把请求打到
 	// 本机 gateway 的 /mcp/*(URL 已由 runtime.Run 改写成 daemon base),这里捕获后反向
 	// 请求回 desktop 执行(真 handler 在 desktop)。仅一条 catch-all,serveMCP 最长前缀
 	// 匹配下命中所有 /mcp/* 路径。
-	d.gateway.RegisterMCP(httpgateway.RouteMCPPrefix, handlers.NewMCPTunnelHandler(d.tunnelTarget))
+	d.gateway.RegisterMCP(httpgateway.RouteMCPPrefix, handlers.NewMCPTunnelHandler(d.tunnelTargetFor))
 	d.registerMethods()
 	return d, nil
 }
 
 // requireAuth returns ErrUnauthorized when the calling connection has not
-// completed auth.pair / auth.connect. Called by every non-auth handler.
+// completed auth.pair / auth.connect / auth.account. Called by every non-auth handler.
 func requireAuth(ctx context.Context) error {
 	c := rpc.ConnFromContext(ctx)
 	if c == nil || !c.Auth().Authenticated {
@@ -519,6 +821,28 @@ func (d *Daemon) registerMethods() {
 			c.SetAuth(rpc.AuthState{
 				Authenticated:     true,
 				DeviceFingerprint: cp.DeviceFingerprint,
+			})
+			d.conns.add(c, notifier.New(c))
+		}
+		return res, nil
+	})
+	d.registry.Register("auth.account", func(ctx context.Context, p json.RawMessage) (any, error) {
+		var ap rpc.AccountParams
+		if err := jsonUnmarshal(p, &ap); err != nil {
+			return nil, rpc.ErrInvalidParams
+		}
+		if ap.DeviceFingerprint == "" {
+			return nil, rpc.ErrInvalidParams
+		}
+		res, err := d.auth.HandleAccount(ctx, ap)
+		if err != nil {
+			return nil, err
+		}
+		if c := rpc.ConnFromContext(ctx); c != nil {
+			c.SetAuth(rpc.AuthState{
+				Authenticated:     true,
+				DeviceFingerprint: ap.DeviceFingerprint,
+				AccountID:         d.claimedAccountID(),
 			})
 			d.conns.add(c, notifier.New(c))
 		}
@@ -613,6 +937,27 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// repository calling db.Ctx(ctx) anywhere below this point resolves to this
 	// instance's database, never another Daemon's.
 	ctx = dbpkg.WithContextDB(ctx, d.db)
+	// Outbound relay failures are deliberately isolated from the LAN server and
+	// running sessions. HubLink owns logging, heartbeats, and retry for Run's
+	// whole lifetime; the multiplexer consumes its raw-frame seam separately.
+	if d.hub != nil {
+		hubCtx, hubCancel := context.WithCancel(ctx)
+		go func() { _ = d.hub.Run(hubCtx) }()
+		// The credential refresher keeps the minute-lived access token ahead of
+		// expiry; a permanently dead refresh token cancels the hub link so a
+		// doomed relay is not kept alive forever (R4/R14). It never propagates
+		// to Run — local sessions and LAN stay healthy either way.
+		go d.runCredentialRefresh(ctx, hubCancel)
+		// R4 的另一半:定期把账号的吊销列表拉到本地。挂在 hubCtx 上是因为它与中转
+		// 链路共用同一份设备凭据 —— 凭据永久失效时两者一起停,最后拉到的那份列表
+		// 留在 state.json 里继续本地生效(R19 承认的延迟),本地会话与 LAN 直连
+		// 全程不受影响。
+		go d.runRevocationPoll(hubCtx)
+	}
+	if d.mux != nil {
+		defer d.mux.Close()
+		go d.serveRelayChannels(ctx, d.mux)
+	}
 	// 通知日志的回收:起手一次,之后按间隔跑(见 collectJournal 的留存策略)。
 	go d.runJournalCollector(ctx)
 	if err := d.gateway.Start(ctx); err != nil {
@@ -647,13 +992,382 @@ func (d *Daemon) Run(ctx context.Context) error {
 	return runErr
 }
 
-// bindConn is called by LANServer once per accepted WebSocket connection.
+// runCredentialRefresh launches the R4/R14 credential refresher for the daemon's
+// lifetime. stopRelay is invoked only when the refresh token is permanently dead
+// (expired or revoked): the relay link is doomed because the access token can no
+// longer be renewed, so the hub link is canceled rather than kept retrying a
+// dead connection forever. Local sessions and the LAN server are unaffected.
+func (d *Daemon) runCredentialRefresh(ctx context.Context, stopRelay context.CancelFunc) {
+	newCredentialRefresher(d.state, d.opts.HubServerURL).run(ctx, stopRelay)
+}
+
+// runRevocationPoll launches the R4 revocation-list poller for the daemon's
+// relay lifetime. Nothing it does can fail the daemon: a pull failure keeps the
+// previously cached list, logs, and retries with backoff.
+func (d *Daemon) runRevocationPoll(ctx context.Context) {
+	newRevocationPoller(d.state, d.opts.HubServerURL, d.currentAccessToken).run(ctx)
+}
+
+// defaultRefreshMargin is how long before AccessTokenExpiresAt the daemon
+// proactively refreshes. Task 16 makes the access TTL minute-level; a two-minute
+// margin keeps the relay link comfortably ahead of expiry.
+const defaultRefreshMargin = 2 * time.Minute
+
+const (
+	refreshRetryInitial = time.Second
+	refreshRetryMax     = time.Minute
+)
+
+func defaultRefreshBackoff(failures int) time.Duration {
+	delay := refreshRetryInitial
+	for range failures {
+		if delay >= refreshRetryMax/2 {
+			delay = refreshRetryMax
+			break
+		}
+		delay *= 2
+	}
+	return delay
+}
+
+// credentialRefresher keeps the account relay link alive (R4/R14): the access
+// token is minute-lived and must be renewed well before it expires or the hub
+// link dies permanently. It exchanges the stored refresh token at the server's
+// refresh endpoint, persists the rotated credential, and lets the HubLink
+// re-resolve the freshest access token at each dial. Refresh failures never
+// propagate to the daemon run loop — the loop logs and retries with backoff.
+type credentialRefresher struct {
+	state      *state.State
+	serverURL  string
+	httpClient *http.Client
+
+	now     func() time.Time
+	wait    func(context.Context, time.Duration) error
+	backoff func(int) time.Duration
+	margin  time.Duration
+	logf    func(format string, args ...any)
+}
+
+func newCredentialRefresher(st *state.State, serverURL string) *credentialRefresher {
+	return &credentialRefresher{
+		state:      st,
+		serverURL:  serverURL,
+		httpClient: &http.Client{Timeout: 15 * time.Second},
+		now:        time.Now,
+		wait:       waitForRefresh,
+		backoff:    defaultRefreshBackoff,
+		margin:     defaultRefreshMargin,
+		logf:       log.Printf,
+	}
+}
+
+// run refreshes until ctx is canceled or the refresh token is permanently dead.
+func (r *credentialRefresher) run(ctx context.Context, stopRelay context.CancelFunc) {
+	failures := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		credential := r.state.Snapshot().Credential
+		now := r.now()
+		if credential.RefreshToken == "" {
+			// Legacy/edge credential with nothing to refresh. Leave the hub alone
+			// (it keeps using whatever access token it has) rather than tearing
+			// down a link that may still work.
+			r.logf("daemon.refresh: no refresh token; relay renewal disabled")
+			return
+		}
+		if credential.RefreshTokenExpiresAt > 0 && now.Unix() >= credential.RefreshTokenExpiresAt {
+			r.logf("daemon.refresh: refresh token expired at %d; relay renewal stopped (LAN unaffected)",
+				credential.RefreshTokenExpiresAt)
+			stopRelay()
+			return
+		}
+		delay := r.nextRefreshIn(credential, now)
+		if err := r.wait(ctx, delay); err != nil {
+			return
+		}
+
+		// Retry transient failures with backoff without re-entering the schedule
+		// wait: the access token is still due until a refresh succeeds. Only a
+		// permanent grant rejection (invalid_grant) stops the loop.
+		token, permanent, err := r.refreshOnce(ctx, credential.RefreshToken)
+		for err != nil && !permanent {
+			r.logf("daemon.refresh: refresh failed; retrying: %v", err)
+			if err := r.wait(ctx, r.backoff(failures)); err != nil {
+				return
+			}
+			failures++
+			token, permanent, err = r.refreshOnce(ctx, credential.RefreshToken)
+		}
+		if err != nil {
+			r.logf("daemon.refresh: refresh token rejected by server; relay renewal stopped (LAN unaffected): %v", err)
+			stopRelay()
+			return
+		}
+		failures = 0
+		rotated := state.AccountCredential{
+			DeviceID:              credential.DeviceID,
+			AccessToken:           token.AccessToken,
+			AccessTokenExpiresAt:  r.now().Add(time.Duration(token.ExpiresIn) * time.Second).Unix(),
+			RefreshToken:          token.RefreshToken,
+			RefreshTokenExpiresAt: r.now().Add(time.Duration(token.RefreshExpiresIn) * time.Second).Unix(),
+		}
+		r.state.Mutate(func(s *state.State) { s.Credential = rotated })
+		if err := r.state.Save(); err != nil {
+			r.logf("daemon.refresh: persist refreshed credential: %v", err)
+		}
+	}
+}
+
+// nextRefreshIn schedules the next proactive refresh well before the access
+// token expires (defaultRefreshMargin). An already-due token refreshes now.
+func (r *credentialRefresher) nextRefreshIn(credential state.AccountCredential, now time.Time) time.Duration {
+	if credential.AccessTokenExpiresAt <= 0 {
+		return r.margin
+	}
+	remaining := time.Unix(credential.AccessTokenExpiresAt, 0).Sub(now)
+	delay := remaining - r.margin
+	if delay < 0 {
+		return 0
+	}
+	return delay
+}
+
+type refreshTokenResponse struct {
+	AccessToken      string `json:"access_token"`
+	ExpiresIn        int    `json:"expires_in"`
+	RefreshToken     string `json:"refresh_token"`
+	RefreshExpiresIn int    `json:"refresh_expires_in"`
+}
+
+// refreshOnce exchanges a refresh token for a fresh access token plus a rotated
+// refresh token. permanent reports an unrecoverable grant failure (expired /
+// revoked / replay) — the loop must stop, not retry, and the relay is dead.
+// Network errors and server 5xx are transient and retried by the caller.
+func (r *credentialRefresher) refreshOnce(ctx context.Context, refreshToken string) (*refreshTokenResponse, bool, error) {
+	body, err := json.Marshal(map[string]string{"refresh_token": refreshToken})
+	if err != nil {
+		return nil, false, fmt.Errorf("encode refresh request: %w", err)
+	}
+	endpoint := strings.TrimRight(r.serverURL, "/") + "/v1/oauth/token/refresh"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, false, fmt.Errorf("build refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := r.httpClient.Do(req)
+	if err != nil {
+		return nil, false, fmt.Errorf("refresh request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, false, fmt.Errorf("read refresh response: %w", err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		var oauthErr struct {
+			Code        string `json:"error"`
+			Description string `json:"error_description"`
+		}
+		if decodeServerEnvelope(payload, &oauthErr) == nil && oauthErr.Code != "" {
+			return nil, oauthErr.Code == "invalid_grant",
+				fmt.Errorf("refresh rejected: %s: %s", oauthErr.Code, oauthErr.Description)
+		}
+		return nil, false, fmt.Errorf("refresh endpoint returned %s", resp.Status)
+	}
+	var token refreshTokenResponse
+	if err := decodeServerEnvelope(payload, &token); err != nil {
+		return nil, false, fmt.Errorf("parse refresh response: %w", err)
+	}
+	if token.AccessToken == "" || token.RefreshToken == "" || token.ExpiresIn <= 0 || token.RefreshExpiresIn <= 0 {
+		return nil, false, fmt.Errorf("refresh endpoint returned an invalid token payload")
+	}
+	return &token, false, nil
+}
+
+// decodeServerEnvelope handles both the raw JSON payload and cago's
+// {data: ...} response envelope, mirroring the login flow's decoder. Agentre
+// must not import agentre-server; this keeps the daemon-side contract in sync.
+func decodeServerEnvelope(payload []byte, target any) error {
+	var envelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return err
+	}
+	if len(envelope.Data) != 0 && string(envelope.Data) != "null" {
+		return json.Unmarshal(envelope.Data, target)
+	}
+	return json.Unmarshal(payload, target)
+}
+
+func waitForRefresh(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// defaultRevocationPollInterval is how often a claimed daemon pulls its account's
+// revocation list. It has to stay well under the server's 15m access TTL for the
+// pull to add anything: a credential revoked right after a pull is refused
+// locally at most one interval later, and its short expiry is the backstop (R4).
+const defaultRevocationPollInterval = time.Minute
+
+// revocationsResponse mirrors agentre-server's GET /v1/devices/revocations body
+// (device JWT bearer). RevokedJTI is every revoked access-token jti under the
+// caller device's account that was issued inside the server's access-TTL window;
+// older ones are omitted because expiry alone already invalidates them.
+type revocationsResponse struct {
+	RevokedJTI []string `json:"revoked_jti"`
+	AsOf       int64    `json:"as_of"`
+}
+
+// revocationPoller keeps the daemon's cached copy of that list fresh (R4
+// consumer). The account handshake is verified entirely from cached material
+// with zero network round trips (R3), so this loop is the only thing that can
+// make a revocation take effect on this machine. A failed or offline pull
+// deliberately keeps the previous list and keeps enforcing it — that is R4's
+// acknowledged revocation delay (R19), not a fallback — and it never touches
+// local sessions or LAN serving.
+type revocationPoller struct {
+	state       *state.State
+	serverURL   string
+	httpClient  *http.Client
+	accessToken func() string
+
+	interval time.Duration
+	// wait is the clock seam shared with the credential refresher: the loop asks
+	// for a delay, production sleeps it out, a test releases it immediately.
+	wait    func(context.Context, time.Duration) error
+	backoff func(int) time.Duration
+	logf    func(format string, args ...any)
+}
+
+func newRevocationPoller(st *state.State, serverURL string, accessToken func() string) *revocationPoller {
+	return &revocationPoller{
+		state:       st,
+		serverURL:   serverURL,
+		httpClient:  &http.Client{Timeout: 15 * time.Second},
+		accessToken: accessToken,
+		interval:    defaultRevocationPollInterval,
+		wait:        waitForRefresh,
+		backoff:     defaultRefreshBackoff, // the daemon's shared transient-retry ladder
+		logf:        log.Printf,
+	}
+}
+
+// run pulls until ctx is canceled, starting with an immediate pull so a daemon
+// that was offline (or just restarted) re-syncs as soon as it can reach server.
+func (p *revocationPoller) run(ctx context.Context) {
+	failures := 0
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		list, err := p.pullOnce(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			kept := p.state.Snapshot()
+			p.logf("daemon.revocations: pull failed; keeping the last list: revokedCount=%d asOf=%d err=%v",
+				len(kept.RevokedJTIs), kept.RevocationsAsOf, err)
+			if err := p.wait(ctx, p.backoff(failures)); err != nil {
+				return
+			}
+			failures++
+			continue
+		}
+		failures = 0
+		p.state.Mutate(func(s *state.State) {
+			s.RevokedJTIs = list.RevokedJTI
+			s.RevocationsAsOf = list.AsOf
+		})
+		// Persisted on every pull: the check has to survive a restart, and it is
+		// the only copy an offline daemon has left to enforce.
+		if err := p.state.Save(); err != nil {
+			p.logf("daemon.revocations: persist revocation list: revokedCount=%d err=%v",
+				len(list.RevokedJTI), err)
+		}
+		if err := p.wait(ctx, p.interval); err != nil {
+			return
+		}
+	}
+}
+
+// pullOnce fetches the account's revocation list with the daemon's device
+// credential. Every failure — including the 401 a revoked device itself gets —
+// is transient here: the caller keeps the last list and retries with backoff.
+func (p *revocationPoller) pullOnce(ctx context.Context) (*revocationsResponse, error) {
+	token := p.accessToken()
+	if token == "" {
+		return nil, errors.New("no account access token")
+	}
+	endpoint := strings.TrimRight(p.serverURL, "/") + "/v1/devices/revocations"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build revocations request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("revocations request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read revocations response: %w", err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("revocations endpoint returned %s", resp.Status)
+	}
+	var list revocationsResponse
+	if err := decodeServerEnvelope(payload, &list); err != nil {
+		return nil, fmt.Errorf("parse revocations response: %w", err)
+	}
+	// as_of is always set by the endpoint, so its absence means this is not the
+	// contract's payload (a captive portal or proxy answering 200, say). Treat
+	// it as a failed pull: replacing the cached list with an empty one would
+	// silently un-revoke everything.
+	if list.AsOf <= 0 {
+		return nil, errors.New("revocations endpoint returned a payload without as_of")
+	}
+	return &list, nil
+}
+
+// serveRelayChannels turns server-initiated virtual channels into the same
+// connection shape the LAN server creates. The channel ID and relay envelope
+// end at the Multiplexer boundary: Conn and every registered handler see only
+// a FrameConn.
+func (d *Daemon) serveRelayChannels(ctx context.Context, mux *rpc.Multiplexer) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case channel := <-mux.Accept():
+			if channel == nil {
+				return
+			}
+			conn := rpc.NewConn(channel, d.registry.Clone())
+			d.bindConn(conn)
+			go conn.Serve(ctx)
+		}
+	}
+}
+
+// bindConn is called once per LAN or relay connection.
 // 挂载 runtime.* 13 个 RPC 到这条连接的私有 registry。RuntimeHandlers 持有 per-session backend
 // type cache,所以是 per-conn 构造的;会话通知**不**推回「这条」连接 —— 它在发送那一刻
 // 按会话解析属主连接(见 notifierForPeer / connRegistry),因为 fanout goroutine 会活过
 // 这条连接。
 //
-// bindConn 跑在鉴权**之前**(它是 OnConn 回调,auth.pair / auth.connect 是之后才到的
+// bindConn 跑在鉴权**之前**(它是 OnConn 回调,auth.pair / auth.connect / auth.account 是之后才到的
 // RPC),所以这里**不**把连接登记成推送目标 —— 登记只发生在鉴权成功那一刻,会话认领
 // 更要等到它真为某条会话发 runtime.*,否则一条从不认证的连接就能顶掉正主。
 func (d *Daemon) bindConn(c *rpc.Conn) {
@@ -665,11 +1379,16 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 		NotifyFor: d.notifierForPeer,
 		Journal:   d.journal,
 		Sessions:  d.sessionStore,
+		// R17:queuedID → 提交方对端映射是 Daemon 级的 —— Steer RPC 可能落在任意一条
+		// 连接(同设备多条连接 / 他端接管),而 SteerConsumed 由发起会话那条连接的
+		// fanout 发出,两者必须共享同一张表。
+		SteerSource: d.steerSource,
 		// 同一个仓储的读侧:提交决策解不出会话时,靠它区分「轮次真的结束了」与
 		// 「这个 handler 从没拥有过这条会话」(见 idempotentSubmitResult)。
 		SessionQuery:       d.sessionStore,
 		Gateway:            d.gateway,
 		Lookup:             NewProviderLookup(d.state),
+		ClaimedAccountID:   d.claimedAccountID,
 		GenerationRegistry: d.generations,
 	})
 	d.runtimeMu.Lock()
@@ -782,11 +1501,16 @@ func (d *Daemon) closeRuntimeConnections(ctx context.Context) error {
 func (d *Daemon) trackSessionOwner(next rpc.HandlerFunc) rpc.HandlerFunc {
 	return func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var p struct {
-			SessionID int64 `json:"sessionId"`
+			SessionID       int64  `json:"sessionId"`
+			PeerFingerprint string `json:"peerFingerprint"`
 		}
 		var ticket claimTicket
 		if err := jsonUnmarshal(raw, &p); err == nil {
-			ticket = d.conns.claim(rpc.ConnFromContext(ctx), p.SessionID)
+			peer, peerErr := handlers.ResolveSessionPeer(ctx, p.PeerFingerprint, d.claimedAccountID)
+			if peerErr != nil {
+				return nil, peerErr
+			}
+			ticket = d.conns.claimFor(rpc.ConnFromContext(ctx), peer, p.SessionID)
 		}
 		res, err := next(ctx, raw)
 		if err != nil {
@@ -813,6 +1537,14 @@ func (d *Daemon) trackSessionOwner(next rpc.HandlerFunc) rpc.HandlerFunc {
 func (d *Daemon) attachSession(rh *handlers.RuntimeHandlers) rpc.HandlerFunc {
 	inner := wrapGuardedSentinel(d.catchup.Attach)
 	return func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var p wire.SessionAttachParams
+		if err := jsonUnmarshal(raw, &p); err != nil {
+			return nil, rpc.ErrInvalidParams
+		}
+		peer, err := handlers.ResolveSessionPeer(ctx, p.PeerFingerprint, d.claimedAccountID)
+		if err != nil {
+			return nil, err
+		}
 		res, err := inner(ctx, raw)
 		if err != nil {
 			return nil, err
@@ -821,8 +1553,8 @@ func (d *Daemon) attachSession(rh *handlers.RuntimeHandlers) rpc.HandlerFunc {
 		if !ok {
 			return res, nil
 		}
-		rh.Adopt(ctx, attached.SessionID, agent_backend_entity.BackendType(attached.BackendType))
-		d.conns.claim(rpc.ConnFromContext(ctx), attached.SessionID)
+		rh.AdoptForPeer(peer, attached.SessionID, agent_backend_entity.BackendType(attached.BackendType))
+		d.conns.claimFor(rpc.ConnFromContext(ctx), peer, attached.SessionID)
 		log.Printf("runtime.session.attach: session taken over sid=%d state=%s latestSeq=%d",
 			attached.SessionID, attached.LifecycleState, attached.LatestSeq)
 		return res, nil
@@ -978,6 +1710,53 @@ func (j notificationJournal) Append(ctx context.Context, peerFingerprint, peerSe
 // Daemon 会互相串库,见 Daemon.db 注释)。
 type daemonSessionStore struct{ db *gorm.DB }
 
+// steerSourceStore 是「queuedID → 提交方对端」的映射(R17),Daemon 级一份(见
+// Daemon.steerSource 注释)。queuedID 是桌面端生成的 UUID v4,跨对端天然唯一,所以可以
+// 用裸 ID 做键而不必按会话/对端隔离。映射在 Steer RPC 时写入、SteerConsumed / 轮末
+// DrainPending 消费后删除;撤回的 steer 由 CancelSteer 显式 Forget,不会无界增长。
+// 实现满足 handlers.SteerSourcePort(按 DIP 声明在消费方)。
+type steerSourceStore struct {
+	mu sync.Mutex
+	m  map[string]handlers.SteerSourceEntry
+}
+
+var _ handlers.SteerSourcePort = (*steerSourceStore)(nil)
+
+func newSteerSourceStore() *steerSourceStore {
+	return &steerSourceStore{m: make(map[string]handlers.SteerSourceEntry)}
+}
+
+func (s *steerSourceStore) Record(queuedID string, entry handlers.SteerSourceEntry) {
+	if queuedID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m[queuedID] = entry
+}
+
+func (s *steerSourceStore) Consume(queuedID string) (handlers.SteerSourceEntry, bool) {
+	if queuedID == "" {
+		return handlers.SteerSourceEntry{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.m[queuedID]
+	if ok {
+		delete(s.m, queuedID)
+	}
+	return e, ok
+}
+
+func (s *steerSourceStore) Forget(queuedID string) {
+	if queuedID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, queuedID)
+}
+
 var (
 	_ handlers.SessionLifecyclePort = daemonSessionStore{}
 	_ handlers.SessionQueryPort     = daemonSessionStore{}
@@ -1013,6 +1792,18 @@ func (s daemonSessionStore) CountRunning(ctx context.Context) (int64, error) {
 
 func (s daemonSessionStore) List(ctx context.Context, peerFingerprint string) ([]handlers.SessionRecord, error) {
 	rows, err := session_repo.Session().ListByPeer(dbpkg.WithContextDB(ctx, s.db), peerFingerprint)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]handlers.SessionRecord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, sessionRecordOf(row))
+	}
+	return out, nil
+}
+
+func (s daemonSessionStore) ListAll(ctx context.Context) ([]handlers.SessionRecord, error) {
+	rows, err := session_repo.Session().ListAll(dbpkg.WithContextDB(ctx, s.db))
 	if err != nil {
 		return nil, err
 	}

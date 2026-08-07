@@ -360,12 +360,7 @@ func signalProcessTree(process *os.Process, sig os.Signal) error {
 	if !ok {
 		return process.Signal(sig)
 	}
-	// #nosec G204 -- executable is fixed; arguments are the OS-assigned PID and signal number.
-	if err := exec.Command(
-		"/bin/kill",
-		"-"+strconv.Itoa(int(signalNumber)),
-		"-"+strconv.Itoa(process.Pid),
-	).Run(); err == nil {
+	if err := signalTree(process.Pid, signalNumber); err == nil {
 		return nil
 	}
 	return process.Signal(sig)
@@ -382,8 +377,7 @@ func killProcessTree(process *os.Process) error {
 		}
 		return ignoreProcessDone(process.Kill())
 	}
-	// #nosec G204 -- executable is fixed; argument is the OS-assigned process-group ID.
-	if err := exec.Command("/bin/kill", "-9", "-"+strconv.Itoa(process.Pid)).Run(); err == nil {
+	if err := signalTree(process.Pid, syscall.SIGKILL); err == nil {
 		return nil
 	}
 	return ignoreProcessDone(process.Kill())

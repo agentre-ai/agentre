@@ -2,11 +2,16 @@ package daemon
 
 import (
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -21,12 +26,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/agentre-ai/agentre/internal/daemon/client"
 	"github.com/agentre-ai/agentre/internal/daemon/handlers"
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/daemon/state"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
@@ -39,6 +46,7 @@ import (
 	workspacefswire "github.com/agentre-ai/agentre/internal/pkg/workspacefs/wire"
 
 	"github.com/cago-frame/agents/provider"
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -729,6 +737,94 @@ func TestIntegration_RemoteRuntime_EventRoundTrip(t *testing.T) {
 	})
 }
 
+// steerAwareRunner 在收到 Steer RPC 时把那条 mid-turn 消息以 SteerConsumed 事件
+// 送回事件流,模拟 claudecode/codex 的 hook 消费队列。QueuedID 原样保留,让
+// TestIntegration_SteerConsumedCarriesSubmitterSource 能验证 daemon 把它对应的提交方
+// 对端指纹/名字盖回密封事件。
+//
+// runFn 返回的 live channel 是唯一的事件出口:Steer 可能在 Run 返回后任意时刻到达,
+// 而 fanout goroutine 从 Run 一返回就开始抽这个 channel,所以 Steer 往它上面写事件不会丢。
+type steerAwareRunner struct {
+	mu   sync.Mutex
+	live chan agentruntime.Event
+}
+
+func (*steerAwareRunner) Capabilities() capability.Capabilities { return capability.Capabilities{} }
+
+func (r *steerAwareRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	r.mu.Lock()
+	r.live = make(chan agentruntime.Event, 16)
+	r.mu.Unlock()
+	return r.live, &agentruntime.RunResult{}, nil
+}
+
+func (r *steerAwareRunner) Steer(_ context.Context, _ int64, queuedID, text string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.live != nil {
+		r.live <- agentruntime.SteerConsumed{Steers: []agentruntime.ConsumedSteer{{
+			QueuedID: queuedID,
+			Text:     text,
+		}}}
+	}
+	return nil
+}
+
+// bootSteerAwareRig 起一个 rig,把 backend 换成 steerAwareRunner(bootRemoteRig 里
+// 换的那次由 t.Cleanup LIFO 先还原,这里再换一次接管)。
+func bootSteerAwareRig(t *testing.T, r *steerAwareRunner) *pairedTestRig {
+	t.Helper()
+	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+	t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, r))
+	return rig
+}
+
+// TestIntegration_SteerConsumedCarriesSubmitterSource (R17):
+// 一台已配对设备(rigDeviceFingerprint / "test-mac")起一轮后发一条 mid-turn steer,
+// daemon 必须把**提交方**的对端指纹与设备名盖到 SteerConsumed 的 ConsumedSteer 上,
+// 并随密封 EventFrame 原样回到客户端 —— 桌面端靠它区分「本机发的(与本地指纹相等,不
+// 渲染来源标识)」与「他端发的(渲染 pill)」。
+//
+// 拒绝的错误实现:不盖;盖的是会话发起方而非提交方;SourcePeer 只存在于 EventFrame 外层
+// 字段(密封事件被远端原样传递,EventFrame 级字段会被丢弃,必须骑在事件内部)。
+func TestIntegration_SteerConsumedCarriesSubmitterSource(t *testing.T) {
+	rt := &steerAwareRunner{}
+	rig := bootSteerAwareRig(t, rt)
+
+	events, _ := rig.startRun(t, 700)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	require.NoError(t, rig.runner.Steer(ctx, 700, "q-1", "follow-up from this device"))
+
+	var consumed agentruntime.SteerConsumed
+	deadline := time.After(5 * time.Second)
+found:
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatal("events channel closed before SteerConsumed arrived")
+			}
+			if sc, isSteer := ev.(agentruntime.SteerConsumed); isSteer {
+				consumed = sc
+				break found
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for SteerConsumed to round-trip")
+		}
+	}
+
+	require.Len(t, consumed.Steers, 1, "SteerConsumed must carry exactly the consumed steer")
+	assert.Equal(t, "q-1", consumed.Steers[0].QueuedID)
+	assert.Equal(t, "follow-up from this device", consumed.Steers[0].Text)
+	// 提交方 = 发起 steers 的那台已配对设备(rig 里唯一的客户端)。
+	assert.Equal(t, rigDeviceFingerprint, consumed.Steers[0].SourcePeer,
+		"daemon must stamp the submitter peer fingerprint onto the consumed steer")
+	assert.Equal(t, "test-mac", consumed.Steers[0].SourceName,
+		"daemon must stamp the submitter device name onto the consumed steer")
+}
+
 // TestIntegration_StrayConnDoesNotStealSessionNotifications 回归:一条完成 WS 升级却
 // **从不认证**的连接(LAN 扫描器 / 鉴权失败的客户端 / 掉队的重连)接入时,已配对设备
 // 上正在跑的会话必须照常收到推送。
@@ -1223,8 +1319,10 @@ func TestIntegration_MCPReverseTunnel(t *testing.T) {
 	t.Cleanup(func() { remote.RegisterMCPProxyDispatcher(nil) })
 
 	// 真 daemon + 真 WS 客户端;remote.New(cli) 已在 rig 内注册 MethodMCPProxy 反向 handler。
-	// script 仅 Done:本测不跑 runtime.run,只验隧道(此刻 daemon 已记下活跃 notifier)。
 	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+	// The rewritten local MCP URL identifies a real originating session.
+	events, _ := rig.startRun(t, 601)
+	_ = drainRuntimeEvents(t, events, 5*time.Second)
 
 	// daemon 本机 gateway 的隧道入口(真机上 CLI 子进程被改写后打的就是这个 base)。
 	base := rig.d.gateway.BaseURL()
@@ -1232,7 +1330,7 @@ func TestIntegration_MCPReverseTunnel(t *testing.T) {
 
 	// 模拟 daemon 上的 CLI 子进程:POST /mcp/org/,带 desktop 轮起手时签的 token。
 	reqBody := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
-	httpReq, err := http.NewRequest(http.MethodPost, base+"/mcp/org/", strings.NewReader(reqBody))
+	httpReq, err := http.NewRequest(http.MethodPost, base+"/mcp/org/?peerFingerprint="+rigDeviceFingerprint+"&sessionId=601", strings.NewReader(reqBody))
 	require.NoError(t, err)
 	httpReq.Header.Set("Authorization", "Bearer desktop-signed-tok")
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -1307,7 +1405,7 @@ func TestIntegration_MCPReverseTunnel_NoDispatcher(t *testing.T) {
 }
 
 // TestIntegration_MCPReverseTunnel_NoTarget 覆盖 R17:发起会话的桌面端彻底断开(daemon
-// 活连接表为空,tunnelTarget() 无目标可解)时,daemon 本机 /mcp/ 隧道入口不能把裸 503
+// 无法为 URL 中那对 (peerFingerprint, sessionId) 解出活连接)时,daemon 本机 /mcp/ 隧道入口不能把裸 503
 // 答回 CLI 子进程的 MCP 客户端——非 2xx 状态码会让 MCP-over-HTTP 客户端把整个应答当传输层
 // 故障丢弃,body 里的话模型永远读不到。必须换成 HTTP 200 包一个 JSON-RPC error,是 MCP
 // 客户端读作"这次工具调用失败了"的那个形状,措辞点名哪个能力不可用、说明它依赖发起端在线、
@@ -1763,6 +1861,481 @@ func pairSecondDevice(t *testing.T, d *Daemon, fingerprint string) *client.Clien
 	}, &pairResp))
 	require.NotEmpty(t, pairResp.DeviceToken)
 	return cli
+}
+
+func claimDaemonForIntegration(t *testing.T, d *Daemon, accountID string) string {
+	t.Helper()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	der, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	require.NoError(t, err)
+	d.state.Claim(accountID, string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})), state.AccountCredential{})
+	require.NoError(t, d.state.Save())
+
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+	claims, err := json.Marshal(map[string]any{"uid": accountID, "exp": time.Now().Add(time.Hour).Unix()})
+	require.NoError(t, err)
+	payload := base64.RawURLEncoding.EncodeToString(claims)
+	signingInput := header + "." + payload
+	digest := sha256.Sum256([]byte(signingInput))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
+	require.NoError(t, err)
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func accountClientForIntegration(t *testing.T, d *Daemon, fingerprint, credential string) *client.Client {
+	t.Helper()
+	d.mu.RLock()
+	url := d.lan.URL()
+	d.mu.RUnlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	cli, err := client.Dial(ctx, client.Options{URL: url})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cli.Close() })
+
+	var result map[string]any
+	require.NoError(t, cli.Call(ctx, "auth.account", rpc.AccountParams{
+		Credential: credential, DeviceFingerprint: fingerprint,
+	}, &result))
+	require.True(t, result["ok"].(bool))
+	return cli
+}
+
+// TestIntegration_RelayInitiatedChannelServesAccountRuntimeAndCleansUp proves
+// the daemon consumes a server-originated relay channel through the same
+// bindConn path as LAN: account auth and runtime handlers work unchanged, and
+// a relay disconnect removes its authenticated connection from the registry.
+func TestIntegration_RelayInitiatedChannelServesAccountRuntimeAndCleansUp(t *testing.T) {
+	fake := &fakeBackendRunner{}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, fake)
+	t.Cleanup(restore)
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	der, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	require.NoError(t, err)
+
+	dir, err := os.MkdirTemp("", "ard-relay")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	accountID := "relay-account"
+	st.Claim(accountID, string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})),
+		state.AccountCredential{AccessToken: "relay-access-token"})
+	require.NoError(t, st.Save())
+	credential := signedAccountCredential(t, privateKey, accountID)
+
+	connections := make(chan *websocket.Conn, 1)
+	closeRelay := make(chan struct{})
+	var closeRelayOnce sync.Once
+	var relayAttempts atomic.Int32
+	upgrader := websocket.Upgrader{}
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 同一台 fake server 也会收到 daemon 的吊销列表轮询(R4)。它与本测试无关,
+		// 但绝不能占掉下面「只接受第一次中转拨号」的那个计数。
+		if r.URL.Path != "/v1/relay/daemon" {
+			http.NotFound(w, r)
+			return
+		}
+		if relayAttempts.Add(1) > 1 {
+			http.Error(w, "relay closed", http.StatusServiceUnavailable)
+			return
+		}
+		require.Equal(t, "Bearer relay-access-token", r.Header.Get("Authorization"))
+		ws, upgradeErr := upgrader.Upgrade(w, r, nil)
+		if upgradeErr != nil {
+			return
+		}
+		connections <- ws
+		<-closeRelay
+		_ = ws.Close()
+	}))
+	t.Cleanup(relay.Close)
+	t.Cleanup(func() { closeRelayOnce.Do(func() { close(closeRelay) }) })
+
+	d, err := New(Options{DataDir: dir, LANHost: "127.0.0.1", LANPort: 0, HubServerURL: relay.URL})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case runErr := <-errCh:
+			require.NoError(t, runErr)
+		case <-time.After(3 * time.Second):
+			t.Error("relay daemon did not shut down within 3s")
+		}
+	})
+
+	var relayConn *websocket.Conn
+	select {
+	case relayConn = <-connections:
+	case <-time.After(2 * time.Second):
+		t.Fatal("claimed daemon did not connect to the relay")
+	}
+
+	channelID := "relay-client-1"
+	authResponse := relayRequest(t, relayConn, channelID, rpc.Frame{
+		JSONRPC: "2.0",
+		ID:      json.RawMessage(`1`),
+		Method:  "auth.account",
+		Params:  mustMarshal(t, rpc.AccountParams{Credential: credential, DeviceFingerprint: "sha256:relay-client"}),
+	})
+	require.Nil(t, authResponse.Error)
+	var authResult map[string]any
+	require.NoError(t, json.Unmarshal(authResponse.Result, &authResult))
+	assert.Equal(t, true, authResult["ok"])
+
+	runtimeResponse := relayRequest(t, relayConn, channelID, rpc.Frame{
+		JSONRPC: "2.0",
+		ID:      json.RawMessage(`2`),
+		Method:  wire.MethodCapabilities,
+		Params:  mustMarshal(t, wire.CapabilitiesParams{BackendType: "claudecode"}),
+	})
+	require.Nil(t, runtimeResponse.Error)
+	assert.NotEmpty(t, runtimeResponse.Result, "relay channel must serve the per-connection runtime handlers")
+
+	require.Eventually(t, func() bool {
+		d.conns.mu.Lock()
+		defer d.conns.mu.Unlock()
+		return len(d.conns.live) == 1
+	}, time.Second, 10*time.Millisecond, "authenticated relay connection must be registered")
+
+	closeRelayOnce.Do(func() { close(closeRelay) })
+	require.Eventually(t, func() bool {
+		d.conns.mu.Lock()
+		defer d.conns.mu.Unlock()
+		return len(d.conns.live) == 0 && len(d.conns.claims) == 0
+	}, time.Second, 10*time.Millisecond, "closed relay channel must be removed like a LAN connection")
+}
+
+func signedAccountCredential(t *testing.T, privateKey *rsa.PrivateKey, accountID string) string {
+	t.Helper()
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+	claims := mustMarshal(t, map[string]any{"uid": accountID, "exp": time.Now().Add(time.Hour).Unix()})
+	payload := base64.RawURLEncoding.EncodeToString(claims)
+	signingInput := header + "." + payload
+	digest := sha256.Sum256([]byte(signingInput))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
+	require.NoError(t, err)
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func relayRequest(t *testing.T, conn *websocket.Conn, channelID string, request rpc.Frame) rpc.Frame {
+	t.Helper()
+	requestJSON := mustMarshal(t, request)
+	require.NoError(t, conn.WriteMessage(websocket.BinaryMessage, relayEnvelope(channelID, requestJSON)))
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(time.Second)))
+	messageType, responsePayload, err := conn.ReadMessage()
+	require.NoError(t, err, "relay-initiated channel did not return a response")
+	require.Equal(t, websocket.BinaryMessage, messageType)
+	responseChannelID, responseJSON := unpackRelayEnvelope(t, responsePayload)
+	require.Equal(t, channelID, responseChannelID)
+	var response rpc.Frame
+	require.NoError(t, json.Unmarshal(responseJSON, &response))
+	return response
+}
+
+func relayEnvelope(channelID string, frame []byte) []byte {
+	payload := make([]byte, 2+len(channelID)+len(frame))
+	binary.BigEndian.PutUint16(payload, uint16(len(channelID)))
+	copy(payload[2:], channelID)
+	copy(payload[2+len(channelID):], frame)
+	return payload
+}
+
+func unpackRelayEnvelope(t *testing.T, payload []byte) (string, []byte) {
+	t.Helper()
+	require.GreaterOrEqual(t, len(payload), 2)
+	channelIDLength := int(binary.BigEndian.Uint16(payload[:2]))
+	require.Greater(t, channelIDLength, 0)
+	require.Greater(t, len(payload), 2+channelIDLength)
+	return string(payload[2 : 2+channelIDLength]), payload[2+channelIDLength:]
+}
+
+func mustMarshal(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	require.NoError(t, err)
+	return encoded
+}
+
+// TestIntegration_MultiClientVisibility_GatesAllPeerAccessByClaimedAccount covers R10–R13:
+// two peers stay connected concurrently; unclaimed daemons keep both isolated, while two
+// same-account auth.account peers on a claimed daemon see and may target both origins.
+func TestIntegration_MultiClientVisibility_GatesAllPeerAccessByClaimedAccount(t *testing.T) {
+	t.Run("unclaimed daemon remains peer-scoped and rejects an explicit foreign origin", func(t *testing.T) {
+		rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+		other := pairSecondDevice(t, rig.d, "sha256:peer-b")
+		startRunAs(t, rig.cli, rig.dir, 101, "from-a")
+		startRunAs(t, other, rig.dir, 202, "from-b")
+		awaitLifecycle(t, rig.cli, 101, wire.SessionLifecycleIdle)
+		awaitLifecycle(t, other, 202, wire.SessionLifecycleIdle)
+
+		var fromA, fromB wire.SessionListResult
+		require.NoError(t, callRig(t, rig.cli, wire.MethodSessionList, nil, &fromA))
+		require.NoError(t, callRig(t, other, wire.MethodSessionList, nil, &fromB))
+		require.Equal(t, []int64{101}, sessionIDs(fromA.Sessions))
+		require.Equal(t, []int64{202}, sessionIDs(fromB.Sessions))
+		require.Empty(t, fromA.Sessions[0].PeerFingerprint)
+		require.Empty(t, fromB.Sessions[0].PeerFingerprint)
+
+		var page wire.SessionPullResult
+		err := callRig(t, other, wire.MethodSessionPull, wire.SessionPullParams{
+			SessionID: 101, PeerFingerprint: rigDeviceFingerprint,
+		}, &page)
+		require.Error(t, err, "a paired peer on an unclaimed daemon must not name another origin")
+	})
+
+	t.Run("claimed daemon shares sessions only with same-account authenticated peers", func(t *testing.T) {
+		rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+		credential := claimDaemonForIntegration(t, rig.d, "account-42")
+		peerA := accountClientForIntegration(t, rig.d, "sha256:account-peer-a", credential)
+		peerB := accountClientForIntegration(t, rig.d, "sha256:account-peer-b", credential)
+		startRunAs(t, peerA, rig.dir, 301, "from-a")
+		startRunAs(t, peerB, rig.dir, 302, "from-b")
+		awaitLifecycle(t, peerA, 301, wire.SessionLifecycleIdle)
+		awaitLifecycle(t, peerB, 302, wire.SessionLifecycleIdle)
+
+		var fromA, fromB wire.SessionListResult
+		require.NoError(t, callRig(t, peerA, wire.MethodSessionList, nil, &fromA))
+		require.NoError(t, callRig(t, peerB, wire.MethodSessionList, nil, &fromB))
+		require.Equal(t, []int64{301, 302}, sessionIDs(fromA.Sessions))
+		require.Equal(t, []int64{301, 302}, sessionIDs(fromB.Sessions))
+		// Origin 是**相对调用方**的:自己发起的那条留空(「省略 = 调用方自己的对端」),
+		// 只有别的对端那条才带指纹。两个对端因此各自看到一份镜像的 origin 表。
+		require.Equal(t, map[int64]string{301: "", 302: "sha256:account-peer-b"}, sessionOrigins(fromA.Sessions))
+		require.Equal(t, map[int64]string{301: "sha256:account-peer-a", 302: ""}, sessionOrigins(fromB.Sessions))
+
+		var page wire.SessionPullResult
+		require.NoError(t, callRig(t, peerA, wire.MethodSessionPull, wire.SessionPullParams{
+			SessionID: 302, PeerFingerprint: "sha256:account-peer-b",
+		}, &page), "same-account peer must be able to target the other origin")
+		require.Error(t, callRig(t, rig.cli, wire.MethodSessionPull, wire.SessionPullParams{
+			SessionID: 302, PeerFingerprint: "sha256:account-peer-b",
+		}, &page), "a pairing-authenticated connection remains peer-scoped on a claimed daemon")
+
+		var attached wire.SessionAttachResult
+		require.NoError(t, callRig(t, peerA, wire.MethodSessionAttach, wire.SessionAttachParams{
+			SessionID: 302, PeerFingerprint: "sha256:account-peer-b",
+		}, &attached), "same-account peer must be able to attach the other origin")
+		var ok wire.OK
+		require.NoError(t, callRig(t, peerA, wire.MethodAbort, wire.AbortParams{
+			SessionID: 302, PeerFingerprint: "sha256:account-peer-b",
+		}, &ok), "control resolution must use the named origin's runtime session key")
+	})
+
+	// Given 一台已认领 daemon,和一台**既配过对、又持账号凭据**的桌面 —— R6 的并发选路
+	// 让它每次重连都可能落在直连(有配对令牌就走 auth.connect)或中转(恒走 auth.account)
+	// 任一条路径上;When 它在账号鉴权那条路径上取会话清单,把清单交出的 origin 记下来,
+	// 随后路径切回直连(配对鉴权)并按既有约定把同一个 origin 原样带进补齐的 attach,
+	// Then 补齐必须照常成功。
+	//
+	// 清单交出 origin 的约定是「空 = 调用方自己的对端」(ResolveSessionPeer 的入口语义,
+	// 桌面侧 remote.Runtime 的 originFor / rememberOrigin 也照它写)。把**调用方自己的**
+	// 指纹写进清单,客户端就会在此后每一次 attach / pull / 控制请求里原样带回来,而配对
+	// 身份点名任何 origin 都被 ResolveSessionPeer 拒成 ErrUnauthorized —— 桌面端切回直连
+	// 后连自己的会话都补不齐,正是规格的硬不变量「路径切换不得使前置规格的事件游标失效」
+	// 所禁止的。
+	t.Run("a peer's own sessions carry no origin, so replaying it on the direct path still resolves", func(t *testing.T) {
+		rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+		credential := claimDaemonForIntegration(t, rig.d, "account-42")
+		// 同一台桌面的账号鉴权连接:指纹与 rig.cli 那条配对连接相同(R5 硬不变量 ——
+		// 两条路径上必须是同一个对端标识)。
+		viaAccount := accountClientForIntegration(t, rig.d, rigDeviceFingerprint, credential)
+		startRunAs(t, viaAccount, rig.dir, 601, "from-account-path")
+		awaitLifecycle(t, viaAccount, 601, wire.SessionLifecycleIdle)
+
+		var list wire.SessionListResult
+		require.NoError(t, callRig(t, viaAccount, wire.MethodSessionList, nil, &list))
+		assert.Equal(t, map[int64]string{601: ""}, sessionOrigins(list.Sessions),
+			"调用方自己发起的会话,清单交出的 origin 必须为空")
+
+		// 路径切回直连:配对鉴权的那条连接把清单里学到的 origin 原样带回来。
+		var attached wire.SessionAttachResult
+		require.NoError(t, callRig(t, rig.cli, wire.MethodSessionAttach, wire.SessionAttachParams{
+			SessionID: 601, PeerFingerprint: sessionOrigins(list.Sessions)[601],
+		}, &attached), "路径切换后必须还能按游标接回自己的会话")
+	})
+}
+
+// twoClientApprovalRunner 停在一条待决策上,谁回答都由 backend 自己 emit
+// ToolPermissionResolved —— 这正是用户流程里「另一方通过事件流看到它被解决」的那条事件。
+type twoClientApprovalRunner struct {
+	mu     sync.Mutex
+	events chan agentruntime.Event
+	closed bool
+}
+
+const twoClientRequestID = "req-two-client"
+
+func (*twoClientApprovalRunner) Capabilities() capability.Capabilities {
+	return capability.Capabilities{}
+}
+
+func (r *twoClientApprovalRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	ch := make(chan agentruntime.Event, 8)
+	r.mu.Lock()
+	r.events = ch
+	r.mu.Unlock()
+	ch <- agentruntime.TextDelta{Text: "before"}
+	ch <- agentruntime.ToolPermissionRequest{
+		RequestID: twoClientRequestID, ToolName: "Bash", Input: json.RawMessage(`{"command":"ls"}`),
+	}
+	return ch, &agentruntime.RunResult{}, nil
+}
+
+func (r *twoClientApprovalRunner) SubmitToolPermission(_ context.Context, _ int64, requestID string, allow, _ bool, _ string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.events == nil || r.closed {
+		return agentruntime.ErrWaiterNotFound
+	}
+	if requestID != twoClientRequestID {
+		return agentruntime.ErrWaiterNotFound
+	}
+	r.events <- agentruntime.ToolPermissionResolved{RequestID: requestID, Allowed: allow}
+	r.events <- agentruntime.Done{}
+	close(r.events)
+	r.closed = true
+	return nil
+}
+
+// subscribeEventFrames 把一条连接收到的 runtime.event 帧收进 channel。
+func subscribeEventFrames(t *testing.T, cli *client.Client) <-chan wire.EventFrame {
+	t.Helper()
+	frames := make(chan wire.EventFrame, 64)
+	cli.Handle(wire.NotifyEvent, func(_ context.Context, p json.RawMessage) (any, error) {
+		var f wire.EventFrame
+		if err := json.Unmarshal(p, &f); err == nil {
+			select {
+			case frames <- f:
+			default:
+			}
+		}
+		return nil, nil
+	})
+	return frames
+}
+
+// awaitEventKind 等某条会话的某类事件到达这条连接;超时即失败(「收不到」正是会话被推去
+// 了别处 / 没有扇出时的表现:没有错误,只是永远没有下一条)。
+func awaitEventKind(t *testing.T, frames <-chan wire.EventFrame, sid int64, kind agentruntime.EventKind, msg string) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case f := <-frames:
+			if f.SessionID != sid {
+				continue
+			}
+			var probe struct {
+				Kind agentruntime.EventKind `json:"kind"`
+			}
+			if err := json.Unmarshal(f.Event, &probe); err == nil && probe.Kind == kind {
+				require.Positive(t, f.Seq, "推出去的帧必须带 seq")
+				return
+			}
+		case <-deadline:
+			t.Fatalf("%s: 会话 %d 的 %s 事件没有到达这条连接", msg, sid, kind)
+		}
+	}
+}
+
+// TestIntegration_MultiClientLiveEvents_SameAccountConnsShareOneSessionStream 兑现用户
+// 流程「桌面与手机同时连着同一个会话」:已认领 daemon 上同账号的两条连接同时收到同一
+// 会话的实时事件,任一方回答待决策,另一方从事件流里看到它被解决。
+//
+// 三段断言各钉一个方向:手机按 R12 接管这条会话后回答待决策,已经不是属主的桌面端仍
+// 收到解决事件(接管不把另一方踢下线);而同账号的第三条连接从没上过这条会话,一条也
+// 收不到 —— 帧上只有裸 sessionId,推给它就是落进它自己那条同号会话(R12「会话主键结构
+// 不变」)。
+func TestIntegration_MultiClientLiveEvents_SameAccountConnsShareOneSessionStream(t *testing.T) {
+	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+	t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, &twoClientApprovalRunner{}))
+
+	credential := claimDaemonForIntegration(t, rig.d, "account-42")
+	const desktopFingerprint = "sha256:account-desktop"
+	desktop := accountClientForIntegration(t, rig.d, desktopFingerprint, credential)
+	phone := accountClientForIntegration(t, rig.d, "sha256:account-phone", credential)
+	bystander := accountClientForIntegration(t, rig.d, "sha256:account-bystander", credential)
+	desktopFrames := subscribeEventFrames(t, desktop)
+	phoneFrames := subscribeEventFrames(t, phone)
+	bystanderFrames := subscribeEventFrames(t, bystander)
+
+	startRunAs(t, desktop, rig.dir, 501, "two-client")
+
+	awaitEventKind(t, desktopFrames, 501, agentruntime.EventToolPermissionRequest, "发起会话的那条连接")
+
+	// 手机接管这条会话(接管把推送目标改到手机那条连接上)并回答待决策。
+	var attached wire.SessionAttachResult
+	require.NoError(t, callRig(t, phone, wire.MethodSessionAttach, wire.SessionAttachParams{
+		SessionID: 501, PeerFingerprint: desktopFingerprint,
+	}, &attached))
+	var ok wire.OK
+	require.NoError(t, callRig(t, phone, wire.MethodSubmitToolPermission, wire.SubmitToolPermissionParams{
+		SessionID: 501, PeerFingerprint: desktopFingerprint, RequestID: twoClientRequestID, Allow: true,
+	}, &ok))
+
+	awaitEventKind(t, phoneFrames, 501, agentruntime.EventToolPermissionResolved, "回答的那一方")
+	awaitEventKind(t, desktopFrames, 501, agentruntime.EventToolPermissionResolved,
+		"另一方必须从事件流里看到这条待决策被解决")
+	awaitLifecycle(t, desktop, 501, wire.SessionLifecycleIdle)
+
+	select {
+	case f := <-bystanderFrames:
+		t.Fatalf("会话 %d 的事件推给了一条从没上过它的同账号连接", f.SessionID)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// TestIntegration_MultiClientLiveEvents_UnclaimedDaemonKeepsEventsWithTheOriginatingPeer
+// 钉死 R13 的另一半:未认领 daemon 上没有账号可言,第二台已配对设备既看不到会话列表,
+// 也收不到别人会话的实时事件 —— 扇出只在已认领 daemon 上成立。
+func TestIntegration_MultiClientLiveEvents_UnclaimedDaemonKeepsEventsWithTheOriginatingPeer(t *testing.T) {
+	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+	t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, &twoClientApprovalRunner{}))
+
+	other := pairSecondDevice(t, rig.d, "sha256:peer-b")
+	otherFrames := subscribeEventFrames(t, other)
+	ownFrames := subscribeEventFrames(t, rig.cli)
+
+	startRunAs(t, rig.cli, rig.dir, 502, "two-client")
+	awaitEventKind(t, ownFrames, 502, agentruntime.EventToolPermissionRequest, "发起会话的那条连接")
+
+	select {
+	case f := <-otherFrames:
+		t.Fatalf("未认领 daemon 把会话 %d 的事件推给了另一台配对设备", f.SessionID)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// 收尾:让这一轮跑完再退出,否则 fanout goroutine 会活过用例、在数据目录被删之后
+	// 还往库里写(见 TestIntegration_SessionCatchup_AttachRepointsTheLiveStream)。
+	var ok wire.OK
+	require.NoError(t, callRig(t, rig.cli, wire.MethodSubmitToolPermission, wire.SubmitToolPermissionParams{
+		SessionID: 502, RequestID: twoClientRequestID, Allow: true,
+	}, &ok))
+	awaitLifecycle(t, rig.cli, 502, wire.SessionLifecycleIdle)
+}
+
+func sessionIDs(sessions []wire.SessionSummary) []int64 {
+	ids := make([]int64, 0, len(sessions))
+	for _, session := range sessions {
+		ids = append(ids, session.SessionID)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+func sessionOrigins(sessions []wire.SessionSummary) map[int64]string {
+	origins := make(map[int64]string, len(sessions))
+	for _, session := range sessions {
+		origins[session.SessionID] = session.PeerFingerprint
+	}
+	return origins
 }
 
 // TestIntegration_SessionCatchup_ListAndPullReplayTheWholeTurn 覆盖补齐的主路径:

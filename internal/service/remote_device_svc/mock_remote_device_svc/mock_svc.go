@@ -56,6 +56,21 @@ func (mr *MockRemoteDeviceSvcMockRecorder) Add(ctx, req any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Add", reflect.TypeOf((*MockRemoteDeviceSvc)(nil).Add), ctx, req)
 }
 
+// DeviceFingerprint mocks base method.
+func (m *MockRemoteDeviceSvc) DeviceFingerprint() (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeviceFingerprint")
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DeviceFingerprint indicates an expected call of DeviceFingerprint.
+func (mr *MockRemoteDeviceSvcMockRecorder) DeviceFingerprint() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeviceFingerprint", reflect.TypeOf((*MockRemoteDeviceSvc)(nil).DeviceFingerprint))
+}
+
 // Get mocks base method.
 func (m *MockRemoteDeviceSvc) Get(ctx context.Context, id int64) (*remote_device_svc.DeviceView, error) {
 	m.ctrl.T.Helper()

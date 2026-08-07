@@ -165,6 +165,7 @@ type OK struct{}
 
 type GoalParams struct {
 	SessionID         int64           `json:"sessionId"`
+	PeerFingerprint   string          `json:"peerFingerprint,omitempty"`
 	AgentID           int64           `json:"agentId,omitempty"`
 	ProviderSessionID string          `json:"providerSessionId"`
 	Backend           json.RawMessage `json:"backend,omitempty"`
@@ -272,15 +273,17 @@ type RunAck struct {
 
 // SteerParams 等同 agentruntime.Steerer.Steer 的入参。
 type SteerParams struct {
-	SessionID int64  `json:"sessionId"`
-	QueuedID  string `json:"queuedId,omitempty"`
-	Text      string `json:"text"`
+	SessionID       int64  `json:"sessionId"`
+	PeerFingerprint string `json:"peerFingerprint,omitempty"`
+	QueuedID        string `json:"queuedId,omitempty"`
+	Text            string `json:"text"`
 }
 
 // CancelSteerParams 等同 agentruntime.SteerCanceler.CancelSteer 的入参。
 type CancelSteerParams struct {
-	SessionID int64  `json:"sessionId"`
-	QueuedID  string `json:"queuedId,omitempty"`
+	SessionID       int64  `json:"sessionId"`
+	PeerFingerprint string `json:"peerFingerprint,omitempty"`
+	QueuedID        string `json:"queuedId,omitempty"`
 }
 
 // CancelSteerResult 返已撤销的 queuedID 列表(空 queuedID 表示「清空所有未消费」,
@@ -291,7 +294,8 @@ type CancelSteerResult struct {
 
 // DrainParams 等同 agentruntime.SteerDrainer.DrainPending 的入参。
 type DrainParams struct {
-	SessionID int64 `json:"sessionId"`
+	SessionID       int64  `json:"sessionId"`
+	PeerFingerprint string `json:"peerFingerprint,omitempty"`
 }
 
 // DrainResult 返本轮 daemon 已 ack 但 hook 没拉走的 mid-turn steer 列表,
@@ -302,33 +306,38 @@ type DrainResult struct {
 
 // AbortParams 等同 agentruntime.Aborter.Abort 的入参。
 type AbortParams struct {
-	SessionID int64 `json:"sessionId"`
+	SessionID       int64  `json:"sessionId"`
+	PeerFingerprint string `json:"peerFingerprint,omitempty"`
 }
 
 // StopBackgroundTaskParams 等同 agentruntime.BackgroundTaskStopper.StopBackgroundTask 的入参。
 type StopBackgroundTaskParams struct {
-	SessionID int64  `json:"sessionId"`
-	TaskID    string `json:"taskId"`
+	SessionID       int64  `json:"sessionId"`
+	PeerFingerprint string `json:"peerFingerprint,omitempty"`
+	TaskID          string `json:"taskId"`
 }
 
 // SetPermissionModeParams 等同 agentruntime.PermissionModeSetter.SetPermissionMode 的入参。
 type SetPermissionModeParams struct {
-	SessionID int64  `json:"sessionId"`
-	Mode      string `json:"mode"`
+	SessionID       int64  `json:"sessionId"`
+	PeerFingerprint string `json:"peerFingerprint,omitempty"`
+	Mode            string `json:"mode"`
 }
 
 // SubmitAnswerParams 等同 agentruntime.AskAnswerSink.SubmitAnswer 的入参。
 type SubmitAnswerParams struct {
-	SessionID int64                      `json:"sessionId"`
-	RequestID string                     `json:"requestId"`
-	Questions []agentruntime.AskQuestion `json:"questions,omitempty"`
-	Answers   []agentruntime.AskAnswer   `json:"answers,omitempty"`
-	Skipped   bool                       `json:"skipped,omitempty"`
+	SessionID       int64                      `json:"sessionId"`
+	PeerFingerprint string                     `json:"peerFingerprint,omitempty"`
+	RequestID       string                     `json:"requestId"`
+	Questions       []agentruntime.AskQuestion `json:"questions,omitempty"`
+	Answers         []agentruntime.AskAnswer   `json:"answers,omitempty"`
+	Skipped         bool                       `json:"skipped,omitempty"`
 }
 
 // SubmitToolPermissionParams 等同 agentruntime.ToolPermissionSink.SubmitToolPermission 的入参。
 type SubmitToolPermissionParams struct {
 	SessionID          int64  `json:"sessionId"`
+	PeerFingerprint    string `json:"peerFingerprint,omitempty"`
 	RequestID          string `json:"requestId"`
 	Allow              bool   `json:"allow"`
 	AlwaysAllowSession bool   `json:"alwaysAllowSession,omitempty"`
@@ -367,6 +376,7 @@ const (
 // 存的游标一比就知道断连期间落下了多少条。
 type SessionSummary struct {
 	SessionID       int64  `json:"sessionId"`
+	PeerFingerprint string `json:"peerFingerprint,omitempty"`
 	AgentID         int64  `json:"agentId,omitempty"`
 	Cwd             string `json:"cwd,omitempty"`
 	BackendType     string `json:"backendType,omitempty"`
@@ -384,9 +394,10 @@ type SessionListResult struct {
 // SessionPullParams 是 MethodSessionPull 的请求:给定会话与起始游标,取其后的通知。
 // Cursor 是**已经收到的**最后一个 seq(独占),所以首次补齐传 0。
 type SessionPullParams struct {
-	SessionID int64 `json:"sessionId"`
-	Cursor    int64 `json:"cursor"`
-	Limit     int   `json:"limit,omitempty"`
+	SessionID       int64  `json:"sessionId"`
+	PeerFingerprint string `json:"peerFingerprint,omitempty"`
+	Cursor          int64  `json:"cursor"`
+	Limit           int    `json:"limit,omitempty"`
 }
 
 // JournaledNotification 是日志里的一行:那条本该发出的通知的原样 (method, params)。
@@ -419,7 +430,8 @@ type SessionPullResult struct {
 
 // SessionPendingWaitersParams 是 MethodSessionPendingWaiters 的请求。
 type SessionPendingWaitersParams struct {
-	SessionID int64 `json:"sessionId"`
+	SessionID       int64  `json:"sessionId"`
+	PeerFingerprint string `json:"peerFingerprint,omitempty"`
 }
 
 // SessionPendingWaitersResult 是某会话此刻仍在阻塞的全部待决策,载荷足以重建审批 /
@@ -432,7 +444,8 @@ type SessionPendingWaitersResult struct {
 
 // SessionAttachParams 是 MethodSessionAttach 的请求。
 type SessionAttachParams struct {
-	SessionID int64 `json:"sessionId"`
+	SessionID       int64  `json:"sessionId"`
+	PeerFingerprint string `json:"peerFingerprint,omitempty"`
 }
 
 // SessionAttachResult 交回客户端接着补齐需要的东西:会话此刻的生命周期状态、backend

@@ -2,6 +2,7 @@ package server_svc_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -53,14 +54,27 @@ func TestStartLogin_Success(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		svc, mRepo, _ := setupServerSvc(t, srv.URL)
-		mRepo.EXPECT().Get(gomock.Any()).Return(&server_state_entity.ServerState{ID: 1, DeviceFingerprint: "fp-existing"}, nil)
-		mRepo.EXPECT().Save(gomock.Any(), gomock.Any()).DoAndReturn(
-			func(_ context.Context, s *server_state_entity.ServerState) error {
-				So(s.ServerURL, ShouldEqual, srv.URL)
-				So(s.DeviceFingerprint, ShouldEqual, "fp-existing")
-				return nil
-			},
+		svc, mRepo, kc := setupServerSvc(t, srv.URL)
+		gomock.InOrder(
+			mRepo.EXPECT().Get(gomock.Any()).Return(&server_state_entity.ServerState{ID: 1, DeviceFingerprint: "fp-existing"}, nil),
+			// 1) early fingerprint resync (ServerURL still empty) — R5: synced to keychain.
+			mRepo.EXPECT().Save(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(_ context.Context, s *server_state_entity.ServerState) error {
+					kcFP, _ := kc.Get("agentre-device-fingerprint")
+					So(s.ServerURL, ShouldEqual, "")
+					So(s.DeviceFingerprint, ShouldEqual, kcFP)
+					return nil
+				},
+			),
+			// 2) post-authorize save (hub_url now set; fingerprint unchanged).
+			mRepo.EXPECT().Save(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(_ context.Context, s *server_state_entity.ServerState) error {
+					So(s.ServerURL, ShouldEqual, srv.URL)
+					kcFP, _ := kc.Get("agentre-device-fingerprint")
+					So(s.DeviceFingerprint, ShouldEqual, kcFP)
+					return nil
+				},
+			),
 		)
 
 		res, err := svc.StartLogin(context.Background(), srv.URL)
@@ -110,6 +124,49 @@ func TestStartLogin_FreshInstall_PersistsFingerprintEarly(t *testing.T) {
 
 		_, err := svc.StartLogin(context.Background(), srv.URL)
 		So(err, ShouldBeNil)
+	})
+}
+
+func TestStartLogin_ReusesKeychainFingerprint(t *testing.T) {
+	Convey("StartLogin presents the LAN pairing keychain fingerprint, not a random one (R5)", t, func() {
+		var authorizeFP atomic.Value
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/v1/healthz":
+				_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"version":"v0.1.0"}}`))
+			case "/v1/oauth/device/authorize":
+				var req struct {
+					Fingerprint string `json:"fingerprint"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				authorizeFP.Store(req.Fingerprint)
+				_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"device_code":"dc","user_code":"X","verification_uri":"http://h/device","verification_uri_complete":"http://h/device?user_code=X","interval":5,"expires_in":600}}`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer srv.Close()
+
+		svc, mRepo, kc := setupServerSvc(t, srv.URL)
+		// LAN 配对已先落地同一把 keychain 指纹。
+		_ = kc.Set("agentre-device-fingerprint", "sha256:lan-paired")
+
+		mRepo.EXPECT().Get(gomock.Any()).Return(&server_state_entity.ServerState{ID: 1}, nil)
+		mRepo.EXPECT().Save(gomock.Any(), gomock.Any()).AnyTimes()
+
+		_, err := svc.StartLogin(context.Background(), srv.URL)
+		So(err, ShouldBeNil)
+		So(authorizeFP.Load().(string), ShouldEqual, "sha256:lan-paired")
+		kcFP, _ := kc.Get("agentre-device-fingerprint")
+		So(kcFP, ShouldEqual, "sha256:lan-paired") // 未覆盖既有 LAN 指纹
+	})
+}
+
+func TestAccessToken_ReturnsCurrentToken(t *testing.T) {
+	Convey("AccessToken returns the current hub access token (relay auth)", t, func() {
+		svc := server_svc.New(server_svc.NewHTTPClient("http://hub", "tok-1"), nil)
+		So(svc.AccessToken(), ShouldEqual, "tok-1")
 	})
 }
 

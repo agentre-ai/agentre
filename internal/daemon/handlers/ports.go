@@ -104,6 +104,25 @@ type SessionQueryPort interface {
 	Find(ctx context.Context, peerFingerprint, peerSessionID string) (*SessionRecord, error)
 }
 
+// SteerSourceEntry 是一条 mid-turn steer 的提交方信息(R17)。Record 时由 Steer RPC
+// 从调用连接的对端鉴权状态里取,Consume 时盖回被消费的 steer 上。
+type SteerSourceEntry struct {
+	Peer string // 提交方设备指纹;空 = 本机/未知
+	Name string // 提交方设备名(auth.pair 时上报);空 = 无可用名字
+}
+
+// SteerSourcePort 记录并消费「queuedID → 提交方对端」的映射(R17)。它是 **Daemon 级**
+// 的:Steer RPC 可能落在任意一条连接上(同设备多条连接 / 他端接管别人的会话),而
+// SteerConsumed 由发起会话那条连接的 fanout 发出 —— 映射必须在两者之间共享,per-conn
+// 存就会在「提交落在连接 B、fanout 跑在连接 A」时查不到。
+type SteerSourcePort interface {
+	Record(queuedID string, entry SteerSourceEntry)
+	// Consume 取走并删除 queuedID 对应的提交方;查不到返回零值 + false。
+	Consume(queuedID string) (SteerSourceEntry, bool)
+	// Forget 删除一个 queuedID 的映射(steer 被撤回等不再会被消费的场景)。
+	Forget(queuedID string)
+}
+
 // JournalRow 是通知日志里的一行。Payload 是那条通知的 params 原样、**不含 seq**
 // (见 JournalPort)。
 type JournalRow struct {

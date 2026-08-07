@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/agentre-ai/agentre/internal/daemon/client"
 	"github.com/agentre-ai/agentre/internal/model/entity/server_state_entity"
 )
 
@@ -21,6 +22,13 @@ type ServerSvc interface {
 	// affecting the singleton service's state. Returns the hub-reported version.
 	CheckURL(ctx context.Context, serverURL string) (string, error)
 	SetEmitter(emit func(any))
+	// AccessToken returns the current hub access token (empty when not logged in).
+	// Consumed by the relay dial to authenticate /v1/relay/client.
+	AccessToken() string
+	// DialDaemonRelay connects to the given daemon through the account relay,
+	// presenting peerFingerprint (the desktop's own device fingerprint) to
+	// auth.account — the same identity the LAN path presents (R5/R6).
+	DialDaemonRelay(ctx context.Context, daemonFingerprint, peerFingerprint string) (*client.Client, error)
 }
 
 var defaultSvc ServerSvc
