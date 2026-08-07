@@ -55,13 +55,16 @@ export function DiffPreview({
       ariaLabel,
       theme: resolveMonacoTheme(),
     });
-    diff.setModel({
-      original: ns.editor.createModel(original, lang),
-      modified: ns.editor.createModel(modified, lang),
-    });
+    const originalModel = ns.editor.createModel(original, lang);
+    const modifiedModel = ns.editor.createModel(modified, lang);
+    diff.setModel({ original: originalModel, modified: modifiedModel });
     return () => {
-      // dispose 时一并释放它持有的 original/modified 模型，无手动泄漏。
       diff.dispose();
+      // Monaco 里 createModel 建的模型登记在全局模型表,编辑器 dispose 不会释放
+      // 它们;不显式 dispose 每次重建就泄漏 2 个 TextModel(轮次结束重读 / 切文件
+      // 都会重建)。先 diff.dispose() 解除编辑器引用,再释放模型。
+      originalModel.dispose();
+      modifiedModel.dispose();
     };
   }, [ns, lang, original, modified, ariaLabel]);
 

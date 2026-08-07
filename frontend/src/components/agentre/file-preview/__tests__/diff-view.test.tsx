@@ -109,4 +109,36 @@ describe("DiffPreview", () => {
 
     expect(diffs[0].dispose).toHaveBeenCalledTimes(1);
   });
+
+  // Monaco 里 createModel 建的模型登记在全局模型表里,编辑器 dispose 不会释放它们;
+  // 不显式 dispose 就每次重建都泄漏 2 个 TextModel(轮次结束重读 / 切文件都会重建)。
+  it("disposes the created models on unmount (no model-registry leak)", () => {
+    const { monaco, models } = createFakeMonaco();
+
+    const { unmount } = render(
+      <DiffPreview original="a" modified="b" path="x.go" monaco={monaco} />,
+    );
+    expect(models).toHaveLength(2);
+    unmount();
+
+    expect(models[0].dispose).toHaveBeenCalledTimes(1);
+    expect(models[1].dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("disposes the previous run's models when content changes", () => {
+    const { monaco, models } = createFakeMonaco();
+
+    const { rerender } = render(
+      <DiffPreview original="a" modified="b" path="x.go" monaco={monaco} />,
+    );
+    rerender(
+      <DiffPreview original="a2" modified="b2" path="x.go" monaco={monaco} />,
+    );
+
+    expect(models).toHaveLength(4);
+    expect(models[0].dispose).toHaveBeenCalledTimes(1);
+    expect(models[1].dispose).toHaveBeenCalledTimes(1);
+    expect(models[2].dispose).not.toHaveBeenCalled();
+    expect(models[3].dispose).not.toHaveBeenCalled();
+  });
 });

@@ -60,7 +60,11 @@ function createFakeMonaco(): FakeMonaco {
         return d;
       },
     ),
-    createModel: vi.fn((value: string, lang: string) => ({ value, lang })),
+    createModel: vi.fn((value: string, lang: string) => ({
+      value,
+      lang,
+      dispose: vi.fn(),
+    })),
   };
   return { editor };
 }
@@ -350,6 +354,28 @@ describe("FilePreviewPanel", () => {
       expect(
         useChatSidebarStore.getState().previewBySession[7],
       ).toBeUndefined();
+    });
+  });
+
+  it("keeps a newly opened file when a close is still animating", async () => {
+    readFileMock.mockResolvedValue(textView("# a"));
+    openPreview("a.md");
+    renderPanel();
+
+    const panel = await screen.findByRole("complementary", {
+      name: "File preview",
+    });
+    await userEvent.click(
+      within(panel).getByRole("button", { name: "Close preview" }),
+    );
+    // 200ms 出场动画期间打开另一个文件:旧 timer 不能把新选择清掉。
+    useChatSidebarStore.getState().openPreview(7, "b.md");
+
+    // 等关闭动画的 timer 跑完,断言 b.md 仍然选中、面板仍然开着。
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(useChatSidebarStore.getState().previewBySession[7]).toEqual({
+      path: "b.md",
+      segment: null,
     });
   });
 

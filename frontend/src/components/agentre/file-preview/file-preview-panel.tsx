@@ -105,9 +105,16 @@ export function FilePreviewPanel({ sessionId }: Props) {
   );
   const handleClose = React.useCallback(() => {
     if (closing) return;
+    // 记下关闭那一刻的选中,出场动画(200ms)期间用户可能已打开另一个文件
+    // (openPreview):只有选中仍是关闭那一刻的文件才真正清空,否则旧 timer 会把
+    // 用户的新选择一起清掉(面板白关、新文件白选)。
+    const selectedPath =
+      useChatSidebarStore.getState().previewBySession[sessionId]?.path;
     setClosing(true);
     closeTimerRef.current = window.setTimeout(() => {
-      clearPreview(sessionId);
+      const current =
+        useChatSidebarStore.getState().previewBySession[sessionId]?.path;
+      if (current === selectedPath) clearPreview(sessionId);
       setClosing(false);
     }, 200);
   }, [closing, clearPreview, sessionId]);
