@@ -2,6 +2,7 @@ package chat_svc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -87,9 +88,9 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 		sess.LastMessageAt = time.Now().UnixMilli()
 		return chat_repo.Session().Update(txCtx, sess)
 	}); err != nil {
-		logger.Ctx(ctx).Error("chat_svc: driveAutonomousTurn persist assistant failed; draining events",
+		logger.Ctx(ctx).Error("chat_svc: driveAutonomousTurn persist assistant failed",
 			zap.Int64("sessionId", sessionID), zap.Error(err))
-		drainAndDiscard(at.Events)
+		s.failAutonomousTurnPersist(ctx, sessionID, sess, be, err, at.Events)
 		return
 	}
 
@@ -226,6 +227,61 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 		Kind:            StreamAutonomousFinished,
 		LaunchMessageID: assistantMsg.ID,
 	})
+}
+
+// failAutonomousTurnPersist 处理"新建 assistant 消息的事务最终失败"这一分支
+// (design decisions 6/7/9 + spec"自主续轮落库失败时的可观察结果"),依次产出四个
+// 互相独立的可观察结果:
+//  1. 会话翻 error 并持久化。失败的是消息写入事务;会话状态写入是独立一次写,
+//     允许其独立成功。若这次写也失败,记录日志后继续后续步骤,不再重试
+//     (应用层重试已被本轮决策 1 拒绝,重试属于驱动层 busy handler 的职责)。
+//  2. 经会话级流(AutonomousStreamName)推一条错误事件,不依赖数据库就能让前端
+//     看到这一轮出错;文案复用既有 mapTurnError,与用户发起的轮次一致。
+//  3. 主动中断 CLI 当前这一轮,让子进程解除等待(镜像 chat.go Stop 里
+//     `runner.(agentruntime.Aborter)` 的既有先例)。selectRunner / Abort 失败
+//     (含子进程已消失,即 ErrNoActiveTurn)只记日志,不影响前两步已产生的结果。
+//  4. Hard invariant:抽干 at.Events,必须发生在 1-3 之后 —— 出口 channel 无人
+//     drain 会导致 Session 活跃槽位不释放,后续用户 turn 全部卡死。
+//
+// 四步互相独立、顺序执行,任何一步失败都不影响其余步骤,也不 panic、不阻塞
+// watcher goroutine。
+func (s *chatSvc) failAutonomousTurnPersist(
+	ctx context.Context,
+	sessionID int64,
+	sess *chat_entity.Session,
+	be *agent_backend_entity.AgentBackend,
+	persistErr error,
+	events <-chan agentruntime.Event,
+) {
+	// 1. 会话翻 error 并持久化;这次写失败只记日志,不重试。
+	sess.AgentStatus = "error"
+	sess.NeedsAttention = false
+	if err := chat_repo.Session().Update(ctx, sess); err != nil {
+		logger.Ctx(ctx).Error("chat_svc.failAutonomousTurnPersist: session status persist failed",
+			zap.Int64("sessionId", sessionID), zap.Error(err))
+	}
+
+	// 2. 经会话级流推错误事件,不依赖数据库;文案复用 mapTurnError。
+	mappedErr := s.mapTurnError(ctx, sess, be, persistErr)
+	s.emitter.Emit(ctx, AutonomousStreamName(sessionID), ChatStreamEvent{
+		Kind:  StreamError,
+		Error: mappedErr.Error(),
+	})
+
+	// 3. 主动中断 CLI 当前这一轮。selectRunner / Abort 失败(含子进程已消失)只记日志,
+	// 不影响前两步已经产生的结果。
+	if runner, err := s.selectRunner(ctx, be, sessionID); err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.failAutonomousTurnPersist: selectRunner failed, cannot interrupt CLI turn",
+			zap.Int64("sessionId", sessionID), zap.Error(err))
+	} else if aborter, ok := runner.(agentruntime.Aborter); ok {
+		if aerr := aborter.Abort(ctx, sessionID); aerr != nil && !errors.Is(aerr, agentruntime.ErrNoActiveTurn) {
+			logger.Ctx(ctx).Warn("chat_svc.failAutonomousTurnPersist: runner.Abort failed",
+				zap.Int64("sessionId", sessionID), zap.Error(aerr))
+		}
+	}
+
+	// 4. Hard invariant:抽干事件 channel,别让 Session reader 阻塞。
+	drainAndDiscard(events)
 }
 
 // drainAndDiscard 把事件 channel 抽干丢弃。关键不是丢内容,而是别让底层
