@@ -12,9 +12,9 @@ import { TLSTrustDialog } from "./tls-trust-dialog";
 import { useRemoteDevices, type DeviceRowModel } from "./use-remote-devices";
 import { useServerLogin } from "./use-server-login";
 
-// R24: entry point for the standard device-authorization flow, and the
-// signed-in identity + sign-out affordance once connected. The remote
-// devices panel is the natural host — it already renders the unclaimed
+// 规格「界面与交互 › 登录」: entry point for the standard device-authorization
+// flow, and the signed-in identity + sign-out affordance once connected. The
+// remote devices panel is the natural host — it already renders the unclaimed
 // marker and claim guidance that this flow closes the loop on.
 function AccountStatus({
   loading,

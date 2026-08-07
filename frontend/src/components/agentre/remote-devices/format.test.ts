@@ -103,7 +103,7 @@ describe("hostOf", () => {
   });
 });
 
-describe("friendlyLoginError (R24 error surfacing)", () => {
+describe("friendlyLoginError (login error surfacing)", () => {
   it("translates known server_svc sentinel errors", () => {
     expect(friendlyLoginError(new Error("server: unreachable"), t)).toBe(
       "无法连接服务器，请检查地址后重试。",

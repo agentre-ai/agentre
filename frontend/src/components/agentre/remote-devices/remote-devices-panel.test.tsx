@@ -177,8 +177,8 @@ describe("RemoteDevicesPanel", () => {
     expect(screen.queryByText(/192\.168\.1\.50/)).not.toBeInTheDocument();
   });
 
-  // R24: the remote-devices panel is the login entry point.
-  describe("account login (R24)", () => {
+  // 规格「界面与交互 › 登录」:设备面板是账号登录的入口。
+  describe("account login", () => {
     it("shows a Sign in entry point when not connected to an account", async () => {
       mockList.mockResolvedValueOnce([]);
       render(<RemoteDevicesPanel />);

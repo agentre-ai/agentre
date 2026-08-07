@@ -61,7 +61,7 @@ export function hostOf(url: string): string {
   }
 }
 
-// R24: server_svc's login/poll bindings return raw Go error strings (not
+// server_svc's login/poll bindings return raw Go error strings (not
 // i18n.NewError-wrapped — see internal/app/server.go), so the frontend maps
 // the known server_svc sentinels to translated copy and falls back to the
 // raw message for anything else, mirroring friendlyLastError above.

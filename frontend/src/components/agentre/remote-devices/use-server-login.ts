@@ -12,7 +12,7 @@ import type { server_state_entity } from "../../../../wailsjs/go/models";
 
 export type ServerState = server_state_entity.ServerState;
 
-// R24: mirrors server_state_entity.ServerState.IsLoggedIn() (Go) — the
+// Mirrors server_state_entity.ServerState.IsLoggedIn() (Go) — the
 // desktop is only "logged in" once user, device, and keychain are all bound.
 // Kept in sync by hand since the entity method isn't reachable from the
 // frontend; internal/model/entity/server_state_entity/server_state.go is the

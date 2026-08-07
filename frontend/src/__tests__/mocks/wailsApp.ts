@@ -275,7 +275,7 @@ export const RemoteFsMkdir = windowBackedMock("RemoteFsMkdir", () =>
   Promise.resolve({}),
 );
 
-// R24 account login (internal/app/server.go) — used by RemoteDevicesPanel's
+// Account login (internal/app/server.go) — used by RemoteDevicesPanel's
 // login entry point / identity card via use-server-login.ts + login-dialog.tsx.
 // Default is the fresh-install logged-out row; tests that exercise the login
 // flow override these directly.
