@@ -14,6 +14,7 @@ describe("chat-sidebar-store", () => {
       activeTab: "outline",
       filesMode: "changes",
       showIgnored: false,
+      gitBaselineBySession: {},
     });
   });
 
@@ -89,5 +90,72 @@ describe("chat-sidebar-store", () => {
     );
     await useChatSidebarStore.persist.rehydrate();
     expect(useChatSidebarStore.getState().showIgnored).toBe(false);
+  });
+
+  it("stores the git baseline per session and persists it", () => {
+    useChatSidebarStore.getState().setGitBaseline(7, "origin/main");
+    useChatSidebarStore.getState().setGitBaseline(8, "develop/wyz");
+
+    expect(useChatSidebarStore.getState().gitBaselineBySession).toEqual({
+      7: "origin/main",
+      8: "develop/wyz",
+    });
+    expect(localStorage.getItem("chat-sidebar-state")).toContain(
+      '"7":"origin/main"',
+    );
+  });
+
+  it("clears one session's baseline without touching the others", () => {
+    useChatSidebarStore.getState().setGitBaseline(7, "origin/main");
+    useChatSidebarStore.getState().setGitBaseline(8, "develop/wyz");
+
+    useChatSidebarStore.getState().clearGitBaseline(7);
+
+    expect(useChatSidebarStore.getState().gitBaselineBySession).toEqual({
+      8: "develop/wyz",
+    });
+  });
+
+  it("ignores a baseline write for a non-session id or an empty ref", () => {
+    useChatSidebarStore.getState().setGitBaseline(0, "origin/main");
+    useChatSidebarStore.getState().setGitBaseline(7, "");
+
+    expect(useChatSidebarStore.getState().gitBaselineBySession).toEqual({});
+  });
+
+  it("drops persisted baselines that are not a session id to ref map", async () => {
+    localStorage.setItem(
+      "chat-sidebar-state",
+      JSON.stringify({
+        state: {
+          open: true,
+          activeTab: "files",
+          gitBaselineBySession: {
+            7: "origin/main",
+            8: 42,
+            notAnId: "main",
+          },
+        },
+        version: 0,
+      }),
+    );
+    await useChatSidebarStore.persist.rehydrate();
+
+    expect(useChatSidebarStore.getState().gitBaselineBySession).toEqual({
+      7: "origin/main",
+    });
+  });
+
+  it("falls back to an empty baseline map when the persisted value is not an object", async () => {
+    localStorage.setItem(
+      "chat-sidebar-state",
+      JSON.stringify({
+        state: { open: true, gitBaselineBySession: "origin/main" },
+        version: 0,
+      }),
+    );
+    await useChatSidebarStore.persist.rehydrate();
+
+    expect(useChatSidebarStore.getState().gitBaselineBySession).toEqual({});
   });
 });

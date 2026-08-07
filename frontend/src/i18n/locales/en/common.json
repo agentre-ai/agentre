@@ -631,6 +631,34 @@
       "readFailed": "Failed to read the directory",
       "retry": "Retry"
     },
+    "git": {
+      "scope": {
+        "label": "Comparison scope",
+        "uncommitted": "Uncommitted",
+        "branch": "This branch"
+      },
+      "baseline": "Compare against: {{ref}}",
+      "pickBaseline": "Pick a baseline",
+      "noBranches": "No branches to pick from",
+      "loading": "Loading git changes…",
+      "notARepo": "This directory is not a git repository",
+      "notARepoHint": "Switch to Changes to see the files this session touched",
+      "cleanUncommitted": "The working tree is clean, nothing uncommitted",
+      "cleanBranch": "No changes compared with {{ref}}",
+      "noBaseline": "Can't infer a default branch",
+      "noBaselineHint": "Pick a comparison baseline from the button above",
+      "noCwd": "This session has no working directory",
+      "readFailed": "Failed to read git changes",
+      "retry": "Retry",
+      "truncated": "Showing the first {{limit}} changed files only",
+      "status": {
+        "modified": "Modified",
+        "added": "Added",
+        "deleted": "Deleted",
+        "renamed": "Renamed",
+        "untracked": "Untracked"
+      }
+    },
     "outline": {
       "empty": "No messages in this session",
       "label": "Outline",

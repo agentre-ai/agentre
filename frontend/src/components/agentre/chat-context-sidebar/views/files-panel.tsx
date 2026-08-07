@@ -10,6 +10,9 @@ import { FilesModeSwitcher } from "../files-mode-switcher";
 
 import { DirectoryView } from "./directory-view";
 import { FilesView } from "./files-view";
+import { GitContextBar } from "./git-context-bar";
+import { GitView } from "./git-view";
+import { useGitChanges } from "./use-git-changes";
 
 type Props = {
   sessionId: number;
@@ -38,12 +41,17 @@ export function FilesPanel({
   const showIgnored = useChatSidebarStore((s) => s.showIgnored);
   const setShowIgnored = useChatSidebarStore((s) => s.setShowIgnored);
 
+  // Git 模式的取数挂在面板这一层，是因为上下文条（两档 + 基线）与内容区共用同一
+  // 份状态，模式控件的角标也要读它的文件数；enabled 保证别的模式下零后端调用。
+  const git = useGitChanges({ sessionId, cwd, enabled: mode === "git" });
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <FilesModeSwitcher
         active={mode}
         onChange={setMode}
         changesCount={files.length}
+        gitCount={git.count}
       />
       {mode === "directory" ? (
         <div className="flex h-7 shrink-0 items-center border-b border-border px-2">
@@ -67,6 +75,19 @@ export function FilesPanel({
           </Toggle>
         </div>
       ) : null}
+      {/*
+        非 git 仓库时连两档切换一起收起来 —— 没有仓库就没有「未提交 / 本分支」
+        可言，空态本身已经说明了原因（mockup C2）。
+      */}
+      {mode === "git" && cwd !== "" && !git.notARepo ? (
+        <GitContextBar
+          scope={git.scope}
+          onScopeChange={git.setScope}
+          baseRef={git.baseRef}
+          branches={git.branches}
+          onSelectBaseline={git.selectBaseline}
+        />
+      ) : null}
       <div className="min-h-0 flex-1 overflow-auto">
         {mode === "changes" ? (
           <FilesView
@@ -84,10 +105,16 @@ export function FilesPanel({
             showIgnored={showIgnored}
           />
         ) : null}
-        {/*
-          「Git」模式（未提交 / 本分支两档 + 基线分支选择 + 扁平变动行）接在这里，
-          上下文条的 git 分支同样接在上面的条件里。
-        */}
+        {mode === "git" ? (
+          <GitView
+            cwd={cwd}
+            remote={remote}
+            scope={git.scope}
+            baseRef={git.baseRef}
+            state={git.state}
+            onRetry={git.reload}
+          />
+        ) : null}
       </div>
     </div>
   );

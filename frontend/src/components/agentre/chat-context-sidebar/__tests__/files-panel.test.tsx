@@ -11,10 +11,28 @@ vi.mock("sonner", () => sonnerMocks);
 
 const openPathMock = vi.fn();
 const listDirMock = vi.fn();
+// Git 模式的两个绑定这里只需要能被安全调用（本文件不断言它们），断言在
+// files-panel-git.test.tsx。
+const gitMocks = vi.hoisted(() => ({
+  changes: async () => ({
+    notARepo: false,
+    baseRef: "",
+    changes: [],
+    truncated: false,
+  }),
+  branches: async () => ({
+    notARepo: false,
+    currentBranch: "",
+    defaultBaseline: "",
+    branches: [],
+  }),
+}));
 vi.mock("@/../wailsjs/go/app/App", () => ({
   OpenPath: (p: string) => openPathMock(p),
   WorkspaceFsListDir: (sessionId: number, relPath: string, ignored: boolean) =>
     listDirMock(sessionId, relPath, ignored),
+  WorkspaceFsGitChanges: gitMocks.changes,
+  WorkspaceFsGitBranches: gitMocks.branches,
 }));
 
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
