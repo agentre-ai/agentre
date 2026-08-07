@@ -36,6 +36,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/agentskill"
 	"github.com/agentre-ai/agentre/internal/pkg/ccoauth"
 	remotefswire "github.com/agentre-ai/agentre/internal/pkg/remotefs/wire"
+	workspacefswire "github.com/agentre-ai/agentre/internal/pkg/workspacefs/wire"
 
 	"github.com/cago-frame/agents/provider"
 	"github.com/stretchr/testify/assert"
@@ -405,6 +406,45 @@ func TestIntegration_UnauthGuard(t *testing.T) {
 	var rfsErr *rpc.Error
 	require.True(t, errors.As(err, &rfsErr), "error must be *rpc.Error")
 	assert.Equal(t, -32001, rfsErr.Code)
+
+	// workspacefs.* 是独立方法族(spec 设计决策 5),同样套 requireAuth 闭包,
+	// 未授权应回 -32001。
+	err = c.Call(callCtx, workspacefswire.MethodListDir, workspacefswire.ListDirReq{}, &workspacefswire.ListDirResp{})
+	require.Error(t, err, "workspacefs.listDir must be rejected without auth")
+	var wfsErr *rpc.Error
+	require.True(t, errors.As(err, &wfsErr), "error must be *rpc.Error")
+	assert.Equal(t, -32001, wfsErr.Code)
+}
+
+// TestIntegration_WorkspaceFsListDir_EndToEnd 验证 workspacefs.listDir 在鉴权
+// 后能端到端跑通一跳:配对拿 deviceToken,再用它调用 daemon 真实文件系统上的
+// 一个临时目录,断言拿到真实条目而不是错误。未鉴权已由 TestIntegration_UnauthGuard
+// 覆盖,这里只覆盖“鉴权后可用”这一半。
+//
+// 用 bootRigInDir + os.MkdirTemp 短前缀(而不是 startTestDaemon 的 t.TempDir()):
+// 长测试名 + t.TempDir() 生成的深路径会超过 macOS 104 字节 unix socket 限制
+// (同 TestIntegration_UnauthGuard/bootRemoteRig 的既有取舍)。
+func TestIntegration_WorkspaceFsListDir_EndToEnd(t *testing.T) {
+	dir, err := os.MkdirTemp("", "ard-wsfs")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	rig := bootRigInDir(t, dir)
+
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.txt"), []byte("hi"), 0o644))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var resp workspacefswire.ListDirResp
+	require.NoError(t, rig.cli.Call(ctx, workspacefswire.MethodListDir, workspacefswire.ListDirReq{Root: root}, &resp))
+	assert.Equal(t, root, resp.Path)
+	names := map[string]workspacefswire.Entry{}
+	for _, e := range resp.Entries {
+		names[e.Name] = e
+	}
+	assert.Contains(t, names, "a.txt")
+	assert.False(t, names["a.txt"].IsDir)
 }
 
 // pacedBackendRunner emits events one at a time with a small inter-event gap so

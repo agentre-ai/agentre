@@ -27,6 +27,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 	"github.com/agentre-ai/agentre/internal/daemon/sessions"
 	"github.com/agentre-ai/agentre/internal/daemon/state"
+	daemonworkspacefs "github.com/agentre-ai/agentre/internal/daemon/workspacefs"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 	"github.com/agentre-ai/agentre/internal/pkg/ccoauth"
@@ -578,6 +579,21 @@ func (d *Daemon) registerMethods() {
 	// remotefs.Register 接受已构造好的 rpc.HandlerFunc,泛型 wrapGuarded[Req,Res] 的
 	// 签名约束与其不匹配,改用 WrapFunc 闭包注入 requireAuth。
 	remotefs.Register(d.registry, remotefs.NewHandlers(remotefs.Options{}),
+		func(fn rpc.HandlerFunc) rpc.HandlerFunc {
+			return func(ctx context.Context, raw json.RawMessage) (any, error) {
+				if err := requireAuth(ctx); err != nil {
+					return nil, err
+				}
+				return fn(ctx, raw)
+			}
+		})
+
+	// workspacefs.Register 挂 workspacefs.* 方法族——刻意与 remotefs.* 分开的
+	// 独立方法族(spec 设计决策 5):remotefs.* 浏览远端机器任意绝对路径,
+	// workspacefs.* 浏览某个会话已解析出的工作目录。旧 daemon 不认识这三个新
+	// 方法时按 JSON-RPC 协议直接回 -32601,而不是静默按 remotefs.* 的旧语义
+	// 应答,版本偏斜因此可见。同样用 WrapFunc 闭包注入 requireAuth。
+	daemonworkspacefs.Register(d.registry, daemonworkspacefs.NewHandlers(daemonworkspacefs.Options{}),
 		func(fn rpc.HandlerFunc) rpc.HandlerFunc {
 			return func(ctx context.Context, raw json.RawMessage) (any, error) {
 				if err := requireAuth(ctx); err != nil {

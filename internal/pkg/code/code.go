@@ -282,3 +282,13 @@ const (
 	DataImportRollback                          // 导入失败,所有改动已回滚
 	DataImportInvalidAction                     // 未知的导入 action
 )
+
+// 会话工作目录浏览(workspacefs)20800~
+const (
+	WorkspaceFsNoCwd            = iota + 20800 // 会话没有可浏览的工作目录
+	WorkspaceFsPathRefused                     // 相对路径越出会话工作目录
+	WorkspaceFsReadFailed                      // 目录 / git 读取失败
+	WorkspaceFsBaselineRequired                // 「本分支」档缺少对比基线
+	WorkspaceFsDeviceOffline                   // 远端设备不在线 / pool borrow 失败
+	WorkspaceFsDaemonOutdated                  // 远端 agentred 不认识 workspacefs.* 方法族
+)
