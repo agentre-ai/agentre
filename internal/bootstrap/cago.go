@@ -53,6 +53,7 @@ import (
 	"github.com/cago-frame/cago/database/db"
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 
 	// 注册 SQLite 驱动
 	_ "github.com/cago-frame/cago/database/db/sqlite"
@@ -99,6 +100,11 @@ func Init(ctx context.Context) (*Runtime, error) {
 
 	// 注册 SQLite 数据库组件。cago 启动 db 失败时会 panic，由调用方 recover/log。
 	cago.New(ctx, cfg).Registry(db.Database())
+
+	// journal_mode 是持久化的数据库属性，一次转换成功即永久生效，不必（也不能）挂进
+	// sqliteDSN 的 _pragma 让每个连接重复执行——失败只记警告、不阻断启动，详见
+	// convertToWAL。放在 migrations 之前，让迁移本身也跑在 WAL 上。
+	convertToWAL(ctx, db.Default())
 
 	if err := migrations.RunMigrations(db.Default()); err != nil {
 		return nil, fmt.Errorf("run migrations: %w", err)
@@ -309,12 +315,42 @@ func (r *Runtime) Close() {
 // 调用点（main.go 等）零改动。
 func AppDataDir() (string, error) { return paths.AppDataDir() }
 
-// sqliteDSN 给 SQLite 文件路径挂上连接 pragma。busy_timeout: 并发 turn 流式写库
-// 时另一条写会撞 SQLITE_BUSY(默认 0 立即失败,实测 0.5ms 即报 database is locked),
-// 改为等锁最多 5s。glebarez 驱动按 DSN _pragma 参数对每个池化连接生效;启动后
-// Exec("PRAGMA ...") 只作用单个连接,不可用。
+// sqliteDSN 给 SQLite 文件路径挂上连接参数。
+//
+// _txlock=immediate: 令每个事务以 BEGIN IMMEDIATE 开启,在 BEGIN 时就取写锁,冲突走
+// busy handler 等锁最多 5s(驱动硬编码的 busy_timeout,见下)。默认的 deferred 事务先
+// 拿读快照、写升级时才取锁,而 SQLite 规范在升级冲突时不调用 busy handler、直接返回
+// SQLITE_BUSY —— 并发 turn 流式写库时曾借此在 0.2ms 内报 database is locked,busy
+// handler 根本没机会介入。glebarez 驱动解析该参数(glebarez/go-sqlite@v1.21.2/sqlite.go:902)
+// 对每个池化连接生效;启动后 Exec("BEGIN ...") 只作用单个连接,不可用。
+//
+// _pragma=synchronous(NORMAL): 配合 WAL(见 convertToWAL)仍崩溃安全 —— 进程崩溃不
+// 会损坏数据库,只在断电/内核崩溃时可能丢失最后若干已提交事务,换来 WAL 写性能收益。
+//
+// 不带 busy_timeout: glebarez 驱动在每个连接建立时无条件硬编码执行
+// `pragma BUSY_TIMEOUT(5000)`(glebarez/go-sqlite@v1.21.2/sqlite.go:880,且早于处理
+// _pragma),该 DSN 参数从未改变过任何行为,保留只会让读代码的人误以为超时是本项目
+// 配置的、可调的。
+//
+// journal_mode 不在这里设置 —— 见 convertToWAL 的 doc 注释：_pragma 对每个连接无条件
+// 执行，首次转换失败会让那次连接建立本身失败进而阻断启动。
 func sqliteDSN(dbPath string) string {
-	return dbPath + "?_pragma=busy_timeout(5000)"
+	return dbPath + "?_txlock=immediate&_pragma=synchronous(NORMAL)"
+}
+
+// convertToWAL 启动时把数据库转换成 WAL journal 模式，仅需成功执行一次 —— 该属性
+// 持久化在数据库文件头，后续启动无须重复生效判断。转换失败(典型是转换时刻另有连接
+// 持有写锁,实测并发连接下 PRAGMA journal_mode=WAL 会直接报 database is locked)不
+// 当作致命错误:这只是一次性能优化，应用可用性不应被它绑架，失败只记警告，下次启动
+// 重试。不得挂进 sqliteDSN 的 _pragma —— 那对每个连接都无条件执行，首次转换失败会让
+// 那一次连接建立本身失败，进而阻断启动。
+func convertToWAL(ctx context.Context, gormDB *gorm.DB) {
+	var mode string
+	if err := gormDB.Raw("PRAGMA journal_mode=WAL").Scan(&mode).Error; err != nil {
+		logger.Ctx(ctx).Warn("bootstrap.convertToWAL: journal mode conversion failed, continuing with current mode", zap.Error(err))
+		return
+	}
+	logger.Ctx(ctx).Info("bootstrap.convertToWAL: journal mode converted", zap.String("mode", mode))
 }
 
 func defaultConfigValues(logsDir, dbPath string) map[string]interface{} {
