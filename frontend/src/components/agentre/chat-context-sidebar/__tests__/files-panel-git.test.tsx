@@ -285,6 +285,7 @@ describe("FilesPanel git mode · 未提交档", () => {
     expect(useChatSidebarStore.getState().previewBySession[7]).toEqual({
       path: "internal/a.go",
       segment: null,
+      sourceMode: "git",
     });
     // 行点击仍是打开,预览按钮点击不打开文件。
     expect(openPathMock).not.toHaveBeenCalled();

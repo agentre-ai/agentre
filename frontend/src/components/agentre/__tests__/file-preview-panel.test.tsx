@@ -71,7 +71,10 @@ function createFakeMonaco(): FakeMonaco {
 
 let fakeMonaco: FakeMonaco;
 
-import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
+import {
+  useChatSidebarStore,
+  type PreviewSourceMode,
+} from "@/stores/chat-sidebar-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
 import { FilePreviewPanel } from "../file-preview/file-preview-panel";
@@ -104,8 +107,12 @@ function renderPanel(sessionId = 7) {
   return render(<FilePreviewPanel sessionId={sessionId} />);
 }
 
-function openPreview(path: string, sessionId = 7) {
-  useChatSidebarStore.getState().openPreview(sessionId, path);
+function openPreview(
+  path: string,
+  sessionId = 7,
+  sourceMode: PreviewSourceMode = "directory",
+) {
+  useChatSidebarStore.getState().openPreview(sessionId, path, sourceMode);
 }
 
 describe("FilePreviewPanel", () => {
@@ -117,7 +124,7 @@ describe("FilePreviewPanel", () => {
 
   it("reads the selected file on open and renders the header", async () => {
     readFileMock.mockResolvedValue(textView("# Hi"));
-    openPreview("docs/guide.md");
+    openPreview("docs/guide.md", 7, "directory");
 
     renderPanel();
 
@@ -140,7 +147,7 @@ describe("FilePreviewPanel", () => {
 
   it("renders markdown in render mode by default (GFM MarkdownText)", async () => {
     readFileMock.mockResolvedValue(textView("**bold**"));
-    openPreview("README.md");
+    openPreview("README.md", 7, "directory");
     renderPanel();
 
     const panel = await screen.findByRole("complementary", {
@@ -152,7 +159,7 @@ describe("FilePreviewPanel", () => {
 
   it("switches markdown to text mode showing raw source via Monaco", async () => {
     readFileMock.mockResolvedValue(textView("# raw"));
-    openPreview("README.md");
+    openPreview("README.md", 7, "directory");
     renderPanel();
 
     const panel = await screen.findByRole("complementary", {
@@ -171,7 +178,7 @@ describe("FilePreviewPanel", () => {
 
   it("switches markdown to split mode showing source and render side by side", async () => {
     readFileMock.mockResolvedValue(textView("# Title\n\nSome **bold** body."));
-    openPreview("README.md");
+    openPreview("README.md", 7, "directory");
     renderPanel();
 
     const panel = await screen.findByRole("complementary", {
@@ -189,77 +196,121 @@ describe("FilePreviewPanel", () => {
     );
   });
 
-  it("shows a code file in text mode by default and only two segments", async () => {
+  it("shows a code file opened from directory mode as content with no segment control", async () => {
     readFileMock.mockResolvedValue(textView("package main"));
-    openPreview("main.go");
+    openPreview("main.go", 7, "directory");
     renderPanel();
 
     const panel = await screen.findByRole("complementary", {
       name: "File preview",
     });
+    // 代码 / 文本没有分段控件（不再有「文本 / 对比」两档）。
     expect(within(panel).queryByRole("button", { name: "Render" })).toBeNull();
-    expect(
-      within(panel).getByRole("button", { name: "Diff" }),
-    ).toBeInTheDocument();
+    expect(within(panel).queryByRole("button", { name: "Text" })).toBeNull();
+    expect(within(panel).queryByRole("button", { name: "Diff" })).toBeNull();
+    // 目录打开 → 只读内容，不调 GitFileContent。
+    expect(gitFileContentMock).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(fakeMonaco.editor.create).toHaveBeenCalledWith(
+        expect.any(HTMLElement),
+        expect.objectContaining({ language: "go", readOnly: true }),
+      ),
+    );
   });
 
-  it("fetches git HEAD content when switching a code file to diff mode", async () => {
+  it("shows a git-opened code file as a diff with no segment control", async () => {
     readFileMock.mockResolvedValue(textView("package main\n"));
     gitFileContentMock.mockResolvedValue({
       content: "package main\n// old\n",
       notARepo: false,
       hasHead: true,
     });
-    openPreview("main.go");
+    openPreview("main.go", 7, "git");
     renderPanel();
 
     const panel = await screen.findByRole("complementary", {
       name: "File preview",
     });
-    expect(gitFileContentMock).not.toHaveBeenCalled();
-    await userEvent.click(within(panel).getByRole("button", { name: "Diff" }));
-
+    // 首视图直接是对比：调 GitFileContent、出对比头部条 + 增删图例、建 diff editor。
     await waitFor(() =>
       expect(gitFileContentMock).toHaveBeenCalledWith(7, "main.go"),
     );
-    // 头部条:对比 · HEAD → 工作区 + 增删图例。
     expect(
       within(panel).getByText("Diff · HEAD → working tree"),
     ).toBeInTheDocument();
     expect(within(panel).getByText("Added")).toBeInTheDocument();
     expect(within(panel).getByText("Deleted")).toBeInTheDocument();
-    // Monaco diff editor 被创建(只读, side-by-side)。
     await waitFor(() =>
       expect(fakeMonaco.editor.createDiffEditor).toHaveBeenCalledWith(
         expect.any(HTMLElement),
         expect.objectContaining({ readOnly: true }),
       ),
     );
+    // 代码 / 文本没有分段控件。
+    expect(within(panel).queryByRole("button", { name: "Text" })).toBeNull();
+    expect(within(panel).queryByRole("button", { name: "Diff" })).toBeNull();
   });
 
-  it("renders the no-git-baseline empty state when the directory is not a repo", async () => {
+  it("shows a changes-mode code file as a diff too", async () => {
+    readFileMock.mockResolvedValue(textView("package main\n"));
+    gitFileContentMock.mockResolvedValue({
+      content: "package main\n// old\n",
+      notARepo: false,
+      hasHead: true,
+    });
+    openPreview("main.go", 7, "changes");
+    renderPanel();
+
+    const panel = await screen.findByRole("complementary", {
+      name: "File preview",
+    });
+    await waitFor(() =>
+      expect(gitFileContentMock).toHaveBeenCalledWith(7, "main.go"),
+    );
+    expect(
+      within(panel).getByText("Diff · HEAD → working tree"),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the no-git-baseline empty state for a git-opened code file outside a repo", async () => {
     readFileMock.mockResolvedValue(textView("hello"));
     gitFileContentMock.mockResolvedValue({
       content: "",
       notARepo: true,
       hasHead: false,
     });
-    openPreview("a.txt");
+    openPreview("a.txt", 7, "git");
     renderPanel();
 
     const panel = await screen.findByRole("complementary", {
       name: "File preview",
     });
-    await userEvent.click(within(panel).getByRole("button", { name: "Diff" }));
-
     expect(
       await within(panel).findByText("No git baseline to compare"),
     ).toBeInTheDocument();
   });
 
+  it("shows markdown content segments even when opened from git mode (never a diff)", async () => {
+    readFileMock.mockResolvedValue(textView("# Title"));
+    openPreview("README.md", 7, "git");
+    renderPanel();
+
+    const panel = await screen.findByRole("complementary", {
+      name: "File preview",
+    });
+    // markdown 三档仍在、默认渲染档；从任何模式都不调 GitFileContent。
+    for (const seg of ["Render", "Text", "Split"]) {
+      expect(
+        within(panel).getByRole("button", { name: seg }),
+      ).toBeInTheDocument();
+    }
+    expect(gitFileContentMock).not.toHaveBeenCalled();
+    await within(panel).findByRole("heading", { level: 1, name: "Title" });
+  });
+
   it("renders an image with a data URL and alt text", async () => {
     readFileMock.mockResolvedValue(imageView("aGVsbG8=", "image/png"));
-    openPreview("assets/logo.png");
+    openPreview("assets/logo.png", 7, "directory");
     renderPanel();
 
     const panel = await screen.findByRole("complementary", {
@@ -279,7 +330,7 @@ describe("FilePreviewPanel", () => {
       binary: true,
       tooLarge: false,
     });
-    openPreview("archive.bin");
+    openPreview("archive.bin", 7, "directory");
     renderPanel();
 
     const panel = await screen.findByRole("complementary", {
@@ -300,7 +351,7 @@ describe("FilePreviewPanel", () => {
       binary: false,
       tooLarge: true,
     });
-    openPreview("photo.jpg");
+    openPreview("photo.jpg", 7, "directory");
     renderPanel();
 
     const panel = await screen.findByRole("complementary", {
@@ -319,7 +370,7 @@ describe("FilePreviewPanel", () => {
       new Error("Path is outside the session working directory"),
     );
     readFileMock.mockResolvedValue(textView("# ok"));
-    openPreview("README.md");
+    openPreview("README.md", 7, "directory");
     renderPanel();
 
     const panel = await screen.findByRole("complementary", {
@@ -340,7 +391,7 @@ describe("FilePreviewPanel", () => {
 
   it("closes the panel and clears the selection when close is clicked", async () => {
     readFileMock.mockResolvedValue(textView("# hi"));
-    openPreview("README.md");
+    openPreview("README.md", 7, "directory");
     renderPanel();
 
     const panel = await screen.findByRole("complementary", {
@@ -359,7 +410,7 @@ describe("FilePreviewPanel", () => {
 
   it("keeps a newly opened file when a close is still animating", async () => {
     readFileMock.mockResolvedValue(textView("# a"));
-    openPreview("a.md");
+    openPreview("a.md", 7, "directory");
     renderPanel();
 
     const panel = await screen.findByRole("complementary", {
@@ -369,25 +420,26 @@ describe("FilePreviewPanel", () => {
       within(panel).getByRole("button", { name: "Close preview" }),
     );
     // 200ms 出场动画期间打开另一个文件:旧 timer 不能把新选择清掉。
-    useChatSidebarStore.getState().openPreview(7, "b.md");
+    useChatSidebarStore.getState().openPreview(7, "b.md", "directory");
 
     // 等关闭动画的 timer 跑完,断言 b.md 仍然选中、面板仍然开着。
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(useChatSidebarStore.getState().previewBySession[7]).toEqual({
       path: "b.md",
       segment: null,
+      sourceMode: "directory",
     });
   });
 
-  it("switching files re-reads the new file and switches segment back on close", async () => {
+  it("switching files re-reads the new file and keeps the segment in the same mode", async () => {
     readFileMock.mockResolvedValue(textView("# a"));
-    openPreview("a.md");
+    openPreview("a.md", 7, "directory");
     const { rerender } = renderPanel();
 
     await screen.findByRole("complementary", { name: "File preview" });
-    // 打开第二个文件(面板保持打开,档位保留)。
+    // 打开第二个文件(同模式,面板保持打开,markdown 档位保留)。
     useChatSidebarStore.getState().setPreviewSegment(7, "text");
-    useChatSidebarStore.getState().openPreview(7, "b.md");
+    useChatSidebarStore.getState().openPreview(7, "b.md", "directory");
     rerender(<FilePreviewPanel sessionId={7} />);
 
     await waitFor(() => {
@@ -398,9 +450,42 @@ describe("FilePreviewPanel", () => {
     );
   });
 
+  it("re-sets the first view when the same file is opened from a different mode", async () => {
+    readFileMock.mockResolvedValue(textView("hello"));
+    gitFileContentMock.mockResolvedValue({
+      content: "",
+      notARepo: false,
+      hasHead: true,
+    });
+    openPreview("a.go", 7, "directory");
+    const { rerender } = renderPanel();
+
+    const panel = await screen.findByRole("complementary", {
+      name: "File preview",
+    });
+    await waitFor(() =>
+      expect(fakeMonaco.editor.create).toHaveBeenCalledWith(
+        expect.any(HTMLElement),
+        expect.objectContaining({ language: "go", readOnly: true }),
+      ),
+    );
+    expect(gitFileContentMock).not.toHaveBeenCalled();
+
+    // 换到 Git 模式重开同一文件 → 首视图变对比。
+    useChatSidebarStore.getState().openPreview(7, "a.go", "git");
+    rerender(<FilePreviewPanel sessionId={7} />);
+
+    await waitFor(() =>
+      expect(gitFileContentMock).toHaveBeenCalledWith(7, "a.go"),
+    );
+    expect(
+      within(panel).getByText("Diff · HEAD → working tree"),
+    ).toBeInTheDocument();
+  });
+
   it("clears the selection when the session switches", async () => {
     readFileMock.mockResolvedValue(textView("# hi"));
-    openPreview("README.md");
+    openPreview("README.md", 7, "directory");
     const { rerender } = renderPanel(7);
 
     await screen.findByRole("complementary", { name: "File preview" });
@@ -416,7 +501,7 @@ describe("FilePreviewPanel", () => {
 
   it("re-reads the open file when the session turn ends (doneTick)", async () => {
     readFileMock.mockResolvedValue(textView("# v1"));
-    openPreview("README.md");
+    openPreview("README.md", 7, "directory");
     renderPanel();
 
     const panel = await screen.findByRole("complementary", {
@@ -430,5 +515,57 @@ describe("FilePreviewPanel", () => {
 
     await within(panel).findByRole("heading", { level: 1, name: "v2" });
     expect(readFileMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-reads and re-computes the diff for a git-opened code file on doneTick", async () => {
+    readFileMock.mockResolvedValue(textView("v1\n"));
+    gitFileContentMock.mockResolvedValue({
+      content: "old\n",
+      notARepo: false,
+      hasHead: true,
+    });
+    openPreview("a.go", 7, "git");
+    renderPanel();
+
+    await screen.findByRole("complementary", { name: "File preview" });
+    await waitFor(() =>
+      expect(gitFileContentMock).toHaveBeenCalledWith(7, "a.go"),
+    );
+    expect(readFileMock).toHaveBeenCalledTimes(1);
+    expect(gitFileContentMock).toHaveBeenCalledTimes(1);
+
+    readFileMock.mockResolvedValue(textView("v2\n"));
+    useSessionStatusStore.getState().bumpDone(7, { kind: "done" });
+
+    await waitFor(() => expect(readFileMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(gitFileContentMock).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(fakeMonaco.editor.createDiffEditor).toHaveBeenCalledWith(
+        expect.any(HTMLElement),
+        expect.objectContaining({ readOnly: true }),
+      ),
+    );
+  });
+
+  it("re-reads only content on doneTick for a directory-opened code file", async () => {
+    readFileMock.mockResolvedValue(textView("v1"));
+    openPreview("a.go", 7, "directory");
+    renderPanel();
+
+    await screen.findByRole("complementary", { name: "File preview" });
+    await waitFor(() =>
+      expect(fakeMonaco.editor.create).toHaveBeenCalledWith(
+        expect.any(HTMLElement),
+        expect.objectContaining({ language: "go", readOnly: true }),
+      ),
+    );
+    expect(gitFileContentMock).not.toHaveBeenCalled();
+    expect(readFileMock).toHaveBeenCalledTimes(1);
+
+    readFileMock.mockResolvedValue(textView("v2"));
+    useSessionStatusStore.getState().bumpDone(7, { kind: "done" });
+
+    await waitFor(() => expect(readFileMock).toHaveBeenCalledTimes(2));
+    expect(gitFileContentMock).not.toHaveBeenCalled();
   });
 });

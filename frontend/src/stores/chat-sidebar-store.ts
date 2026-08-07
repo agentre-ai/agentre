@@ -6,13 +6,17 @@ export type ChatSidebarTab = "outline" | "files";
 /** 「文件」页内的三种视角：本次对话改过的文件 / 工作目录树 / git 变动。 */
 export type ChatFilesMode = "changes" | "directory" | "git";
 
-/** 预览面板按文件类型提供的视图档位（spec 决策 7）。 */
-export type FilePreviewSegment = "render" | "text" | "split" | "diff";
+/** 预览面板按文件类型提供的视图档位（spec 决策 7）；diff 已随需求修订去掉，仅 markdown 有意义。 */
+export type FilePreviewSegment = "render" | "text" | "split";
 
-/** 预览选中：path 是会话级 relPath；segment 为 null 表示用该文件类型的默认档。 */
+/** 打开预览的行来自哪个文件模式：目录 / Git / 变动。首视图由它决定（spec 决策 9）。 */
+export type PreviewSourceMode = "directory" | "git" | "changes";
+
+/** 预览选中：path 是会话级 relPath；sourceMode 是入口模式；segment 为 null 表示用 markdown 默认档。 */
 export type FilePreviewSelection = {
   path: string;
   segment: FilePreviewSegment | null;
+  sourceMode: PreviewSourceMode;
 };
 
 type ChatSidebarState = {
@@ -30,8 +34,12 @@ type ChatSidebarState = {
   setShowIgnored: (showIgnored: boolean) => void;
   setGitBaseline: (sessionId: number, ref: string) => void;
   clearGitBaseline: (sessionId: number) => void;
-  /** 打开 / 切换到某文件；面板开着时保留既有档位（spec 决策 12）。 */
-  openPreview: (sessionId: number, path: string) => void;
+  /** 打开 / 切换到某文件并记录入口模式；面板开着且模式不变时保留 markdown 档位，换模式则回默认档。 */
+  openPreview: (
+    sessionId: number,
+    path: string,
+    sourceMode: PreviewSourceMode,
+  ) => void;
   /** 更新当前选中文件的视图档位；无选中时为 no-op。 */
   setPreviewSegment: (sessionId: number, segment: FilePreviewSegment) => void;
   /** 关闭面板：清空该会话的预览选中。 */
@@ -50,7 +58,12 @@ const VALID_PREVIEW_SEGMENTS: ReadonlySet<FilePreviewSegment> = new Set([
   "render",
   "text",
   "split",
-  "diff",
+]);
+
+const VALID_SOURCE_MODES: ReadonlySet<PreviewSourceMode> = new Set([
+  "directory",
+  "git",
+  "changes",
 ]);
 
 // sanitizeBaselines 只保留「正整数会话 id → 非空 ref」的条目：这张表会被
@@ -70,8 +83,9 @@ function sanitizeBaselines(value: unknown): Record<number, string> {
   return Object.fromEntries(kept) as Record<number, string>;
 }
 
-// sanitizePreview 只保留「正整数会话 id → { path, segment? }」的合法条目：路径必须
-// 非空字符串,segment 缺失补 null、非法值丢弃整条。JSON 往返后键必然是字符串。
+// sanitizePreview 只保留「正整数会话 id → { path, segment?, sourceMode }」的合法条目：路径必须
+// 非空字符串,segment 缺失补 null、非法值丢弃整条；sourceMode 缺失 / 非法（旧版本持久化
+// 无此字段）也丢弃整条。JSON 往返后键必然是字符串。
 function sanitizePreview(value: unknown): Record<number, FilePreviewSelection> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const entries = Object.entries(value as Record<string, unknown>);
@@ -86,6 +100,9 @@ function sanitizePreview(value: unknown): Record<number, FilePreviewSelection> {
     ) {
       return false;
     }
+    if (!VALID_SOURCE_MODES.has(s.sourceMode as PreviewSourceMode)) {
+      return false;
+    }
     return true;
   });
   const normalized: Record<number, FilePreviewSelection> = Object.fromEntries(
@@ -96,6 +113,7 @@ function sanitizePreview(value: unknown): Record<number, FilePreviewSelection> {
         {
           path: s.path as string,
           segment: (s.segment as FilePreviewSegment) ?? null,
+          sourceMode: s.sourceMode as PreviewSourceMode,
         },
       ];
     }),
@@ -173,18 +191,26 @@ export const useChatSidebarStore = create<ChatSidebarState>()(
           delete next[sessionId];
           return { gitBaselineBySession: next };
         }),
-      openPreview: (sessionId, path) => {
+      openPreview: (sessionId, path, sourceMode) => {
         if (!Number.isInteger(sessionId) || sessionId <= 0 || path === "")
           return;
-        set((state) => ({
-          previewBySession: {
-            ...state.previewBySession,
-            [sessionId]: {
-              path,
-              segment: state.previewBySession[sessionId]?.segment ?? null,
+        if (!VALID_SOURCE_MODES.has(sourceMode)) return;
+        set((state) => {
+          const prev = state.previewBySession[sessionId];
+          // 入口模式决定首视图：换模式打开重设首视图（markdown 档位回默认）；
+          // 同一模式内切文件保留 markdown 档位（spec 决策 9 / 12）。
+          const sameMode = prev?.sourceMode === sourceMode;
+          return {
+            previewBySession: {
+              ...state.previewBySession,
+              [sessionId]: {
+                path,
+                sourceMode,
+                segment: sameMode ? (prev?.segment ?? null) : null,
+              },
             },
-          },
-        }));
+          };
+        });
       },
       setPreviewSegment: (sessionId, segment) => {
         if (!Number.isInteger(sessionId) || sessionId <= 0) return;

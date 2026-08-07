@@ -148,7 +148,7 @@ export function GitView({
             previewActive={previewPath === previewRelPath}
             onPreview={
               previewRelPath !== null
-                ? () => openPreview(sessionId, previewRelPath)
+                ? () => openPreview(sessionId, previewRelPath, "git")
                 : null
             }
           />

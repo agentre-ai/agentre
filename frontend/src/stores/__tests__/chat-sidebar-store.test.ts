@@ -161,30 +161,44 @@ describe("chat-sidebar-store", () => {
   });
 
   describe("preview selection", () => {
-    it("opens a file with a null segment (default) when nothing was selected", () => {
-      useChatSidebarStore.getState().openPreview(7, "README.md");
+    it("opens a file recording its source mode with a null segment when nothing was selected", () => {
+      useChatSidebarStore.getState().openPreview(7, "README.md", "directory");
       expect(useChatSidebarStore.getState().previewBySession[7]).toEqual({
         path: "README.md",
         segment: null,
+        sourceMode: "directory",
       });
     });
 
-    it("keeps the segment when switching files while the panel is open", () => {
-      useChatSidebarStore.getState().openPreview(7, "README.md");
+    it("keeps the segment when switching files in the same mode while the panel is open", () => {
+      useChatSidebarStore.getState().openPreview(7, "README.md", "directory");
       useChatSidebarStore.getState().setPreviewSegment(7, "split");
-      useChatSidebarStore.getState().openPreview(7, "guide.md");
+      useChatSidebarStore.getState().openPreview(7, "guide.md", "directory");
 
       expect(useChatSidebarStore.getState().previewBySession[7]).toEqual({
         path: "guide.md",
         segment: "split",
+        sourceMode: "directory",
+      });
+    });
+
+    it("resets the segment to the default when opening from a different mode", () => {
+      useChatSidebarStore.getState().openPreview(7, "README.md", "directory");
+      useChatSidebarStore.getState().setPreviewSegment(7, "split");
+      useChatSidebarStore.getState().openPreview(7, "guide.md", "changes");
+
+      expect(useChatSidebarStore.getState().previewBySession[7]).toEqual({
+        path: "guide.md",
+        segment: null,
+        sourceMode: "changes",
       });
     });
 
     it("updates the segment for an existing selection only", () => {
-      useChatSidebarStore.getState().openPreview(7, "a.go");
-      useChatSidebarStore.getState().setPreviewSegment(7, "diff");
+      useChatSidebarStore.getState().openPreview(7, "a.go", "git");
+      useChatSidebarStore.getState().setPreviewSegment(7, "split");
       expect(useChatSidebarStore.getState().previewBySession[7].segment).toBe(
-        "diff",
+        "split",
       );
 
       // 没有选中文件时设置档位是 no-op。
@@ -195,16 +209,21 @@ describe("chat-sidebar-store", () => {
     });
 
     it("rejects an unknown segment at runtime by no-op", () => {
-      useChatSidebarStore.getState().openPreview(7, "a.go");
+      useChatSidebarStore.getState().openPreview(7, "a.go", "git");
       useChatSidebarStore.getState().setPreviewSegment(7, "bogus" as never);
       expect(
         useChatSidebarStore.getState().previewBySession[7].segment,
       ).toBeNull();
     });
 
+    it("rejects an unknown source mode at runtime by no-op", () => {
+      useChatSidebarStore.getState().openPreview(7, "a.md", "bogus" as never);
+      expect(useChatSidebarStore.getState().previewBySession).toEqual({});
+    });
+
     it("clears one session's preview without touching the others", () => {
-      useChatSidebarStore.getState().openPreview(7, "a.md");
-      useChatSidebarStore.getState().openPreview(8, "b.go");
+      useChatSidebarStore.getState().openPreview(7, "a.md", "changes");
+      useChatSidebarStore.getState().openPreview(8, "b.go", "directory");
 
       useChatSidebarStore.getState().clearPreview(7);
 
@@ -214,12 +233,13 @@ describe("chat-sidebar-store", () => {
       expect(useChatSidebarStore.getState().previewBySession[8]).toEqual({
         path: "b.go",
         segment: null,
+        sourceMode: "directory",
       });
     });
 
     it("ignores openPreview for a non-session id or an empty path", () => {
-      useChatSidebarStore.getState().openPreview(0, "a.md");
-      useChatSidebarStore.getState().openPreview(7, "");
+      useChatSidebarStore.getState().openPreview(0, "a.md", "directory");
+      useChatSidebarStore.getState().openPreview(7, "", "directory");
       expect(useChatSidebarStore.getState().previewBySession).toEqual({});
     });
 
@@ -231,11 +251,16 @@ describe("chat-sidebar-store", () => {
             open: true,
             activeTab: "files",
             previewBySession: {
-              7: { path: "README.md", segment: "split" },
-              8: { path: "a.go" },
+              7: {
+                path: "README.md",
+                segment: "split",
+                sourceMode: "directory",
+              },
+              8: { path: "a.go", sourceMode: "git" },
               9: { path: "" },
               notAnId: { path: "x.md" },
-              10: { path: "y.md", segment: "bogus" },
+              10: { path: "y.md", segment: "bogus", sourceMode: "changes" },
+              11: { path: "z.md", sourceMode: "bogus" },
             },
           },
           version: 0,
@@ -244,8 +269,12 @@ describe("chat-sidebar-store", () => {
       await useChatSidebarStore.persist.rehydrate();
 
       expect(useChatSidebarStore.getState().previewBySession).toEqual({
-        7: { path: "README.md", segment: "split" },
-        8: { path: "a.go", segment: null },
+        7: {
+          path: "README.md",
+          segment: "split",
+          sourceMode: "directory",
+        },
+        8: { path: "a.go", segment: null, sourceMode: "git" },
       });
     });
   });

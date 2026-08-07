@@ -677,7 +677,6 @@
       "segmentRender": "Render",
       "segmentText": "Text",
       "segmentSplit": "Split",
-      "segmentDiff": "Diff",
       "diffHeader": "Diff · HEAD → working tree",
       "diffLegendAdded": "Added",
       "diffLegendDeleted": "Deleted",

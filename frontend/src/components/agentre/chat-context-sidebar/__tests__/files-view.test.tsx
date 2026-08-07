@@ -460,6 +460,7 @@ describe("FilesView preview button", () => {
     expect(useChatSidebarStore.getState().previewBySession[1]).toEqual({
       path: "README.md",
       segment: null,
+      sourceMode: "changes",
     });
     expect(onJump).not.toHaveBeenCalled();
   });
@@ -489,6 +490,7 @@ describe("FilesView preview button", () => {
     expect(useChatSidebarStore.getState().previewBySession[1]).toEqual({
       path: "internal/service/chat_svc/chat.go",
       segment: null,
+      sourceMode: "changes",
     });
   });
 
@@ -528,7 +530,7 @@ describe("FilesView preview button", () => {
   });
 
   it("highlights the currently previewed file's button", () => {
-    useChatSidebarStore.getState().openPreview(1, "README.md");
+    useChatSidebarStore.getState().openPreview(1, "README.md", "changes");
     render(
       <FilesView
         sessionId={1}

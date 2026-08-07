@@ -161,7 +161,7 @@ export function FilesView({
             type="button"
             aria-label={t("chatContext.filePreview.open")}
             title={t("chatContext.filePreview.open")}
-            onClick={() => openPreview(sessionId, previewRelPath)}
+            onClick={() => openPreview(sessionId, previewRelPath, "changes")}
             className={cn(
               "ml-1 shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground",
               previewPath === previewRelPath && "text-primary",

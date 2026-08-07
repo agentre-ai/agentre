@@ -472,6 +472,7 @@ describe("FilesPanel directory mode", () => {
     expect(useChatSidebarStore.getState().previewBySession[7]).toEqual({
       path: "internal/chat.go",
       segment: null,
+      sourceMode: "directory",
     });
     expect(openPathMock).not.toHaveBeenCalled();
 
@@ -481,6 +482,7 @@ describe("FilesPanel directory mode", () => {
     expect(useChatSidebarStore.getState().previewBySession[7]).toEqual({
       path: "logo.png",
       segment: null,
+      sourceMode: "directory",
     });
   });
 

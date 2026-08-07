@@ -70,15 +70,19 @@ const KIND_ICON: Record<PreviewKind, LucideIcon> = {
 /**
  * FilePreviewPanel 是会话「文件」面板的最右一栏预览面板（spec「状态与布局」）：
  * 仅在选中了可预览文件时渲染，可拖拽调宽（ResizableSidebar edge="left"，独立
- * persistenceKey），按文件类型分档（markdown 渲染/文本/双栏、代码文本/对比、
- * 图片无档）。读取走 WorkspaceFsReadFile / WorkspaceFsGitFileContent（会话级
- * relPath，本机 / 远端同一绑定）；本会话轮次结束（doneTick）自动重读刷新。
+ * persistenceKey）。markdown 三档（渲染/文本/双栏）；代码/文本无分段控件，首视图
+ * 由入口模式决定（目录→内容、Git/变动→与 HEAD 对比，spec 决策 9）；图片无档。
+ * 读取走 WorkspaceFsReadFile / WorkspaceFsGitFileContent（会话级 relPath，本机 /
+ * 远端同一绑定）；本会话轮次结束（doneTick）按 sourceMode 自动重读刷新。
  */
 export function FilePreviewPanel({ sessionId }: Props) {
   const { t } = useTranslation();
   const path = useChatSidebarStore((s) => s.previewBySession[sessionId]?.path);
   const storedSegment = useChatSidebarStore(
     (s) => s.previewBySession[sessionId]?.segment ?? null,
+  );
+  const sourceMode = useChatSidebarStore(
+    (s) => s.previewBySession[sessionId]?.sourceMode,
   );
   const setPreviewSegment = useChatSidebarStore((s) => s.setPreviewSegment);
   const clearPreview = useChatSidebarStore((s) => s.clearPreview);
@@ -119,18 +123,20 @@ export function FilePreviewPanel({ sessionId }: Props) {
     }, 200);
   }, [closing, clearPreview, sessionId]);
 
-  // 档位是面板状态:切文件保留,关面板 / 切会话回默认。这里把存储的档位按文件
-  // 类型钳到合法集合(markdown render/text/split,代码 text/diff,图片无)。
+  // 档位是面板状态:切文件保留,关面板 / 切会话回默认。markdown 的档位才是存储的
+  // segment(render/text/split);代码 / 文本没有分段控件,首视图由入口模式决定
+  // (showDiff)。这里把存储的档位按文件类型钳到合法集合。
   const kind: PreviewKind | null = path ? previewKind(path) : null;
   const effectiveSegment = React.useMemo(() => {
-    if (kind === "image") return null;
-    if (kind === "markdown") {
-      return storedSegment === "text" || storedSegment === "split"
-        ? storedSegment
-        : "render";
-    }
-    return storedSegment === "diff" ? "diff" : "text";
+    if (kind === "image" || kind === "code") return null;
+    return storedSegment === "text" || storedSegment === "split"
+      ? storedSegment
+      : "render";
   }, [kind, storedSegment]);
+  // 代码 / 文本从 Git / 变动模式打开 → 直接展示与 git HEAD 的对比；目录模式打开
+  // → 只读内容。markdown / 图片从任何模式都不对比（spec 决策 9）。
+  const showDiff =
+    kind === "code" && sourceMode != null && sourceMode !== "directory";
 
   // doneTick 每次本会话轮次结束自增一次;轮次结束是「文件可能变了」的唯一强信号,
   // 面板开着时据此重读(不读缓存,spec 决策 11)。
@@ -169,7 +175,7 @@ export function FilePreviewPanel({ sessionId }: Props) {
   }, [sessionId, path, doneTick, reloadKey]);
 
   React.useEffect(() => {
-    if (effectiveSegment !== "diff" || !path) {
+    if (!showDiff || !path) {
       setGitState({ status: "idle" });
       return;
     }
@@ -187,43 +193,36 @@ export function FilePreviewPanel({ sessionId }: Props) {
         setGitState({ status: "error", message: errorText(err) });
       },
     );
-  }, [sessionId, path, effectiveSegment, doneTick, reloadKey]);
+  }, [sessionId, path, showDiff, doneTick, reloadKey]);
 
   if (!path) return null;
 
   const dir = dirname(path);
   const Icon = KIND_ICON[kind ?? "code"];
+  // 只有 markdown 有分段控件（渲染/文本/双栏）；代码 / 文本与图片都没有（首视图
+  // 由入口模式决定，spec 决策 9）。
   const segments =
-    kind === "markdown"
-      ? (["render", "text", "split"] as const)
-      : kind === "code"
-        ? (["text", "diff"] as const)
-        : [];
-  const segmentLabel = (seg: FilePreviewSegment): string => {
-    switch (seg) {
-      case "render":
-        return t("chatContext.filePreview.segmentRender");
-      case "text":
-        return t("chatContext.filePreview.segmentText");
-      case "split":
-        return t("chatContext.filePreview.segmentSplit");
-      default:
-        return t("chatContext.filePreview.segmentDiff");
-    }
+    kind === "markdown" ? (["render", "text", "split"] as const) : [];
+  const SEGMENT_LABEL_KEY: Record<FilePreviewSegment, string> = {
+    render: "chatContext.filePreview.segmentRender",
+    text: "chatContext.filePreview.segmentText",
+    split: "chatContext.filePreview.segmentSplit",
   };
+  const segmentLabel = (seg: FilePreviewSegment): string =>
+    t(SEGMENT_LABEL_KEY[seg]);
 
   const readSettled = readPath === path;
   const gitSettled = gitPath === path;
   const isLoading =
     readState.status === "loading" ||
     !readSettled ||
-    (effectiveSegment === "diff" &&
+    (showDiff &&
       (gitState.status === "idle" ||
         gitState.status === "loading" ||
         !gitSettled));
 
   // 正文容器按内容变化重挂载 → 150ms 淡入(motion-reduce 停用);骨架屏不参与。
-  const contentKey = `${path}|${effectiveSegment}|${readState.status}|${gitState.status}`;
+  const contentKey = `${path}|${effectiveSegment}|${showDiff}|${readState.status}|${gitState.status}`;
 
   return (
     <ResizableSidebar
@@ -305,6 +304,7 @@ export function FilePreviewPanel({ sessionId }: Props) {
             <PanelBody
               kind={kind}
               segment={effectiveSegment}
+              showDiff={showDiff}
               readState={readState}
               gitState={gitState}
               path={path}
@@ -320,6 +320,7 @@ export function FilePreviewPanel({ sessionId }: Props) {
 function PanelBody({
   kind,
   segment,
+  showDiff,
   readState,
   gitState,
   path,
@@ -327,6 +328,7 @@ function PanelBody({
 }: {
   kind: PreviewKind | null;
   segment: FilePreviewSegment | null;
+  showDiff: boolean;
   readState: ReadState;
   gitState: GitState;
   path: string;
@@ -408,7 +410,8 @@ function PanelBody({
     );
   }
 
-  if (segment === "diff") {
+  if (showDiff) {
+    // 代码 / 文本从 Git / 变动模式打开:左 HEAD 版本 / 右工作区,增删行底色区分。
     if (gitState.status === "error") {
       return (
         <PreviewMessage

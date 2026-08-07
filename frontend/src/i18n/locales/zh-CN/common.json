@@ -677,7 +677,6 @@
       "segmentRender": "渲染",
       "segmentText": "文本",
       "segmentSplit": "双栏",
-      "segmentDiff": "对比",
       "diffHeader": "对比 · HEAD → 工作区",
       "diffLegendAdded": "新增",
       "diffLegendDeleted": "删除",
