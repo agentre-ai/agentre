@@ -110,7 +110,15 @@ func (h *SessionCatchupHandlers) List(ctx context.Context) (wire.SessionListResu
 			WaitingForInput: h.waitingForInput(ctx, row, sid),
 			LatestSeq:       latestSeq,
 		}
-		if accountWide {
+		// Origin 只标在**别的对端**发起的那些会话上。空 origin 的语义是
+		// ResolveSessionPeer 的入口约定 ——「省略 = 调用方自己的对端」—— 而清单是客户端
+		// 学 origin 的唯一来源:它会把这里交出的值原样带回此后每一次 attach / pull /
+		// 控制请求。把调用方自己的指纹写进来,它就会在**配对鉴权**的连接上也点名一个
+		// origin,而配对身份点名任何 origin 都被 ResolveSessionPeer 拒掉;桌面端同时握
+		// 着两条路径(直连有配对令牌时走 auth.connect,中转恒走 auth.account,谁先到谁
+		// 胜),路径一切换就连自己的会话都补不齐 —— 规格的硬不变量正是「路径切换不得使
+		// 事件游标失效」。
+		if accountWide && row.PeerFingerprint != peer {
 			summary.PeerFingerprint = row.PeerFingerprint
 		}
 		out.Sessions = append(out.Sessions, summary)

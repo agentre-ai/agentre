@@ -2065,8 +2065,10 @@ func TestIntegration_MultiClientVisibility_GatesAllPeerAccessByClaimedAccount(t 
 		require.NoError(t, callRig(t, peerB, wire.MethodSessionList, nil, &fromB))
 		require.Equal(t, []int64{301, 302}, sessionIDs(fromA.Sessions))
 		require.Equal(t, []int64{301, 302}, sessionIDs(fromB.Sessions))
-		require.Equal(t, map[int64]string{301: "sha256:account-peer-a", 302: "sha256:account-peer-b"}, sessionOrigins(fromA.Sessions))
-		require.Equal(t, sessionOrigins(fromA.Sessions), sessionOrigins(fromB.Sessions))
+		// Origin 是**相对调用方**的:自己发起的那条留空(「省略 = 调用方自己的对端」),
+		// 只有别的对端那条才带指纹。两个对端因此各自看到一份镜像的 origin 表。
+		require.Equal(t, map[int64]string{301: "", 302: "sha256:account-peer-b"}, sessionOrigins(fromA.Sessions))
+		require.Equal(t, map[int64]string{301: "sha256:account-peer-a", 302: ""}, sessionOrigins(fromB.Sessions))
 
 		var page wire.SessionPullResult
 		require.NoError(t, callRig(t, peerA, wire.MethodSessionPull, wire.SessionPullParams{
@@ -2084,6 +2086,39 @@ func TestIntegration_MultiClientVisibility_GatesAllPeerAccessByClaimedAccount(t 
 		require.NoError(t, callRig(t, peerA, wire.MethodAbort, wire.AbortParams{
 			SessionID: 302, PeerFingerprint: "sha256:account-peer-b",
 		}, &ok), "control resolution must use the named origin's runtime session key")
+	})
+
+	// Given 一台已认领 daemon,和一台**既配过对、又持账号凭据**的桌面 —— R6 的并发选路
+	// 让它每次重连都可能落在直连(有配对令牌就走 auth.connect)或中转(恒走 auth.account)
+	// 任一条路径上;When 它在账号鉴权那条路径上取会话清单,把清单交出的 origin 记下来,
+	// 随后路径切回直连(配对鉴权)并按既有约定把同一个 origin 原样带进补齐的 attach,
+	// Then 补齐必须照常成功。
+	//
+	// 清单交出 origin 的约定是「空 = 调用方自己的对端」(ResolveSessionPeer 的入口语义,
+	// 桌面侧 remote.Runtime 的 originFor / rememberOrigin 也照它写)。把**调用方自己的**
+	// 指纹写进清单,客户端就会在此后每一次 attach / pull / 控制请求里原样带回来,而配对
+	// 身份点名任何 origin 都被 ResolveSessionPeer 拒成 ErrUnauthorized —— 桌面端切回直连
+	// 后连自己的会话都补不齐,正是规格的硬不变量「路径切换不得使前置规格的事件游标失效」
+	// 所禁止的。
+	t.Run("a peer's own sessions carry no origin, so replaying it on the direct path still resolves", func(t *testing.T) {
+		rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+		credential := claimDaemonForIntegration(t, rig.d, "account-42")
+		// 同一台桌面的账号鉴权连接:指纹与 rig.cli 那条配对连接相同(R5 硬不变量 ——
+		// 两条路径上必须是同一个对端标识)。
+		viaAccount := accountClientForIntegration(t, rig.d, rigDeviceFingerprint, credential)
+		startRunAs(t, viaAccount, rig.dir, 601, "from-account-path")
+		awaitLifecycle(t, viaAccount, 601, wire.SessionLifecycleIdle)
+
+		var list wire.SessionListResult
+		require.NoError(t, callRig(t, viaAccount, wire.MethodSessionList, nil, &list))
+		assert.Equal(t, map[int64]string{601: ""}, sessionOrigins(list.Sessions),
+			"调用方自己发起的会话,清单交出的 origin 必须为空")
+
+		// 路径切回直连:配对鉴权的那条连接把清单里学到的 origin 原样带回来。
+		var attached wire.SessionAttachResult
+		require.NoError(t, callRig(t, rig.cli, wire.MethodSessionAttach, wire.SessionAttachParams{
+			SessionID: 601, PeerFingerprint: sessionOrigins(list.Sessions)[601],
+		}, &attached), "路径切换后必须还能按游标接回自己的会话")
 	})
 }
 
