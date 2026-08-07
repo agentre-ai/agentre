@@ -6,15 +6,63 @@ import { Button } from "@/components/ui/button";
 
 import { AddDeviceDialog } from "./add-device-dialog";
 import { DeviceRow } from "./device-row";
+import { hostOf } from "./format";
+import { LoginDialog } from "./login-dialog";
 import { TLSTrustDialog } from "./tls-trust-dialog";
 import { useRemoteDevices, type DeviceRowModel } from "./use-remote-devices";
+import { useServerLogin } from "./use-server-login";
+
+// R24: entry point for the standard device-authorization flow, and the
+// signed-in identity + sign-out affordance once connected. The remote
+// devices panel is the natural host — it already renders the unclaimed
+// marker and claim guidance that this flow closes the loop on.
+function AccountStatus({
+  loading,
+  loggedIn,
+  serverURL,
+  onSignIn,
+  onSignOut,
+}: {
+  loading: boolean;
+  loggedIn: boolean;
+  serverURL: string;
+  onSignIn: () => void;
+  onSignOut: () => void;
+}) {
+  const { t } = useTranslation();
+
+  if (loading) return null;
+
+  if (!loggedIn) {
+    return (
+      <Button variant="outline" onClick={onSignIn}>
+        {t("remoteDevices.login.signIn")}
+      </Button>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+      <span>
+        {t("remoteDevices.login.status.signedIn", {
+          server: hostOf(serverURL),
+        })}
+      </span>
+      <Button variant="ghost" size="sm" onClick={onSignOut}>
+        {t("remoteDevices.login.actions.signOut")}
+      </Button>
+    </div>
+  );
+}
 
 export function RemoteDevicesPanel() {
   const { t } = useTranslation();
-  const { devices, loading, add, remove, updateTLS, rename, refresh } =
+  const { devices, loading, add, remove, updateTLS, rename, refresh, reload } =
     useRemoteDevices();
+  const serverLogin = useServerLogin();
   const [now, setNow] = useState(() => Date.now());
   const [addOpen, setAddOpen] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(false);
   const [editTLSFor, setEditTLSFor] = useState<DeviceRowModel | null>(null);
 
   useEffect(() => {
@@ -45,10 +93,21 @@ export function RemoteDevicesPanel() {
             </p>
           ) : null}
         </div>
-        <Button onClick={() => setAddOpen(true)}>
-          <Plus className="mr-2 h-4 w-4" />{" "}
-          {t("remoteDevices.actions.addAgentred")}
-        </Button>
+        <div className="flex items-center gap-2">
+          <AccountStatus
+            loading={serverLogin.loading}
+            loggedIn={serverLogin.loggedIn}
+            serverURL={serverLogin.state?.ServerURL ?? ""}
+            onSignIn={() => setLoginOpen(true)}
+            onSignOut={() => {
+              void serverLogin.logout().then(() => reload());
+            }}
+          />
+          <Button onClick={() => setAddOpen(true)}>
+            <Plus className="mr-2 h-4 w-4" />{" "}
+            {t("remoteDevices.actions.addAgentred")}
+          </Button>
+        </div>
       </header>
 
       {devices.length === 0 ? (
@@ -112,6 +171,24 @@ export function RemoteDevicesPanel() {
           }
           setEditTLSFor(null);
         }}
+      />
+
+      <LoginDialog
+        open={loginOpen}
+        initialUrl={serverLogin.state?.ServerURL ?? ""}
+        onClose={() => setLoginOpen(false)}
+        onLoggedIn={() => {
+          // Login completed inside the dialog — pull the fresh identity and
+          // re-merge the device list so unclaimed markers / relay chips
+          // reflect the newly-claimed account without waiting for a window
+          // focus event.
+          void serverLogin.refresh();
+          void reload();
+        }}
+        checkURL={serverLogin.checkURL}
+        startLogin={serverLogin.startLogin}
+        pollLoginToken={serverLogin.pollLoginToken}
+        cancelLogin={serverLogin.cancelLogin}
       />
     </div>
   );

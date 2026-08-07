@@ -1,5 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+
+const ZERO_SERVER_STATE = {
+  ID: 1,
+  ServerURL: "",
+  DeviceID: 0,
+  DeviceFingerprint: "",
+  ServerUserID: 0,
+  KeychainAccount: "",
+  Updatetime: 0,
+};
+
+const LOGGED_IN_SERVER_STATE = {
+  ID: 1,
+  ServerURL: "https://hub.example.com",
+  DeviceID: 7,
+  DeviceFingerprint: "sha256:abc",
+  ServerUserID: 42,
+  KeychainAccount: "agentre.server.refresh_token",
+  Updatetime: 1_700_000_000_000,
+};
 
 vi.mock("../../../../wailsjs/go/app/App", () => ({
   RemoteDeviceList: vi.fn().mockResolvedValue([]),
@@ -10,27 +30,54 @@ vi.mock("../../../../wailsjs/go/app/App", () => ({
   RemoteDeviceRename: vi.fn(),
   // 默认未登录:账号来源 unknown。R15 合并用例在测试里单独覆盖成已登录。
   ServerListDevices: vi.fn().mockRejectedValue(new Error("not logged in")),
+  ServerGetState: vi.fn(),
+  ServerCheckURL: vi.fn(),
+  ServerStartLogin: vi.fn(),
+  ServerPollLoginToken: vi.fn(),
+  ServerCancelLogin: vi.fn(),
+  ServerLogout: vi.fn(),
 }));
 
 vi.mock("../../../../wailsjs/runtime/runtime", () => ({
   EventsOn: vi.fn(() => vi.fn()),
+  BrowserOpenURL: vi.fn(),
 }));
 
 import {
   RemoteDeviceList,
   ServerListDevices,
+  ServerGetState,
+  ServerCheckURL,
+  ServerStartLogin,
+  ServerPollLoginToken,
+  ServerLogout,
 } from "../../../../wailsjs/go/app/App";
 import { RemoteDevicesPanel } from "./remote-devices-panel";
 import type { DeviceView } from "./use-remote-devices";
 
 const mockList = RemoteDeviceList as unknown as ReturnType<typeof vi.fn>;
 const mockServerList = ServerListDevices as unknown as ReturnType<typeof vi.fn>;
+const mockGetState = ServerGetState as unknown as ReturnType<typeof vi.fn>;
+const mockCheckURL = ServerCheckURL as unknown as ReturnType<typeof vi.fn>;
+const mockStartLogin = ServerStartLogin as unknown as ReturnType<typeof vi.fn>;
+const mockPollLoginToken = ServerPollLoginToken as unknown as ReturnType<
+  typeof vi.fn
+>;
+const mockLogout = ServerLogout as unknown as ReturnType<typeof vi.fn>;
 
 describe("RemoteDevicesPanel", () => {
   beforeEach(() => {
     mockList.mockReset();
     mockServerList.mockReset();
     mockServerList.mockRejectedValue(new Error("not logged in"));
+    mockGetState.mockReset();
+    mockGetState.mockResolvedValue(ZERO_SERVER_STATE);
+    mockCheckURL.mockReset();
+    mockCheckURL.mockResolvedValue("0.3.0");
+    mockStartLogin.mockReset();
+    mockPollLoginToken.mockReset();
+    mockLogout.mockReset();
+    mockLogout.mockResolvedValue(undefined);
   });
 
   it("shows empty state when no devices", async () => {
@@ -128,5 +175,104 @@ describe("RemoteDevicesPanel", () => {
     expect(screen.getByLabelText("Relay · In use")).toBeInTheDocument();
     expect(screen.getByText(/Via relay/)).toBeInTheDocument();
     expect(screen.queryByText(/192\.168\.1\.50/)).not.toBeInTheDocument();
+  });
+
+  // R24: the remote-devices panel is the login entry point.
+  describe("account login (R24)", () => {
+    it("shows a Sign in entry point when not connected to an account", async () => {
+      mockList.mockResolvedValueOnce([]);
+      render(<RemoteDevicesPanel />);
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Sign in" }),
+        ).toBeInTheDocument(),
+      );
+      expect(screen.queryByText(/Signed in to/)).not.toBeInTheDocument();
+    });
+
+    // d) the logged-in state shows the account/server identity and offers logout.
+    it("shows the account identity and Sign out when connected", async () => {
+      mockList.mockResolvedValueOnce([]);
+      mockGetState.mockResolvedValue(LOGGED_IN_SERVER_STATE);
+      render(<RemoteDevicesPanel />);
+      await waitFor(() =>
+        expect(
+          screen.getByText("Signed in to hub.example.com"),
+        ).toBeInTheDocument(),
+      );
+      expect(
+        screen.getByRole("button", { name: "Sign out" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Sign in" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("driving the full device flow through the dialog updates the panel to signed-in without further action", async () => {
+      mockList.mockResolvedValueOnce([]);
+      mockStartLogin.mockResolvedValueOnce({
+        DeviceCode: "device-abc",
+        UserCode: "ABCD-1234",
+        VerificationURI: "https://hub.example.com/device",
+        VerificationURIComplete:
+          "https://hub.example.com/device?code=ABCD-1234",
+        // Short interval keeps this wiring test fast and deterministic
+        // without fake timers (timing precision is covered separately in
+        // login-dialog.test.tsx).
+        Interval: 1,
+        ExpiresIn: 900,
+      });
+      mockPollLoginToken.mockResolvedValueOnce(true);
+      // Second GetState call (after onLoggedIn refresh) reports signed-in.
+      mockGetState.mockResolvedValueOnce(ZERO_SERVER_STATE);
+      mockGetState.mockResolvedValueOnce(LOGGED_IN_SERVER_STATE);
+
+      render(<RemoteDevicesPanel />);
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Sign in" }),
+        ).toBeInTheDocument(),
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+      fireEvent.change(screen.getByPlaceholderText(/hub\.example\.com/), {
+        target: { value: "https://hub.example.com" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+      await waitFor(() =>
+        expect(screen.getByText("ABCD-1234")).toBeInTheDocument(),
+      );
+
+      await waitFor(
+        () =>
+          expect(
+            screen.getByText("Signed in to hub.example.com"),
+          ).toBeInTheDocument(),
+        { timeout: 8_000 },
+      );
+      expect(mockPollLoginToken).toHaveBeenCalledWith("device-abc");
+    }, 10_000);
+
+    it("signing out returns to the Sign in entry point", async () => {
+      mockList.mockResolvedValueOnce([]);
+      mockGetState.mockResolvedValueOnce(LOGGED_IN_SERVER_STATE);
+      mockGetState.mockResolvedValueOnce(ZERO_SERVER_STATE);
+      render(<RemoteDevicesPanel />);
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Sign out" }),
+        ).toBeInTheDocument(),
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+      expect(mockLogout).toHaveBeenCalled();
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Sign in" }),
+        ).toBeInTheDocument(),
+      );
+    });
   });
 });

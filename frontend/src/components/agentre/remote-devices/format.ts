@@ -51,3 +51,32 @@ export function friendlyLastError(le: string, t: TFunction): string {
     });
   return le;
 }
+
+/** Extracts host[:port] from a URL for display; falls back to the raw input. */
+export function hostOf(url: string): string {
+  try {
+    return new URL(url).host || url;
+  } catch {
+    return url;
+  }
+}
+
+// R24: server_svc's login/poll bindings return raw Go error strings (not
+// i18n.NewError-wrapped — see internal/app/server.go), so the frontend maps
+// the known server_svc sentinels to translated copy and falls back to the
+// raw message for anything else, mirroring friendlyLastError above.
+export function friendlyLoginError(e: unknown, t: TFunction): string {
+  const msg = e instanceof Error ? e.message : typeof e === "string" ? e : "";
+  switch (msg) {
+    case "server: unreachable":
+      return t("remoteDevices.login.errors.unreachable");
+    case "server: access denied":
+      return t("remoteDevices.login.errors.accessDenied");
+    case "server: device code expired":
+      return t("remoteDevices.login.errors.expired");
+    case "server: login already in progress":
+      return t("remoteDevices.login.errors.inProgress");
+    default:
+      return msg || t("remoteDevices.login.errors.generic");
+  }
+}

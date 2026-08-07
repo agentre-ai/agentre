@@ -1541,6 +1541,34 @@
       "tofuMismatch": "The server identity fingerprint changed. Verify it is safe, then pair again.",
       "unauthorized": "Credentials expired. Pair again."
     },
+    "login": {
+      "actions": {
+        "connecting": "Connecting...",
+        "continue": "Continue",
+        "openBrowser": "Open Browser",
+        "signOut": "Sign out"
+      },
+      "description": "Connect this desktop to your account so your other devices can find it.",
+      "errors": {
+        "accessDenied": "Sign-in was declined.",
+        "expired": "The code expired. Sign in again.",
+        "generic": "Sign-in failed.",
+        "inProgress": "A sign-in is already in progress.",
+        "unreachable": "Can't reach the server. Check the URL and try again."
+      },
+      "fields": {
+        "url": "Server URL"
+      },
+      "signIn": "Sign in",
+      "status": {
+        "signedIn": "Signed in to {{server}}"
+      },
+      "title": "Sign in to your account",
+      "waiting": {
+        "userCode": "Your code",
+        "verificationUrl": "Go to"
+      }
+    },
     "panel": {
       "description": "Manage remote agentred compute endpoints: desktop remote driver, direct LAN connections, and Cloud relay across networks (v0.3+).",
       "stats": "{{paired}} paired · {{online}} online",

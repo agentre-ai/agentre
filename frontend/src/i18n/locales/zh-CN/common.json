@@ -1541,6 +1541,34 @@
       "tofuMismatch": "服务端身份指纹已变化，请确认安全后重新配对",
       "unauthorized": "凭据已失效，请重新配对"
     },
+    "login": {
+      "actions": {
+        "connecting": "连接中…",
+        "continue": "继续",
+        "openBrowser": "打开浏览器",
+        "signOut": "退出登录"
+      },
+      "description": "把这台桌面连接到你的账号，让其它设备能发现它。",
+      "errors": {
+        "accessDenied": "登录已被拒绝。",
+        "expired": "验证码已过期，请重新登录。",
+        "generic": "登录失败。",
+        "inProgress": "已有登录流程正在进行。",
+        "unreachable": "无法连接服务器，请检查地址后重试。"
+      },
+      "fields": {
+        "url": "服务器地址"
+      },
+      "signIn": "登录",
+      "status": {
+        "signedIn": "已登录 {{server}}"
+      },
+      "title": "登录账号",
+      "waiting": {
+        "userCode": "你的验证码",
+        "verificationUrl": "前往"
+      }
+    },
     "panel": {
       "description": "管理远程 agentred 计算端 — desktop 远程驱动；LAN 同网段直连，Cloud 中转跨网段（v0.3+）。",
       "stats": "{{paired}} 已配对 · {{online}} 在线",

@@ -275,6 +275,38 @@ export const RemoteFsMkdir = windowBackedMock("RemoteFsMkdir", () =>
   Promise.resolve({}),
 );
 
+// R24 account login (internal/app/server.go) — used by RemoteDevicesPanel's
+// login entry point / identity card via use-server-login.ts + login-dialog.tsx.
+// Default is the fresh-install logged-out row; tests that exercise the login
+// flow override these directly.
+export const ServerGetState = windowBackedMock("ServerGetState", () =>
+  Promise.resolve({
+    ID: 1,
+    ServerURL: "",
+    DeviceID: 0,
+    DeviceFingerprint: "",
+    ServerUserID: 0,
+    KeychainAccount: "",
+    Updatetime: 0,
+  }),
+);
+export const ServerCheckURL = windowBackedMock("ServerCheckURL", () =>
+  Promise.resolve("dev"),
+);
+export const ServerStartLogin = windowBackedMock("ServerStartLogin", () =>
+  missingWailsBinding("ServerStartLogin"),
+);
+export const ServerPollLoginToken = windowBackedMock(
+  "ServerPollLoginToken",
+  () => Promise.resolve(false),
+);
+export const ServerCancelLogin = windowBackedMock("ServerCancelLogin", () =>
+  Promise.resolve(),
+);
+export const ServerLogout = windowBackedMock("ServerLogout", () =>
+  Promise.resolve(),
+);
+
 // Data backup bindings
 export const ExportData = windowBackedMock("ExportData", () =>
   Promise.resolve({ path: "", canceled: true, summary: {} }),
