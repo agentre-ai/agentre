@@ -410,6 +410,219 @@ func TestGitChanges_LocalBranchScope_EndToEnd(t *testing.T) {
 	})
 }
 
+// ── ReadFile:按 deviceID 路由 + 视图字段透传 ───────────────────────────────
+
+func TestReadFile_RoutesByDeviceID(t *testing.T) {
+	convey.Convey("ReadFile 按 deviceID 路由", t, func() {
+		convey.Convey("deviceID=0 → 本机 in-process,不借租约", func() {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\n"), 0o644))
+			r := newRig(t, 0, dir)
+			// rd 上没有任何 EXPECT:一旦走了远端分支,gomock 会直接判错。
+
+			view, err := r.svc.ReadFile(r.ctx, 42, "a.txt")
+			require.NoError(t, err)
+			assert.False(t, view.Binary)
+			assert.False(t, view.TooLarge)
+			assert.Equal(t, "hello\n", view.Content)
+		})
+
+		convey.Convey("deviceID≠0 → 走 RPC,root 用服务解析出的 cwd", func() {
+			r := newRig(t, 7, "/remote/work")
+			r.expectCall(wire.MethodReadFile, wire.ReadFileReq{Root: "/remote/work", RelPath: "a.txt"}).
+				DoAndReturn(func(_ context.Context, _ string, _ any, out any) error {
+					resp := out.(*wire.ReadFileResp)
+					resp.Content = "remote body\n"
+					return nil
+				})
+
+			view, err := r.svc.ReadFile(r.ctx, 42, "a.txt")
+			require.NoError(t, err)
+			assert.Equal(t, "remote body\n", view.Content)
+			assert.False(t, view.Binary)
+			assert.False(t, view.TooLarge)
+		})
+	})
+}
+
+func TestReadFile_ViewFlagsPassThrough(t *testing.T) {
+	convey.Convey("binary / tooLarge / contentType 是视图字段,不是错误码", t, func() {
+		convey.Convey("本机:含 NUL 的文件 → Binary 标志,不报错", func() {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "bin.dat"), []byte("a\x00b"), 0o644))
+			r := newRig(t, 0, dir)
+
+			view, err := r.svc.ReadFile(r.ctx, 42, "bin.dat")
+			require.NoError(t, err)
+			assert.True(t, view.Binary)
+			assert.Empty(t, view.Content)
+		})
+
+		convey.Convey("远端:wire 字段原样透传(图片 base64 + contentType)", func() {
+			r := newRig(t, 7, "/remote/work")
+			r.expectCall(wire.MethodReadFile, wire.ReadFileReq{Root: "/remote/work", RelPath: "img.png"}).
+				DoAndReturn(func(_ context.Context, _ string, _ any, out any) error {
+					resp := out.(*wire.ReadFileResp)
+					resp.Content = "aGVsbG8="
+					resp.ContentType = "image/png"
+					return nil
+				})
+
+			view, err := r.svc.ReadFile(r.ctx, 42, "img.png")
+			require.NoError(t, err)
+			assert.Equal(t, "aGVsbG8=", view.Content)
+			assert.Equal(t, "image/png", view.ContentType)
+		})
+	})
+}
+
+func TestReadFile_ErrorMapping(t *testing.T) {
+	convey.Convey("ReadFile 错误映射复用 20800 段", t, func() {
+		convey.Convey("cwd 为空 → WorkspaceFsNoCwd,不借租约", func() {
+			r := newRig(t, 7, "")
+			_, err := r.svc.ReadFile(r.ctx, 42, "a.txt")
+			require.Error(t, err)
+			assert.Equal(t, i18n.NewError(r.ctx, code.WorkspaceFsNoCwd).Error(), err.Error())
+		})
+
+		convey.Convey("本机越界 → WorkspaceFsPathRefused", func() {
+			r := newRig(t, 0, t.TempDir())
+			_, err := r.svc.ReadFile(r.ctx, 42, "../etc/passwd")
+			require.Error(t, err)
+			assert.Equal(t, i18n.NewError(r.ctx, code.WorkspaceFsPathRefused).Error(), err.Error())
+		})
+
+		convey.Convey("远端越界 → 同一个 WorkspaceFsPathRefused", func() {
+			r := newRig(t, 7, "/remote/work")
+			r.expectCall(wire.MethodReadFile, gomock.Any()).
+				Return(&rpc.Error{Code: wire.ErrCodePathRefused, Message: "refused"})
+			_, err := r.svc.ReadFile(r.ctx, 42, "../etc/passwd")
+			require.Error(t, err)
+			assert.Equal(t, i18n.NewError(r.ctx, code.WorkspaceFsPathRefused).Error(), err.Error())
+		})
+
+		convey.Convey("远端方法不存在 → WorkspaceFsDaemonOutdated", func() {
+			r := newRig(t, 7, "/remote/work")
+			r.expectCall(wire.MethodReadFile, gomock.Any()).
+				Return(&rpc.Error{Code: -32601, Message: "Method not found"})
+			_, err := r.svc.ReadFile(r.ctx, 42, "a.txt")
+			require.Error(t, err)
+			assert.Equal(t, i18n.NewError(r.ctx, code.WorkspaceFsDaemonOutdated).Error(), err.Error())
+		})
+
+		convey.Convey("借不到租约 → WorkspaceFsDeviceOffline", func() {
+			r := newRig(t, 7, "/remote/work")
+			r.rd.EXPECT().Pool().Return(r.pool)
+			r.pool.EXPECT().Borrow(r.ctx, int64(7)).Return(nil, errors.New("dial fail"))
+			_, err := r.svc.ReadFile(r.ctx, 42, "a.txt")
+			require.Error(t, err)
+			assert.Equal(t, i18n.NewError(r.ctx, code.WorkspaceFsDeviceOffline).Error(), err.Error())
+		})
+	})
+}
+
+// ── GitFileContent:按 deviceID 路由 + 错误映射 ──────────────────────────────
+
+func TestGitFileContent_RoutesByDeviceID(t *testing.T) {
+	convey.Convey("GitFileContent 按 deviceID 路由", t, func() {
+		convey.Convey("deviceID=0 → 本机叶子包读 HEAD 版本", func() {
+			dir := initRepo(t)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("v1\n"), 0o644))
+			runGit(t, dir, "add", "a.txt")
+			runGit(t, dir, "commit", "-q", "-m", "seed")
+			// 工作区被改动后,对比档左列必须仍取 HEAD 版本,而不是工作区内容。
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("v2\n"), 0o644))
+			r := newRig(t, 0, dir)
+
+			view, err := r.svc.GitFileContent(r.ctx, 42, "a.txt")
+			require.NoError(t, err)
+			assert.False(t, view.NotARepo)
+			assert.True(t, view.HasHead)
+			assert.Equal(t, "v1\n", view.Content)
+		})
+
+		convey.Convey("deviceID=0 未跟踪 → 空基线标志,不报错", func() {
+			dir := initRepo(t)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "new.txt"), []byte("x\n"), 0o644))
+			r := newRig(t, 0, dir)
+
+			view, err := r.svc.GitFileContent(r.ctx, 42, "new.txt")
+			require.NoError(t, err)
+			assert.False(t, view.NotARepo)
+			assert.False(t, view.HasHead)
+			assert.Empty(t, view.Content)
+		})
+
+		convey.Convey("deviceID=0 非 git 目录 → NotARepo,不报错", func() {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x\n"), 0o644))
+			r := newRig(t, 0, dir)
+
+			view, err := r.svc.GitFileContent(r.ctx, 42, "a.txt")
+			require.NoError(t, err)
+			assert.True(t, view.NotARepo)
+			assert.False(t, view.HasHead)
+			assert.Empty(t, view.Content)
+		})
+
+		convey.Convey("deviceID≠0 → 走 RPC,root 用服务解析出的 cwd", func() {
+			r := newRig(t, 7, "/remote/work")
+			r.expectCall(wire.MethodGitFileContent, wire.GitFileContentReq{Root: "/remote/work", RelPath: "a.txt"}).
+				DoAndReturn(func(_ context.Context, _ string, _ any, out any) error {
+					resp := out.(*wire.GitFileContentResp)
+					resp.Content = "head body\n"
+					resp.HasHead = true
+					return nil
+				})
+
+			view, err := r.svc.GitFileContent(r.ctx, 42, "a.txt")
+			require.NoError(t, err)
+			assert.False(t, view.NotARepo)
+			assert.True(t, view.HasHead)
+			assert.Equal(t, "head body\n", view.Content)
+		})
+	})
+}
+
+func TestGitFileContent_ErrorMapping(t *testing.T) {
+	convey.Convey("GitFileContent 错误映射复用 20800 段", t, func() {
+		convey.Convey("本机越界 → WorkspaceFsPathRefused", func() {
+			dir := initRepo(t)
+			r := newRig(t, 0, dir)
+			_, err := r.svc.GitFileContent(r.ctx, 42, "../outside")
+			require.Error(t, err)
+			assert.Equal(t, i18n.NewError(r.ctx, code.WorkspaceFsPathRefused).Error(), err.Error())
+		})
+
+		convey.Convey("远端越界 → 同一个 WorkspaceFsPathRefused", func() {
+			r := newRig(t, 7, "/remote/work")
+			r.expectCall(wire.MethodGitFileContent, gomock.Any()).
+				Return(&rpc.Error{Code: wire.ErrCodePathRefused, Message: "refused"})
+			_, err := r.svc.GitFileContent(r.ctx, 42, "../etc/passwd")
+			require.Error(t, err)
+			assert.Equal(t, i18n.NewError(r.ctx, code.WorkspaceFsPathRefused).Error(), err.Error())
+		})
+
+		convey.Convey("远端方法不存在 → WorkspaceFsDaemonOutdated", func() {
+			r := newRig(t, 7, "/remote/work")
+			r.expectCall(wire.MethodGitFileContent, gomock.Any()).
+				Return(&rpc.Error{Code: -32601, Message: "Method not found"})
+			_, err := r.svc.GitFileContent(r.ctx, 42, "a.txt")
+			require.Error(t, err)
+			assert.Equal(t, i18n.NewError(r.ctx, code.WorkspaceFsDaemonOutdated).Error(), err.Error())
+		})
+
+		convey.Convey("借不到租约 → WorkspaceFsDeviceOffline", func() {
+			r := newRig(t, 7, "/remote/work")
+			r.rd.EXPECT().Pool().Return(r.pool)
+			r.pool.EXPECT().Borrow(r.ctx, int64(7)).Return(nil, errors.New("dial fail"))
+			_, err := r.svc.GitFileContent(r.ctx, 42, "a.txt")
+			require.Error(t, err)
+			assert.Equal(t, i18n.NewError(r.ctx, code.WorkspaceFsDeviceOffline).Error(), err.Error())
+		})
+	})
+}
+
 // ── 包级注入 ────────────────────────────────────────────────────────────────
 
 func TestRegisterSessionWorkspaceResolver(t *testing.T) {
