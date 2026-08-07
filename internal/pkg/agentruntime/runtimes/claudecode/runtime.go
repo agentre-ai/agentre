@@ -233,25 +233,41 @@ func (r *Runtime) DrainPending(ctx context.Context, sessionID int64) []agentrunt
 // 活跃轮既包括用户轮(inTurn)也包括带外轮(outOfBandActive:自主续轮 / 后台
 // subagent 活动轮独占帧流期间 inTurn 仍是 false)。两者都不活跃时才是真的
 // 无轮可中断,返回 ErrNoActiveTurn。
-func (r *Runtime) Abort(ctx context.Context, sessionID int64) error {
+//
+// turnToken 语义(决策 1):0 = 中断当前活跃轮(等价旧行为);非 0 = 仅当该轮仍是
+// 当前活跃轮时才中断,否则 stale no-op、不触碰其它轮。成功中断时上报被中断轮的
+// 类型(curTurnKind)。
+func (r *Runtime) Abort(ctx context.Context, sessionID int64, turnToken uint64) (agentruntime.AbortOutcome, error) {
 	v, ok := r.cache.Get(sessionKey(sessionID))
 	if !ok {
-		return agentruntime.ErrNoActiveTurn
+		return agentruntime.AbortOutcome{TurnKind: agentruntime.TurnKindNone}, agentruntime.ErrNoActiveTurn
 	}
 	a := v.(*claudeActive)
 	if !a.inTurn.Load() && !a.outOfBandActive() {
-		return agentruntime.ErrNoActiveTurn
+		return agentruntime.AbortOutcome{TurnKind: agentruntime.TurnKindNone}, agentruntime.ErrNoActiveTurn
+	}
+	if turnToken != 0 && a.curTurnToken.Load() != turnToken {
+		// stale:该轮已不是当前活跃轮,no-op,不触碰任何其它轮。
+		return agentruntime.AbortOutcome{TurnKind: agentruntime.TurnKindNone}, nil
 	}
 	if r.steer != nil && a.sessionUUID != "" {
 		_ = r.steer.Drain(a.sessionUUID)
 	}
 	if a.handle != nil {
 		if err := a.handle.Interrupt(ctx); err != nil {
+			if errors.Is(err, claudecode.ErrInterruptPending) {
+				// 中断已下发、ack 异步到（CLI 卡在别的处理上，interruptAckBound 内没回执）。
+				// **不** Close、**不** 逐出缓存 —— 帧已写、在途，readLoop 追平后 CLI 会
+				// 发 result 帧让本轮自然收尾。只有真错误（写帧失败 / session closed /
+				// CLI 拒绝）才走下方 Close+evict 兜底。
+				return agentruntime.AbortOutcome{TurnKind: a.currentTurnKind()}, nil
+			}
 			_ = a.handle.Close(ctx)
 			r.cache.Remove(sessionKey(sessionID))
+			return agentruntime.AbortOutcome{TurnKind: agentruntime.TurnKindNone}, err
 		}
 	}
-	return nil
+	return agentruntime.AbortOutcome{TurnKind: a.currentTurnKind()}, nil
 }
 
 // StopBackgroundTask 实现 BackgroundTaskStopper：停掉某个后台任务/子 agent(按 CLI
@@ -348,9 +364,11 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	}
 
 	out := make(chan agentruntime.Event, 32)
+	token := a.nextTurnToken(agentruntime.TurnKindUser)
 	result := &agentruntime.RunResult{
 		ProviderSessionID:    a.handle.ID(),
 		LaunchPermissionMode: launchMode,
+		TurnToken:            token,
 	}
 
 	// startup 看门狗:turn 起步后 startupTimeout 内一帧都没有 → 判定子进程卡死(典型:

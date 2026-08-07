@@ -278,13 +278,21 @@ type fakeCCHandle struct {
 	// interruptCalls 原子计数 Interrupt 调用次数,断言 Abort 是否真下发中断
 	// (决策 8:Abort 放宽到带外轮活跃也执行中断)。
 	interruptCalls int32
+	// interruptErr 非 nil 时 Interrupt 返回它(注入 ErrInterruptPending / 写帧失败等
+	// 真错误,断言 Abort 走不杀 / Close+evict 哪条路)。
+	interruptErr error
+	// closeCalls 原子计数 Close 调用次数,断言 ErrInterruptPending 不走 Close+evict 兜底。
+	closeCalls int32
 }
 
-func (f *fakeCCHandle) ID() string                  { return f.id }
-func (f *fakeCCHandle) Close(context.Context) error { return nil }
+func (f *fakeCCHandle) ID() string { return f.id }
+func (f *fakeCCHandle) Close(context.Context) error {
+	atomic.AddInt32(&f.closeCalls, 1)
+	return nil
+}
 func (f *fakeCCHandle) Interrupt(context.Context) error {
 	atomic.AddInt32(&f.interruptCalls, 1)
-	return nil
+	return f.interruptErr
 }
 func (f *fakeCCHandle) Kill(context.Context) error {
 	atomic.AddInt32(&f.killCalls, 1)
@@ -734,19 +742,21 @@ func TestRuntime_StopBackgroundTask(t *testing.T) {
 // 带外轮(自主续轮 / 后台 subagent 活动轮)独占帧流期间 inTurn 仍是 false —— 此前
 // 会被误判为「无活跃轮」拒绝中断,用户按「停止」停不掉正在飞的带外轮。放宽后
 // outOfBandActive 单独也能触发真正的中断;两者都不活跃时契约不变,仍返回
-// ErrNoActiveTurn。
+// ErrNoActiveTurn。turnToken=0 时语义与旧版一致:「中断当前活跃的那一轮」。
 func TestRuntime_Abort(t *testing.T) {
 	Convey("仅带外轮活跃(inTurn=false, outOfBandActive=true) → 执行中断", t, func() {
 		r := New()
 		h := &fakeCCHandle{}
 		a := &claudeActive{handle: h}
 		a.enterOutOfBand()
+		a.nextTurnToken(agentruntime.TurnKindAutonomous)
 		r.cache.Put(sessionKey(501), a)
 
-		err := r.Abort(context.Background(), 501)
+		outcome, err := r.Abort(context.Background(), 501, 0)
 
 		So(err, ShouldBeNil)
 		So(atomic.LoadInt32(&h.interruptCalls), ShouldEqual, 1)
+		So(outcome.TurnKind, ShouldEqual, agentruntime.TurnKindAutonomous)
 	})
 
 	Convey("用户轮与带外轮都不活跃 → 契约不变,返回 ErrNoActiveTurn", t, func() {
@@ -755,10 +765,125 @@ func TestRuntime_Abort(t *testing.T) {
 		a := &claudeActive{handle: h}
 		r.cache.Put(sessionKey(502), a)
 
-		err := r.Abort(context.Background(), 502)
+		outcome, err := r.Abort(context.Background(), 502, 0)
 
 		So(errors.Is(err, agentruntime.ErrNoActiveTurn), ShouldBeTrue)
 		So(atomic.LoadInt32(&h.interruptCalls), ShouldEqual, 0)
+		So(outcome.TurnKind, ShouldEqual, agentruntime.TurnKindNone)
+	})
+}
+
+// TestRuntime_Abort_TurnToken 钉死决策 1 的 per-turn token 语义:Abort 携带 token
+// (0=当前活跃轮)精确寻址,非 0 时仅当该轮仍是当前活跃轮才中断,否则 stale no-op
+// 不触碰任何其它轮;并上报被中断轮的类型。
+func TestRuntime_Abort_TurnToken(t *testing.T) {
+	Convey("stale token(轮已切换)→ no-op,不中断新轮、不返错", t, func() {
+		r := New()
+		h := &fakeCCHandle{}
+		a := &claudeActive{handle: h}
+		a.enterOutOfBand()
+		r.cache.Put(sessionKey(511), a)
+
+		tokenOld := a.nextTurnToken(agentruntime.TurnKindAutonomous)
+		tokenNew := a.nextTurnToken(agentruntime.TurnKindAutonomous)
+		So(tokenNew, ShouldNotEqual, tokenOld)
+
+		outcome, err := r.Abort(context.Background(), 511, tokenOld)
+
+		So(err, ShouldBeNil)
+		So(atomic.LoadInt32(&h.interruptCalls), ShouldEqual, 0)
+		So(outcome.TurnKind, ShouldEqual, agentruntime.TurnKindNone)
+	})
+
+	Convey("当前 token → 执行中断并上报被中断轮类型", t, func() {
+		r := New()
+		h := &fakeCCHandle{}
+		a := &claudeActive{handle: h}
+		a.enterOutOfBand()
+		r.cache.Put(sessionKey(512), a)
+
+		token := a.nextTurnToken(agentruntime.TurnKindAutonomous)
+
+		outcome, err := r.Abort(context.Background(), 512, token)
+
+		So(err, ShouldBeNil)
+		So(atomic.LoadInt32(&h.interruptCalls), ShouldEqual, 1)
+		So(outcome.TurnKind, ShouldEqual, agentruntime.TurnKindAutonomous)
+	})
+
+	Convey("turnToken=0 → 中断当前活跃轮(等价旧行为),上报类型", t, func() {
+		r := New()
+		h := &fakeCCHandle{}
+		a := &claudeActive{handle: h}
+		a.enterOutOfBand()
+		a.nextTurnToken(agentruntime.TurnKindSubagentActivity)
+		r.cache.Put(sessionKey(513), a)
+
+		outcome, err := r.Abort(context.Background(), 513, 0)
+
+		So(err, ShouldBeNil)
+		So(atomic.LoadInt32(&h.interruptCalls), ShouldEqual, 1)
+		So(outcome.TurnKind, ShouldEqual, agentruntime.TurnKindSubagentActivity)
+	})
+
+	Convey("用户轮(inTurn=true)活跃时 turnToken=0 → 上报 userTurn", t, func() {
+		r := New()
+		h := &fakeCCHandle{}
+		a := &claudeActive{handle: h}
+		a.inTurn.Store(true)
+		a.nextTurnToken(agentruntime.TurnKindUser)
+		r.cache.Put(sessionKey(514), a)
+
+		outcome, err := r.Abort(context.Background(), 514, 0)
+
+		So(err, ShouldBeNil)
+		So(atomic.LoadInt32(&h.interruptCalls), ShouldEqual, 1)
+		So(outcome.TurnKind, ShouldEqual, agentruntime.TurnKindUser)
+	})
+}
+
+// TestRuntime_Abort_ErrInterruptPending 钉死决策 2:Interrupt 有界超时返回的
+// ErrInterruptPending 被 Abort 视为「中断已下发、ack 异步到」→ 返回 nil、不 Close
+// 子进程、不逐出缓存;只有写帧失败 / session closed / CLI 拒绝等**真错误**才保留
+// runtime.go:248-252 的 Close+evict 兜底。
+func TestRuntime_Abort_ErrInterruptPending(t *testing.T) {
+	Convey("Interrupt 返 ErrInterruptPending → 返回 nil、不 Close、不逐出缓存", t, func() {
+		r := New()
+		h := &fakeCCHandle{interruptErr: claudecode.ErrInterruptPending}
+		a := &claudeActive{handle: h}
+		a.enterOutOfBand()
+		a.nextTurnToken(agentruntime.TurnKindAutonomous)
+		r.cache.Put(sessionKey(601), a)
+
+		outcome, err := r.Abort(context.Background(), 601, 0)
+
+		So(err, ShouldBeNil)
+		So(outcome.TurnKind, ShouldEqual, agentruntime.TurnKindAutonomous)
+		So(atomic.LoadInt32(&h.interruptCalls), ShouldEqual, 1)
+		So(atomic.LoadInt32(&h.closeCalls), ShouldEqual, 0) // ErrInterruptPending 不应 Close 子进程
+		v, ok := r.cache.Get(sessionKey(601))
+		So(ok, ShouldBeTrue) // ErrInterruptPending 不应逐出缓存
+		So(v, ShouldEqual, a)
+	})
+
+	Convey("真错误(写帧失败)→ 保留 Close+evict 兜底", t, func() {
+		r := New()
+		h := &fakeCCHandle{interruptErr: errors.New("claudecode: write frame: broken pipe")}
+		a := &claudeActive{handle: h}
+		a.enterOutOfBand()
+		a.nextTurnToken(agentruntime.TurnKindAutonomous)
+		r.cache.Put(sessionKey(602), a)
+
+		_, err := r.Abort(context.Background(), 602, 0)
+
+		So(err, ShouldNotBeNil)
+		// 真错误应 Close 子进程:显式 a.handle.Close 一次,且 cache.Remove 还会异步 close
+		// 被逐出的 handle(CLISessionPool.Remove 里 go closeWithTimeout),故 closeCalls 是
+		// 1 或 2 —— 钉死「至少一次 Close + 缓存被逐出」这条与 ErrInterruptPending(0 次
+		// Close)可区分的判据,不钉死可能被异步 close 竞态的精确次数。
+		So(atomic.LoadInt32(&h.closeCalls), ShouldBeGreaterThanOrEqualTo, 1)
+		_, ok := r.cache.Get(sessionKey(602))
+		So(ok, ShouldBeFalse) // 真错误应逐出缓存
 	})
 }
 

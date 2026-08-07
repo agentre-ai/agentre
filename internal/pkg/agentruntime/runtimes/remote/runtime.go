@@ -65,6 +65,7 @@ type remoteSession struct {
 	registrationOnce  sync.Once
 	abortOnce         sync.Once
 	abortErr          error
+	abortOutcome      agentruntime.AbortOutcome
 }
 
 // Runtime 包装 DaemonClientPort 把 chat session 委托给远端 daemon。生命周期:
@@ -372,33 +373,33 @@ func (r *Runtime) PrepareRun(ctx context.Context, req agentruntime.RunRequest) (
 	sess.registrationOnce.Do(func() { close(sess.registrationDone) })
 	releaseGenerationGate()
 	if registrationErr != nil {
-		_ = r.abortGeneration(ctx, sess)
+		_, _ = r.abortGeneration(ctx, sess, 0)
 		return nil, wire.FromJSONRPCError(registrationErr)
 	}
 	if registrationAck.SessionID != req.SessionID {
-		_ = r.abortGeneration(ctx, sess)
+		_, _ = r.abortGeneration(ctx, sess, 0)
 		return nil, fmt.Errorf("remote runtime: Pi registration returned session %d for %d", registrationAck.SessionID, req.SessionID)
 	}
 	if err := generationCtx.Err(); err != nil {
-		_ = r.abortGeneration(ctx, sess)
+		_, _ = r.abortGeneration(ctx, sess, 0)
 		return nil, err
 	}
 
 	var ack wire.RunAck
 	if err := r.conn().Call(generationCtx, wire.MethodRun, params, &ack); err != nil {
-		_ = r.abortGeneration(ctx, sess)
+		_, _ = r.abortGeneration(ctx, sess, 0)
 		logger.Ctx(ctx).Warn("remote runtime: Pi preparation RPC failed",
 			zap.Int64("sessionId", req.SessionID),
 			zap.String("errorType", fmt.Sprintf("%T", err)))
 		return nil, wire.FromJSONRPCError(err)
 	}
 	if ack.SessionID != req.SessionID {
-		_ = r.abortGeneration(ctx, sess)
+		_, _ = r.abortGeneration(ctx, sess, 0)
 		return nil, fmt.Errorf("remote runtime: Pi preparation returned session %d for %d", ack.SessionID, req.SessionID)
 	}
 	providerSessionID := strings.TrimSpace(ack.ProviderSessionID)
 	if providerSessionID == "" {
-		_ = r.abortGeneration(ctx, sess)
+		_, _ = r.abortGeneration(ctx, sess, 0)
 		return nil, errors.New("remote runtime: Pi preparation returned empty provider session id")
 	}
 	sess.mu.Lock()
@@ -456,11 +457,11 @@ func (p *remotePreparedRun) Start(ctx context.Context) (<-chan agentruntime.Even
 	}()
 	var ack wire.RunAck
 	if err := p.runtime.conn().Call(startCtx, wire.MethodRun, p.params, &ack); err != nil {
-		_ = p.runtime.abortGeneration(ctx, p.session)
+		_, _ = p.runtime.abortGeneration(ctx, p.session, 0)
 		return nil, nil, wire.FromJSONRPCError(err)
 	}
 	if ack.SessionID != p.session.id || strings.TrimSpace(ack.ProviderSessionID) != p.ProviderSessionID() {
-		_ = p.runtime.abortGeneration(ctx, p.session)
+		_, _ = p.runtime.abortGeneration(ctx, p.session, 0)
 		return nil, nil, errors.New("remote runtime: Pi start acknowledged a different prepared generation")
 	}
 	p.session.mu.Lock()
@@ -479,7 +480,8 @@ func (p *remotePreparedRun) Close(ctx context.Context) error {
 	p.mu.Lock()
 	p.closed = true
 	p.mu.Unlock()
-	return p.runtime.abortGeneration(ctx, p.session)
+	_, err := p.runtime.abortGeneration(ctx, p.session, 0)
+	return err
 }
 
 func (r *Runtime) runDirect(ctx context.Context, req agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
@@ -856,6 +858,7 @@ func (r *Runtime) handleRunResultDone(ctx context.Context, raw json.RawMessage) 
 	sess.result.UserAnchor = frame.UserAnchor
 	sess.result.Model = frame.Model
 	sess.result.ContextWindow = frame.ContextWindow
+	sess.result.TurnToken = frame.TurnToken
 	if frame.Usage != nil {
 		// provider.Usage 没 JSON tag,wire 端用 UsageWire 中转,这里 1:1 拷回。
 		sess.result.Usage = usageFromWire(frame.Usage)
@@ -922,22 +925,26 @@ func (r *Runtime) DrainPending(ctx context.Context, sessionID int64) []agentrunt
 	return res.Steers
 }
 
-func (r *Runtime) Abort(ctx context.Context, sessionID int64) error {
+func (r *Runtime) Abort(ctx context.Context, sessionID int64, turnToken uint64) (agentruntime.AbortOutcome, error) {
 	r.mu.RLock()
 	sess := r.sessions[sessionID]
 	r.mu.RUnlock()
 	// 本进程在跑 Pi generation:走本地收尾路径(main 的 Pi abort)。
 	if sess != nil && sess.backendType == agent_backend_entity.TypePiAgent {
-		return r.abortGeneration(ctx, sess)
+		return r.abortGeneration(ctx, sess, turnToken)
 	}
 	// 其余会话(含补齐进 tracked / autoSessions 的 R12 远端会话):用 HEAD 的
 	// hasSession 判定 + origin 路由,避免把无本地 Run 的会话拦成 ErrNoActiveTurn。
 	if !r.hasSession(sessionID) {
-		return agentruntime.ErrNoActiveTurn
+		return agentruntime.AbortOutcome{}, agentruntime.ErrNoActiveTurn
 	}
-	return r.callSession(ctx, sessionID, wire.MethodAbort, wire.AbortParams{
-		SessionID: sessionID, PeerFingerprint: r.originFor(sessionID),
-	}, &wire.OK{})
+	var res wire.AbortResult
+	if err := r.callSession(ctx, sessionID, wire.MethodAbort, wire.AbortParams{
+		SessionID: sessionID, PeerFingerprint: r.originFor(sessionID), TurnToken: turnToken,
+	}, &res); err != nil {
+		return agentruntime.AbortOutcome{}, err
+	}
+	return agentruntime.AbortOutcome{TurnKind: res.TurnKind}, nil
 }
 
 func (r *Runtime) StopBackgroundTask(ctx context.Context, sessionID int64, taskID string) error {
@@ -1039,15 +1046,15 @@ func (r *Runtime) goalParams(req agentruntime.GoalRequest) (wire.GoalParams, err
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-func (r *Runtime) abortGeneration(ctx context.Context, sess *remoteSession) error {
+func (r *Runtime) abortGeneration(ctx context.Context, sess *remoteSession, turnToken uint64) (agentruntime.AbortOutcome, error) {
 	if sess == nil {
-		return agentruntime.ErrNoActiveTurn
+		return agentruntime.AbortOutcome{}, agentruntime.ErrNoActiveTurn
 	}
 	r.mu.RLock()
 	current := r.sessions[sess.id] == sess
 	r.mu.RUnlock()
 	if !current {
-		return nil
+		return agentruntime.AbortOutcome{TurnKind: agentruntime.TurnKindNone}, nil
 	}
 
 	// Cancellation is owner-local and must reach preparation immediately. Only
@@ -1068,7 +1075,7 @@ func (r *Runtime) abortGeneration(ctx context.Context, sess *remoteSession) erro
 	current = r.sessions[sess.id] == sess
 	r.mu.RUnlock()
 	if !current {
-		return nil
+		return agentruntime.AbortOutcome{TurnKind: agentruntime.TurnKindNone}, nil
 	}
 	sess.abortOnce.Do(func() {
 		base := ctx
@@ -1077,14 +1084,16 @@ func (r *Runtime) abortGeneration(ctx context.Context, sess *remoteSession) erro
 		}
 		abortCtx, cancel := context.WithTimeout(context.WithoutCancel(base), generationControlTimeout)
 		defer cancel()
-		err := r.callSentinel(abortCtx, wire.MethodAbort, wire.AbortParams{SessionID: sess.id}, &wire.OK{})
+		var res wire.AbortResult
+		err := r.callSentinel(abortCtx, wire.MethodAbort, wire.AbortParams{SessionID: sess.id, TurnToken: turnToken}, &res)
 		if errors.Is(err, agentruntime.ErrNoActiveTurn) {
 			err = nil
 		}
 		sess.abortErr = err
+		sess.abortOutcome = agentruntime.AbortOutcome{TurnKind: res.TurnKind}
 		r.finishSession(sess, agentruntime.ErrAborted)
 	})
-	return sess.abortErr
+	return sess.abortOutcome, sess.abortErr
 }
 
 // abortOverflowedGeneration cancels the daemon-side generation after a bounded
@@ -1096,7 +1105,7 @@ func (r *Runtime) abortGeneration(ctx context.Context, sess *remoteSession) erro
 func (r *Runtime) abortOverflowedGeneration(sess *remoteSession) {
 	abortCtx, cancel := context.WithTimeout(context.Background(), generationControlTimeout)
 	defer cancel()
-	err := r.callSentinel(abortCtx, wire.MethodAbort, wire.AbortParams{SessionID: sess.id}, &wire.OK{})
+	err := r.callSentinel(abortCtx, wire.MethodAbort, wire.AbortParams{SessionID: sess.id}, &wire.AbortResult{})
 	if errors.Is(err, agentruntime.ErrNoActiveTurn) {
 		err = nil
 	}

@@ -57,8 +57,10 @@ type fullRT struct {
 	drainFn   func(int64) []agentruntime.ConsumedSteer
 	drainArgs []int64
 
-	abortErr   error
-	abortCalls []int64
+	abortErr     error
+	abortCalls   []int64
+	abortTokens  []uint64
+	abortOutcome agentruntime.AbortOutcome
 
 	stopBgErr   error
 	stopBgCalls []stopBgCall
@@ -175,11 +177,12 @@ func (r *fullRT) DrainPending(_ context.Context, sid int64) []agentruntime.Consu
 	return nil
 }
 
-func (r *fullRT) Abort(_ context.Context, sid int64) error {
+func (r *fullRT) Abort(_ context.Context, sid int64, turnToken uint64) (agentruntime.AbortOutcome, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.abortCalls = append(r.abortCalls, sid)
-	return r.abortErr
+	r.abortTokens = append(r.abortTokens, turnToken)
+	return r.abortOutcome, r.abortErr
 }
 
 func (r *fullRT) StopBackgroundTask(_ context.Context, sid int64, taskID string) error {
@@ -1513,6 +1516,22 @@ func TestRuntime_Abort_Success(t *testing.T) {
 	assert.Equal(t, []int64{3}, rt.abortCalls)
 }
 
+// TestRuntime_Abort_PassesTokenAndReturnsInterruptedTurnKind 钉死决策 1 的 daemon 侧:
+// RuntimeHandlers.Abort 把 wire.AbortParams.TurnToken 透传给 runtime 的 Abort,并把
+// 被中断轮的类型经 wire.AbortResult.TurnKind 返给对端 —— spec 测试接缝「remote wire
+// + daemon handler:AbortParams 携带 token,daemon 侧透传并返回轮类型」。
+func TestRuntime_Abort_PassesTokenAndReturnsInterruptedTurnKind(t *testing.T) {
+	rt := &fullRT{abortOutcome: agentruntime.AbortOutcome{TurnKind: agentruntime.TurnKindSubagentActivity}}
+	ctx, _, h, live := runtimeWithLiveSession(t, rt, 3)
+	defer close(live)
+
+	res, err := h.Abort(ctx, wire.AbortParams{SessionID: 3, TurnToken: 42})
+	require.NoError(t, err)
+	assert.Equal(t, []int64{3}, rt.abortCalls)
+	assert.Equal(t, []uint64{42}, rt.abortTokens, "daemon 侧必须把 turnToken 原样透传给 runtime")
+	assert.Equal(t, agentruntime.TurnKindSubagentActivity, res.TurnKind)
+}
+
 func TestRuntime_Abort_NoSession_ErrNoActiveTurn(t *testing.T) {
 	ctx, _, _, _, h := setupRuntimeTest(t, &fullRT{})
 	_, err := h.Abort(ctx, wire.AbortParams{SessionID: 7})
@@ -2278,11 +2297,11 @@ func (r *settlingAcceptedPiRT) PrepareRun(context.Context, agentruntime.RunReque
 	return r.prepared, nil
 }
 
-func (r *settlingAcceptedPiRT) Abort(context.Context, int64) error {
+func (r *settlingAcceptedPiRT) Abort(context.Context, int64, uint64) (agentruntime.AbortOutcome, error) {
 	r.prepared.result.UserAnchor = "pi-user-anchor-after-stop"
 	r.prepared.result.StopErr = agentruntime.ErrAborted
 	r.prepared.finish()
-	return nil
+	return agentruntime.AbortOutcome{}, nil
 }
 
 type settlingAcceptedPiRun struct {
@@ -2318,11 +2337,11 @@ func (r *blockingAbortAcceptedPiRT) PrepareRun(context.Context, agentruntime.Run
 	return r.prepared, nil
 }
 
-func (r *blockingAbortAcceptedPiRT) Abort(context.Context, int64) error {
+func (r *blockingAbortAcceptedPiRT) Abort(context.Context, int64, uint64) (agentruntime.AbortOutcome, error) {
 	r.abortOnce.Do(func() { close(r.abortEntered) })
 	<-r.allowAbort
 	r.prepared.finish()
-	return nil
+	return agentruntime.AbortOutcome{}, nil
 }
 
 func (p *settlingAcceptedPiRun) Start(context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
@@ -2405,16 +2424,16 @@ func (r *gatedPreparedPiRT) PrepareRun(ctx context.Context, req agentruntime.Run
 	return r.scriptedPreparedPiRT.PrepareRun(ctx, req)
 }
 
-func (r *scriptedPreparedPiRT) Abort(context.Context, int64) error {
+func (r *scriptedPreparedPiRT) Abort(context.Context, int64, uint64) (agentruntime.AbortOutcome, error) {
 	r.mu.Lock()
 	active := r.active
 	r.mu.Unlock()
 	if active == nil {
-		return agentruntime.ErrNoActiveTurn
+		return agentruntime.AbortOutcome{}, agentruntime.ErrNoActiveTurn
 	}
 	active.result.StopErr = agentruntime.ErrAborted
 	active.finish()
-	return nil
+	return agentruntime.AbortOutcome{}, nil
 }
 
 type scriptedPreparedPiRun struct {

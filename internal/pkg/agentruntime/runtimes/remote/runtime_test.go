@@ -319,7 +319,8 @@ func TestPrepareRun_SlowConsumerOverflowCancelsExactGenerationAndAllowsRetry(t *
 	require.Error(t, firstResult.StopErr)
 	assert.Equal(t, "remote runtime: event delivery exceeded bounded buffer", firstResult.StopErr.Error())
 	assert.NotContains(t, firstResult.StopErr.Error(), secret)
-	assert.ErrorIs(t, rt.Abort(context.Background(), sessionID), agentruntime.ErrNoActiveTurn)
+	_, err = rt.Abort(context.Background(), sessionID, 0)
+	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
 
 	// A stale frame observed after exact-owner finalization is dropped before a
 	// same-SessionID retry is installed.
@@ -383,7 +384,8 @@ func TestPrepareRun_StopDuringRegistrationWaitsForOwnerAckThenAborts(t *testing.
 	abortErrC := make(chan error, 1)
 	go func() {
 		close(abortStarted)
-		abortErrC <- rt.Abort(context.Background(), 72)
+		_, err := rt.Abort(context.Background(), 72, 0)
+		abortErrC <- err
 	}()
 	<-abortStarted
 	select {
@@ -428,9 +430,11 @@ func TestPrepareRun_PendingPiAbortCancelsTheRegisteredGeneration(t *testing.T) {
 	}()
 	<-entered
 
-	require.NoError(t, rt.Abort(context.Background(), 73))
+	_, err := rt.Abort(context.Background(), 73, 0)
+	require.NoError(t, err)
 	require.ErrorIs(t, <-errC, context.Canceled)
-	assert.ErrorIs(t, rt.Abort(context.Background(), 73), agentruntime.ErrNoActiveTurn)
+	_, err = rt.Abort(context.Background(), 73, 0)
+	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
 }
 
 func TestPrepareRun_RequestCancellationAbortsPendingDaemonGeneration(t *testing.T) {
@@ -471,7 +475,8 @@ func TestPrepareRun_RequestCancellationAbortsPendingDaemonGeneration(t *testing.
 
 	require.ErrorIs(t, <-errC, context.Canceled)
 	<-abortCalled
-	assert.ErrorIs(t, rt.Abort(context.Background(), 74), agentruntime.ErrNoActiveTurn)
+	_, err := rt.Abort(context.Background(), 74, 0)
+	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
 }
 
 func TestPrepareRun_StartCancellationAbortsPromptAcknowledgement(t *testing.T) {
@@ -519,7 +524,8 @@ func TestPrepareRun_StartCancellationAbortsPromptAcknowledgement(t *testing.T) {
 
 	require.ErrorIs(t, <-startErrC, context.Canceled)
 	<-abortCalled
-	assert.ErrorIs(t, rt.Abort(context.Background(), 75), agentruntime.ErrNoActiveTurn)
+	_, err = rt.Abort(context.Background(), 75, 0)
+	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
 }
 
 func TestPrepareRun_CurrentPiCompletionIsNotConsumedWhenAbortedOwnerEmitsNoTerminalFrame(t *testing.T) {
@@ -1284,11 +1290,41 @@ func TestAbort_SuccessAndNoSession(t *testing.T) {
 
 	cli.EXPECT().Call(gomock.Any(), wire.MethodAbort, gomock.Any(), gomock.Any()).
 		Return(nil)
-	require.NoError(t, rt.Abort(context.Background(), 4))
+	_, err = rt.Abort(context.Background(), 4, 0)
+	require.NoError(t, err)
 
 	// Unknown session
-	err = rt.Abort(context.Background(), 999)
+	_, err = rt.Abort(context.Background(), 999, 0)
 	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
+}
+
+// TestAbort_PassesTurnTokenAndReturnsInterruptedTurnKind 钉死决策 1 的远端链路:
+// remote.Runtime.Abort 把调用方的 turnToken 原样透传到 wire.AbortParams,并把 daemon
+// 返回的 wire.AbortResult.TurnKind 带回给调用方(AbortOutcome.TurnKind)—— spec 测试接缝
+// 「remote wire + daemon handler:AbortParams 携带 token,daemon 侧透传并返回轮类型」。
+func TestAbort_PassesTurnTokenAndReturnsInterruptedTurnKind(t *testing.T) {
+	_, cli, _, rt := setupRemote(t)
+	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, _ any, result any) error {
+			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: 4}
+			return nil
+		})
+	_, _, err := rt.Run(context.Background(), agentruntime.RunRequest{
+		Backend:   &agent_backend_entity.AgentBackend{Type: "claudecode"},
+		SessionID: 4,
+	})
+	require.NoError(t, err)
+
+	// 断言 AbortParams 携带 turnToken=42,并让 daemon 应答一个具体的被中断轮类型。
+	cli.EXPECT().Call(gomock.Any(), wire.MethodAbort,
+		gomock.Eq(wire.AbortParams{SessionID: 4, TurnToken: 42}), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, _ any, result any) error {
+			*(result.(*wire.AbortResult)) = wire.AbortResult{TurnKind: agentruntime.TurnKindAutonomous}
+			return nil
+		})
+	outcome, err := rt.Abort(context.Background(), 4, 42)
+	require.NoError(t, err)
+	assert.Equal(t, agentruntime.TurnKindAutonomous, outcome.TurnKind)
 }
 
 func TestStopBackgroundTask_SuccessAndNoSession(t *testing.T) {
@@ -1472,7 +1508,7 @@ func TestControlRequests_CarryPeerOrigin(t *testing.T) {
 		{"Steer", func() error { return rt.Steer(context.Background(), peerSid, "q-1", "stop") }, wire.MethodSteer},
 		{"CancelSteer", func() error { _, err := rt.CancelSteer(context.Background(), peerSid, "q-1"); return err }, wire.MethodCancelSteer},
 		{"DrainPending", func() error { rt.DrainPending(context.Background(), peerSid); return nil }, wire.MethodDrainPending},
-		{"Abort", func() error { return rt.Abort(context.Background(), peerSid) }, wire.MethodAbort},
+		{"Abort", func() error { _, err := rt.Abort(context.Background(), peerSid, 0); return err }, wire.MethodAbort},
 		{"StopBackgroundTask", func() error { return rt.StopBackgroundTask(context.Background(), peerSid, "t-1") }, wire.MethodStopBackgroundTask},
 		{"SetPermissionMode", func() error { return rt.SetPermissionMode(context.Background(), peerSid, "plan") }, wire.MethodSetPermissionMode},
 		{"SubmitAnswer", func() error { return rt.SubmitAnswer(context.Background(), peerSid, "r-1", nil, nil, true) }, wire.MethodSubmitAnswer},

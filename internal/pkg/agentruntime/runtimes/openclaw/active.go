@@ -44,6 +44,8 @@ type activeTurn struct {
 	finishOnce sync.Once
 	abortMu    sync.Mutex
 	aborted    bool
+	// turnToken 本轮的身份 token(创建时一次性赋值,发布进 r.active 后只读,Abort 比对用)。
+	turnToken uint64
 
 	approvalMu        sync.Mutex
 	approvalResolveMu sync.Mutex

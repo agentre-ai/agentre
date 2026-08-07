@@ -457,6 +457,12 @@ type RunResult struct {
 	Usage             *provider.Usage
 	StopErr           error
 
+	// TurnToken 是这一轮的 per-turn token(本会话内的递增序号,0 表示 runner 未
+	// 生成)。Abort 携带它做精确寻址:非 0 时仅当该轮仍是当前活跃轮才中断,否则
+	// stale no-op(决策 1)。claudecode / codex / builtin / piagent / openclaw
+	// 在每轮入口递增一次;remote 侧由 daemon 生成后经 wire 透传回来。
+	TurnToken uint64
+
 	// UserAnchor 是 provider 端对本轮 user prompt 的稳定标识，用于将来
 	// 「重新生成 assistant N」时反向定位到 user N 之前的会话点。
 	//
@@ -546,12 +552,43 @@ type SteerDrainer interface {
 	DrainPending(ctx context.Context, sessionID int64) []ConsumedSteer
 }
 
+// AbortOutcome 描述一次 Abort 的结果:被中断的那一轮的类型。
+//
+// TurnKind == TurnKindNone 只随 ErrNoActiveTurn / stale no-op 返回(没有实际中断任何轮);
+// 成功中断时带具体类型。
+type AbortOutcome struct {
+	TurnKind TurnKind
+}
+
+// TurnKind 标识被中断的那一轮的类型。
+type TurnKind string
+
+const (
+	// TurnKindNone 没有中断任何轮(无活跃轮 / stale token no-op)。
+	TurnKindNone TurnKind = "none"
+	// TurnKindUser 被中断的是用户轮(Run)。
+	TurnKindUser TurnKind = "userTurn"
+	// TurnKindAutonomous 被中断的是自主续轮(AutonomousTurn)。
+	TurnKindAutonomous TurnKind = "autonomous"
+	// TurnKindSubagentActivity 被中断的是后台 subagent 活动轮(SubagentActivity)。
+	TurnKindSubagentActivity TurnKind = "subagentActivity"
+)
+
 // Aborter is implemented by BackendRunners that support stopping the in-flight
 // turn (user clicks "停止"). chat_svc.Stop calls Abort to unblock the runner's
 // blocking I/O — claudecode writes a control_request{interrupt} frame, codex
 // sends turn/interrupt RPC, builtin cancels turnCtx. Implementations MUST be
 // idempotent and MUST be safe to call concurrently with the runner's own
 // drain goroutine.
+//
+// turnToken 是调用方想中断的那一轮的 per-turn token(随 RunResult /
+// AutonomousTurn / SubagentActivity 暴露):
+//   - 0 = 中断该会话当前活跃的那一轮(等价于旧行为,用户点停止的语义不变);
+//   - 非 0 = 仅当该轮仍是当前活跃轮时才中断,否则视为 stale、返回 (AbortOutcome{}, nil)
+//     no-op,不触碰任何其它轮 —— 迟到的带 token 中断不会杀掉新起的轮。
+//
+// 返回 AbortOutcome 携带被中断轮的类型(TurnKindUser / TurnKindAutonomous /
+// TurnKindSubagentActivity;无轮可中断或 stale no-op 时 TurnKindNone)。
 //
 // Returns ErrNoActiveTurn when there is no in-flight turn for sessionID
 // (already finished, never started, or unknown to this runner). chat_svc
@@ -560,7 +597,7 @@ type SteerDrainer interface {
 // Defined as a separate interface (like SteerCanceler) so a backend can be
 // added without abort support if needed; all three current runners implement it.
 type Aborter interface {
-	Abort(ctx context.Context, sessionID int64) error
+	Abort(ctx context.Context, sessionID int64, turnToken uint64) (AbortOutcome, error)
 }
 
 // BackgroundTaskStopper is implemented by BackendRunners that support stopping a
@@ -622,6 +659,8 @@ type AutonomousTurn struct {
 	Events  <-chan Event
 	Result  *RunResult
 	Trigger string // "background_task"
+	// TurnToken 是本自主轮的 per-turn token,供 Abort 精确寻址(决策 1)。
+	TurnToken uint64
 	// CompletedTask 镜像 claudecode.CompletedBackgroundTask:触发本自主轮的后台命令身份。
 	CompletedTask *CompletedBackgroundTask
 }
@@ -644,6 +683,8 @@ type SubagentActivitySource interface {
 type SubagentActivity struct {
 	ToolUseID string
 	Events    <-chan Event
+	// TurnToken 是本活动轮的 per-turn token,供 Abort 精确寻址(决策 1)。
+	TurnToken uint64
 }
 
 // Errors live in errors.go; registry / RuntimeFor / RegisterRuntime / SwapRuntimeForTest live in registry.go.

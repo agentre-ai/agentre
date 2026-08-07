@@ -21,6 +21,12 @@ import (
 // 慢机的余量，错过这个窗口的早退由 Turn / 0-frame fallback 兜底（也走 ExitErr）。
 var claudeStartupCheckTimeout = 200 * time.Millisecond
 
+// interruptAckBound 是 Interrupt / StopTask 等 control_request 写帧后等 ack 的
+// 上界（与 chat_svc 的 piStopAbortWriteBound=500ms 同值）。CLI 不回执（卡在别的
+// 处理上）时超时返回 ErrInterruptPending —— 帧已写、请求在途,不无界挂住调用方
+// 的 goroutine,也不因超时杀子进程。
+const interruptAckBound = 500 * time.Millisecond
+
 // Session 是一个常驻的 claude 子进程。多个 Turn 复用同一个 stdin/stdout，
 // 适合"每个 chat session 一个子进程"的部署形态——避免每轮 spawn 的 cold start，
 // 也让 hooks/--settings 注入只做一次。
@@ -725,9 +731,14 @@ func parseControlResponse(line []byte) (controlResponse, string, bool) {
 
 // Interrupt 写一帧 control_request{subtype:"interrupt"} 让 CLI 软中断当前 turn。
 // CLI 会回一帧 control_response 标 success / error，本方法阻塞等这条回执（或 ctx
-// 取消）。中断成功后 CLI 还会发一个 result 帧（subtype 通常是 "interrupted" /
+// 取消 / 子进程收尾 / interruptAckBound 超时）。中断成功后 CLI 还会发一个 result 帧
+// （subtype 通常是 "interrupted" /
 // "error_during_execution"）让正在 drain 的 Turn 自然返 done —— **子进程保留**，
 // 下一轮可以直接复用同一个 Session。
+//
+// ack 等待有界（interruptAckBound=500ms）：CLI 不回执（卡在别的处理上）时超时返回
+// ErrInterruptPending —— 帧已写、中断在途，CLI 处理到后会自然收尾；调用方应把它视
+// 为「中断已下发」而非失败，不得因此杀子进程。
 //
 // 调用约束：可以和 Turn 并发调用（stdinMu 只在写帧期间持有，turnMu 不参与）。
 // Close 之后调返错。同一个 Session 并发多次 Interrupt 不冲突（各自 request_id）
@@ -771,6 +782,10 @@ func (s *Session) Interrupt(ctx context.Context) error {
 		return ctx.Err()
 	case <-s.readerDone:
 		return s.controlRequestAbortedErr("interrupt")
+	case <-time.After(interruptAckBound):
+		// CLI 不回执：中断帧已写、在途，CLI 处理到后 readLoop 会 dispatch 迟到的
+		// control_response / result 让本轮自然收尾。有界返回独立哨兵，不无界挂死。
+		return ErrInterruptPending
 	case resp := <-ch:
 		if resp.Subtype != "success" {
 			if resp.Error != "" {
@@ -829,6 +844,10 @@ func (s *Session) StopTask(ctx context.Context, taskID string) error {
 		return ctx.Err()
 	case <-s.readerDone:
 		return s.controlRequestAbortedErr("stop_task")
+	case <-time.After(interruptAckBound):
+		// 与 Interrupt 同款有界：stop_task 帧已写、在途，CLI 停掉任务后会另发
+		// task_notification 收尾。超时返回 ErrInterruptPending，不无界挂死。
+		return ErrInterruptPending
 	case resp := <-ch:
 		return stopTaskResponseErr(resp)
 	}

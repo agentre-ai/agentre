@@ -89,11 +89,11 @@ func (f *fakeBackendRunner) Steer(_ context.Context, _ int64, _ string, text str
 	return nil
 }
 
-func (f *fakeBackendRunner) Abort(_ context.Context, sessionID int64) error {
+func (f *fakeBackendRunner) Abort(_ context.Context, sessionID int64, _ uint64) (agentruntime.AbortOutcome, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.aborted = append(f.aborted, sessionID)
-	return nil
+	return agentruntime.AbortOutcome{}, nil
 }
 
 // startTestDaemon spins a daemon on ephemeral port, returns it + cancel.
@@ -478,7 +478,9 @@ func (p *pacedBackendRunner) Run(_ context.Context, _ agentruntime.RunRequest) (
 }
 
 func (p *pacedBackendRunner) Steer(_ context.Context, _ int64, _ string, _ string) error { return nil }
-func (p *pacedBackendRunner) Abort(_ context.Context, _ int64) error                     { return nil }
+func (p *pacedBackendRunner) Abort(_ context.Context, _ int64, _ uint64) (agentruntime.AbortOutcome, error) {
+	return agentruntime.AbortOutcome{}, nil
+}
 
 // pairedTestRig boots a daemon, pairs a WS client, and constructs a *remote.Runtime
 // proxy on top so subtests can drive backend Events end-to-end through the full

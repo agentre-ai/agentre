@@ -271,17 +271,18 @@ func (m *MockAborter) EXPECT() *MockAborterMockRecorder {
 }
 
 // Abort mocks base method.
-func (m *MockAborter) Abort(ctx context.Context, sessionID int64) error {
+func (m *MockAborter) Abort(ctx context.Context, sessionID int64, turnToken uint64) (agentruntime.AbortOutcome, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Abort", ctx, sessionID)
-	ret0, _ := ret[0].(error)
-	return ret0
+	ret := m.ctrl.Call(m, "Abort", ctx, sessionID, turnToken)
+	ret0, _ := ret[0].(agentruntime.AbortOutcome)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // Abort indicates an expected call of Abort.
-func (mr *MockAborterMockRecorder) Abort(ctx, sessionID any) *gomock.Call {
+func (mr *MockAborterMockRecorder) Abort(ctx, sessionID, turnToken any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Abort", reflect.TypeOf((*MockAborter)(nil).Abort), ctx, sessionID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Abort", reflect.TypeOf((*MockAborter)(nil).Abort), ctx, sessionID, turnToken)
 }
 
 // MockBackgroundTaskStopper is a mock of BackgroundTaskStopper interface.

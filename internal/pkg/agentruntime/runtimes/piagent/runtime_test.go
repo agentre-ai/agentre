@@ -132,7 +132,8 @@ func TestRun_CanceledAcceptedTurnReturnsSettledUserAnchor(t *testing.T) {
 	<-stream.started
 
 	cancel()
-	require.NoError(t, runtime.Abort(context.Background(), 2))
+	_, abortErr := runtime.Abort(context.Background(), 2, 0)
+	require.NoError(t, abortErr)
 	for range events {
 	}
 
@@ -504,7 +505,8 @@ func TestRun_StaleCleanupCannotUnregisterNewerGeneration(t *testing.T) {
 	for range firstEvents {
 	}
 
-	require.NoError(t, runtime.Abort(context.Background(), req.SessionID),
+	_, abortErr := runtime.Abort(context.Background(), req.SessionID, 0)
+	require.NoError(t, abortErr,
 		"generation A's deferred unregister must not remove generation B")
 	select {
 	case <-secondInterrupted:

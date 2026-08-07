@@ -305,9 +305,16 @@ type DrainResult struct {
 }
 
 // AbortParams 等同 agentruntime.Aborter.Abort 的入参。
+// TurnToken 语义同 agentruntime:0 = 中断当前活跃轮;非 0 = 仅当该轮仍是当前活跃轮才中断。
 type AbortParams struct {
 	SessionID       int64  `json:"sessionId"`
 	PeerFingerprint string `json:"peerFingerprint,omitempty"`
+	TurnToken       uint64 `json:"turnToken,omitempty"`
+}
+
+// AbortResult 是 MethodAbort 的应答,携带被中断轮的类型(agentruntime.AbortOutcome.TurnKind)。
+type AbortResult struct {
+	TurnKind agentruntime.TurnKind `json:"turnKind"`
 }
 
 // StopBackgroundTaskParams 等同 agentruntime.BackgroundTaskStopper.StopBackgroundTask 的入参。
@@ -500,6 +507,7 @@ type RunResultDoneFrame struct {
 	UserAnchor        string     `json:"userAnchor,omitempty"`
 	Model             string     `json:"model,omitempty"`
 	ContextWindow     int        `json:"contextWindow,omitempty"`
+	TurnToken         uint64     `json:"turnToken,omitempty"`
 	StopErrMsg        string     `json:"stopErrMsg,omitempty"`
 	StopErrCode       int        `json:"stopErrCode,omitempty"`
 	Seq               int64      `json:"seq,omitempty"`
@@ -515,6 +523,7 @@ func (f *RunResultDoneFrame) SetSeq(seq int64) { f.Seq = seq }
 type AutonomousTurnStartedFrame struct {
 	SessionID int64  `json:"sessionId"`
 	Trigger   string `json:"trigger,omitempty"`
+	TurnToken uint64 `json:"turnToken,omitempty"`
 	Seq       int64  `json:"seq,omitempty"`
 }
 
