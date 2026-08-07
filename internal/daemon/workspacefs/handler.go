@@ -1,8 +1,8 @@
 // Package workspacefs 是 agentred daemon 端 workspacefs.* RPC 的 handler 实现。
-// 薄封装 internal/pkg/workspacefs 的 ListDir / GitChanges / GitBranches(设计
-// 决策 4:核心逻辑放叶子包,host 的本机分支与 daemon handler 共用同一份实
-// 现),把 sentinel 错误映射到 wire 层,由 register 把 sentinel 翻成
-// *rpc.Error 返给 dispatcher。
+// 薄封装 internal/pkg/workspacefs 的 ListDir / GitChanges / GitBranches /
+// ReadFile / GitFileContent(设计决策 4:核心逻辑放叶子包,host 的本机分支与
+// daemon handler 共用同一份实现),把 sentinel 错误映射到 wire 层,由 register
+// 把 sentinel 翻成 *rpc.Error 返给 dispatcher。
 package workspacefs
 
 import (
@@ -37,7 +37,8 @@ func NewHandlers(opts Options) *Handlers {
 // daemon)。生产传 requireAuth 包装,测试可传 identity。
 type WrapFunc = func(rpc.HandlerFunc) rpc.HandlerFunc
 
-// Register 把 ListDir / GitChanges / GitBranches 挂到 registry。
+// Register 把 ListDir / GitChanges / GitBranches / ReadFile / GitFileContent
+// 挂到 registry。
 //   - wrap 用来套 requireAuth(生产)或 identity(单测)
 //   - handler 返回的 wire sentinel 在此翻成 *rpc.Error,客户端 FromJSONRPCError
 //     反向 rehydrate
@@ -45,6 +46,8 @@ func Register(reg *rpc.Registry, h *Handlers, wrap WrapFunc) {
 	reg.Register(wire.MethodListDir, wrap(translateSentinel(handleListDir(h))))
 	reg.Register(wire.MethodGitChanges, wrap(translateSentinel(handleGitChanges(h))))
 	reg.Register(wire.MethodGitBranches, wrap(translateSentinel(handleGitBranches(h))))
+	reg.Register(wire.MethodReadFile, wrap(translateSentinel(handleReadFile(h))))
+	reg.Register(wire.MethodGitFileContent, wrap(translateSentinel(handleGitFileContent(h))))
 }
 
 func handleListDir(h *Handlers) rpc.HandlerFunc {
@@ -80,6 +83,30 @@ func handleGitBranches(h *Handlers) rpc.HandlerFunc {
 			}
 		}
 		return h.GitBranches(ctx, req)
+	}
+}
+
+func handleReadFile(h *Handlers) rpc.HandlerFunc {
+	return func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var req wire.ReadFileReq
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &req); err != nil {
+				return nil, rpc.ErrInvalidParams
+			}
+		}
+		return h.ReadFile(ctx, req)
+	}
+}
+
+func handleGitFileContent(h *Handlers) rpc.HandlerFunc {
+	return func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var req wire.GitFileContentReq
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &req); err != nil {
+				return nil, rpc.ErrInvalidParams
+			}
+		}
+		return h.GitFileContent(ctx, req)
 	}
 }
 

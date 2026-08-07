@@ -12,7 +12,7 @@
 // 命名约定与 internal/pkg/remotefs/wire 一致:
 //   - 方法在 "workspacefs.*" 命名空间下
 //   - 字段名 lowerCamelCase
-//   - 错误码 -32040..-32041 是稳定 wire 值,与既有方法族的 code 段不重叠
+//   - 错误码 -32040..-32042 是稳定 wire 值,与既有方法族的 code 段不重叠
 //     (remotefs.* 占 -32030..-32035,agentruntime remote wire 占
 //     -32010..-32014),wrapGuarded handler 返回 *rpc.Error 由本包翻译,
 //     客户端用 FromJSONRPCError rehydrate。
@@ -27,9 +27,11 @@ import (
 // ── RPC method names ────────────────────────────────────────────────────────
 
 const (
-	MethodListDir     = "workspacefs.listDir"
-	MethodGitChanges  = "workspacefs.gitChanges"
-	MethodGitBranches = "workspacefs.gitBranches"
+	MethodListDir        = "workspacefs.listDir"
+	MethodGitChanges     = "workspacefs.gitChanges"
+	MethodGitBranches    = "workspacefs.gitBranches"
+	MethodReadFile       = "workspacefs.readFile"
+	MethodGitFileContent = "workspacefs.gitFileContent"
 )
 
 // ── Error codes ─────────────────────────────────────────────────────────────
@@ -37,6 +39,7 @@ const (
 const (
 	ErrCodePathRefused      = -32040
 	ErrCodeBaselineRequired = -32041
+	ErrCodeNoCwd            = -32042
 )
 
 // ── Sentinel errors ─────────────────────────────────────────────────────────
@@ -48,6 +51,10 @@ var (
 	// ErrBaselineRequired 镜像 internal/pkg/workspacefs.ErrBaselineRequired:
 	// GitChanges 的 scope=="branch" 时 baseRef 为空。
 	ErrBaselineRequired = errors.New("workspacefs: baseline required for branch scope")
+	// ErrNoCwd 镜像 internal/pkg/workspacefs.ErrNoCwd:调用方未提供工作目录
+	// (root 为空)。与"越界"的 ErrPathRefused 区分开——cwd 为空是会话配置问题,
+	// 不是路径问题。
+	ErrNoCwd = errors.New("workspacefs: no cwd")
 )
 
 // ToJSONRPCError 把 workspacefs sentinel 包成 *rpc.Error,daemon handler 返回。
@@ -58,6 +65,8 @@ func ToJSONRPCError(err error) *rpc.Error {
 		return &rpc.Error{Code: ErrCodePathRefused, Message: err.Error()}
 	case errors.Is(err, ErrBaselineRequired):
 		return &rpc.Error{Code: ErrCodeBaselineRequired, Message: err.Error()}
+	case errors.Is(err, ErrNoCwd):
+		return &rpc.Error{Code: ErrCodeNoCwd, Message: err.Error()}
 	}
 	return nil
 }
@@ -74,6 +83,8 @@ func FromJSONRPCError(err error) error {
 		return ErrPathRefused
 	case ErrCodeBaselineRequired:
 		return ErrBaselineRequired
+	case ErrCodeNoCwd:
+		return ErrNoCwd
 	}
 	return err
 }
@@ -157,4 +168,44 @@ type GitBranchesResp struct {
 	Branches        []Branch `json:"branches"`
 	CurrentBranch   string   `json:"currentBranch,omitempty"`   // detached HEAD 时为空
 	DefaultBaseline string   `json:"defaultBaseline,omitempty"` // 三级都不命中时为空
+}
+
+// ── ReadFile ────────────────────────────────────────────────────────────────
+
+// ReadFileReq.Root 是会话已解析出的工作目录绝对路径(契约同 ListDirReq.Root:
+// 必填且必须是绝对路径);root 为空 → ErrNoCwd(会话配置问题,与越界区分),
+// RelPath 越界 → ErrPathRefused。
+//
+// 镜像 internal/pkg/workspacefs.ReadFile 的入参,host 侧远端分支与 daemon 共享
+// 同一套路径边界语义。
+type ReadFileReq struct {
+	Root    string `json:"root"`
+	RelPath string `json:"relPath"`
+}
+
+// ReadFileResp 镜像 internal/pkg/workspacefs.ReadFileResult:文本为 UTF-8 正文,
+// 图片为 base64 内容 + ContentType(如 image/png);Binary / TooLarge 为 true 时
+// Content 恒为空。
+type ReadFileResp struct {
+	Content     string `json:"content"`
+	ContentType string `json:"contentType,omitempty"`
+	Binary      bool   `json:"binary,omitempty"`
+	TooLarge    bool   `json:"tooLarge,omitempty"`
+}
+
+// ── GitFileContent ──────────────────────────────────────────────────────────
+
+// GitFileContentReq 的 Root / RelPath 契约与 ReadFileReq 相同:root 为空 →
+// ErrNoCwd,relPath 越界 → ErrPathRefused。
+type GitFileContentReq struct {
+	Root    string `json:"root"`
+	RelPath string `json:"relPath"`
+}
+
+// GitFileContentResp 镜像 internal/pkg/workspacefs.GitFileContentResult:对比档左
+// 列 = 同一文件在 git HEAD 的版本;NotARepo / !HasHead 时 Content 恒为空。
+type GitFileContentResp struct {
+	Content  string `json:"content"`
+	NotARepo bool   `json:"notARepo,omitempty"` // true 时其余字段恒为零值
+	HasHead  bool   `json:"hasHead,omitempty"`  // false 表示空基线(未跟踪/不在 HEAD)
 }

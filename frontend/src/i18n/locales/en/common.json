@@ -660,6 +660,31 @@
         "untracked": "Untracked"
       }
     },
+    "filePreview": {
+      "panelAria": "File preview",
+      "open": "Preview",
+      "close": "Close preview",
+      "loading": "Reading file…",
+      "readFailed": "Failed to read file",
+      "retry": "Retry",
+      "binary": "Binary file, cannot preview",
+      "binaryHint": "This file type cannot be previewed",
+      "tooLarge": "File too large to preview",
+      "tooLargeTextHint": "Text larger than 1 MiB",
+      "tooLargeImageHint": "Image larger than 10 MiB",
+      "noGitBaseline": "No git baseline to compare",
+      "noGitBaselineHint": "This directory is not a git repository",
+      "segmentGroup": "View mode",
+      "segmentRender": "Render",
+      "segmentText": "Text",
+      "segmentSplit": "Split",
+      "diffHeader": "Diff · HEAD → working tree",
+      "diffLegendAdded": "Added",
+      "diffLegendDeleted": "Deleted",
+      "sourceAria": "Raw source of {{name}}",
+      "codeAria": "Code preview of {{name}}",
+      "diffAria": "{{name}} compared with HEAD"
+    },
     "outline": {
       "empty": "No messages in this session",
       "label": "Outline",

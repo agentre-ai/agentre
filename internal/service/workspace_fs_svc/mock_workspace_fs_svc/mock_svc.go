@@ -71,6 +71,21 @@ func (mr *MockWorkspaceFsSvcMockRecorder) GitChanges(ctx, sessionID, scope, base
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GitChanges", reflect.TypeOf((*MockWorkspaceFsSvc)(nil).GitChanges), ctx, sessionID, scope, baseRef)
 }
 
+// GitFileContent mocks base method.
+func (m *MockWorkspaceFsSvc) GitFileContent(ctx context.Context, sessionID int64, relPath string) (*workspace_fs_svc.GitFileContentView, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GitFileContent", ctx, sessionID, relPath)
+	ret0, _ := ret[0].(*workspace_fs_svc.GitFileContentView)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GitFileContent indicates an expected call of GitFileContent.
+func (mr *MockWorkspaceFsSvcMockRecorder) GitFileContent(ctx, sessionID, relPath any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GitFileContent", reflect.TypeOf((*MockWorkspaceFsSvc)(nil).GitFileContent), ctx, sessionID, relPath)
+}
+
 // ListDir mocks base method.
 func (m *MockWorkspaceFsSvc) ListDir(ctx context.Context, sessionID int64, relPath string, includeIgnored bool) (*workspace_fs_svc.ListDirView, error) {
 	m.ctrl.T.Helper()
@@ -84,4 +99,19 @@ func (m *MockWorkspaceFsSvc) ListDir(ctx context.Context, sessionID int64, relPa
 func (mr *MockWorkspaceFsSvcMockRecorder) ListDir(ctx, sessionID, relPath, includeIgnored any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListDir", reflect.TypeOf((*MockWorkspaceFsSvc)(nil).ListDir), ctx, sessionID, relPath, includeIgnored)
+}
+
+// ReadFile mocks base method.
+func (m *MockWorkspaceFsSvc) ReadFile(ctx context.Context, sessionID int64, relPath string) (*workspace_fs_svc.ReadFileView, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReadFile", ctx, sessionID, relPath)
+	ret0, _ := ret[0].(*workspace_fs_svc.ReadFileView)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ReadFile indicates an expected call of ReadFile.
+func (mr *MockWorkspaceFsSvcMockRecorder) ReadFile(ctx, sessionID, relPath any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReadFile", reflect.TypeOf((*MockWorkspaceFsSvc)(nil).ReadFile), ctx, sessionID, relPath)
 }

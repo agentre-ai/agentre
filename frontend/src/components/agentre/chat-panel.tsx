@@ -82,6 +82,7 @@ import {
 } from "./chat";
 import type { LocalCommandHistoryScope } from "./chat-input";
 import { ChatContextSidebar } from "./chat-context-sidebar";
+import { FilePreviewPanel } from "./file-preview/file-preview-panel";
 import {
   clearCatchUp,
   registerTranscriptRowCounter,
@@ -2875,6 +2876,9 @@ function ChatPanel({
                 }}
               />
             ) : null}
+            {/* 最右一栏:文件预览面板。仅在选中了可预览文件时渲染(内部自行返回
+                null),打开占位、关闭释放宽度;宽高记忆独立 persistenceKey。 */}
+            <FilePreviewPanel sessionId={session?.id ?? 0} />
           </div>
         </main>
       )}

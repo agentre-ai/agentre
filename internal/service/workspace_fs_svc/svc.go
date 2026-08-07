@@ -52,6 +52,13 @@ type WorkspaceFsSvc interface {
 	GitChanges(ctx context.Context, sessionID int64, scope, baseRef string) (*GitChangesView, error)
 	// GitBranches 取分支清单 + 当前分支 + 推断出的默认基线。
 	GitBranches(ctx context.Context, sessionID int64) (*GitBranchesView, error)
+	// ReadFile 读取会话工作目录下 relPath 所指文件的内容(会话级文件预览,纯读)。
+	// 文本为 UTF-8 正文;图片为 base64 内容 + contentType;binary/tooLarge 是
+	// 视图标志,不是错误(设计决策 5)。
+	ReadFile(ctx context.Context, sessionID int64, relPath string) (*ReadFileView, error)
+	// GitFileContent 取同一文件在 git HEAD 的版本(对比档左列);未跟踪/不在
+	// HEAD → 空基线(HasHead=false),非 git 仓库 → NotARepo,均不报错。
+	GitFileContent(ctx context.Context, sessionID int64, relPath string) (*GitFileContentView, error)
 }
 
 // ── views ───────────────────────────────────────────────────────────────────
@@ -99,6 +106,24 @@ type GitBranchesView struct {
 	CurrentBranch   string       `json:"currentBranch"`   // detached HEAD 时为空
 	DefaultBaseline string       `json:"defaultBaseline"` // 推断不出时为空
 	Branches        []BranchView `json:"branches"`
+}
+
+// ReadFileView 是 ReadFile 的返回值:文本为 UTF-8 正文(content),图片为 base64
+// 内容 + contentType(如 image/png);binary/tooLarge 为 true 时 content 恒为空。
+// 这三个标志是视图字段,不新增错误码(spec 决策 5)。
+type ReadFileView struct {
+	Content     string `json:"content"`
+	ContentType string `json:"contentType,omitempty"`
+	Binary      bool   `json:"binary,omitempty"`
+	TooLarge    bool   `json:"tooLarge,omitempty"`
+}
+
+// GitFileContentView 是 GitFileContent 的返回值:同一文件在 git HEAD 的版本
+// (对比档左列);NotARepo / !HasHead 时 content 恒为空。
+type GitFileContentView struct {
+	Content  string `json:"content"`
+	NotARepo bool   `json:"notARepo,omitempty"`
+	HasHead  bool   `json:"hasHead,omitempty"` // false 表示空基线(未跟踪/不在 HEAD)
 }
 
 // ── impl ────────────────────────────────────────────────────────────────────
@@ -198,6 +223,66 @@ func (s *workspaceFsImpl) GitBranches(ctx context.Context, sessionID int64) (*Gi
 		return nil, err
 	}
 	return s.gitBranches(ctx, deviceID, cwd)
+}
+
+// ReadFile 按 deviceID 路由:本机直接调叶子包 internal/pkg/workspacefs.ReadFile;
+// 远端经租约调 workspacefs.readFile RPC(daemon 侧是同一份叶子实现)。cwd 由
+// workspace() 在服务层强制,前端只传 sessionID + relPath,路径边界由叶子包 /
+// daemon 强制(硬不变量 2)。
+func (s *workspaceFsImpl) ReadFile(ctx context.Context, sessionID int64, relPath string) (*ReadFileView, error) {
+	deviceID, cwd, err := s.workspace(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	if deviceID == 0 {
+		res, lerr := workspacefs.ReadFile(ctx, cwd, relPath)
+		if lerr != nil {
+			return nil, mapLocalErr(ctx, lerr)
+		}
+		return &ReadFileView{
+			Content: res.Content, ContentType: res.ContentType,
+			Binary: res.Binary, TooLarge: res.TooLarge,
+		}, nil
+	}
+
+	var resp wire.ReadFileResp
+	req := wire.ReadFileReq{Root: cwd, RelPath: relPath}
+	if cerr := s.call(ctx, deviceID, wire.MethodReadFile, req, &resp); cerr != nil {
+		return nil, cerr
+	}
+	return &ReadFileView{
+		Content: resp.Content, ContentType: resp.ContentType,
+		Binary: resp.Binary, TooLarge: resp.TooLarge,
+	}, nil
+}
+
+// GitFileContent 按 deviceID 路由:本机直接调叶子包 workspacefs.GitFileContent;
+// 远端经租约调 workspacefs.gitFileContent RPC。notARepo / hasHead 是视图字段。
+func (s *workspaceFsImpl) GitFileContent(ctx context.Context, sessionID int64, relPath string) (*GitFileContentView, error) {
+	deviceID, cwd, err := s.workspace(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	if deviceID == 0 {
+		res, lerr := workspacefs.GitFileContent(ctx, cwd, relPath)
+		if lerr != nil {
+			return nil, mapLocalErr(ctx, lerr)
+		}
+		return &GitFileContentView{
+			Content: res.Content, NotARepo: res.NotARepo, HasHead: res.HasHead,
+		}, nil
+	}
+
+	var resp wire.GitFileContentResp
+	req := wire.GitFileContentReq{Root: cwd, RelPath: relPath}
+	if cerr := s.call(ctx, deviceID, wire.MethodGitFileContent, req, &resp); cerr != nil {
+		return nil, cerr
+	}
+	return &GitFileContentView{
+		Content: resp.Content, NotARepo: resp.NotARepo, HasHead: resp.HasHead,
+	}, nil
 }
 
 // gitBranches 是 GitBranches 与「本分支」档基线解析共用的取数步骤。

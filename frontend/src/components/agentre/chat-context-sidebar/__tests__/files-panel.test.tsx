@@ -89,6 +89,7 @@ beforeEach(() => {
     activeTab: "files",
     filesMode: "changes",
     showIgnored: false,
+    previewBySession: {},
   });
   useSessionStatusStore.getState().__reset();
   openPathMock.mockReset();
@@ -442,5 +443,57 @@ describe("FilesPanel directory mode", () => {
 
     await screen.findByText("main.go");
     expect(screen.queryByRole("button", { name: /open file/i })).toBeNull();
+  });
+
+  it("shows a preview button on previewable file rows and opens the selection by relPath", async () => {
+    listDirMock.mockImplementation((_id: number, relPath: string) =>
+      Promise.resolve(
+        relPath === ""
+          ? listing([entry("internal", true), entry("logo.png")])
+          : listing([entry("chat.go"), entry("doc.pdf")]),
+      ),
+    );
+    renderPanel({});
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: /expand internal/i }),
+    );
+    // 目录行与不可预览文件行没有预览按钮;代码与图片行有。
+    expect(
+      within(row("internal")).queryByRole("button", { name: /preview/i }),
+    ).toBeNull();
+    expect(
+      within(row("doc.pdf")).queryByRole("button", { name: /preview/i }),
+    ).toBeNull();
+
+    await userEvent.click(
+      within(row("chat.go")).getByRole("button", { name: /preview/i }),
+    );
+    expect(useChatSidebarStore.getState().previewBySession[7]).toEqual({
+      path: "internal/chat.go",
+      segment: null,
+      sourceMode: "directory",
+    });
+    expect(openPathMock).not.toHaveBeenCalled();
+
+    await userEvent.click(
+      within(row("logo.png")).getByRole("button", { name: /preview/i }),
+    );
+    expect(useChatSidebarStore.getState().previewBySession[7]).toEqual({
+      path: "logo.png",
+      segment: null,
+      sourceMode: "directory",
+    });
+  });
+
+  it("still shows preview buttons for a remote directory session", async () => {
+    listDirMock.mockResolvedValue(listing([entry("main.go"), entry("a.zip")]));
+    renderPanel({ remote: true });
+
+    await screen.findByText("main.go");
+    expect(screen.queryByRole("button", { name: /open file/i })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /preview/i }),
+    ).toBeInTheDocument();
   });
 });
