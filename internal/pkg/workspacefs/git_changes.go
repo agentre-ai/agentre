@@ -22,6 +22,11 @@ const maxUntrackedTextSize = 1 << 20 // 1 MiB
 // scope==ScopeUncommitted("未提交档"):以 `git status --porcelain=v1 -z`
 // 取路径与状态,`git diff --numstat -z HEAD` 取已跟踪文件的 +/− 行数。
 //
+// status 带 -uall:默认的 -unormal 会把一个全新目录折成单条 "newdir/" 记录,
+// 既看不到里面的文件、也算不出行数(而 agent 新建的文件恰恰是最需要看行数的,
+// 设计决策 10),扁平行模型的 basename 还会变成空串。被忽略的条目不受影响,
+// 仍然不出现在 status 输出里。
+//
 // scope==ScopeBranch("本分支档"):baseline 必须非空,调用方先用
 // DefaultBaseline 或持久化值算出(baseline 为空返回 ErrBaselineRequired,
 // 这是调用方的编程错误而非 git 故障,不走单条子命令容错的静默降级)。以
@@ -41,7 +46,7 @@ func GitChanges(ctx context.Context, dir string, scope GitChangesScope, baseline
 		return nil, ErrBaselineRequired
 	}
 
-	porcelain := parsePorcelainEntries(gitOutputSafe(ctx, dir, "status", "--porcelain=v1", "-z"))
+	porcelain := parsePorcelainEntries(gitOutputSafe(ctx, dir, "status", "--porcelain=v1", "-z", "-uall"))
 
 	statuses := make(map[string]changeMeta, len(porcelain))
 	var untrackedPaths []string

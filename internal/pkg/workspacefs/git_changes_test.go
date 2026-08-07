@@ -85,6 +85,36 @@ func TestGitChanges_UncommittedScope_ModifiedLineCounts(t *testing.T) {
 	assert.Equal(t, 0, byPath["a.txt"].Deleted)
 }
 
+// agent 新建的文件常常连目录一起是新的。git status 默认(-unormal)把这种目录
+// 折成一条 "?? newdir/" 记录,列表里既看不到具体文件、也没有行数——而
+// "agent 新建的文件是最需要看行数的"(设计决策 10),且行模型的 basename 会变成
+// 空串。两档共用这条规则,所以两档都要断言。
+func TestGitChanges_UntrackedInsideNewDirectory_ListsEachFile(t *testing.T) {
+	dir := initRepo(t)
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "newdir"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "newdir", "one.txt"), []byte("a\nb\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "newdir", "two.txt"), []byte("c\n"), 0o644))
+
+	for _, scope := range []workspacefs.GitChangesScope{workspacefs.ScopeUncommitted, workspacefs.ScopeBranch} {
+		baseline := ""
+		if scope == workspacefs.ScopeBranch {
+			baseline = "main"
+		}
+		res, err := workspacefs.GitChanges(context.Background(), dir, scope, baseline, workspacefs.DefaultMaxEntries)
+		require.NoError(t, err)
+		byPath := changesByPath(res.Changes)
+
+		require.Containsf(t, byPath, "newdir/one.txt", "scope=%s", scope)
+		assert.Equal(t, workspacefs.ChangeUntracked, byPath["newdir/one.txt"].Status)
+		assert.Equal(t, 2, byPath["newdir/one.txt"].Added)
+
+		require.Containsf(t, byPath, "newdir/two.txt", "scope=%s", scope)
+		assert.Equal(t, 1, byPath["newdir/two.txt"].Added)
+
+		assert.NotContainsf(t, byPath, "newdir/", "the collapsed directory record must not become a row (scope=%s)", scope)
+	}
+}
+
 func TestGitChanges_UntrackedBinary_NULByte(t *testing.T) {
 	dir := initRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin.dat"), []byte("a\x00b"), 0o644))

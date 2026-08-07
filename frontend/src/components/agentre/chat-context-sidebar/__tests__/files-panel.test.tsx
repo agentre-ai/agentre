@@ -36,6 +36,7 @@ vi.mock("@/../wailsjs/go/app/App", () => ({
 }));
 
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
+import { useSessionStatusStore } from "@/stores/session-status-store";
 
 import { FilesPanel } from "../views/files-panel";
 
@@ -89,6 +90,7 @@ beforeEach(() => {
     filesMode: "changes",
     showIgnored: false,
   });
+  useSessionStatusStore.getState().__reset();
   openPathMock.mockReset();
   openPathMock.mockResolvedValue(undefined);
   listDirMock.mockReset();
@@ -380,6 +382,39 @@ describe("FilesPanel directory mode", () => {
       await screen.findByRole("button", { name: /expand app/i }),
     ).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("app.go")).toBeNull();
+  });
+
+  // 决策 13：目录与 Git 两个模式的数据都是快照，「当前会话轮次结束」是「文件可能
+  // 变了」的唯一强信号，两个模式都要在那时自动重拉（没有手动刷新按钮可以补救）。
+  it("refetches the loaded levels when the current session's turn ends", async () => {
+    listDirMock.mockImplementation((_id: number, relPath: string) =>
+      Promise.resolve(
+        relPath === ""
+          ? listing([entry("app", true)])
+          : listing([entry("app.go")]),
+      ),
+    );
+    renderPanel({});
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: /expand app/i }),
+    );
+    expect(await screen.findByText("app.go")).toBeInTheDocument();
+    expect(listDirMock).toHaveBeenCalledTimes(2);
+
+    useSessionStatusStore.getState().bumpDone(7, { kind: "done" });
+
+    // 根与已展开的那一层各重拉一遍，展开态保留。
+    await waitFor(() => expect(listDirMock).toHaveBeenCalledTimes(4));
+    expect(listDirMock).toHaveBeenCalledWith(7, "app", false);
+    expect(
+      await screen.findByRole("button", { name: /collapse app/i }),
+    ).toHaveAttribute("aria-expanded", "true");
+
+    // 别的会话结束不该惊动本面板。
+    useSessionStatusStore.getState().bumpDone(9, { kind: "done" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(listDirMock).toHaveBeenCalledTimes(4);
   });
 
   it("opens a file with the cwd-joined path, and only for local sessions", async () => {

@@ -12,6 +12,7 @@ import { WorkspaceFsListDir } from "@/../wailsjs/go/app/App";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { useSessionStatus } from "@/stores/session-status-store";
 
 import type { workspace_fs_svc } from "@/../wailsjs/go/models";
 
@@ -40,7 +41,8 @@ type Props = {
  *
  * 树按目录懒加载，每次只列一层（设计决策 6）：大仓一次性递归会遍历几十万文件。
  * 已加载的层与展开集合只存在组件内、不持久化，切换会话时清空（决策 12）；数据是
- * 快照，在「本模式可见且无缓存」时自动取一次，没有手动刷新按钮（决策 13）。
+ * 快照，在「本模式可见且无缓存」与「当前会话轮次结束」两个时机自动重拉，没有手动
+ * 刷新按钮（决策 13）。
  *
  * 路径解析、`.git` 恒隐藏与忽略判定全在后端（`WorkspaceFsListDir` 的入参是
  * sessionID 而不是路径，决策 2），本地会话与远端 agentred 会话走同一个绑定。
@@ -63,6 +65,10 @@ export function DirectoryView({ sessionId, cwd, remote, showIgnored }: Props) {
   React.useEffect(() => {
     expandedRef.current = expanded;
   }, [expanded]);
+
+  // doneTick 每次本会话轮次结束自增一次；别的会话结束不会动它。轮次结束是「文件
+  // 可能变了」的唯一强信号，快照据此重拉（决策 13）。
+  const doneTick = useSessionStatus(sessionId)?.doneTick ?? 0;
 
   const load = React.useCallback(
     (relPath: string) => {
@@ -92,8 +98,9 @@ export function DirectoryView({ sessionId, cwd, remote, showIgnored }: Props) {
     [sessionId, showIgnored],
   );
 
-  // 快照失效并重取：换会话时连展开态一起清空；只改「显示忽略项」时保留展开态，
-  // 把根与每个已展开的层各重拉一遍（开关会改变后端返回的条目集合）。
+  // 快照失效并重取：换会话时连展开态一起清空；「显示忽略项」变化或本会话轮次结束
+  // 时保留展开态，把根与每个已展开的层各重拉一遍（开关会改变后端返回的条目集合，
+  // 轮次结束则可能改变任意一层的内容）。
   React.useEffect(() => {
     if (cwd === "") return;
     genRef.current += 1;
@@ -103,7 +110,7 @@ export function DirectoryView({ sessionId, cwd, remote, showIgnored }: Props) {
     if (!sameSession) setExpanded(keep);
     setLevels({});
     for (const relPath of [ROOT, ...keep]) load(relPath);
-  }, [sessionId, showIgnored, cwd, load]);
+  }, [sessionId, showIgnored, cwd, load, doneTick]);
 
   const toggleDir = (relPath: string) => {
     const isOpen = expanded.has(relPath);
