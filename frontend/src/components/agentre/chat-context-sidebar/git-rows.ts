@@ -22,8 +22,9 @@ export type GitRow = {
 };
 
 /**
- * deriveGitRows 把后端的变动清单拆成行模型并按完整路径排序 —— 后端「先跟踪、
- * 后未跟踪」的产出顺序会把新建文件全都挤到末尾，与同目录的兄弟文件分开。
+ * deriveGitRows 把后端的变动清单拆成行模型，并按完整路径重排一次，让新建文件与
+ * 同目录的兄弟文件挨在一起。后端已经按路径排过（截断也在排序之后），这里重排只
+ * 是不把行序寄托在传输顺序上，顺带走 localeCompare 与其它列表一致。
  */
 export function deriveGitRows(changes: Change[] | null | undefined): GitRow[] {
   if (!changes) return [];

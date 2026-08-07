@@ -170,6 +170,27 @@ func TestGitChanges_UntrackedOversized_TreatedAsBinary(t *testing.T) {
 	assert.Equal(t, 0, byPath["big.txt"].Added)
 }
 
+// 未跟踪的符号链接必须按链接本身计数,不能跟进目标去读文件内容:git 会把符号
+// 链接当成一条 "??" 记录列出来,而目标可以指到工作目录之外(仓库外文件的行数
+// 会漏进面板),也可以指到 /dev/zero 这类字符设备——跟随后 Size 为 0,过得了
+// 1MiB 那道闸门,读取则永远不会结束。
+func TestGitChanges_UntrackedSymlink_NotFollowed(t *testing.T) {
+	dir := initRepo(t)
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	require.NoError(t, os.WriteFile(outside, []byte("a\nb\nc\n"), 0o644))
+	if err := os.Symlink(outside, filepath.Join(dir, "link.txt")); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+
+	res, err := workspacefs.GitChanges(context.Background(), dir, workspacefs.ScopeUncommitted, "", workspacefs.DefaultMaxEntries)
+	require.NoError(t, err)
+	byPath := changesByPath(res.Changes)
+	require.Contains(t, byPath, "link.txt")
+	assert.Equal(t, workspacefs.ChangeUntracked, byPath["link.txt"].Status)
+	assert.Equal(t, 0, byPath["link.txt"].Added, "不跟随链接去数工作目录之外那个文件的行数")
+	assert.False(t, byPath["link.txt"].Binary)
+}
+
 // setupDivergedBranches builds: main (init commit) -> feature branch checked
 // out with one committed change on top of main, plus a further uncommitted
 // worktree edit to the same file, a staged new file, and an untracked file.
@@ -217,6 +238,19 @@ func TestGitChanges_BranchScope_MergeBaseIncludesCommittedAndUncommitted(t *test
 	require.Contains(t, byPath, "untracked.txt", "untracked files must still be listed in branch scope")
 	assert.Equal(t, workspacefs.ChangeUntracked, byPath["untracked.txt"].Status)
 	assert.Equal(t, 1, byPath["untracked.txt"].Added)
+}
+
+// baseline 是过 wire 进来的调用方输入(daemon 侧 handler 把 req.BaseRef 原样
+// 交给 GitChanges),不能直接当 git 的位置参数使:`--octopus` 这类以 "-" 开头
+// 的值会被 git 当选项吃掉——`git merge-base --octopus HEAD` 退出码 0 且返回
+// HEAD 自己,「本分支档」于是静默变成「对 HEAD 比较」,出一份看着正常、语义
+// 却是另一档的清单。git 本身就不允许这种引用名,拒掉即可。
+func TestGitChanges_BranchScope_OptionLikeBaselineRefused(t *testing.T) {
+	dir := setupDivergedBranches(t)
+
+	res, err := workspacefs.GitChanges(context.Background(), dir, workspacefs.ScopeBranch, "--octopus", workspacefs.DefaultMaxEntries)
+	require.NoError(t, err)
+	assert.Empty(t, res.Changes, "求不出基线时退化为空变动,而不是拿 HEAD 冒充基线")
 }
 
 func TestGitChanges_BranchScope_RequiresBaseline(t *testing.T) {
@@ -292,6 +326,7 @@ func TestRefExists(t *testing.T) {
 	assert.True(t, workspacefs.RefExists(context.Background(), dir, "main"))
 	assert.False(t, workspacefs.RefExists(context.Background(), dir, "does-not-exist"))
 	assert.False(t, workspacefs.RefExists(context.Background(), dir, ""))
+	assert.False(t, workspacefs.RefExists(context.Background(), dir, "--octopus"), "以 - 开头的值是 git 选项而不是引用名")
 }
 
 func TestGitBranches_ListsLocalAndRemote(t *testing.T) {

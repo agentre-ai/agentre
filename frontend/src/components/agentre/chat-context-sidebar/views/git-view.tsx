@@ -8,6 +8,7 @@ import type { TFunction } from "i18next";
 
 import { deriveGitRows, type GitRow } from "../git-rows";
 
+import { PanelNotice, PanelSkeleton } from "./panel-feedback";
 import type { GitChangesState, GitScope } from "./use-git-changes";
 import { useOpenFile } from "./use-open-file";
 
@@ -70,10 +71,10 @@ export function GitView({
   const changes = state.status === "loaded" ? state.view.changes : null;
   const rows = React.useMemo(() => deriveGitRows(changes), [changes]);
 
-  if (cwd === "") return <Notice text={t("chatContext.git.noCwd")} />;
+  if (cwd === "") return <PanelNotice text={t("chatContext.git.noCwd")} />;
 
   if (state.status === "loading") {
-    return <Skeleton label={t("chatContext.git.loading")} />;
+    return <PanelSkeleton label={t("chatContext.git.loading")} />;
   }
 
   if (state.status === "error") {
@@ -95,7 +96,7 @@ export function GitView({
 
   if (state.view.notARepo) {
     return (
-      <Notice
+      <PanelNotice
         text={t("chatContext.git.notARepo")}
         hint={t("chatContext.git.notARepoHint")}
       />
@@ -105,7 +106,7 @@ export function GitView({
   // 本分支档拿不到基线：origin/HEAD / main / master 都不可得，引导用户自己选一个。
   if (scope === "branch" && baseRef === "") {
     return (
-      <Notice
+      <PanelNotice
         text={t("chatContext.git.noBaseline")}
         hint={t("chatContext.git.noBaselineHint")}
       />
@@ -114,7 +115,7 @@ export function GitView({
 
   if (rows.length === 0) {
     return (
-      <Notice
+      <PanelNotice
         text={
           scope === "branch"
             ? t("chatContext.git.cleanBranch", { ref: baseRef })
@@ -215,34 +216,5 @@ function DiffBadge({ row }: { row: GitRow }) {
         <span className="text-destructive">−{row.deleted}</span>
       ) : null}
     </span>
-  );
-}
-
-function Notice({ text, hint }: { text: string; hint?: string }) {
-  return (
-    <div className="px-3 py-6 text-center text-xs leading-relaxed text-muted-foreground">
-      {text}
-      {hint ? (
-        <span className="mt-1.5 block text-[11px] opacity-80">{hint}</span>
-      ) : null}
-    </div>
-  );
-}
-
-function Skeleton({ label }: { label: string }) {
-  return (
-    <div className="flex flex-col gap-2 px-3 py-3">
-      <span role="status" className="sr-only">
-        {label}
-      </span>
-      {[70, 52, 81, 44].map((width) => (
-        <div
-          key={width}
-          className="h-2.5 animate-pulse rounded-sm bg-muted"
-          style={{ width: `${width}%` }}
-          aria-hidden="true"
-        />
-      ))}
-    </div>
   );
 }

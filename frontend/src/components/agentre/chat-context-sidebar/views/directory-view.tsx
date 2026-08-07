@@ -16,6 +16,7 @@ import { useSessionStatus } from "@/stores/session-status-store";
 
 import type { workspace_fs_svc } from "@/../wailsjs/go/models";
 
+import { errorText, PanelNotice, PanelSkeleton } from "./panel-feedback";
 import { useOpenFile } from "./use-open-file";
 
 type Entry = workspace_fs_svc.EntryView;
@@ -132,12 +133,12 @@ export function DirectoryView({ sessionId, cwd, remote, showIgnored }: Props) {
   const openFile = useOpenFile(cwd);
 
   if (cwd === "") {
-    return <Notice text={t("chatContext.directory.noCwd")} />;
+    return <PanelNotice text={t("chatContext.directory.noCwd")} />;
   }
 
   const root = levels[ROOT];
   if (root === undefined || root.status === "loading") {
-    return <RootSkeleton label={t("chatContext.directory.loading")} />;
+    return <PanelSkeleton label={t("chatContext.directory.loading")} />;
   }
   if (root.status === "error") {
     return (
@@ -298,42 +299,4 @@ function sortEntries(entries: Entry[]): Entry[] {
 
 function indentStyle(depth: number): React.CSSProperties {
   return { paddingLeft: `${8 + depth * 14}px` };
-}
-
-/**
- * errorText 取后端已本地化的错误文案原样呈现 —— Wails 边界只过 Error() 字符串、
- * 没有结构化的错误码通道，而后端对「远端设备不在线」「远端 agentred 版本过旧」
- * 等各自给了明确文案，照搬即可，不再在前端二次归类。拿不到文案时才回落到通用的
- * 读取失败提示。
- */
-function errorText(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (typeof err === "string") return err;
-  return "";
-}
-
-function Notice({ text }: { text: string }) {
-  return (
-    <div className="px-3 py-6 text-center text-xs leading-relaxed text-muted-foreground">
-      {text}
-    </div>
-  );
-}
-
-function RootSkeleton({ label }: { label: string }) {
-  return (
-    <div className="flex flex-col gap-2 px-3 py-3">
-      <span role="status" className="sr-only">
-        {label}
-      </span>
-      {[70, 52, 81, 44].map((width) => (
-        <div
-          key={width}
-          className="h-2.5 animate-pulse rounded-sm bg-muted"
-          style={{ width: `${width}%` }}
-          aria-hidden="true"
-        />
-      ))}
-    </div>
-  );
 }

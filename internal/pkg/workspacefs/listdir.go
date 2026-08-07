@@ -88,6 +88,12 @@ func sizeOrZero(info fs.FileInfo) int64 {
 // 仍在 root 之内。算法与 internal/pkg/remotefs/pathguard.ResolvePath 同源但
 // 方向相反:pathguard 要求 raw 必须绝对,这里要求 relPath 必须相对且解析后
 // 不逃出 root。
+//
+// 判定是**字面**的,不解析符号链接:root 里指向外面的目录链接展开后确实会列到
+// root 之外。这是刻意的——工作目录里 symlink 进 vendor / 共享目录是常规用法,
+// 而这一层的信任边界只是"别让 relPath 自己拼出 ..",不是沙箱(条目本身带
+// Entry.Symlink 标记)。真正需要防的"跟随链接读文件内容"由
+// countUntrackedFileLines 的常规文件闸门挡住。
 func resolveRelPath(root, relPath string) (string, error) {
 	if relPath == "" {
 		return root, nil

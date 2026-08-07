@@ -15,9 +15,16 @@ import (
 // *exec.ExitError,调用方按需检查退出码(例如 check-ignore 的 exit=1 是合法
 // 的"无匹配",不是失败)。
 //
-// args 在本包内全部是调用点硬编码的 git 子命令,不拼接任何 user input。
+// 子命令与选项全部是调用点硬编码的;唯一来自调用方的值是基线 ref(RefExists /
+// mergeBase 的入参,daemon 侧由客户端经 wire 传入),它们先过 isRefName 把
+// "-" 开头的值挡在外面,不会被 git 当选项吃掉。
+//
+// 全局带 --no-optional-locks:本包只读,而 status / diff 顺手刷新索引时会去抢
+// .git/index.lock —— 面板恰恰在轮次结束(agent 刚跑完 git)时取数,抢锁会让
+// agent 自己的 git add/commit 报 "Unable to create '.git/index.lock'"。
 func runGit(ctx context.Context, dir string, stdin []byte, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // G204: controlled args, no user input
+	args = append([]string{"--no-optional-locks"}, args...)
+	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // G204: controlled args, refs guarded by isRefName
 	procattr.ApplyNoConsoleWindow(cmd)
 	cmd.Dir = dir
 	if stdin != nil {
@@ -88,11 +95,20 @@ func isInsideWorkTree(ctx context.Context, dir string) bool {
 	return err == nil
 }
 
+// isRefName 挡掉不能当 git 位置参数使的值:空串,以及 "-" 开头的值——后者会被
+// git 当选项解析(`git merge-base --octopus HEAD` 退出码 0 且返回 HEAD 自己,
+// 「本分支档」就静默变成了「对 HEAD 比较」)。基线 ref 是过 wire 进来的调用方
+// 输入,这是它进入 argv 前唯一的关口;git 本身也不允许 "-" 开头的引用名,拒掉
+// 不会误伤合法分支。
+func isRefName(ref string) bool {
+	return ref != "" && !strings.HasPrefix(ref, "-")
+}
+
 // RefExists 用 `git rev-parse --verify` 校验 dir 仓库内 ref 是否存在。
 // 供调用方校验持久化的基线值是否仍然有效(设计决策 9:"若持久化的 ref 已不
 // 存在则回落到默认推断"),也被 DefaultBaseline 自身复用。
 func RefExists(ctx context.Context, dir, ref string) bool {
-	if ref == "" {
+	if !isRefName(ref) {
 		return false
 	}
 	_, err := runGit(ctx, dir, nil, "rev-parse", "--verify", ref)
@@ -120,6 +136,9 @@ func DefaultBaseline(ctx context.Context, dir string) string {
 // 的参照点(Git 模式设计:"先求基线与 HEAD 的 merge-base,再以工作区对
 // merge-base 做比较")。
 func mergeBase(ctx context.Context, dir, baseline string) (string, error) {
+	if !isRefName(baseline) {
+		return "", errors.New("workspacefs: not a ref name")
+	}
 	out, err := runGit(ctx, dir, nil, "merge-base", baseline, "HEAD")
 	if err != nil {
 		return "", err

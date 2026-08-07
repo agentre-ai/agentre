@@ -9,6 +9,8 @@ import { useSessionStatus } from "@/stores/session-status-store";
 
 import type { workspace_fs_svc } from "@/../wailsjs/go/models";
 
+import { errorText } from "./panel-feedback";
+
 /** 未提交档回答「现在还有什么没提交」，本分支档回答「相对基线一共改了什么」。 */
 export type GitScope = "uncommitted" | "branch";
 
@@ -139,15 +141,4 @@ export function useGitChanges({ sessionId, cwd, enabled }: Params): GitChanges {
     notARepo,
     reload: () => setReloadTick((tick) => tick + 1),
   };
-}
-
-/**
- * errorText 取后端已本地化的错误文案原样呈现 —— Wails 边界只过 Error() 字符串、
- * 没有结构化的错误码通道，而后端对「远端设备不在线」「远端 agentred 版本过旧」
- * 等各自给了明确文案，照搬即可。拿不到文案时才回落到通用提示。
- */
-function errorText(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (typeof err === "string") return err;
-  return "";
 }

@@ -301,9 +301,17 @@ func splitNulTokens(out string) []string {
 // >1MiB 的文件在 stat 阶段就判为二进制,不读取全文件内容;≤1MiB 的文件读入
 // 后按是否含 NUL 字节判定二进制。文件在检查途中消失等意外一律降级为
 // "拿不到行数",不报错(与本包其余 git 子命令的容错约定一致)。
+//
+// 用 Lstat 且只对常规文件计行:git 会把未跟踪的符号链接也列成一条 "??" 记录,
+// 跟随它读取既会把工作目录之外那个文件的行数带进面板,也可能撞上 /dev/zero 这
+// 类字符设备 —— 跟随后 Size 为 0,过得了上面那道 1MiB 闸门,而读取永远不会
+// 结束。非常规文件一律按"拿不到行数"处理。
 func countUntrackedFileLines(path string) (added int, binary bool) {
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
+		return 0, false
+	}
+	if !info.Mode().IsRegular() {
 		return 0, false
 	}
 	if info.Size() > maxUntrackedTextSize {
