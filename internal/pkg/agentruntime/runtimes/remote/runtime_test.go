@@ -1298,6 +1298,35 @@ func TestAbort_SuccessAndNoSession(t *testing.T) {
 	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
 }
 
+// TestAbort_PassesTurnTokenAndReturnsInterruptedTurnKind 钉死决策 1 的远端链路:
+// remote.Runtime.Abort 把调用方的 turnToken 原样透传到 wire.AbortParams,并把 daemon
+// 返回的 wire.AbortResult.TurnKind 带回给调用方(AbortOutcome.TurnKind)—— spec 测试接缝
+// 「remote wire + daemon handler:AbortParams 携带 token,daemon 侧透传并返回轮类型」。
+func TestAbort_PassesTurnTokenAndReturnsInterruptedTurnKind(t *testing.T) {
+	_, cli, _, rt := setupRemote(t)
+	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, _ any, result any) error {
+			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: 4}
+			return nil
+		})
+	_, _, err := rt.Run(context.Background(), agentruntime.RunRequest{
+		Backend:   &agent_backend_entity.AgentBackend{Type: "claudecode"},
+		SessionID: 4,
+	})
+	require.NoError(t, err)
+
+	// 断言 AbortParams 携带 turnToken=42,并让 daemon 应答一个具体的被中断轮类型。
+	cli.EXPECT().Call(gomock.Any(), wire.MethodAbort,
+		gomock.Eq(wire.AbortParams{SessionID: 4, TurnToken: 42}), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, _ any, result any) error {
+			*(result.(*wire.AbortResult)) = wire.AbortResult{TurnKind: agentruntime.TurnKindAutonomous}
+			return nil
+		})
+	outcome, err := rt.Abort(context.Background(), 4, 42)
+	require.NoError(t, err)
+	assert.Equal(t, agentruntime.TurnKindAutonomous, outcome.TurnKind)
+}
+
 func TestStopBackgroundTask_SuccessAndNoSession(t *testing.T) {
 	_, cli, _, rt := setupRemote(t)
 	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).

@@ -57,8 +57,10 @@ type fullRT struct {
 	drainFn   func(int64) []agentruntime.ConsumedSteer
 	drainArgs []int64
 
-	abortErr   error
-	abortCalls []int64
+	abortErr     error
+	abortCalls   []int64
+	abortTokens  []uint64
+	abortOutcome agentruntime.AbortOutcome
 
 	stopBgErr   error
 	stopBgCalls []stopBgCall
@@ -175,11 +177,12 @@ func (r *fullRT) DrainPending(_ context.Context, sid int64) []agentruntime.Consu
 	return nil
 }
 
-func (r *fullRT) Abort(_ context.Context, sid int64, _ uint64) (agentruntime.AbortOutcome, error) {
+func (r *fullRT) Abort(_ context.Context, sid int64, turnToken uint64) (agentruntime.AbortOutcome, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.abortCalls = append(r.abortCalls, sid)
-	return agentruntime.AbortOutcome{}, r.abortErr
+	r.abortTokens = append(r.abortTokens, turnToken)
+	return r.abortOutcome, r.abortErr
 }
 
 func (r *fullRT) StopBackgroundTask(_ context.Context, sid int64, taskID string) error {
@@ -1511,6 +1514,22 @@ func TestRuntime_Abort_Success(t *testing.T) {
 	_, err := h.Abort(ctx, wire.AbortParams{SessionID: 3})
 	require.NoError(t, err)
 	assert.Equal(t, []int64{3}, rt.abortCalls)
+}
+
+// TestRuntime_Abort_PassesTokenAndReturnsInterruptedTurnKind 钉死决策 1 的 daemon 侧:
+// RuntimeHandlers.Abort 把 wire.AbortParams.TurnToken 透传给 runtime 的 Abort,并把
+// 被中断轮的类型经 wire.AbortResult.TurnKind 返给对端 —— spec 测试接缝「remote wire
+// + daemon handler:AbortParams 携带 token,daemon 侧透传并返回轮类型」。
+func TestRuntime_Abort_PassesTokenAndReturnsInterruptedTurnKind(t *testing.T) {
+	rt := &fullRT{abortOutcome: agentruntime.AbortOutcome{TurnKind: agentruntime.TurnKindSubagentActivity}}
+	ctx, _, h, live := runtimeWithLiveSession(t, rt, 3)
+	defer close(live)
+
+	res, err := h.Abort(ctx, wire.AbortParams{SessionID: 3, TurnToken: 42})
+	require.NoError(t, err)
+	assert.Equal(t, []int64{3}, rt.abortCalls)
+	assert.Equal(t, []uint64{42}, rt.abortTokens, "daemon 侧必须把 turnToken 原样透传给 runtime")
+	assert.Equal(t, agentruntime.TurnKindSubagentActivity, res.TurnKind)
 }
 
 func TestRuntime_Abort_NoSession_ErrNoActiveTurn(t *testing.T) {
