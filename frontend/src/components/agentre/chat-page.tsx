@@ -1,6 +1,14 @@
 import * as React from "react";
-import { Check, Plus, Search, SlidersHorizontal, X } from "lucide-react";
+import {
+  Check,
+  Plus,
+  Search,
+  SlidersHorizontal,
+  UserPlus,
+  X,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
 import type { TFunction } from "i18next";
 
 import { Button } from "@/components/ui/button";
@@ -8,6 +16,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -31,10 +40,12 @@ import {
 } from "@/stores/attention-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useCommandPaletteStore } from "@/stores/command-palette-store";
+import { requestNewAgentDialog } from "@/stores/new-agent-intent-store";
 import { useSessionMetaStore } from "@/stores/session-meta-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
 import { AgentGroup, AgentPanelSection } from "./agent-list";
+import { NotChattableDialog } from "./not-chattable/not-chattable-dialog";
 import type { AgentSession } from "./agent-list";
 import { ResizableSidebar } from "./resizable-sidebar";
 import { SessionsPopover } from "./sessions-popover";
@@ -198,7 +209,7 @@ type AgentGroupRowProps = {
   openSession: (sid: number) => void;
   openSessionInNewTab: (sid: number) => void;
   openNewSession: (projectId: number, agentId: number, title: string) => void;
-  showNotChattableNotice: (name: string, hint: string) => void;
+  openNotChattableDialog: (agent: ChatAgentItem) => void;
 };
 
 function AgentGroupRow({
@@ -208,7 +219,7 @@ function AgentGroupRow({
   openSession,
   openSessionInNewTab,
   openNewSession,
-  showNotChattableNotice,
+  openNotChattableDialog,
 }: AgentGroupRowProps) {
   const { t } = useTranslation();
   const sessions = useBuildSessions(a);
@@ -224,6 +235,8 @@ function AgentGroupRow({
       initials={a.name.charAt(0)}
       color={(a.avatarColor as AgentColor) || "agent-1"}
       activeCount={a.activeCount}
+      blockReason={a.blockReason}
+      notChattable={!a.chattable}
       pinned={a.pinned}
       pinToggleLabel={
         a.pinned
@@ -244,18 +257,22 @@ function AgentGroupRow({
         selectedSessionId ? String(selectedSessionId) : undefined
       }
       onHeaderClick={() => {
-        if (!a.chattable) {
-          showNotChattableNotice(
-            a.name,
-            a.chattableHint || t("chatPage.notChattable.defaultHint"),
-          );
+        const first = a.sessions[0];
+        if (first) {
+          openSession(first.id);
           return;
         }
-        const first = a.sessions[0];
-        if (first) openSession(first.id);
-        else openNewSession(0, a.id, "");
+        if (!a.chattable) {
+          openNotChattableDialog(a);
+          return;
+        }
+        openNewSession(0, a.id, "");
       }}
       onNewSession={() => {
+        if (!a.chattable) {
+          openNotChattableDialog(a);
+          return;
+        }
         openNewSession(0, a.id, "");
       }}
       onSessionSelect={(sid, opts) => {
@@ -374,6 +391,7 @@ function ChatPage() {
   const openSessionInNewTab = useChatTabsStore((s) => s.openSessionInNewTab);
   const openNewSession = useChatTabsStore((s) => s.openNewSession);
   const openCommandPalette = useCommandPaletteStore((s) => s.openWith);
+  const navigate = useNavigate();
   const [agentFilter, setAgentFilter] = React.useState("");
   const [filterStatuses, setFilterStatuses] = React.useState<
     ReadonlySet<ChatSidebarStatus>
@@ -387,35 +405,8 @@ function ChatPage() {
     });
   }, []);
   const [filterPopoverOpen, setFilterPopoverOpen] = React.useState(false);
-  // not-chattable inline notice: 点击不可对话 agent header 时显示，3 秒后自动消失。
-  const [notChattableNotice, setNotChattableNotice] = React.useState<{
-    name: string;
-    hint: string;
-  } | null>(null);
-  const notChattableTimerRef = React.useRef<ReturnType<
-    typeof setTimeout
-  > | null>(null);
-
-  const showNotChattableNotice = React.useCallback(
-    (name: string, hint: string) => {
-      if (notChattableTimerRef.current)
-        clearTimeout(notChattableTimerRef.current);
-      setNotChattableNotice({ name, hint });
-      notChattableTimerRef.current = setTimeout(() => {
-        setNotChattableNotice(null);
-        notChattableTimerRef.current = null;
-      }, 3000);
-    },
-    [],
-  );
-
-  // 清理 timer on unmount
-  React.useEffect(() => {
-    return () => {
-      if (notChattableTimerRef.current)
-        clearTimeout(notChattableTimerRef.current);
-    };
-  }, []);
+  const [notChattableAgent, setNotChattableAgent] =
+    React.useState<ChatAgentItem | null>(null);
 
   // Filter
   const filterValue = agentFilter.trim().toLowerCase();
@@ -505,12 +496,22 @@ function ChatPage() {
       openSession={openSession}
       openSessionInNewTab={openSessionInNewTab}
       openNewSession={openNewSession}
-      showNotChattableNotice={showNotChattableNotice}
+      openNotChattableDialog={setNotChattableAgent}
     />
   );
 
   return (
     <>
+      {notChattableAgent ? (
+        <NotChattableDialog
+          agent={notChattableAgent}
+          open
+          onOpenChange={(open) => {
+            if (!open) setNotChattableAgent(null);
+          }}
+        />
+      ) : null}
+
       {/* ── Left sidebar ── */}
       <ResizableSidebar persistenceKey="chat" ariaLabel={t("chatPage.sidebar")}>
         <div className="border-b border-border px-4 py-3">
@@ -628,26 +629,26 @@ function ChatPage() {
                 >
                   {t("chatPage.add.newAgentChat")}
                 </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  data-testid="new-agent-item"
+                  onSelect={() => {
+                    requestNewAgentDialog();
+                    navigate("/org");
+                  }}
+                >
+                  <UserPlus className="size-4" aria-hidden="true" />
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <span>{t("chatPage.add.newAgent")}</span>
+                    <span className="text-2xs text-muted-foreground">
+                      {t("chatPage.add.newAgentHint")}
+                    </span>
+                  </div>
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
         </div>
-
-        {/* not-chattable inline 提示 */}
-        {notChattableNotice ? (
-          <div
-            role="alert"
-            aria-live="polite"
-            className="mx-2 mt-2 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground"
-          >
-            <span className="font-semibold text-foreground">
-              {notChattableNotice.name}
-            </span>{" "}
-            {t("chatPage.notChattable.message", {
-              hint: notChattableNotice.hint,
-            })}
-          </div>
-        ) : null}
 
         <div className="min-h-0 flex-1 overflow-auto px-2 py-3">
           {pinnedRows.length > 0 ? (

@@ -12,7 +12,9 @@ import {
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
 
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -90,6 +92,7 @@ type BackendSummaryLike = Pick<
 
 export function OrgDetailAgent(props: Props) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const isCEO = props.agent.systemBadge === "DEFAULT";
 
   const { values, patch, flush, wrap, status, pendingInvalid, retry } =
@@ -155,6 +158,17 @@ export function OrgDetailAgent(props: Props) {
   const selectedBackend =
     props.backends.find((b) => b.id === backendId) ??
     (props.agent.backend?.id === backendId ? props.agent.backend : undefined);
+
+  // 任务 8：不可对话状态内联提示。
+  // no-backend：未绑后端；builtin 选了但无已激活供应商时换提示并提供跳转。
+  const hasUsableProvider =
+    selectedBackend?.llmProviderActive === true &&
+    Boolean(selectedBackend?.llmProviderName?.trim());
+  const noBackendBound = backendId <= 0;
+  const builtinMissingProvider =
+    !noBackendBound &&
+    selectedBackend?.type === "builtin" &&
+    !hasUsableProvider;
 
   const { caps } = useBackendCapabilities(selectedBackend?.type);
   const skillsCapOn = caps?.has("skills") ?? false;
@@ -460,6 +474,61 @@ export function OrgDetailAgent(props: Props) {
         </section>
 
         <section className="space-y-2.5" data-slot="agent-section-backend">
+          {noBackendBound ? (
+            <Alert
+              className="border-status-waiting/40 bg-status-waiting-bg text-xs"
+              data-testid="org-agent-no-backend"
+            >
+              <AlertTriangle className="size-4" aria-hidden="true" />
+              <AlertTitle className="text-xs">
+                {t("org.agent.backend.noBackendTitle")}
+              </AlertTitle>
+              <AlertDescription className="text-2xs">
+                {t("org.agent.backend.noBackendDescription")}
+              </AlertDescription>
+            </Alert>
+          ) : null}
+          {builtinMissingProvider ? (
+            <Alert
+              className="border-status-waiting/40 bg-status-waiting-bg text-xs"
+              data-testid="org-agent-provider-gap"
+            >
+              <AlertTriangle className="size-4" aria-hidden="true" />
+              <AlertTitle className="text-xs">
+                {t("org.agent.backend.providerGapTitle")}
+              </AlertTitle>
+              <AlertDescription className="text-2xs">
+                {t("org.agent.backend.providerGapDescription")}
+                <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 px-2.5 text-2xs"
+                    onClick={() =>
+                      navigate("/settings", {
+                        state: { settingsPage: "llm-providers" },
+                      })
+                    }
+                  >
+                    {t("org.agent.backend.configureProvider")}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="link"
+                    size="sm"
+                    className="h-auto px-0 text-2xs"
+                    onClick={() =>
+                      navigate("/settings", {
+                        state: { settingsPage: "agent-backend" },
+                      })
+                    }
+                  >
+                    {t("org.agent.backend.goAgentBackendSettings")}
+                  </Button>
+                </div>
+              </AlertDescription>
+            </Alert>
+          ) : null}
           <h3 className="font-mono text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
             {t("org.agent.backend.title")}
           </h3>

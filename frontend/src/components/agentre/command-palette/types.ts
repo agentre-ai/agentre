@@ -1,5 +1,7 @@
 import type { NavigateFunction } from "react-router-dom";
 
+import type { ChatAgentItem } from "@/hooks/use-chat-agents";
+
 import type { PaletteMode } from "./mode";
 
 // 命令源每个 item 必须有的两条基础字段。具体 source 可以扩展（如 chat-sessions 会带 status / agent 等）。
@@ -17,11 +19,13 @@ export type CommandItemBase = {
 // 不依赖 store 状态推断「现在是不是项目页」。
 // chat tab 写入用显式动作:openSession 打开/复用已有会话 tab(可选 newTab=true
 // 在新 tab 里);openNewSession 打开 kind:"new" 占位 tab(新建会话首发上下文)。
+// openNotChattableDialog 供不可对话分支打开引导弹窗（面板宿主负责渲染弹窗）。
 export type OnSelectCtx = {
   navigate: NavigateFunction;
   close: () => void;
   openSession: (sessionId: number, opts?: { newTab?: boolean }) => void;
   openNewSession: (agentId: number) => void;
+  openNotChattableDialog: (agent: ChatAgentItem) => void;
   pathname: string;
 };
 

@@ -2,6 +2,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
+  ArrowRight,
   ArrowUpRight,
   CheckCircle2,
   ChevronDown,
@@ -132,7 +133,11 @@ async function fetchProviders() {
   return resp.items ?? [];
 }
 
-export function LlmProvidersPanel() {
+export function LlmProvidersPanel({
+  onOpenAgentBackends,
+}: {
+  onOpenAgentBackends?: () => void;
+} = {}) {
   const { t } = useTranslation();
   const [providers, setProviders] = React.useState<Provider[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -416,7 +421,10 @@ export function LlmProvidersPanel() {
             ) : providers.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={4} className="p-0">
-                  <ProvidersEmptyState onCreate={openCreate} />
+                  <ProvidersEmptyState
+                    onCreate={openCreate}
+                    onOpenAgentBackends={onOpenAgentBackends}
+                  />
                 </TableCell>
               </TableRow>
             ) : (
@@ -619,10 +627,14 @@ function ProviderRow({
 }
 
 type ProvidersEmptyStateProps = {
+  onOpenAgentBackends?: () => void;
   onCreate: () => void;
 };
 
-function ProvidersEmptyState({ onCreate }: ProvidersEmptyStateProps) {
+function ProvidersEmptyState({
+  onOpenAgentBackends,
+  onCreate,
+}: ProvidersEmptyStateProps) {
   const { t } = useTranslation();
   return (
     <div className="flex flex-col items-center justify-center gap-3 px-6 py-10 text-center">
@@ -659,6 +671,18 @@ function ProvidersEmptyState({ onCreate }: ProvidersEmptyStateProps) {
         {t("llmProviders.empty.apiKeyHelp")}
         <ArrowUpRight className="size-3" aria-hidden="true" />
       </a>
+      <div className="flex flex-col items-center gap-1 text-2xs text-muted-foreground">
+        <span className="font-mono">{t("llmProviders.empty.chain")}</span>
+        <Button
+          type="button"
+          variant="link"
+          className="h-auto px-0 text-2xs"
+          onClick={() => onOpenAgentBackends?.()}
+        >
+          {t("llmProviders.empty.goToBackend")}
+          <ArrowRight className="size-3" aria-hidden="true" />
+        </Button>
+      </div>
     </div>
   );
 }

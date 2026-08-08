@@ -31,7 +31,9 @@
     "openRecent": "打开 {{name}} 最近会话",
     "pinned": "置顶",
     "running": "运行中",
-    "runningAria": "{{name}} 有运行中的会话"
+    "runningAria": "{{name}} 有运行中的会话",
+    "backendNotConfigured": "未配置后端",
+    "notConfigured": "未配置"
   },
   "attention": {
     "background": "后台",
@@ -107,7 +109,10 @@
       "editTitle": "编辑 Agent 后端"
     },
     "empty": {
-      "table": "还没有 Agent 后端，点右上「+ 新增后端」开始配置"
+      "addFirst": "新增第一个后端",
+      "addProvider": "先配置 LLM 供应商",
+      "description": "每个 Agent 都要绑定一个后端才能执行任务；内置 SDK 还需要一个已激活的 LLM 供应商；Claude Code / Codex 也可直接用 CLI 登录态。",
+      "title": "还没有 Agent 后端"
     },
     "env": {
       "count": "{{count}} 项",
@@ -207,6 +212,8 @@
       "clear": "清除供应商关联",
       "clearTitle": "清除（走 CLI 自身登录）",
       "cliLogin": "走 CLI 自身登录",
+      "configureCta": "去配置 LLM 供应商",
+      "emptyTitle": "还没有可用的 LLM 供应商",
       "label": "LLM 供应商",
       "modelRequiredDescription": "该供应商未配置默认 Model，Pi 无法通过 --model 选中它。请先在「LLM 供应商」页面为其设置默认模型，再回来保存。",
       "modelRequiredTitle": "该供应商未配置默认模型",
@@ -745,7 +752,11 @@
     "localDevice": "本机",
     "newSession": {
       "description": "在下方输入框输入消息，按 Enter 发送，Shift+Enter 换行",
-      "title": "和 {{name}} 开始对话"
+      "title": "和 {{name}} 开始对话",
+      "guard": {
+        "title": "配置完成后即可与 {{name}} 对话",
+        "placeholder": "请先配置 Agent 后端"
+      }
     },
     "newProjectSession": {
       "description": "首条消息会在该项目工作区中启动会话。",
@@ -801,7 +812,9 @@
   "chatPage": {
     "add": {
       "aria": "新建",
-      "newAgentChat": "新建 Agent 会话"
+      "newAgent": "新建 Agent",
+      "newAgentChat": "新建 Agent 会话",
+      "newAgentHint": "在组织架构里创建新的助手/员工"
     },
     "filter": {
       "open": "筛选侧栏",
@@ -812,8 +825,69 @@
     },
     "newChat": "新建会话",
     "notChattable": {
+      "actions": {
+        "backendSettings": "去 Agent 后端设置",
+        "configureBackend": "去配置 Agent 后端",
+        "configureProvider": "去配置 LLM 供应商",
+        "configureRemoteDevice": "去配置远端设备",
+        "startGateway": "去启动本地网关"
+      },
+      "chain": {
+        "aria": "对话配置链条",
+        "backend": "Agent 后端",
+        "provider": "LLM 供应商",
+        "states": {
+          "configured": "已配置",
+          "inactive": "未激活",
+          "missing": "未配置",
+          "possible": "可能需要",
+          "unknown": "未知",
+          "unavailable": "暂不可用"
+        }
+      },
       "defaultHint": "该 Agent 还没配置后端，请在组织架构页选择一个 Agent 后端",
-      "message": "暂不可对话 — {{hint}}"
+      "info": {
+        "title": "内置后端需要额外的 LLM 供应商",
+        "description": "点「去配置 Agent 后端」后，向导会提示你是否还需要配置供应商，一步步来，不用现在记。"
+      },
+      "message": "暂不可对话 — {{hint}}",
+      "reasons": {
+        "noBackend": {
+          "title": "{{name}} 暂时不能对话",
+          "description": "这个 Agent 还没有配置 Agent 后端。绑定一个后端后，就可以开始对话了。",
+          "short": "还没配置 Agent 后端"
+        },
+        "backendRequiresProvider": {
+          "title": "需要先配置 LLM 供应商",
+          "description": "内置 Agent 后端需要一个已激活的 LLM 供应商才能执行任务。",
+          "short": "需要配置 LLM 供应商"
+        },
+        "providerInactive": {
+          "title": "需要先激活 LLM 供应商",
+          "description": "当前绑定的 LLM 供应商还没有激活，可能缺少 API Key 或尚未启用。",
+          "short": "LLM 供应商未激活"
+        },
+        "remoteProviderMissing": {
+          "title": "需要配置远端 LLM 供应商",
+          "description": "远端 agentred 上没有配置当前 Agent 后端需要的 LLM 供应商。",
+          "short": "远端缺少 LLM 供应商"
+        },
+        "gatewayNotRunning": {
+          "title": "本地网关尚未启动",
+          "description": "当前 CLI 后端依赖本地网关转发请求，启动网关后才能开始对话。",
+          "short": "本地网关未启动"
+        },
+        "remoteOpenclawUnavailable": {
+          "title": "远端 OpenClaw 暂不可用",
+          "description": "当前 Agent 的远端 OpenClaw 网关暂不可用，请检查远端设备连接和配置。",
+          "short": "远端 OpenClaw 不可用"
+        },
+        "unknownBackend": {
+          "title": "Agent 后端暂不可用",
+          "description": "当前 Agent 使用了无法识别的后端类型，请检查 Agent 后端配置。",
+          "short": "后端类型未知"
+        }
+      }
     },
     "pin": {
       "pin": "置顶",
@@ -849,7 +923,26 @@
         "openInNewTab": "在新 Tab 打开",
         "switch": "切换 Tab"
       },
-      "title": "选一个 Agent 或项目下的会话开始"
+      "title": "选一个 Agent 或项目下的会话开始",
+      "setupGuide": {
+        "title": "开始前，先完成两步配置",
+        "description": "每个 Agent 都要先绑定 Agent 后端，才能执行任务、开始对话。当前还没有可对话的 Agent。",
+        "stepBackend": {
+          "title": "配置 Agent 后端",
+          "description": "给 Agent 选一个执行后端（内置 SDK / Claude Code / Codex…）",
+          "action": "去设置 → Agent 后端"
+        },
+        "stepProvider": {
+          "title": "配置 LLM 供应商",
+          "description": "内置后端需要一个已激活的供应商（API Key + 默认模型）",
+          "action": "去设置 → LLM 供应商"
+        },
+        "doneNote": "配置完成后回来，就可以和 CEO 助手开始对话了。"
+      },
+      "unconfigured": {
+        "count": "{{count}} 个 Agent 未配置后端",
+        "goOrg": "去组织架构配置 →"
+      }
     },
     "fallbackSession": "(会话)",
     "missingAgent": {
@@ -925,10 +1018,20 @@
       "otherHeading": "其它 Agent",
       "notInProject": "不在该项目"
     },
+    "newAgent": {
+      "description": "在组织架构里创建新的助手/员工",
+      "heading": "操作",
+      "title": "New agent"
+    },
     "newChat": {
       "heading": "新建对话",
       "itemPrefix": "新建对话：",
-      "itemTitle": "新建对话：{{agentName}}"
+      "itemTitle": "新建对话：{{agentName}}",
+      "needSetup": "需要先配置",
+      "needSetupBadge": "未配置",
+      "needSetupTitle": "和 {{agentName}} 新开对话",
+      "needSetupTitlePrefix": "和",
+      "needSetupTitleSuffix": "新开对话"
     },
     "project": {
       "empty": "（还没有项目）",
@@ -1371,7 +1474,9 @@
     "empty": {
       "addFirst": "新增第一个供应商",
       "apiKeyHelp": "如何获取 API Key",
+      "chain": "LLM 供应商 → Agent 后端 → Agent 对话",
       "description": "先添加一个供应商（Anthropic、OpenAI 或兼容端点），并选择默认模型即可使用。",
+      "goToBackend": "去 Agent 后端",
       "title": "还没有配置任何 LLM 供应商"
     },
     "fields": {
@@ -1847,6 +1952,8 @@
         "backend": "后端",
         "departmentOption": "部门 · {{name}}",
         "description": "设置 Agent 的名称、挂载位置和执行后端。",
+        "intentHint": "创建后先配后端再对话",
+        "intentSettings": "去设置 → Agent 后端",
         "optionalSuffix": "（可选）",
         "placement": "选择部门或上级 Agent"
       },
@@ -1880,7 +1987,13 @@
         "uploadImage": "上传图片"
       },
       "backend": {
+        "configureProvider": "去配置 LLM 供应商",
+        "goAgentBackendSettings": "去 Agent 后端设置",
         "inactiveSuffix": "（已停用）",
+        "noBackendDescription": "绑定一个 Agent 后端后即可开始对话；内置后端需要额外的 LLM 供应商。",
+        "noBackendTitle": "这个 Agent 还不能对话",
+        "providerGapDescription": "内置 SDK 后端通过 LLM 供应商执行任务，当前还没有已激活的供应商。",
+        "providerGapTitle": "还需要一个 LLM 供应商",
         "title": "AGENT 后端",
         "unlinkedProvider": "未绑定 LLM 供应商"
       },
@@ -2036,7 +2149,9 @@
       "collapse": "折叠 {{name}}",
       "collapsedSuffix": "（已折叠）",
       "empty": {
+        "addAgent": "添加 Agent",
         "description": "可新建部门，或把新 Agent 挂到 CEO 助手下。",
+        "newDepartment": "新建部门",
         "title": "未创建部门"
       },
       "expand": "展开 {{name}}",
@@ -2138,6 +2253,11 @@
     },
     "llmProvider": {
       "description": "配置可用模型来源。保存后可拉取该账号下的实际可用模型，模型能力（上下文窗口、是否支持 thinking 等）由 cago agents 内置目录补全。",
+      "gapBanner": {
+        "description": "部分 Agent 绑定的后端还没有关联已激活的 LLM 供应商。配置好供应商后，去组织架构给这些 Agent 选上即可。",
+        "goToOrg": "去组织架构",
+        "title": "还有 Agent 缺这个"
+      },
       "title": "LLM 供应商"
     },
     "notifications": {
@@ -2161,6 +2281,7 @@
     "nav": {
       "about": "关于",
       "agentBackend": "Agent 后端",
+      "agentBackendDot": "有 Agent 还没配置后端",
       "appearance": "外观",
       "dataBackup": "数据 & 备份",
       "engine": "引擎",
@@ -2169,6 +2290,7 @@
       "keyboardShortcuts": "键盘快捷键",
       "localProxy": "本地 HTTP 代理",
       "llmProvider": "LLM 供应商",
+      "llmProviderDot": "有后端缺激活的 LLM 供应商",
       "mcpServers": "MCP 服务器",
       "notifications": "通知",
       "remoteDevices": "远端",

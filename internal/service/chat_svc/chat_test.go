@@ -323,6 +323,189 @@ func TestListAgentsOpenClawAvailability(t *testing.T) {
 	}
 }
 
+// listSingleAgentItem 跑单 Agent 的 ListAgents 场景（sqlmock + mockgen），返回该 Agent 的
+// ChatAgentItem，省去每个 blockReason 分支重复铺会话 mock。
+func listSingleAgentItem(
+	t *testing.T,
+	m *chatMocks,
+	a *agent_entity.Agent,
+	be *agent_backend_entity.AgentBackend,
+	providers map[string]*llm_provider_entity.LLMProvider,
+) *chat_svc.ChatAgentItem {
+	t.Helper()
+	ctx := context.Background()
+
+	backendIDs := []int64{}
+	beMap := map[int64]*agent_backend_entity.AgentBackend{}
+	if a.AgentBackendID > 0 {
+		backendIDs = []int64{a.AgentBackendID}
+		if be != nil {
+			beMap[a.AgentBackendID] = be
+		}
+	}
+	keys := []string{}
+	if be != nil && be.LLMProviderKey != "" {
+		keys = []string{be.LLMProviderKey}
+	}
+	m.agent.EXPECT().List(ctx).Return([]*agent_entity.Agent{a}, nil)
+	m.backend.EXPECT().BatchFind(ctx, backendIDs).Return(beMap, nil)
+	m.provider.EXPECT().BatchFindByKey(ctx, keys).Return(providers, nil)
+	m.session.EXPECT().CountRunningByAgents(ctx, []int64{a.ID}).Return(map[int64]int{}, nil)
+	m.session.EXPECT().CountByAgentsIncludingGroups(ctx, []int64{a.ID}).Return(map[int64]int64{}, nil)
+	m.session.EXPECT().ListIDsByAgentsIncludingGroups(ctx, []int64{a.ID}).Return(map[int64][]int64{}, nil)
+	m.session.EXPECT().ListByAgentIncludingGroups(ctx, a.ID, 5).Return(nil, nil)
+	m.session.EXPECT().ListAttentionByAgentIncludingGroups(ctx, a.ID, 20).Return(nil, nil)
+
+	resp, err := m.svc.ListAgents(ctx, &chat_svc.ListAgentsRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.Agents, 1)
+	return &resp.Agents[0]
+}
+
+func TestListAgents_BlockReason(t *testing.T) {
+	convey.Convey("ListAgents 为每个不可对话分支设置结构化 blockReason（空串=可对话）", t, func() {
+		ctx := context.Background()
+
+		// 共享 mock remote_device_svc：远端 backend 的 device 视图查询（ListAgents 内
+		// rds.Get）与 remoteProviderKnownMissing 的 provider 列表都需要它；nil 默认时
+		// 这两个查询会静默跳过，无法覆盖远端分支。
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+		mockRDS := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+		remote_device_svc.SetDefault(mockRDS)
+		t.Cleanup(func() { remote_device_svc.SetDefault(nil) })
+
+		convey.Convey("可对话（builtin + 激活供应商）→ blockReason 为空串", func() {
+			m := setupChatTest(t)
+			item := listSingleAgentItem(t, m,
+				&agent_entity.Agent{ID: 1, Name: "A", AgentBackendID: 10, Status: consts.ACTIVE},
+				&agent_backend_entity.AgentBackend{ID: 10, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-1", Status: consts.ACTIVE},
+				map[string]*llm_provider_entity.LLMProvider{"key-1": {ID: 1, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}},
+			)
+			assert.True(t, item.Chattable)
+			assert.Empty(t, item.BlockReason)
+			assert.Empty(t, item.ChattableHint)
+		})
+
+		convey.Convey("可对话（CLI 后端走自身 login）→ blockReason 为空串", func() {
+			m := setupChatTest(t)
+			item := listSingleAgentItem(t, m,
+				&agent_entity.Agent{ID: 2, Name: "B", AgentBackendID: 11, Status: consts.ACTIVE},
+				&agent_backend_entity.AgentBackend{ID: 11, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "", Status: consts.ACTIVE},
+				map[string]*llm_provider_entity.LLMProvider{},
+			)
+			assert.True(t, item.Chattable)
+			assert.Empty(t, item.BlockReason)
+		})
+
+		convey.Convey("no-backend（CEO 无后端）", func() {
+			m := setupChatTest(t)
+			item := listSingleAgentItem(t, m,
+				&agent_entity.Agent{ID: 3, Name: "CEO 助手", SystemBadge: agent_entity.SystemBadgeDefault, AgentBackendID: 0, Status: consts.ACTIVE},
+				nil,
+				map[string]*llm_provider_entity.LLMProvider{},
+			)
+			assert.False(t, item.Chattable)
+			assert.Equal(t, chat_svc.BlockReasonNoBackend, item.BlockReason)
+		})
+
+		convey.Convey("no-backend（普通 Agent 无后端）", func() {
+			m := setupChatTest(t)
+			item := listSingleAgentItem(t, m,
+				&agent_entity.Agent{ID: 4, Name: "C", AgentBackendID: 0, Status: consts.ACTIVE},
+				nil,
+				map[string]*llm_provider_entity.LLMProvider{},
+			)
+			assert.False(t, item.Chattable)
+			assert.Equal(t, chat_svc.BlockReasonNoBackend, item.BlockReason)
+		})
+
+		convey.Convey("backend-requires-provider（内置后端找不到绑定的供应商）", func() {
+			m := setupChatTest(t)
+			item := listSingleAgentItem(t, m,
+				&agent_entity.Agent{ID: 5, Name: "D", AgentBackendID: 12, Status: consts.ACTIVE},
+				&agent_backend_entity.AgentBackend{ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "missing-key", Status: consts.ACTIVE},
+				map[string]*llm_provider_entity.LLMProvider{},
+			)
+			assert.False(t, item.Chattable)
+			assert.Equal(t, chat_svc.BlockReasonBackendRequiresProvider, item.BlockReason)
+		})
+
+		convey.Convey("provider-inactive（后端绑的供应商存在但未激活）", func() {
+			m := setupChatTest(t)
+			item := listSingleAgentItem(t, m,
+				&agent_entity.Agent{ID: 6, Name: "E", AgentBackendID: 13, Status: consts.ACTIVE},
+				&agent_backend_entity.AgentBackend{ID: 13, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-2", Status: consts.ACTIVE},
+				map[string]*llm_provider_entity.LLMProvider{"key-2": {ID: 2, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.BAN}},
+			)
+			assert.False(t, item.Chattable)
+			assert.Equal(t, chat_svc.BlockReasonProviderInactive, item.BlockReason)
+		})
+
+		convey.Convey("remote-provider-missing（远端 agentred 未配置该供应商）", func() {
+			mockRDS.EXPECT().ListDeviceProviders(int64(42)).Return([]remote_device_svc.ProviderSummary{
+				{Key: "other-key", Name: "Other", Type: "anthropic"},
+			})
+			mockRDS.EXPECT().Get(ctx, int64(42)).Return(nil, nil)
+
+			m := setupChatTest(t)
+			item := listSingleAgentItem(t, m,
+				&agent_entity.Agent{ID: 7, Name: "F", AgentBackendID: 14, Status: consts.ACTIVE},
+				&agent_backend_entity.AgentBackend{ID: 14, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-3", DeviceID: "42", Status: consts.ACTIVE},
+				map[string]*llm_provider_entity.LLMProvider{"key-3": {ID: 3, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}},
+			)
+			assert.False(t, item.Chattable)
+			assert.Equal(t, chat_svc.BlockReasonRemoteProviderMissing, item.BlockReason)
+		})
+
+		convey.Convey("backend-requires-provider（CLI 后端绑定了不匹配的供应商）", func() {
+			m := setupChatTest(t)
+			item := listSingleAgentItem(t, m,
+				&agent_entity.Agent{ID: 18, Name: "J", AgentBackendID: 19, Status: consts.ACTIVE},
+				&agent_backend_entity.AgentBackend{ID: 19, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-5", Status: consts.ACTIVE},
+				map[string]*llm_provider_entity.LLMProvider{"key-5": {ID: 5, Type: string(llm_provider_entity.TypeOpenAIResponse), Status: consts.ACTIVE}},
+			)
+			assert.False(t, item.Chattable)
+			assert.Equal(t, chat_svc.BlockReasonBackendRequiresProvider, item.BlockReason)
+		})
+
+		convey.Convey("gateway-not-running（本地 CLI 后端 + 网关未启动）", func() {
+			m := setupChatTest(t)
+			item := listSingleAgentItem(t, m,
+				&agent_entity.Agent{ID: 8, Name: "G", AgentBackendID: 15, Status: consts.ACTIVE},
+				&agent_backend_entity.AgentBackend{ID: 15, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "key-4", Status: consts.ACTIVE},
+				map[string]*llm_provider_entity.LLMProvider{"key-4": {ID: 4, Type: string(llm_provider_entity.TypeOpenAIResponse), Status: consts.ACTIVE}},
+			)
+			assert.False(t, item.Chattable)
+			assert.Equal(t, chat_svc.BlockReasonGatewayNotRunning, item.BlockReason)
+		})
+
+		convey.Convey("remote-openclaw-unavailable（远端 OpenClaw 暂不可用）", func() {
+			mockRDS.EXPECT().Get(ctx, int64(9)).Return(nil, nil)
+
+			m := setupChatTest(t)
+			item := listSingleAgentItem(t, m,
+				&agent_entity.Agent{ID: 9, Name: "H", AgentBackendID: 16, Status: consts.ACTIVE},
+				&agent_backend_entity.AgentBackend{ID: 16, Type: string(agent_backend_entity.TypeOpenClaw), DeviceID: "9", Status: consts.ACTIVE},
+				map[string]*llm_provider_entity.LLMProvider{},
+			)
+			assert.False(t, item.Chattable)
+			assert.Equal(t, chat_svc.BlockReasonRemoteOpenClawUnavailable, item.BlockReason)
+		})
+
+		convey.Convey("unknown-backend（未知 Agent 后端类型）", func() {
+			m := setupChatTest(t)
+			item := listSingleAgentItem(t, m,
+				&agent_entity.Agent{ID: 10, Name: "I", AgentBackendID: 17, Status: consts.ACTIVE},
+				&agent_backend_entity.AgentBackend{ID: 17, Type: "weird", Status: consts.ACTIVE},
+				map[string]*llm_provider_entity.LLMProvider{},
+			)
+			assert.False(t, item.Chattable)
+			assert.Equal(t, chat_svc.BlockReasonUnknownBackend, item.BlockReason)
+		})
+	})
+}
+
 func TestListAgents(t *testing.T) {
 	convey.Convey("ListAgents", t, func() {
 		m := setupChatTest(t)

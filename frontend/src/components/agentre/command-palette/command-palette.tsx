@@ -26,6 +26,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useProjectList, type ProjectFlat } from "@/hooks/use-project-list";
+import type { ChatAgentItem } from "@/hooks/use-chat-agents";
 import { cn } from "@/lib/utils";
 import { useCommandPaletteStore } from "@/stores/command-palette-store";
 import {
@@ -36,8 +37,10 @@ import {
 import { useNewChatContextStore } from "@/stores/new-chat-context-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 
+import { NotChattableDialog } from "../not-chattable";
 import { COMMAND_PREFIX, parseMode, type PaletteMode } from "./mode";
 import { chatSessionsSource } from "./sources/chat-sessions-source";
+import { newAgentSource } from "./sources/new-agent-source";
 import { newChatSource } from "./sources/new-chat-source";
 import { newProjectChatSource } from "./sources/new-project-chat-source";
 import type { CommandItemBase, CommandSource, OnSelectCtx } from "./types";
@@ -56,6 +59,7 @@ function isProjectsRoute(pathname: string): boolean {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const SOURCES: CommandSource<any>[] = [
   chatSessionsSource,
+  newAgentSource,
   newChatSource,
   newProjectChatSource,
 ];
@@ -73,6 +77,9 @@ export function CommandPalette(): React.ReactElement {
   const openNewSessionRaw = useChatTabsStore((s) => s.openNewSession);
   const [query, setQuery] = React.useState("");
   const { mode, payload } = parseMode(query);
+  // 不可对话分支选中后由面板宿主打开引导弹窗（onSelect 里先 close 面板再设置）。
+  const [guidanceAgent, setGuidanceAgent] =
+    React.useState<ChatAgentItem | null>(null);
   // 提到 root 一份：SearchRow 的 Tab 循环 + ContextBar 的下拉共享同一份列表，
   // 避免双倍 ProjectListTree RPC。
   const { projects } = useProjectList();
@@ -114,6 +121,7 @@ export function CommandPalette(): React.ReactElement {
       openSession: (sid, opts) =>
         opts?.newTab ? openSessionInNewTab(sid) : openSession(sid),
       openNewSession: (agentId) => openNewSessionRaw(0, agentId, ""),
+      openNotChattableDialog: (agent) => setGuidanceAgent(agent),
       pathname: location.pathname,
     }),
     [
@@ -122,6 +130,7 @@ export function CommandPalette(): React.ReactElement {
       openSession,
       openSessionInNewTab,
       openNewSessionRaw,
+      setGuidanceAgent,
       location.pathname,
     ],
   );
@@ -141,55 +150,66 @@ export function CommandPalette(): React.ReactElement {
     mode === "command" && isProjectsRoute(location.pathname);
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent
-        showCloseButton={false}
-        className={cn(
-          // 设计稿宽 640，垂直在 96px 顶部
-          "w-[640px] max-w-[92vw] translate-y-0 top-[96px] grid-rows-[auto_1fr_auto] gap-0 overflow-hidden rounded-xl border border-border bg-popover p-0 text-popover-foreground shadow-[0_8px_16px_rgba(10,10,10,0.15),0_24px_60px_rgba(10,10,10,0.25)]",
-        )}
-      >
-        <DialogTitle className="sr-only">
-          {t("commandPalette.title")}
-        </DialogTitle>
-        <DialogDescription className="sr-only">
-          {t("commandPalette.description")}
-        </DialogDescription>
-
-        <CommandPrimitive
-          // 关掉 cmdk 内置 filter / sort —— 我们用 source.getScore 自己排
-          shouldFilter={false}
-          loop
-          label={t("commandPalette.title")}
-          className="flex h-full flex-col overflow-hidden"
+    <>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent
+          showCloseButton={false}
+          className={cn(
+            // 设计稿宽 640，垂直在 96px 顶部
+            "w-[640px] max-w-[92vw] translate-y-0 top-[96px] grid-rows-[auto_1fr_auto] gap-0 overflow-hidden rounded-xl border border-border bg-popover p-0 text-popover-foreground shadow-[0_8px_16px_rgba(10,10,10,0.15),0_24px_60px_rgba(10,10,10,0.25)]",
+          )}
         >
-          <SearchRow
-            query={query}
-            mode={mode}
-            payload={payload}
-            projects={projects}
-            isProjectMode={isProjectMode}
-            onQueryChange={setQuery}
-            onClose={close}
-          />
-          {isProjectMode ? <ContextBar projects={projects} /> : null}
-          <CommandPrimitive.List className="max-h-[60vh] overflow-y-auto px-2 pb-2 pt-1">
-            <CommandPrimitive.Empty className="px-4 py-10 text-center text-xs text-muted-foreground">
-              {emptyText(mode, payload, t)}
-            </CommandPrimitive.Empty>
-            {activeSources.map((source) => (
-              <SourceGroup
-                key={source.id}
-                source={source}
-                query={payload}
-                ctx={ctx}
-              />
-            ))}
-          </CommandPrimitive.List>
-          <Footer mode={mode} />
-        </CommandPrimitive>
-      </DialogContent>
-    </Dialog>
+          <DialogTitle className="sr-only">
+            {t("commandPalette.title")}
+          </DialogTitle>
+          <DialogDescription className="sr-only">
+            {t("commandPalette.description")}
+          </DialogDescription>
+
+          <CommandPrimitive
+            // 关掉 cmdk 内置 filter / sort —— 我们用 source.getScore 自己排
+            shouldFilter={false}
+            loop
+            label={t("commandPalette.title")}
+            className="flex h-full flex-col overflow-hidden"
+          >
+            <SearchRow
+              query={query}
+              mode={mode}
+              payload={payload}
+              projects={projects}
+              isProjectMode={isProjectMode}
+              onQueryChange={setQuery}
+              onClose={close}
+            />
+            {isProjectMode ? <ContextBar projects={projects} /> : null}
+            <CommandPrimitive.List className="max-h-[60vh] overflow-y-auto px-2 pb-2 pt-1">
+              <CommandPrimitive.Empty className="px-4 py-10 text-center text-xs text-muted-foreground">
+                {emptyText(mode, payload, t)}
+              </CommandPrimitive.Empty>
+              {activeSources.map((source) => (
+                <SourceGroup
+                  key={source.id}
+                  source={source}
+                  query={payload}
+                  ctx={ctx}
+                />
+              ))}
+            </CommandPrimitive.List>
+            <Footer mode={mode} />
+          </CommandPrimitive>
+        </DialogContent>
+      </Dialog>
+      {guidanceAgent ? (
+        <NotChattableDialog
+          agent={guidanceAgent}
+          open
+          onOpenChange={(open) => {
+            if (!open) setGuidanceAgent(null);
+          }}
+        />
+      ) : null}
+    </>
   );
 }
 

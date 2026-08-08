@@ -207,6 +207,27 @@ describe("AgentBackendsPanel", () => {
     });
   });
 
+  it("shows a provider-empty hint + configure button when the provider list is empty (task 8)", async () => {
+    const user = userEvent.setup();
+    const onOpenLlmProviders = vi.fn();
+    installAppMock({
+      ListLLMProviders: vi.fn(() => Promise.resolve({ items: [] })),
+    });
+    render(<AgentBackendsPanel onOpenLlmProviders={onOpenLlmProviders} />);
+
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText("No LLM providers available yet"),
+    ).toBeInTheDocument();
+    await user.click(
+      within(dialog).getByRole("button", { name: "Configure LLM providers" }),
+    );
+    expect(onOpenLlmProviders).toHaveBeenCalledTimes(1);
+  });
+
   it("submits create dialog with builtin type", async () => {
     const user = userEvent.setup();
     const mocks = installAppMock();

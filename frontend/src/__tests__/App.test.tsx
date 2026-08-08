@@ -816,8 +816,10 @@ describe("App", () => {
       screen.getByRole("complementary", { name: "Agent list" }),
     ).toHaveStyle({ width: "320px" });
     expect(screen.getByPlaceholderText("Search Agent")).toBeInTheDocument();
+    // 空聊天态: 测试环境没有可对话 Agent (ListChatAgents 未 mock, agents=[]),
+    // 因此显示 spec §7 组 1B 的两步配置引导空态而非旧占位。
     expect(
-      screen.getByText("Choose an Agent or project session to start"),
+      screen.getByText("Before you start, complete two setup steps"),
     ).toBeInTheDocument();
     // TabStrip + ChatPanelHost right pane is visible on /chat
     expect(

@@ -339,8 +339,10 @@ function openClawProbeErrorMessage(
 }
 
 export function AgentBackendsPanel({
+  onOpenLlmProviders,
   onOpenProxySettings,
 }: {
+  onOpenLlmProviders?: () => void;
   onOpenProxySettings?: () => void;
 } = {}) {
   const { t } = useTranslation();
@@ -562,13 +564,11 @@ export function AgentBackendsPanel({
               </TableRow>
             ) : backends.length === 0 ? (
               <TableRow>
-                <TableCell
-                  colSpan={5}
-                  className="py-8 text-center text-xs text-muted-foreground"
-                >
-                  <span data-selectable-text="true">
-                    {t("agentBackends.empty.table")}
-                  </span>
+                <TableCell colSpan={5} className="p-0">
+                  <AgentBackendsEmptyState
+                    onCreate={() => setEditor({ kind: "create" })}
+                    onOpenLlmProviders={onOpenLlmProviders}
+                  />
                 </TableCell>
               </TableRow>
             ) : (
@@ -600,6 +600,7 @@ export function AgentBackendsPanel({
             await reload();
           }}
           onOpenProxySettings={onOpenProxySettings}
+          onOpenLlmProviders={onOpenLlmProviders}
         />
       ) : null}
 
@@ -619,6 +620,56 @@ export function AgentBackendsPanel({
         />
       ) : null}
     </section>
+  );
+}
+
+function AgentBackendsEmptyState({
+  onCreate,
+  onOpenLlmProviders,
+}: {
+  onCreate: () => void;
+  onOpenLlmProviders?: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+      <div
+        aria-hidden="true"
+        className="relative flex size-12 items-center justify-center rounded-full bg-primary-soft text-primary-text"
+      >
+        <Puzzle className="size-5" />
+      </div>
+      <div className="flex max-w-md flex-col gap-1">
+        <p className="text-sm font-semibold">
+          {t("agentBackends.empty.title")}
+        </p>
+        <p className="text-2xs leading-relaxed text-muted-foreground">
+          {t("agentBackends.empty.description")}
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        <Button
+          type="button"
+          size="sm"
+          className="h-[30px] gap-1.5 px-3 text-xs"
+          onClick={onCreate}
+        >
+          <Plus data-icon="inline-start" aria-hidden="true" />
+          {t("agentBackends.empty.addFirst")}
+        </Button>
+        {onOpenLlmProviders ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-[30px] gap-1.5 px-3 text-xs"
+            onClick={onOpenLlmProviders}
+          >
+            {t("agentBackends.empty.addProvider")}
+          </Button>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -851,12 +902,14 @@ function BackendEditor({
   onClose,
   onSaved,
   onOpenProxySettings,
+  onOpenLlmProviders,
 }: {
   state: EditorState;
   providers: Provider[];
   onClose: () => void;
   onSaved: (message: string) => Promise<void> | void;
   onOpenProxySettings?: () => void;
+  onOpenLlmProviders?: () => void;
 }) {
   const { t } = useTranslation();
   const editing = state.kind === "edit" ? state.backend : null;
@@ -1517,6 +1570,7 @@ function BackendEditor({
             strictLabel={strictLabel}
             piAgentModelMissing={piAgentModelMissing}
             editing={!!editing}
+            onOpenLlmProviders={onOpenLlmProviders}
           />
         ) : (
           <OpenClawBackendFields
@@ -1789,6 +1843,20 @@ function BackendTypeSegmented({
   );
 }
 
+function ProviderConfigureCta({ onConfigure }: { onConfigure?: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <Button
+      type="button"
+      size="sm"
+      className="mt-1.5 h-7 px-2.5 text-2xs"
+      onClick={onConfigure}
+    >
+      {t("agentBackends.provider.configureCta")}
+    </Button>
+  );
+}
+
 function LlmProviderField({
   type,
   providers,
@@ -1797,6 +1865,7 @@ function LlmProviderField({
   strictLabel,
   piAgentModelMissing,
   editing,
+  onOpenLlmProviders,
 }: {
   type: BackendType;
   providers: Provider[];
@@ -1805,6 +1874,7 @@ function LlmProviderField({
   strictLabel: string | null;
   piAgentModelMissing: boolean;
   editing: boolean;
+  onOpenLlmProviders?: () => void;
 }) {
   const { t } = useTranslation();
   // claudecode / codex / piagent 允许「不关联」走 CLI 自身登录；builtin 必填。
@@ -1829,10 +1899,13 @@ function LlmProviderField({
         <Alert className="border-status-waiting/40 bg-status-waiting-bg text-xs">
           <AlertCircle className="size-4" aria-hidden="true" />
           <AlertTitle className="text-xs">
-            {t("agentBackends.provider.noneTitle")}
+            {t("agentBackends.provider.emptyTitle")}
           </AlertTitle>
           <AlertDescription className="text-2xs">
             {t("agentBackends.provider.noneDescription")}
+            {onOpenLlmProviders ? (
+              <ProviderConfigureCta onConfigure={onOpenLlmProviders} />
+            ) : null}
           </AlertDescription>
         </Alert>
       </div>
@@ -1886,6 +1959,9 @@ function LlmProviderField({
               : type === "piagent"
                 ? t("agentBackends.provider.noMatchPiAgent")
                 : t("agentBackends.provider.noMatchCodex")}
+            {onOpenLlmProviders ? (
+              <ProviderConfigureCta onConfigure={onOpenLlmProviders} />
+            ) : null}
           </AlertDescription>
         </Alert>
       ) : (

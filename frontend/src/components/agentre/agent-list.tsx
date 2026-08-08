@@ -2,6 +2,7 @@ import * as React from "react";
 import { ChevronDown, Pin, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -113,7 +114,9 @@ type AgentSession = {
 
 type AgentGroupProps = React.ComponentProps<"article"> & {
   activeCount?: number;
+  blockReason?: string;
   color?: AgentColor;
+  notChattable?: boolean;
   expanded?: boolean;
   initials?: string;
   name: string;
@@ -142,8 +145,10 @@ type AgentGroupProps = React.ComponentProps<"article"> & {
 
 function AgentGroup({
   activeCount = 0,
+  blockReason = "",
   className,
   color = "agent-1",
+  notChattable = false,
   expanded: expandedProp,
   initials,
   name,
@@ -211,6 +216,16 @@ function AgentGroup({
             size="sm"
           />
           <span className="min-w-0 truncate text-sm font-semibold">{name}</span>
+          {notChattable ? (
+            <Badge
+              variant="outline"
+              className="border-status-waiting/40 bg-status-waiting-bg px-1.5 py-0 text-2xs text-foreground"
+            >
+              {blockReason === "no-backend"
+                ? t("agentList.backendNotConfigured")
+                : t("agentList.notConfigured")}
+            </Badge>
+          ) : null}
           {pinned ? (
             <Pin
               className="size-3 -rotate-[30deg] text-primary-text"

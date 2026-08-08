@@ -1,6 +1,8 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
+  AlertCircle,
   Bell,
   Cable,
   Cpu,
@@ -29,6 +31,7 @@ import { cn } from "@/lib/utils";
 import { LANGUAGE_STORAGE_KEY, type SupportedLanguage } from "@/i18n";
 
 import type { AppTheme, AppThemePreference } from "./chrome";
+import { useChatAgents } from "@/hooks/use-chat-agents";
 import { AgentBackendsPanel } from "./agent-backends";
 import { DataBackupPanel } from "./data-backup";
 import { RemoteDevicesPanel } from "./remote-devices/remote-devices-panel";
@@ -60,6 +63,26 @@ type SettingsPageId =
   | "notifications"
   | "skills-tools"
   | "version-logs";
+
+const settingsPageIds = new Set<SettingsPageId>([
+  "agent-backend",
+  "appearance",
+  "remote-devices",
+  "data-backup",
+  "keyboard-shortcuts",
+  "llm-providers",
+  "local-proxy",
+  "mcp-servers",
+  "notifications",
+  "skills-tools",
+  "version-logs",
+]);
+
+function isSettingsPageId(value: unknown): value is SettingsPageId {
+  return (
+    typeof value === "string" && settingsPageIds.has(value as SettingsPageId)
+  );
+}
 
 const settingsNavSections: SettingsNavSection[] = [
   {
@@ -156,11 +179,6 @@ const compactSettingsNavItems = settingsNavSections
     Boolean(item.id),
   );
 
-type SettingsNavProps = {
-  activePage: SettingsPageId;
-  onPageChange: (page: SettingsPageId) => void;
-};
-
 function canUseMatchMedia() {
   return (
     typeof window !== "undefined" && typeof window.matchMedia === "function"
@@ -192,24 +210,38 @@ function useMediaQuery(query: string) {
 
 type SettingsNavButtonProps = {
   activePage: SettingsPageId;
+  backendGap: boolean;
   item: {
     icon: LucideIcon;
     id?: SettingsPageId;
     labelKey: string;
   };
   onPageChange: (page: SettingsPageId) => void;
+  providerGap: boolean;
 };
 
 function SettingsNavButton({
   activePage,
+  backendGap,
   item,
   onPageChange,
+  providerGap,
 }: SettingsNavButtonProps) {
   const { t } = useTranslation();
   const Icon = item.icon;
   const active = item.id === activePage;
   const pageId = item.id;
   const label = t(item.labelKey);
+  const gapDot =
+    item.id === "agent-backend"
+      ? backendGap
+        ? t("settings.nav.agentBackendDot")
+        : undefined
+      : item.id === "llm-providers"
+        ? providerGap
+          ? t("settings.nav.llmProviderDot")
+          : undefined
+        : undefined;
 
   return (
     <Button
@@ -230,11 +262,31 @@ function SettingsNavButton({
         aria-hidden="true"
       />
       {label}
+      {gapDot ? (
+        <span
+          aria-hidden="true"
+          className="ml-auto inline-block size-1.5 shrink-0 rounded-full bg-status-waiting"
+          data-gap-dot={item.id}
+          title={gapDot}
+        />
+      ) : null}
     </Button>
   );
 }
 
-function SettingsNav({ activePage, onPageChange }: SettingsNavProps) {
+type SettingsNavProps = {
+  activePage: SettingsPageId;
+  backendGap: boolean;
+  onPageChange: (page: SettingsPageId) => void;
+  providerGap: boolean;
+};
+
+function SettingsNav({
+  activePage,
+  backendGap,
+  onPageChange,
+  providerGap,
+}: SettingsNavProps) {
   const { t } = useTranslation();
   const showFullNav = useMediaQuery("(min-width: 1024px)");
 
@@ -269,8 +321,10 @@ function SettingsNav({ activePage, onPageChange }: SettingsNavProps) {
               <SettingsNavButton
                 key={item.labelKey}
                 activePage={activePage}
+                backendGap={backendGap}
                 item={item}
                 onPageChange={onPageChange}
+                providerGap={providerGap}
               />
             ))}
           </div>
@@ -467,8 +521,10 @@ function AppearanceSettings({
 }
 
 function AgentBackendSettings({
+  onOpenLlmProviders,
   onOpenProxySettings,
 }: {
+  onOpenLlmProviders: () => void;
   onOpenProxySettings: () => void;
 }) {
   const { t } = useTranslation();
@@ -480,7 +536,10 @@ function AgentBackendSettings({
         description={t("settings.agentBackend.description")}
       />
       <div className="flex min-w-0 flex-col gap-3">
-        <AgentBackendsPanel onOpenProxySettings={onOpenProxySettings} />
+        <AgentBackendsPanel
+          onOpenLlmProviders={onOpenLlmProviders}
+          onOpenProxySettings={onOpenProxySettings}
+        />
         <RuntimeHint />
       </div>
     </>
@@ -501,8 +560,15 @@ function LocalProxySettings() {
   );
 }
 
-function LlmProviderSettings() {
+function LlmProviderSettings({
+  onOpenAgentBackends,
+  providerGap,
+}: {
+  onOpenAgentBackends: () => void;
+  providerGap: boolean;
+}) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
 
   return (
     <>
@@ -510,7 +576,26 @@ function LlmProviderSettings() {
         title={t("settings.llmProvider.title")}
         description={t("settings.llmProvider.description")}
       />
-      <LlmProvidersPanel />
+      {providerGap ? (
+        <Alert className="border-status-waiting/40 bg-status-waiting/10 text-status-waiting">
+          <AlertCircle className="size-4" aria-hidden="true" />
+          <AlertTitle className="text-xs font-semibold">
+            {t("settings.llmProvider.gapBanner.title")}
+          </AlertTitle>
+          <AlertDescription className="text-2xs leading-relaxed">
+            {t("settings.llmProvider.gapBanner.description")}
+            <Button
+              type="button"
+              variant="link"
+              className="h-auto px-0 text-2xs"
+              onClick={() => navigate("/org")}
+            >
+              {t("settings.llmProvider.gapBanner.goToOrg")}
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+      <LlmProvidersPanel onOpenAgentBackends={onOpenAgentBackends} />
     </>
   );
 }
@@ -555,15 +640,41 @@ function SettingsPage({
   onThemePreferenceChange,
   themePreference,
 }: SettingsPageProps) {
-  const [activePage, setActivePage] =
-    React.useState<SettingsPageId>("appearance");
+  const location = useLocation();
+  const settingsPage = (location.state as { settingsPage?: unknown } | null)
+    ?.settingsPage;
+  // 支持外部深链 (如空聊天态 / 不可对话弹窗 navigate("/settings", { state:
+  // { settingsPage } })): 只在首次挂载时读一次 router state 作为初始页。
+  const [activePage, setActivePage] = React.useState<SettingsPageId>(() =>
+    isSettingsPageId(settingsPage) ? settingsPage : "appearance",
+  );
+  React.useEffect(() => {
+    if (isSettingsPageId(settingsPage)) setActivePage(settingsPage);
+  }, [settingsPage]);
+
+  // 设置导航打点 + LLM 供应商页黄条的数据源：一次共享的 ListChatAgents
+  // (useChatAgents)。gap 只在「确有缺口」时出现：Agent 后端页缺「有 Agent 没绑
+  // 后端」，LLM 供应商页缺「有后端绑了未激活/缺失的供应商」(= blockReason
+  // provider-inactive / backend-requires-provider)。
+  const { agents } = useChatAgents();
+  const backendGap = agents.some((a) => a.blockReason === "no-backend");
+  const providerGap = agents.some(
+    (a) =>
+      a.blockReason === "provider-inactive" ||
+      a.blockReason === "backend-requires-provider",
+  );
 
   return (
     <div
       data-slot="settings-page"
       className="flex min-h-0 min-w-0 flex-1 flex-col lg:flex-row"
     >
-      <SettingsNav activePage={activePage} onPageChange={setActivePage} />
+      <SettingsNav
+        activePage={activePage}
+        backendGap={backendGap}
+        onPageChange={setActivePage}
+        providerGap={providerGap}
+      />
       <main className="min-w-0 flex-1 overflow-auto bg-background">
         <div className="flex min-h-full w-full min-w-0 max-w-[1180px] flex-col gap-6 px-4 py-5 sm:px-6 lg:gap-8 lg:px-10 lg:py-8">
           {activePage === "remote-devices" ? (
@@ -576,10 +687,14 @@ function SettingsPage({
             />
           ) : activePage === "agent-backend" ? (
             <AgentBackendSettings
+              onOpenLlmProviders={() => setActivePage("llm-providers")}
               onOpenProxySettings={() => setActivePage("local-proxy")}
             />
           ) : activePage === "llm-providers" ? (
-            <LlmProviderSettings />
+            <LlmProviderSettings
+              onOpenAgentBackends={() => setActivePage("agent-backend")}
+              providerGap={providerGap}
+            />
           ) : activePage === "local-proxy" ? (
             <LocalProxySettings />
           ) : activePage === "keyboard-shortcuts" ? (

@@ -1,7 +1,15 @@
 import * as React from "react";
-import { ChevronDown, ChevronUp, Puzzle, Wrench } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  FolderPlus,
+  Plus,
+  Puzzle,
+  Wrench,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { Button } from "@/components/ui/button";
 import {
   DndContext,
   KeyboardSensor,
@@ -56,6 +64,8 @@ export type OrgTreeProps = {
     orderedIds: number[],
   ) => void;
   onReorderDepartment?: (parentId: number, orderedIds: number[]) => void;
+  onCreateDepartment?: () => void;
+  onCreateAgent?: () => void;
 };
 
 type DragId = `agent-${number}` | `dept-${number}`;
@@ -69,7 +79,7 @@ const AGENT_NODE_HEIGHT = 96;
 const DEPARTMENT_NODE_WIDTH = 280;
 const DEPARTMENT_NODE_HEIGHT = 48;
 const EMPTY_NODE_WIDTH = 280;
-const EMPTY_NODE_HEIGHT = 68;
+const EMPTY_NODE_HEIGHT = 100;
 
 const agentBorderClassNames: Record<AgentColor, string> = {
   "agent-1": "border-agent-1",
@@ -813,24 +823,59 @@ function TreeLayoutNode({
     return <AgentCard agent={node.agent} all={all} accented={false} />;
   }
   if (node.kind === "empty") {
-    return <EmptyOrgPlaceholder />;
+    return (
+      <EmptyOrgPlaceholder
+        onCreateDepartment={all.onCreateDepartment}
+        onCreateAgent={all.onCreateAgent}
+      />
+    );
   }
   return <DepartmentBanner dept={node.dept} all={all} />;
 }
 
-function EmptyOrgPlaceholder() {
+function EmptyOrgPlaceholder({
+  onCreateDepartment,
+  onCreateAgent,
+}: {
+  onCreateDepartment?: () => void;
+  onCreateAgent?: () => void;
+}) {
   const { t } = useTranslation();
 
   return (
     <div
       data-slot="org-empty-placeholder"
-      className="h-[68px] w-[280px] rounded-lg border border-dashed border-border-strong bg-card/80 px-4 py-3 text-center shadow-xs"
+      className="h-[100px] w-[280px] rounded-lg border border-dashed border-border-strong bg-card/80 px-4 py-3 text-center shadow-xs"
     >
       <div className="text-xs font-semibold text-foreground">
         {t("org.tree.empty.title")}
       </div>
       <div className="mt-1 max-w-[260px] text-2xs leading-5 text-muted-foreground">
         {t("org.tree.empty.description")}
+      </div>
+      <div className="mt-2 flex items-center justify-center gap-1.5">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-7 px-2.5 text-2xs"
+          onClick={onCreateDepartment}
+        >
+          <FolderPlus className="size-3" aria-hidden="true" />
+          {t("org.tree.empty.newDepartment")}
+        </Button>
+        {onCreateAgent ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 px-2.5 text-2xs"
+            onClick={onCreateAgent}
+          >
+            <Plus className="size-3" aria-hidden="true" />
+            {t("org.tree.empty.addAgent")}
+          </Button>
+        ) : null}
       </div>
     </div>
   );

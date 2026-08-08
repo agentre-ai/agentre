@@ -1,11 +1,12 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ChatAgentItem } from "@/hooks/use-chat-agents";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useCommandPaletteStore } from "@/stores/command-palette-store";
+import { consumeNewAgentDialogIntent } from "@/stores/new-agent-intent-store";
 
 // 直接 mock 整个 useChatAgents hook —— 避开 Wails 模块多层 mock 的解析路径风险。
 const hookMocks = vi.hoisted(() => ({
@@ -64,9 +65,14 @@ beforeEach(() => {
   });
 });
 
+function LocationProbe() {
+  return <output data-testid="location">{useLocation().pathname}</output>;
+}
+
 function renderPalette() {
   return render(
     <MemoryRouter initialEntries={["/projects"]}>
+      <LocationProbe />
       <ShortcutsProvider platform="darwin">
         <CommandPalette />
       </ShortcutsProvider>
@@ -116,5 +122,16 @@ describe("CommandPalette", () => {
       expect(tabs[0].meta).toEqual({ kind: "session", sessionId: 101 });
       expect(useCommandPaletteStore.getState().open).toBe(false);
     });
+  });
+
+  it("Given command mode, when New agent is selected, then it navigates to org and requests the dialog", async () => {
+    consumeNewAgentDialogIntent();
+    renderPalette();
+    act(() => useCommandPaletteStore.getState().openWith("> New agent"));
+
+    await userEvent.click(await screen.findByText("New agent"));
+
+    expect(screen.getByTestId("location")).toHaveTextContent("/org");
+    expect(consumeNewAgentDialogIntent()).toBe(true);
   });
 });

@@ -31,7 +31,9 @@
     "openRecent": "Open {{name}} recent session",
     "pinned": "Pinned",
     "running": "Running",
-    "runningAria": "{{name}} has running sessions"
+    "runningAria": "{{name}} has running sessions",
+    "backendNotConfigured": "Backend not configured",
+    "notConfigured": "Not configured"
   },
   "attention": {
     "background": "Background",
@@ -107,7 +109,10 @@
       "editTitle": "Edit Agent Backend"
     },
     "empty": {
-      "table": "No agent backends yet. Use + New Backend in the top right to start."
+      "addFirst": "Add First Backend",
+      "addProvider": "Configure LLM providers first",
+      "description": "Every agent must bind a backend to run tasks. The built-in SDK also needs an activated LLM provider; Claude Code / Codex can use their own CLI login state.",
+      "title": "No agent backends yet"
     },
     "env": {
       "count": "{{count}} items",
@@ -207,6 +212,8 @@
       "clear": "Clear provider link",
       "clearTitle": "Clear and use CLI login",
       "cliLogin": "Use CLI login",
+      "configureCta": "Configure LLM providers",
+      "emptyTitle": "No LLM providers available yet",
       "label": "LLM Provider",
       "modelRequiredDescription": "This provider has no default model, so Pi cannot select it via --model. Set a default model on the LLM Providers page first, then save again.",
       "modelRequiredTitle": "Provider has no default model",
@@ -745,7 +752,11 @@
     "localDevice": "Local",
     "newSession": {
       "description": "Type a message below, press Enter to send, or Shift+Enter for a new line.",
-      "title": "Start a chat with {{name}}"
+      "title": "Start a chat with {{name}}",
+      "guard": {
+        "title": "You can start chatting with {{name}} once configured",
+        "placeholder": "Configure the Agent backend first"
+      }
     },
     "newProjectSession": {
       "description": "Your first message will start this session in the project workspace.",
@@ -801,7 +812,9 @@
   "chatPage": {
     "add": {
       "aria": "New",
-      "newAgentChat": "New agent chat"
+      "newAgent": "New agent",
+      "newAgentChat": "New agent chat",
+      "newAgentHint": "Create a new assistant/employee in the org chart"
     },
     "filter": {
       "open": "Filter sidebar",
@@ -812,8 +825,69 @@
     },
     "newChat": "New chat",
     "notChattable": {
+      "actions": {
+        "backendSettings": "Go to Agent backend settings",
+        "configureBackend": "Configure Agent backend",
+        "configureProvider": "Configure LLM provider",
+        "configureRemoteDevice": "Configure remote device",
+        "startGateway": "Start local gateway"
+      },
+      "chain": {
+        "aria": "Chat configuration chain",
+        "backend": "Agent backend",
+        "provider": "LLM provider",
+        "states": {
+          "configured": "Configured",
+          "inactive": "Inactive",
+          "missing": "Not configured",
+          "possible": "May be needed",
+          "unknown": "Unknown",
+          "unavailable": "Unavailable"
+        }
+      },
       "defaultHint": "Bind a built-in backend to this Agent on the org chart page first",
-      "message": "Not available for chat — {{hint}}"
+      "info": {
+        "title": "Built-in backends need an additional LLM provider",
+        "description": "After you choose Configure Agent backend, the guide will tell you whether a provider is also needed. You do not need to remember the next step."
+      },
+      "message": "Not available for chat — {{hint}}",
+      "reasons": {
+        "noBackend": {
+          "title": "{{name}} cannot chat yet",
+          "description": "This Agent has no Agent backend configured. Bind a backend to start chatting.",
+          "short": "No agent backend configured"
+        },
+        "backendRequiresProvider": {
+          "title": "Configure an LLM provider first",
+          "description": "The built-in Agent backend needs an active LLM provider to run tasks.",
+          "short": "An LLM provider is required"
+        },
+        "providerInactive": {
+          "title": "Activate the LLM provider first",
+          "description": "The LLM provider bound to this Agent is inactive, possibly because its API key is missing or it is disabled.",
+          "short": "LLM provider not active"
+        },
+        "remoteProviderMissing": {
+          "title": "Configure the remote LLM provider",
+          "description": "The remote agentred does not have the LLM provider required by this Agent backend.",
+          "short": "Remote LLM provider missing"
+        },
+        "gatewayNotRunning": {
+          "title": "The local gateway is not running",
+          "description": "This CLI backend uses the local gateway to forward requests. Start it before chatting.",
+          "short": "Local gateway not running"
+        },
+        "remoteOpenclawUnavailable": {
+          "title": "Remote OpenClaw is unavailable",
+          "description": "The remote OpenClaw gateway for this Agent is unavailable. Check the remote device connection and configuration.",
+          "short": "Remote OpenClaw unavailable"
+        },
+        "unknownBackend": {
+          "title": "The Agent backend is unavailable",
+          "description": "This Agent uses an unrecognized backend type. Check the Agent backend configuration.",
+          "short": "Unknown backend type"
+        }
+      }
     },
     "pin": {
       "pin": "Pin",
@@ -849,7 +923,26 @@
         "openInNewTab": "Open in New Tab",
         "switch": "Switch Tab"
       },
-      "title": "Choose an Agent or project session to start"
+      "title": "Choose an Agent or project session to start",
+      "setupGuide": {
+        "title": "Before you start, complete two setup steps",
+        "description": "Every Agent must have an Agent backend bound before it can run tasks and start chatting. There are no chat-ready Agents yet.",
+        "stepBackend": {
+          "title": "Configure Agent backend",
+          "description": "Pick an execution backend for your Agent (Built-in SDK / Claude Code / Codex…)",
+          "action": "Go to settings → Agent backend"
+        },
+        "stepProvider": {
+          "title": "Configure LLM provider",
+          "description": "The built-in backend needs an active provider (API Key + default model)",
+          "action": "Go to settings → LLM provider"
+        },
+        "doneNote": "Once configured, come back and start chatting with the CEO assistant."
+      },
+      "unconfigured": {
+        "count": "{{count}} Agent(s) without a backend",
+        "goOrg": "Go to org chart setup →"
+      }
     },
     "fallbackSession": "(session)",
     "missingAgent": {
@@ -925,10 +1018,20 @@
       "otherHeading": "Other Agents",
       "notInProject": "Not in this project"
     },
+    "newAgent": {
+      "description": "Create a new assistant/employee in the org chart",
+      "heading": "Actions",
+      "title": "New agent"
+    },
     "newChat": {
       "heading": "New Chat",
       "itemPrefix": "New chat with",
-      "itemTitle": "New chat with {{agentName}}"
+      "itemTitle": "New chat with {{agentName}}",
+      "needSetup": "Needs setup",
+      "needSetupBadge": "Not configured",
+      "needSetupTitle": "Start a new chat with {{agentName}}",
+      "needSetupTitlePrefix": "Start a new chat with",
+      "needSetupTitleSuffix": ""
     },
     "project": {
       "empty": "(no projects yet)",
@@ -1371,7 +1474,9 @@
     "empty": {
       "addFirst": "Add First Provider",
       "apiKeyHelp": "How to get an API key",
+      "chain": "LLM providers → Agent backends → Agent chats",
       "description": "Add a provider such as Anthropic, OpenAI, or a compatible endpoint, then choose a default model.",
+      "goToBackend": "Go to Agent backends",
       "title": "No LLM providers configured"
     },
     "fields": {
@@ -1847,6 +1952,8 @@
         "backend": "Backend",
         "departmentOption": "Department · {{name}}",
         "description": "Set the agent name, placement, and execution backend.",
+        "intentHint": "Configure the backend after creating the agent, then start chatting",
+        "intentSettings": "Go to settings → Agent backend",
         "optionalSuffix": "(optional)",
         "placement": "Select a department or parent agent"
       },
@@ -1880,7 +1987,13 @@
         "uploadImage": "Upload Image"
       },
       "backend": {
+        "configureProvider": "Configure LLM providers",
+        "goAgentBackendSettings": "Go to Agent backend settings",
         "inactiveSuffix": " (disabled)",
+        "noBackendDescription": "Bind an agent backend to start chatting; the built-in backend also needs an LLM provider.",
+        "noBackendTitle": "This agent can't chat yet",
+        "providerGapDescription": "The built-in SDK backend runs tasks through an LLM provider, but no active provider is linked yet.",
+        "providerGapTitle": "An LLM provider is still needed",
         "title": "Agent Backend",
         "unlinkedProvider": "No linked LLM provider"
       },
@@ -2036,7 +2149,9 @@
       "collapse": "Collapse {{name}}",
       "collapsedSuffix": " (collapsed)",
       "empty": {
+        "addAgent": "Add Agent",
         "description": "Create a department, or attach new Agents under the CEO assistant.",
+        "newDepartment": "New Department",
         "title": "No departments created"
       },
       "expand": "Expand {{name}}",
@@ -2138,6 +2253,11 @@
     },
     "llmProvider": {
       "description": "Configure available model sources. After saving, Agentre can fetch the account's available models, while context window, thinking support, and other capabilities are filled from the built-in cago agents catalog.",
+      "gapBanner": {
+        "description": "Some agents are bound to backends that have no activated LLM provider. Once you've configured a provider, go to the org chart to assign it to those agents.",
+        "goToOrg": "Go to org chart",
+        "title": "Some agents still need this"
+      },
       "title": "LLM Providers"
     },
     "notifications": {
@@ -2161,6 +2281,7 @@
     "nav": {
       "about": "About",
       "agentBackend": "Agent Backends",
+      "agentBackendDot": "Some agents don't have a backend yet",
       "appearance": "Appearance",
       "dataBackup": "Data & Backup",
       "engine": "Engine",
@@ -2169,6 +2290,7 @@
       "keyboardShortcuts": "Keyboard Shortcuts",
       "localProxy": "Local HTTP Proxy",
       "llmProvider": "LLM Providers",
+      "llmProviderDot": "Some backends are missing an activated LLM provider",
       "mcpServers": "MCP Servers",
       "notifications": "Notifications",
       "remoteDevices": "Remote",

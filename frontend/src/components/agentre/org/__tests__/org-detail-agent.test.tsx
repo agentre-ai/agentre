@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OrgDetailAgent } from "../org-detail-agent";
@@ -70,6 +71,15 @@ const backend = (
     ...overrides,
   }) as agent_backend_svc.BackendItem;
 
+function LocationStateProbe() {
+  const location = useLocation();
+  return (
+    <output data-testid="location-state">
+      {JSON.stringify(location.state ?? {})}
+    </output>
+  );
+}
+
 function renderPanel(
   overrides: Partial<OrgAgent> = {},
   backends: agent_backend_svc.BackendItem[] = [],
@@ -81,19 +91,22 @@ function renderPanel(
   const onDeleteAvatar = vi.fn().mockResolvedValue(undefined);
   const onClose = vi.fn();
   render(
-    <OrgDetailAgent
-      agent={agent(overrides)}
-      departments={[dept]}
-      agents={[]}
-      backends={backends}
-      isLeadOf={null}
-      availableTools={availableTools}
-      onUpdate={onUpdate}
-      onDelete={onDelete}
-      onUploadAvatar={onUploadAvatar}
-      onDeleteAvatar={onDeleteAvatar}
-      onClose={onClose}
-    />,
+    <MemoryRouter initialEntries={["/org"]}>
+      <LocationStateProbe />
+      <OrgDetailAgent
+        agent={agent(overrides)}
+        departments={[dept]}
+        agents={[]}
+        backends={backends}
+        isLeadOf={null}
+        availableTools={availableTools}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onUploadAvatar={onUploadAvatar}
+        onDeleteAvatar={onDeleteAvatar}
+        onClose={onClose}
+      />
+    </MemoryRouter>,
   );
   return { onUpdate, onDelete, onUploadAvatar, onDeleteAvatar };
 }
@@ -359,19 +372,21 @@ describe("OrgDetailAgent", () => {
   it("renders the reports-to badge avatar at a legible size (size-5, not the cramped size-3.5)", () => {
     const target = agent({ id: 99, name: "Boss", avatarColor: "agent-3" });
     render(
-      <OrgDetailAgent
-        agent={agent({ parentAgentId: 99 })}
-        departments={[dept]}
-        agents={[target]}
-        backends={[]}
-        isLeadOf={null}
-        availableTools={[]}
-        onUpdate={vi.fn().mockResolvedValue(undefined)}
-        onDelete={vi.fn().mockResolvedValue(undefined)}
-        onUploadAvatar={vi.fn().mockResolvedValue(undefined)}
-        onDeleteAvatar={vi.fn().mockResolvedValue(undefined)}
-        onClose={vi.fn()}
-      />,
+      <MemoryRouter initialEntries={["/org"]}>
+        <OrgDetailAgent
+          agent={agent({ parentAgentId: 99 })}
+          departments={[dept]}
+          agents={[target]}
+          backends={[]}
+          isLeadOf={null}
+          availableTools={[]}
+          onUpdate={vi.fn().mockResolvedValue(undefined)}
+          onDelete={vi.fn().mockResolvedValue(undefined)}
+          onUploadAvatar={vi.fn().mockResolvedValue(undefined)}
+          onDeleteAvatar={vi.fn().mockResolvedValue(undefined)}
+          onClose={vi.fn()}
+        />
+      </MemoryRouter>,
     );
     // 汇报给徽章里的目标头像（role=img, aria-label=目标名）必须 ≥ 行高 (16px)，
     // 否则字母/图标被挤成 8px 糊点。size-3.5(14px) 是历史遗留的过小值。
@@ -415,6 +430,109 @@ describe("OrgDetailAgent", () => {
         ]),
       }),
     );
+  });
+
+  describe("OrgDetailAgent setup guidance (task 8)", () => {
+    it("shows a no-backend status alert when no backend is bound", () => {
+      renderPanel({ agentBackendId: 0 }, []);
+      expect(screen.getByText("This agent can't chat yet")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          /Bind an agent backend to start chatting; the built-in backend also needs an LLM provider\./,
+        ),
+      ).toBeInTheDocument();
+      // 后端选择器保持在原位。
+      expect(
+        screen.getByRole("heading", { name: "Agent Backend" }),
+      ).toBeInTheDocument();
+    });
+
+    it("hides the no-backend alert once a backend is selected", () => {
+      renderPanel({ agentBackendId: 5 }, [backend()]);
+      expect(screen.queryByText("This agent can't chat yet")).toBeNull();
+    });
+
+    it("shows a provider-gap alert for a builtin backend with no usable provider", () => {
+      renderPanel({ agentBackendId: 8 }, [
+        backend({
+          id: 8,
+          type: "builtin",
+          llmProviderName: "",
+          llmProviderActive: false,
+        }),
+      ]);
+      expect(
+        screen.getByText("An LLM provider is still needed"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          /The built-in SDK backend runs tasks through an LLM provider, but no active provider is linked yet\./,
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Configure LLM providers" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Go to Agent backend settings" }),
+      ).toBeInTheDocument();
+    });
+
+    it("hides the provider-gap alert once a builtin backend has an active provider linked", () => {
+      renderPanel({ agentBackendId: 8 }, [
+        backend({
+          id: 8,
+          type: "builtin",
+          llmProviderName: "Anthropic",
+          llmProviderActive: true,
+        }),
+      ]);
+      expect(screen.queryByText("An LLM provider is still needed")).toBeNull();
+      expect(screen.queryByText("This agent can't chat yet")).toBeNull();
+    });
+
+    it("keeps the no-backend alert when the selected backend is a CLI type (no provider required)", () => {
+      renderPanel({ agentBackendId: 5 }, [
+        backend({ id: 5, type: "claudecode" }),
+      ]);
+      expect(screen.queryByText("This agent can't chat yet")).toBeNull();
+      expect(screen.queryByText("An LLM provider is still needed")).toBeNull();
+    });
+
+    it("navigates to settings llm-providers from the configure-provider button", async () => {
+      const user = userEvent.setup();
+      renderPanel({ agentBackendId: 8 }, [
+        backend({
+          id: 8,
+          type: "builtin",
+          llmProviderName: "",
+          llmProviderActive: false,
+        }),
+      ]);
+      await user.click(
+        screen.getByRole("button", { name: "Configure LLM providers" }),
+      );
+      expect(screen.getByTestId("location-state")).toHaveTextContent(
+        "llm-providers",
+      );
+    });
+
+    it("navigates to settings agent-backend from the Go to Agent backend settings link", async () => {
+      const user = userEvent.setup();
+      renderPanel({ agentBackendId: 8 }, [
+        backend({
+          id: 8,
+          type: "builtin",
+          llmProviderName: "",
+          llmProviderActive: false,
+        }),
+      ]);
+      await user.click(
+        screen.getByRole("button", { name: "Go to Agent backend settings" }),
+      );
+      expect(screen.getByTestId("location-state")).toHaveTextContent(
+        "agent-backend",
+      );
+    });
   });
 
   describe("OrgDetailAgent auto-save", () => {

@@ -197,6 +197,8 @@ type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
   /** 挂载时自动 focus 输入框。新建会话场景下由 chat-panel 传 true，让用户一打开
    *  就能直接打字、不用再点输入框一次。 */
   autoFocusOnMount?: boolean;
+  /** 输入框只读禁用。新建会话场景下由 chat-panel 对不可对话 Agent 传入。 */
+  disabled?: boolean;
   /** 当前会话 backend 类型;让 AIChatInput 启用 slash menu 并按 backend 过滤候选命令。
    *  空串/省略 → 不启用 slash menu。 */
   backendType?: string;
@@ -482,6 +484,7 @@ function ChatComposer({
   localCommandHistoryScope,
   editorRef,
   onPasteCapture,
+  disabled = false,
   ...props
 }: ChatComposerProps) {
   const { t } = useTranslation();
@@ -548,6 +551,7 @@ function ChatComposer({
 
   const handleDroppedPaths = React.useCallback(
     (paths: string[]) => {
+      if (disabled) return;
       void (async () => {
         const { attachments, text } = await resolveDroppedPaths(paths, {
           allowImages: !editing && supportsImageInput,
@@ -575,16 +579,17 @@ function ChatComposer({
         if (text) inputRef.current?.insertText(text);
       })();
     },
-    [editing, supportsImageInput, images.length],
+    [disabled, editing, supportsImageInput, images.length],
   );
 
   const { isDragOver } = useFileDropZone({
     ref: dropRef,
-    enabled: true,
+    enabled: !disabled,
     onPaths: handleDroppedPaths,
   });
 
   function handleSend(text: string) {
+    if (disabled) return;
     const trimmed = text.trim();
     if (!trimmed && images.length === 0) return;
     onSubmit?.(
@@ -596,6 +601,7 @@ function ChatComposer({
 
   function handleFormSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (disabled) return;
     if (isEmpty && images.length > 0) {
       handleSend("");
       return;
@@ -605,7 +611,7 @@ function ChatComposer({
 
   async function handleImageFiles(files: FileList | readonly File[] | null) {
     try {
-      if (!files || files.length === 0) return;
+      if (disabled || !files || files.length === 0) return;
       const nextFiles = Array.from(files);
       if (images.length + nextFiles.length > MAX_CHAT_IMAGE_COUNT) {
         setImageError(
@@ -636,7 +642,8 @@ function ChatComposer({
 
   function handlePasteCapture(event: React.ClipboardEvent<HTMLFormElement>) {
     onPasteCapture?.(event);
-    if (event.defaultPrevented || editing || !supportsImageInput) return;
+    if (event.defaultPrevented || disabled || editing || !supportsImageInput)
+      return;
     const pastedImages = imageFilesFromClipboard(event.clipboardData);
     if (pastedImages.length === 0) return;
     event.preventDefault();
@@ -812,6 +819,7 @@ function ChatComposer({
             userMessageHistory={userMessageHistory}
             placeholder={resolvedPlaceholder}
             autoFocus={autoFocusOnMount}
+            disabled={disabled}
             backendType={backendType}
             mentionSources={mentionSources}
             skillCommands={skillCommands}
@@ -845,7 +853,7 @@ function ChatComposer({
                   size="icon-sm"
                   aria-label={t("chat.composer.addImage")}
                   title={t("chat.composer.addImage")}
-                  disabled={images.length >= MAX_CHAT_IMAGE_COUNT}
+                  disabled={disabled || images.length >= MAX_CHAT_IMAGE_COUNT}
                   onClick={() => fileInputRef.current?.click()}
                 >
                   <ImagePlus data-icon="only" aria-hidden="true" />
@@ -895,7 +903,7 @@ function ChatComposer({
             ) : (
               <Button
                 type="submit"
-                disabled={isEmpty && images.length === 0}
+                disabled={disabled || (isEmpty && images.length === 0)}
                 size="icon-sm"
                 aria-label={t("chat.composer.send")}
                 title={t("chat.composer.sendTitle")}

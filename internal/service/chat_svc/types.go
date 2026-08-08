@@ -547,6 +547,29 @@ type ChatSessionDetail struct {
 	ProjectID int64 `json:"projectId,omitempty"`
 }
 
+// BlockReason 是不可对话 Agent 的结构化原因枚举；空串 = 可对话（与 Chattable=true 一致）。
+// 由 ListAgents 在与 Chattable/ChattableHint 相同的判定点位设置，取值见下。
+// 前端（spec docs/specs/2026-08-08-setup-guidance.md 决策表）按它映射引导文案与
+// 主按钮跳转；ChattableHint 保留为兜底展示字段。
+type BlockReason string
+
+const (
+	// BlockReasonNoBackend 该 Agent 没绑后端（含 CEO）。
+	BlockReasonNoBackend BlockReason = "no-backend"
+	// BlockReasonBackendRequiresProvider 后端需要但找不到绑定的 LLM 供应商。
+	BlockReasonBackendRequiresProvider BlockReason = "backend-requires-provider"
+	// BlockReasonProviderInactive 后端绑的供应商存在但未激活/缺 Key。
+	BlockReasonProviderInactive BlockReason = "provider-inactive"
+	// BlockReasonRemoteProviderMissing 远端 agentred 未配置该供应商。
+	BlockReasonRemoteProviderMissing BlockReason = "remote-provider-missing"
+	// BlockReasonGatewayNotRunning 本地网关未启动，CLI 后端暂不可用。
+	BlockReasonGatewayNotRunning BlockReason = "gateway-not-running"
+	// BlockReasonRemoteOpenClawUnavailable 远端 OpenClaw 暂不可用。
+	BlockReasonRemoteOpenClawUnavailable BlockReason = "remote-openclaw-unavailable"
+	// BlockReasonUnknownBackend 未知 Agent 后端类型。
+	BlockReasonUnknownBackend BlockReason = "unknown-backend"
+)
+
 type ChatAgentItem struct {
 	ID            int64  `json:"id"`
 	Name          string `json:"name"`
@@ -562,10 +585,13 @@ type ChatAgentItem struct {
 	// LLMProviderKey 是 backend 绑定的 provider key；空串 = 未绑（CLI 登录态）。
 	// 前端无会话 composer ModelPill 用它判定新会话已绑/未绑：非空 → 走 /v1/models 列表；
 	// 空 → 弹层内自由输入模型 id。
-	LLMProviderKey    string            `json:"llmProviderKey"`
-	Chattable         bool              `json:"chattable"`
-	Pinned            bool              `json:"pinned"`
-	ChattableHint     string            `json:"chattableHint"`
+	LLMProviderKey string `json:"llmProviderKey"`
+	Chattable      bool   `json:"chattable"`
+	Pinned         bool   `json:"pinned"`
+	ChattableHint  string `json:"chattableHint"`
+	// BlockReason 是结构化不可对话原因；空串 = 可对话。取值见 BlockReason 常量，
+	// 由 ListAgents 与 Chattable 同一判定点位设置，保持二者一致。
+	BlockReason       BlockReason       `json:"blockReason"`
 	ActiveCount       int               `json:"activeCount"`
 	RecentCount       int               `json:"recentCount"`
 	TotalSessions     int64             `json:"totalSessions"`

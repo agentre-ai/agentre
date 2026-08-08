@@ -10,6 +10,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +22,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import {
+  consumeNewAgentDialogIntent,
+  subscribeNewAgentIntent,
+} from "@/stores/new-agent-intent-store";
 
 import { agent_svc, department_svc } from "../../../wailsjs/go/models";
 import {
@@ -30,7 +35,11 @@ import {
 } from "./types";
 import { AgentreDialog } from "./app-dialog";
 import { AgentAvatarPicker, IconPicker } from "./icon-picker";
-import { type OrgAgent, type OrgDepartment } from "./org/types";
+import {
+  type OrgAgent,
+  type OrgDepartment,
+  type OrgSelection,
+} from "./org/types";
 import { OrgDetailAgent } from "./org/org-detail-agent";
 import { OrgDetailDepartment } from "./org/org-detail-department";
 import { OrgList } from "./org/org-list";
@@ -61,13 +70,34 @@ export function OrgChartPage() {
     createAgent,
   } = useOrgData();
   const view = useOrgTreeView();
+  const location = useLocation();
+
+  React.useEffect(() => {
+    const selection = (
+      location.state as { orgSelection?: OrgSelection } | null
+    )?.orgSelection;
+    if (selection?.kind && selection.id > 0) {
+      view.setSelected(selection);
+    }
+  }, [location.state, view.setSelected]);
 
   const [newDeptOpen, setNewDeptOpen] = React.useState(false);
   const [newAgentOpen, setNewAgentOpen] = React.useState(false);
+  const [newAgentFromIntent, setNewAgentFromIntent] = React.useState(false);
   // 当从 DeptEditDrawer 的 “+ 添加 Agent 或子部门” 触发时，预选目标部门。
   const [newAgentParentDeptId, setNewAgentParentDeptId] =
     React.useState<number>(0);
   const [newSubDeptParentId, setNewSubDeptParentId] = React.useState<number>(0);
+  React.useEffect(() => {
+    const openFromIntent = () => {
+      if (!consumeNewAgentDialogIntent()) return;
+      setNewAgentParentDeptId(0);
+      setNewAgentFromIntent(true);
+      setNewAgentOpen(true);
+    };
+    openFromIntent();
+    return subscribeNewAgentIntent(openFromIntent);
+  }, []);
 
   const agentById = React.useMemo(
     () =>
@@ -143,6 +173,7 @@ export function OrgChartPage() {
     deleteAgentAvatar,
     t,
     onAddAgent: (deptId) => {
+      setNewAgentFromIntent(false);
       setNewAgentParentDeptId(deptId);
       setNewAgentOpen(true);
     },
@@ -258,6 +289,7 @@ export function OrgChartPage() {
               : undefined
           }
           onClick={() => {
+            setNewAgentFromIntent(false);
             setNewAgentParentDeptId(0);
             setNewAgentOpen(true);
           }}
@@ -302,6 +334,19 @@ export function OrgChartPage() {
               onReorderDepartment={(parentId, orderedIds) => {
                 void reorderDepartments(parentId, orderedIds);
               }}
+              onCreateDepartment={() => {
+                setNewSubDeptParentId(0);
+                setNewDeptOpen(true);
+              }}
+              onCreateAgent={
+                departments.length > 0 || agents.length > 0
+                  ? () => {
+                      setNewAgentFromIntent(false);
+                      setNewAgentParentDeptId(0);
+                      setNewAgentOpen(true);
+                    }
+                  : undefined
+              }
             />
           ) : (
             <OrgList
@@ -347,8 +392,13 @@ export function OrgChartPage() {
         onSubmit={async (req) => {
           await createAgent(agent_svc.CreateAgentRequest.createFrom(req));
           setNewAgentOpen(false);
+          setNewAgentFromIntent(false);
         }}
-        onClose={() => setNewAgentOpen(false)}
+        fromIntent={newAgentFromIntent}
+        onClose={() => {
+          setNewAgentOpen(false);
+          setNewAgentFromIntent(false);
+        }}
       />
     </main>
   );
@@ -565,6 +615,7 @@ function NewDepartmentDialogBody(props: NewDeptProps) {
 
 type NewAgentProps = {
   open: boolean;
+  fromIntent?: boolean;
   departments: OrgDepartment[];
   agents: OrgAgent[];
   backends: ReturnType<typeof useOrgData>["backends"];
@@ -590,6 +641,7 @@ function NewAgentDialog(props: NewAgentProps) {
 
 function NewAgentDialogBody(props: NewAgentProps) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [name, setName] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [avatarColor, setAvatarColor] = React.useState<AgentColor>("agent-1");
@@ -608,6 +660,13 @@ function NewAgentDialogBody(props: NewAgentProps) {
     [props.departments, props.agents, t],
   );
   const initialPlacement = React.useMemo(() => {
+    if (props.fromIntent) {
+      const ceo = props.agents.find((a) => a.systemBadge === "DEFAULT");
+      if (props.departments.length === 0 && ceo) {
+        return `agent:${ceo.id}`;
+      }
+      return placementOptions[0]?.value ?? "";
+    }
     const preset = props.defaultDepartmentId
       ? `department:${props.defaultDepartmentId}`
       : null;
@@ -615,10 +674,16 @@ function NewAgentDialogBody(props: NewAgentProps) {
       return preset;
     }
     return placementOptions[0]?.value ?? "";
-  }, [props.defaultDepartmentId, placementOptions]);
+  }, [
+    props.agents,
+    props.defaultDepartmentId,
+    props.departments.length,
+    placementOptions,
+    props.fromIntent,
+  ]);
   const [placement, setPlacement] = React.useState<string>(initialPlacement);
   const [backendId, setBackendId] = React.useState<number>(
-    props.backends[0]?.id ?? 0,
+    props.fromIntent ? 0 : (props.backends[0]?.id ?? 0),
   );
   const parsedPlacement = parsePlacement(placement);
 
@@ -661,6 +726,24 @@ function NewAgentDialogBody(props: NewAgentProps) {
         </>
       }
     >
+      {props.fromIntent ? (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-primary/20 bg-primary-soft px-3 py-2 text-2xs text-muted-foreground">
+          <span>{t("org.chart.newAgent.intentHint")}</span>
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="h-auto px-0 text-2xs"
+            onClick={() =>
+              navigate("/settings", {
+                state: { settingsPage: "agent-backend" },
+              })
+            }
+          >
+            {t("org.chart.newAgent.intentSettings")}
+          </Button>
+        </div>
+      ) : null}
       <label className="flex flex-col gap-1 text-xs">
         <span className="text-2xs text-muted-foreground">
           {t("org.department.name")}

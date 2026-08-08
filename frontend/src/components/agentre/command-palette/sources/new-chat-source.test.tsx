@@ -52,17 +52,19 @@ function mkCtx(pathname = "/chat") {
     close: vi.fn(),
     openSession: vi.fn(),
     openNewSession: vi.fn(),
+    openNotChattableDialog: vi.fn(),
     pathname,
   } as unknown as OnSelectCtx & {
     navigate: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
     openSession: ReturnType<typeof vi.fn>;
     openNewSession: ReturnType<typeof vi.fn>;
+    openNotChattableDialog: ReturnType<typeof vi.fn>;
   };
 }
 
 describe("flattenAgents (NewChatSource · 自由会话)", () => {
-  it("only chattable agents are kept", () => {
+  it("keeps chattable agents in the main group and non-chattable agents in a need-setup sub-group", () => {
     const agents: ChatAgentItem[] = [
       mkAgent({ id: 1, name: "Yes", chattable: true }),
       mkAgent({
@@ -73,7 +75,34 @@ describe("flattenAgents (NewChatSource · 自由会话)", () => {
       }),
     ];
     const items = flattenAgents(agents);
-    expect(items.map((i) => i.agent.id)).toEqual([1]);
+    expect(items.map((i) => i.agent.id)).toEqual([1, 2]);
+    // 可对话组不带 subHeading；不可对话组带「需要先配置」subHeading
+    expect(items[0]?.subHeading).toBeUndefined();
+    expect(items[1]?.subHeading).toBeTruthy();
+  });
+
+  it("need-setup group keeps pinned-first ordering (mirrors the chattable group)", () => {
+    const agents: ChatAgentItem[] = [
+      mkAgent({ id: 1, name: "A", chattable: true, pinned: true }),
+      mkAgent({ id: 2, name: "B", chattable: true, pinned: false }),
+      mkAgent({ id: 3, name: "C", chattable: false, pinned: false }),
+      mkAgent({ id: 4, name: "D", chattable: false, pinned: true }),
+    ];
+    const items = flattenAgents(agents);
+    expect(items.map((i) => i.agent.id)).toEqual([1, 2, 4, 3]);
+    expect(items[2]?.subHeading).toBeTruthy();
+    expect(items[3]?.subHeading).toBeTruthy();
+  });
+
+  it("lastAgentId only bubbles inside the chattable group, never into need-setup", () => {
+    const agents: ChatAgentItem[] = [
+      mkAgent({ id: 1, name: "A", chattable: true, pinned: true }),
+      mkAgent({ id: 2, name: "B", chattable: false }),
+      mkAgent({ id: 3, name: "C", chattable: false, pinned: true }),
+    ];
+    const items = flattenAgents(agents, 3);
+    // lastAgentId=3 命中不可对话组 → 不做冒泡；仍 pinned → others 顺序
+    expect(items.map((i) => i.agent.id)).toEqual([1, 3, 2]);
   });
 
   it("pinned agents come before non-pinned; otherwise input order is preserved", () => {
@@ -218,6 +247,29 @@ describe("newChatSource.renderItem — shows 'New chat with <name>' label", () =
     // 不应包含 "New project chat with" —— 那是 newProjectChatSource 的命令名
     expect(container.textContent).not.toContain("New project chat with");
   });
+
+  it("non-chattable row shows 'Start a new chat with <name>' + reason subline + 'Not configured' badge", () => {
+    const item = mkItem({
+      agent: mkAgent({
+        id: 5,
+        name: "CEO",
+        chattable: false,
+        blockReason: "no-backend",
+        chattableHint: "请在组织页绑定后端",
+      }),
+    });
+    const { container } = render(
+      <>{newChatSource.renderItem(item, { active: false })}</>,
+    );
+    expect(container.textContent).toContain("Start a new chat with");
+    expect(container.textContent).toContain("CEO");
+    // 原因行复用 task 2 的文案（no-backend.short）
+    expect(container.textContent).toContain("No agent backend configured");
+    // 「未配置」徽标
+    expect(container.textContent).toContain("Not configured");
+    // 不可对话行不应再用 "New chat with" 前缀
+    expect(container.textContent).not.toContain("New chat with");
+  });
 });
 
 describe("newChatSource.onSelect — 永远走 /chat 自由会话，忽略 store", () => {
@@ -261,6 +313,40 @@ describe("newChatSource.onSelect — 永远走 /chat 自由会话，忽略 store
     newChatSource.onSelect(item, ctx);
 
     expect(ctx.openNewSession).toHaveBeenCalledWith(7);
+    expect(ctx.navigate).toHaveBeenCalledWith("/chat");
+  });
+
+  it("non-chattable agent opens the guidance dialog instead of creating a session", () => {
+    const item = mkItem({
+      agent: mkAgent({
+        id: 9,
+        name: "CEO",
+        chattable: false,
+        blockReason: "no-backend",
+      }),
+    });
+    const ctx = mkCtx("/chat");
+    newChatSource.onSelect(item, ctx);
+
+    // 面板关闭 + 打开引导弹窗
+    expect(ctx.close).toHaveBeenCalled();
+    expect(ctx.openNotChattableDialog).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 9 }),
+    );
+    // 绝不建会话 / 不跳转 / 不写 lastAgentId
+    expect(ctx.openNewSession).not.toHaveBeenCalled();
+    expect(ctx.openSession).not.toHaveBeenCalled();
+    expect(ctx.navigate).not.toHaveBeenCalled();
+    expect(readLastAgentId()).toBeNull();
+  });
+
+  it("chattable agent still creates a session (unchanged behavior)", () => {
+    const item = mkItem({ agent: mkAgent({ id: 42, name: "工程师" }) });
+    const ctx = mkCtx("/chat");
+    newChatSource.onSelect(item, ctx);
+
+    expect(ctx.openNotChattableDialog).not.toHaveBeenCalled();
+    expect(ctx.openNewSession).toHaveBeenCalledWith(42);
     expect(ctx.navigate).toHaveBeenCalledWith("/chat");
   });
 });

@@ -7,10 +7,12 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { useCommandPaletteStore } from "@/stores/command-palette-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useChatAgentsStore } from "@/stores/chat-agents-store";
+import { consumeNewAgentDialogIntent } from "@/stores/new-agent-intent-store";
 
 function resetTabsStore() {
   useChatTabsStore.setState({ tabs: [], activeTabId: null });
@@ -76,8 +78,17 @@ import { reasonToPillText } from "@/lib/attention-display";
 
 // renderChatPage: ChatPage は sidebar のみをレンダリングするので、
 // ChatStreamsHost は不要になった。
+function LocationProbe() {
+  return <output data-testid="location">{useLocation().pathname}</output>;
+}
+
 function renderChatPage() {
-  return render(<ChatPage />);
+  return render(
+    <MemoryRouter initialEntries={["/chat"]}>
+      <LocationProbe />
+      <ChatPage />
+    </MemoryRouter>,
+  );
 }
 
 describe("ChatPage sidebar — attention bubble", () => {
@@ -529,6 +540,137 @@ describe("ChatPage sidebar — 新建会话按钮接入 chat-tabs", () => {
   });
 });
 
+describe("ChatPage sidebar — 不可对话引导", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetTabsStore();
+    runtimeMocks.handlers.clear();
+    vi.clearAllMocks();
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [
+        {
+          activeCount: 0,
+          avatarColor: "agent-1",
+          backendType: "builtin",
+          blockReason: "no-backend",
+          chattable: false,
+          id: 7,
+          name: "CEO",
+          pinned: false,
+          recentCount: 0,
+          sessions: [],
+        },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    resetTabsStore();
+    localStorage.clear();
+  });
+
+  it("opens the reason dialog when the non-chattable agent header is clicked", async () => {
+    renderChatPage();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Open CEO recent session" }),
+    );
+
+    expect(
+      await screen.findByRole("dialog", { name: "CEO cannot chat yet" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/This Agent has no Agent backend configured/),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the reason dialog from + without creating a session tab", async () => {
+    renderChatPage();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "New CEO session" }),
+    );
+
+    expect(
+      await screen.findByRole("dialog", { name: "CEO cannot chat yet" }),
+    ).toBeInTheDocument();
+    expect(useChatTabsStore.getState().tabs).toHaveLength(0);
+  });
+
+  it("opens an existing recent session from the header even when the agent is not chattable", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [
+        {
+          activeCount: 0,
+          avatarColor: "agent-1",
+          backendType: "builtin",
+          blockReason: "no-backend",
+          chattable: false,
+          id: 7,
+          name: "CEO",
+          pinned: false,
+          recentCount: 1,
+          sessions: [
+            { id: 42, lastMessageAt: 1, status: "idle", title: "Old chat" },
+          ],
+        },
+      ],
+    });
+
+    renderChatPage();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Open CEO recent session" }),
+    );
+
+    await waitFor(() => {
+      expect(useChatTabsStore.getState().tabs[0]?.meta).toEqual({
+        kind: "session",
+        sessionId: 42,
+      });
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("shows the configuration badge only for the non-chattable row", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [
+        {
+          activeCount: 0,
+          avatarColor: "agent-1",
+          backendType: "builtin",
+          blockReason: "no-backend",
+          chattable: false,
+          id: 7,
+          name: "CEO",
+          pinned: false,
+          recentCount: 0,
+          sessions: [],
+        },
+        {
+          activeCount: 0,
+          avatarColor: "agent-2",
+          backendType: "builtin",
+          blockReason: "",
+          chattable: true,
+          id: 8,
+          name: "Eng",
+          pinned: false,
+          recentCount: 0,
+          sessions: [],
+        },
+      ],
+    });
+
+    renderChatPage();
+
+    expect(
+      await screen.findByText("Backend not configured"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Not configured", { exact: true })).toBeNull();
+  });
+});
+
 describe("ChatPage sidebar — 置顶切换", () => {
   // 侧栏每行常驻一个置顶切换按钮;点击 → 调 SetAgentPinned 写库,再 reload
   // 让浮顶即时生效。aria-label 随当前置顶态在 Pin/Unpin 之间切换。
@@ -736,6 +878,22 @@ describe("ChatPage sidebar — 状态筛选与顶部新建", () => {
       open: true,
       initialQuery: "> ",
     });
+  });
+
+  it("Given the sidebar, When the top + menu picks New agent, Then it navigates to org and requests the dialog", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    consumeNewAgentDialogIntent();
+    renderChatPage();
+
+    await user.click(await screen.findByRole("button", { name: "New" }));
+    const newAgentItem = await screen.findByTestId("new-agent-item");
+    expect(newAgentItem).toHaveTextContent(
+      "Create a new assistant/employee in the org chart",
+    );
+    await user.click(newAgentItem);
+
+    expect(screen.getByTestId("location")).toHaveTextContent("/org");
+    expect(consumeNewAgentDialogIntent()).toBe(true);
   });
 });
 

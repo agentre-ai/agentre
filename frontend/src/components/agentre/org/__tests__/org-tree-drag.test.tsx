@@ -133,6 +133,39 @@ describe("OrgTree empty departments", () => {
     expect(screen.getByText(/No departments created/)).toBeInTheDocument();
   });
 
+  it("renders New Department / Add Agent buttons on the empty placeholder that invoke the create callbacks (task 8)", () => {
+    const onCreateDepartment = vi.fn();
+    const onCreateAgent = vi.fn();
+    render(
+      <OrgTree
+        departments={[]}
+        agents={[agent()]}
+        selected={null}
+        collapse={{}}
+        zoom={1}
+        pan={{ x: 0, y: 0 }}
+        onSelect={vi.fn()}
+        onToggleCollapse={vi.fn()}
+        onMoveAgent={vi.fn()}
+        onMoveDepartment={vi.fn()}
+        onCreateDepartment={onCreateDepartment}
+        onCreateAgent={onCreateAgent}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "New Department" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Add Agent" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "New Department" }));
+    expect(onCreateDepartment).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Add Agent" }));
+    expect(onCreateAgent).toHaveBeenCalledTimes(1);
+  });
+
   it("does not render a separate top-level department drop zone", () => {
     render(
       <OrgTree

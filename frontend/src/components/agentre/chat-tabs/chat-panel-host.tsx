@@ -2,6 +2,10 @@
 import * as React from "react";
 import { Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
+
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 
 import { ChatPanel } from "../chat-panel";
 import { pruneChatPanelScrollState } from "../chat-panel-scroll-state";
@@ -38,7 +42,6 @@ function tabsByPanelOrder(tabs: ChatTab[], order: string[]) {
 }
 
 export function ChatPanelHost() {
-  const { t } = useTranslation();
   const tabs = useChatTabsStore((s) => s.tabs);
   const activeTabId = useChatTabsStore((s) => s.activeTabId);
   const [panelOrderState, setPanelOrderState] = React.useState<PanelOrderState>(
@@ -63,33 +66,7 @@ export function ChatPanelHost() {
   }, [tabs]);
 
   if (tabs.length === 0) {
-    return (
-      <main className="flex flex-1 flex-col items-center justify-center gap-3 bg-background px-8 text-center">
-        <span className="inline-flex size-14 items-center justify-center rounded-lg border border-border bg-primary-soft">
-          <Sparkles className="size-6 text-primary" aria-hidden="true" />
-        </span>
-        <div className="text-base font-semibold">
-          {t("chatTabs.empty.title")}
-        </div>
-        <div className="text-xs text-muted-foreground">
-          {t("chatTabs.empty.description")}
-        </div>
-        <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
-          <kbd className="rounded-md border border-border bg-card px-2 py-1 font-mono">
-            ⌘1..⌘9
-          </kbd>
-          {t("chatTabs.empty.shortcuts.switch")}
-          <kbd className="rounded-md border border-border bg-card px-2 py-1 font-mono">
-            ⌘W
-          </kbd>
-          {t("chatTabs.empty.shortcuts.close")}
-          <kbd className="rounded-md border border-border bg-card px-2 py-1 font-mono">
-            ⌘ Click
-          </kbd>
-          {t("chatTabs.empty.shortcuts.openInNewTab")}
-        </div>
-      </main>
-    );
+    return <ChatEmptyState />;
   }
 
   return (
@@ -105,6 +82,154 @@ export function ChatPanelHost() {
           <HostedPanel key={t.id} tab={t} active={t.id === activeTabId} />
         ),
       )}
+    </div>
+  );
+}
+
+// 空聊天态分两档 (spec §7):
+//   - 1B: 没有任何可对话 Agent → 两步配置引导 (配置 Agent 后端 / LLM 供应商, 各带跳转按钮)
+//   - 1C: 已有可对话 Agent → 保留原占位, 底部补一行「N 个 Agent 未配置后端」徽标 + 去组织架构链接
+function ChatEmptyState() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const agents = useChatAgentsStore((s) => s.agents);
+  const loading = useChatAgentsStore((s) => s.loading);
+  const error = useChatAgentsStore((s) => s.error);
+
+  // ChatPanelHost 在非 /chat 路由 (projects / settings / org) 也保持挂载,
+  // 此时 sidebar (ChatPage) 未挂载、不会帮我们拉 agents —— 空态自己补一次
+  // reload (store 内并发去重, 已 in-flight 时复用), 保证两档判定数据新鲜。
+  React.useEffect(() => {
+    void useChatAgentsStore.getState().reload();
+  }, []);
+
+  const hasChattable = agents.some((a) => a.chattable);
+  const unconfiguredCount = agents.filter(
+    (a) => a.blockReason === "no-backend",
+  ).length;
+
+  if (!loading && !error && !hasChattable) {
+    return (
+      <main className="flex flex-1 flex-col items-center justify-center gap-3 overflow-auto bg-background px-8 py-10 text-center">
+        <div className="text-base font-semibold">
+          {t("chatTabs.empty.setupGuide.title")}
+        </div>
+        <div className="max-w-md text-xs text-muted-foreground">
+          {t("chatTabs.empty.setupGuide.description")}
+        </div>
+        <div className="flex w-full max-w-lg flex-col gap-2.5 text-left">
+          <SetupStepCard
+            index={1}
+            title={t("chatTabs.empty.setupGuide.stepBackend.title")}
+            description={t("chatTabs.empty.setupGuide.stepBackend.description")}
+            actionLabel={t("chatTabs.empty.setupGuide.stepBackend.action")}
+            onAction={() =>
+              navigate("/settings", {
+                state: { settingsPage: "agent-backend" },
+              })
+            }
+          />
+          <SetupStepCard
+            index={2}
+            title={t("chatTabs.empty.setupGuide.stepProvider.title")}
+            description={t(
+              "chatTabs.empty.setupGuide.stepProvider.description",
+            )}
+            actionLabel={t("chatTabs.empty.setupGuide.stepProvider.action")}
+            onAction={() =>
+              navigate("/settings", {
+                state: { settingsPage: "llm-providers" },
+              })
+            }
+          />
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {t("chatTabs.empty.setupGuide.doneNote")}
+        </div>
+        <ChatShortcuts />
+      </main>
+    );
+  }
+
+  return (
+    <main className="flex flex-1 flex-col items-center justify-center gap-3 bg-background px-8 text-center">
+      <span className="inline-flex size-14 items-center justify-center rounded-lg border border-border bg-primary-soft">
+        <Sparkles className="size-6 text-primary" aria-hidden="true" />
+      </span>
+      <div className="text-base font-semibold">{t("chatTabs.empty.title")}</div>
+      <div className="text-xs text-muted-foreground">
+        {t("chatTabs.empty.description")}
+      </div>
+      {unconfiguredCount > 0 ? (
+        <div className="mt-3 flex items-center gap-2 text-xs">
+          <Badge
+            variant="outline"
+            className="border-status-waiting/40 bg-status-waiting-bg px-2 py-0 text-2xs text-foreground"
+          >
+            {t("chatTabs.empty.unconfigured.count", {
+              count: unconfiguredCount,
+            })}
+          </Badge>
+          <Button
+            type="button"
+            variant="link"
+            className="h-auto px-0 text-xs"
+            onClick={() => navigate("/org")}
+          >
+            {t("chatTabs.empty.unconfigured.goOrg")}
+          </Button>
+        </div>
+      ) : null}
+      <ChatShortcuts />
+    </main>
+  );
+}
+
+function ChatShortcuts() {
+  const { t } = useTranslation();
+  return (
+    <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
+      <kbd className="rounded-md border border-border bg-card px-2 py-1 font-mono">
+        ⌘1..⌘9
+      </kbd>
+      {t("chatTabs.empty.shortcuts.switch")}
+      <kbd className="rounded-md border border-border bg-card px-2 py-1 font-mono">
+        ⌘W
+      </kbd>
+      {t("chatTabs.empty.shortcuts.close")}
+      <kbd className="rounded-md border border-border bg-card px-2 py-1 font-mono">
+        ⌘ Click
+      </kbd>
+      {t("chatTabs.empty.shortcuts.openInNewTab")}
+    </div>
+  );
+}
+
+function SetupStepCard({
+  index,
+  title,
+  description,
+  actionLabel,
+  onAction,
+}: {
+  index: number;
+  title: string;
+  description: string;
+  actionLabel: string;
+  onAction: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-border bg-card p-2.5">
+      <span className="inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-secondary text-2xs font-semibold text-muted-foreground">
+        {index}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium">{title}</div>
+        <div className="text-xs text-muted-foreground">{description}</div>
+      </div>
+      <Button type="button" variant="outline" size="sm" onClick={onAction}>
+        {actionLabel}
+      </Button>
     </div>
   );
 }

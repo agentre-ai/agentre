@@ -1,6 +1,7 @@
 import * as React from "react";
 import {
   ArrowDown,
+  ArrowRight,
   Folder,
   MoreHorizontal,
   PanelRight,
@@ -10,6 +11,8 @@ import {
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
+import { Badge } from "@/components/ui/badge";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -90,6 +93,7 @@ import {
   type CatchUpSummary,
 } from "./chat-panel-catchup-state";
 import { computeComposerContextUsage } from "./chat-panel-context-usage";
+import { blockReasonToCta, navigateToTarget } from "./not-chattable";
 import { PermissionModePill, usePermissionMode } from "./permission-mode";
 import { ModelPill, useModelPill } from "./model-pill";
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
@@ -567,6 +571,59 @@ type ChatPanelProps = {
   /** 当前 mounted tab 的稳定 id。用于跨路由 remount 恢复滚动；关闭 tab 后新 id 不复用。*/
   scrollStateKey?: string;
 };
+
+/** 不可对话 Agent 新会话 tab 的内联引导块（组 4B）：复用任务 2 的徽标 / 原因 / CTA
+ *  文案与跳转语义，渲染在输入框上方；按钮走 navigateToTarget 与引导弹窗一致。 */
+function NewSessionChatGuard({ agent }: { agent: ChatAgentItem }) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const cta = blockReasonToCta(agent.blockReason ?? "");
+  const reasonKey = cta.copyKey;
+  return (
+    <div
+      className="mx-5 mb-2 flex flex-col items-start gap-2 rounded-lg border border-status-waiting/40 bg-status-waiting-bg px-4 py-3"
+      data-testid="new-session-guard"
+      role="alert"
+      aria-live="polite"
+    >
+      <div className="flex flex-wrap items-center gap-2 text-sm font-semibold">
+        <Badge
+          variant="outline"
+          className="border-status-waiting/40 bg-background px-1.5 py-0 text-2xs text-foreground"
+        >
+          {agent.blockReason === "no-backend"
+            ? t("agentList.backendNotConfigured")
+            : t("agentList.notConfigured")}
+        </Badge>
+        {t("chatPanel.newSession.guard.title", { name: agent.name })}
+      </div>
+      <div className="text-xs leading-relaxed text-muted-foreground">
+        {t(`${reasonKey}.description`, { name: agent.name })}
+      </div>
+      <div className="flex items-center gap-4">
+        <Button
+          type="button"
+          size="sm"
+          onClick={() =>
+            navigateToTarget(navigate, cta.primaryTarget, agent.id)
+          }
+        >
+          {t(cta.primaryLabel)}
+        </Button>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 text-xs font-medium text-primary-text hover:underline"
+          onClick={() =>
+            navigateToTarget(navigate, "settings:agent-backend", agent.id)
+          }
+        >
+          {t(cta.secondaryLabel)}
+          <ArrowRight className="size-3" aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function ChatPanel({
   sessionId,
@@ -2366,6 +2423,11 @@ function ChatPanel({
 
   // ── render ──
   const showNewSessionPrompt = !sessionId && newSessionAgent;
+  // 不可对话 Agent（chattable===false）的新 tab：输入框上方内联引导块 + 禁用 composer。
+  // 用 === false 判定：newSessionAgent 缺 chattable 字段（如测试/部分数据）时保持现状可用。
+  const showNewSessionGuard = Boolean(
+    showNewSessionPrompt && newSessionAgent?.chattable === false,
+  );
   const showEmpty = !sessionId && !newSessionAgent;
 
   return (
@@ -2703,13 +2765,23 @@ function ChatPanel({
               ) : null}
 
               {/* ── Composer ── */}
+              {showNewSessionGuard && newSessionAgent ? (
+                <NewSessionChatGuard agent={newSessionAgent} />
+              ) : null}
               <ChatComposer
                 editing={activeEditing !== null}
                 editDraft={activeEditing?.text}
                 onCancelEdit={() => setEditingMessage(null)}
                 // 新建会话场景下，ChatPanel 的 key 变化让 Composer 重新挂载 → 自动抓焦点，
                 // 用户一进来就能直接打字。续聊已有会话不抢焦点，避免打断侧栏切换的鼠标交互。
-                autoFocusOnMount={!!newSessionAgent}
+                // 不可对话 Agent 的输入框已禁用，不再抢焦点。
+                autoFocusOnMount={!!newSessionAgent && !showNewSessionGuard}
+                disabled={showNewSessionGuard}
+                placeholder={
+                  showNewSessionGuard
+                    ? t("chatPanel.newSession.guard.placeholder")
+                    : undefined
+                }
                 contextUsage={composerContextUsage}
                 quotaUsage={quotaUsage}
                 quotaDeviceLabel={quotaDeviceLabel}

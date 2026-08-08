@@ -1,5 +1,6 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 
 import { ChatPanelHost } from "../chat-panel-host";
 import { useChatAgentsStore } from "@/stores/chat-agents-store";
@@ -82,11 +83,42 @@ describe("ChatPanelHost", () => {
     useProjectSessionsStore.getState().__reset();
   });
 
-  it("空 tab 显示统一空态 hero", () => {
-    render(<ChatPanelHost />);
+  it("空 tab 有可对话 Agent 时显示统一空态 hero", () => {
+    // 空态两档化之后 (spec §7): 没有可对话 Agent 时显示两步配置引导, 只有
+    // 存在可对话 Agent 时才保留原占位 —— 所以这里要 seed 一个可对话 Agent。
+    // 空态组件会主动补一次 agents reload; 这里避免触发真实 wails 调用。
+    useChatAgentsStore.setState({
+      agents: [
+        {
+          id: 7,
+          name: "Eng",
+          avatarColor: "agent-1",
+          backendType: "builtin",
+          chattable: true,
+          pinned: false,
+          sessions: [],
+          attentionSessions: [],
+          sessionIds: [],
+        },
+      ] as never,
+      loading: false,
+      error: null,
+    });
+    // 必须在 setState 之后 spy 并在此测试内 restore —— setState 会替换 store
+    // 的 state 对象, 若先 spy 再 setState, mockRestore 只还原旧对象, reload 的
+    // mock 会泄漏到下一个测试。
+    const reloadSpy = vi
+      .spyOn(useChatAgentsStore.getState(), "reload")
+      .mockResolvedValue();
+    render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPanelHost />
+      </MemoryRouter>,
+    );
     expect(
       screen.getByText(/Choose an Agent or project session to start/),
     ).toBeInTheDocument();
+    reloadSpy.mockRestore();
   });
 
   it("每个 kind:'session' tab 渲染一个 ChatPanel mount", () => {

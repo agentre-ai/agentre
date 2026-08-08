@@ -404,6 +404,25 @@ describe("ChatComposer context meter", () => {
     expect(container.querySelector('input[type="file"]')).toBeNull();
   });
 
+  it("does not accept or submit image attachments while disabled", async () => {
+    const onSubmit = vi.fn();
+    const { container } = render(<ChatComposer disabled onSubmit={onSubmit} />);
+    const input = container.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement;
+    const file = new File([new Uint8Array([1, 2, 3])], "blocked.png", {
+      type: "image/png",
+    });
+
+    expect(screen.getByRole("button", { name: "Add Image" })).toBeDisabled();
+    fireEvent.change(input, { target: { files: [file] } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByAltText("blocked.png")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("renders warning-level context usage with defined waiting color tokens", () => {
     render(
       <ChatComposer

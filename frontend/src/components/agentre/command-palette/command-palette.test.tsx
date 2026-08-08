@@ -81,7 +81,7 @@ afterEach(() => {
 });
 
 describe("CommandPalette — ⌘N opens command mode and lists agents (BDD)", () => {
-  it("Given /chat route + ⌘N seeds '> ', When palette opens, Then 命令 chip shows and every chattable agent renders as 'New chat with <name>'", async () => {
+  it("Given /chat route + ⌘N seeds '> ', When palette opens, Then 命令 chip shows, chattable agents as 'New chat with', non-chattable in a 'Needs setup' group", async () => {
     appMocks.ListChatAgents.mockResolvedValue({
       agents: [
         mkAgent({ id: 1, name: "CEO 助手" }),
@@ -91,6 +91,7 @@ describe("CommandPalette — ⌘N opens command mode and lists agents (BDD)", ()
           name: "未绑后端",
           chattable: false,
           chattableHint: "请在组织页绑定后端",
+          blockReason: "no-backend",
         }),
       ],
     });
@@ -104,7 +105,9 @@ describe("CommandPalette — ⌘N opens command mode and lists agents (BDD)", ()
     expect(screen.getByLabelText("Command mode")).toBeTruthy();
     expect(screen.getByText("CEO 助手")).toBeTruthy();
     expect(screen.getByText("工程师")).toBeTruthy();
-    expect(screen.queryByText("未绑后端")).toBeNull();
+    // 不可对话 agent 不再被过滤：单列「Needs setup」组
+    expect(screen.getByText("Needs setup")).toBeTruthy();
+    expect(screen.getByText("未绑后端")).toBeTruthy();
 
     // /chat 路由：newChatSource 激活 → "New chat with"
     const labels = screen.getAllByText("New chat with");
@@ -815,5 +818,44 @@ describe("CommandPalette — ⌘P does NOT enter command mode after a prior ⌘N
     });
     await flush();
     expect(screen.queryByLabelText("Command mode")).toBeTruthy();
+  });
+});
+
+describe("CommandPalette — 非可对话 agent：需要先配置 分组 + 选中开引导弹窗", () => {
+  it("Given a non-chattable agent on /chat, When selecting it, Then the guidance dialog opens, the palette closes and no session is created", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [
+        mkAgent({ id: 1, name: "CEO 助手" }),
+        mkAgent({
+          id: 3,
+          name: "未绑后端",
+          chattable: false,
+          blockReason: "no-backend",
+          chattableHint: "请在组织页绑定后端",
+        }),
+      ],
+    });
+
+    renderHarness("/chat");
+    await act(async () => {
+      useCommandPaletteStore.getState().openWith("> ");
+    });
+    await flush();
+
+    // 不可对话行：在「Needs setup」组内 + 徽标
+    expect(screen.getByText("Needs setup")).toBeTruthy();
+    expect(screen.getAllByText("Not configured").length).toBeGreaterThanOrEqual(
+      1,
+    );
+
+    // 选中 → 不建会话、面板关闭、引导弹窗打开
+    fireEvent.click(screen.getByText("未绑后端"));
+    await flush();
+
+    expect(useCommandPaletteStore.getState().open).toBe(false);
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toBeTruthy();
+    // no-backend 弹窗标题（task 2 文案）
+    expect(screen.getByText("未绑后端 cannot chat yet")).toBeTruthy();
   });
 });

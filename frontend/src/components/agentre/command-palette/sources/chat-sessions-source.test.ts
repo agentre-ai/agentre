@@ -150,6 +150,7 @@ describe("chatSessionsSource.onSelect", () => {
       openSession,
       openNewSession,
       close,
+      openNotChattableDialog: vi.fn(),
       navigate: navigate as never,
       pathname: "/chat",
     });
@@ -181,6 +182,7 @@ describe("chatSessionsSource.onSelect", () => {
         openSession: vi.fn(),
         openNewSession: vi.fn(),
         close: vi.fn(),
+        openNotChattableDialog: vi.fn(),
         navigate: navigate as never,
         pathname: "/chat",
       }),

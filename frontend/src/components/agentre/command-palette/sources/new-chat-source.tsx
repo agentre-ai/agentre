@@ -1,6 +1,8 @@
 import * as React from "react";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 
+import { Badge } from "@/components/ui/badge";
 import { useChatAgents, type ChatAgentItem } from "@/hooks/use-chat-agents";
 import i18n from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -9,6 +11,7 @@ import {
   writeLastAgentId,
 } from "@/stores/last-agent-persistence";
 
+import { blockReasonToCta } from "../../not-chattable";
 import { AgentAvatar } from "../../primitives";
 import type { AgentColor } from "../../types";
 import { scoreItem } from "../score";
@@ -24,10 +27,13 @@ export type NewChatItem = {
   agent: ChatAgentItem;
   // 自由会话版总把 agent 视为"成员"（无项目分组概念）；保留字段是为了 renderItem 同构。
   isMember: true;
+  // 不可对话 agent 带「需要先配置」次级分组标签（复用 subHeading 机制）。
+  subHeading?: string;
 };
 
-// 排序：lastAgent → pinned → others。lastAgent 不存在（被删 / 未存）时退化为
-// "pinned → others"，与历史行为一致。
+// 排序：可对话组 lastAgent → pinned → others（历史行为不变）；
+// 不可对话组 pinned → others（lastAgentId 只在可对话组内冒泡）。
+// 两组同属 newChatSource，不可对话组用 subHeading 单列「需要先配置」。
 export function flattenAgents(
   agents: ChatAgentItem[],
   lastAgentId: number | null = null,
@@ -43,12 +49,27 @@ export function flattenAgents(
       ordered = [last, ...ordered];
     }
   }
-  return ordered.map((agent) => ({
-    key: `new-chat-agent-${agent.id}`,
-    agentId: agent.id,
-    agent,
-    isMember: true,
-  }));
+
+  const needSetup = agents.filter((a) => !a.chattable);
+  const needSetupPinned = needSetup.filter((a) => a.pinned);
+  const needSetupOthers = needSetup.filter((a) => !a.pinned);
+  const needSetupHeading = i18n.t("commandPalette.newChat.needSetup");
+
+  return [
+    ...ordered.map((agent) => ({
+      key: `new-chat-agent-${agent.id}`,
+      agentId: agent.id,
+      agent,
+      isMember: true as const,
+    })),
+    ...[...needSetupPinned, ...needSetupOthers].map((agent) => ({
+      key: `new-chat-agent-${agent.id}`,
+      agentId: agent.id,
+      agent,
+      isMember: true as const,
+      subHeading: needSetupHeading,
+    })),
+  ];
 }
 
 function useItems(): { items: NewChatItem[]; loading: boolean } {
@@ -64,9 +85,12 @@ function useItems(): { items: NewChatItem[]; loading: boolean } {
 }
 
 function actionTitle(item: NewChatItem): string {
-  return i18n.t("commandPalette.newChat.itemTitle", {
-    agentName: item.agent.name,
-  });
+  return i18n.t(
+    item.agent.chattable
+      ? "commandPalette.newChat.itemTitle"
+      : "commandPalette.newChat.needSetupTitle",
+    { agentName: item.agent.name },
+  );
 }
 
 const MULTI_TOKEN_SCORE = 25;
@@ -96,9 +120,23 @@ function renderItem(item: NewChatItem): React.ReactNode {
 
 type AgentRowProps = { item: NewChatItem };
 
+// 不可对话行：原因优先取 blockReason 映射的短文案（复用 task 2 的 copyKey），
+// blockReason 缺失时兜底用 chattableHint（后端总在同一点位设置二者）。
+function reasonText(agent: ChatAgentItem, t: TFunction): string {
+  if (agent.blockReason) {
+    const key = `${blockReasonToCta(agent.blockReason).copyKey}.short`;
+    const resolved = t(key);
+    if (resolved !== key) return resolved;
+  }
+  return agent.chattableHint || "";
+}
+
 function AgentRow({ item }: AgentRowProps) {
   const { t } = useTranslation();
   const a = item.agent;
+  const needSetup = !a.chattable;
+  const needSetupTitlePrefix = t("commandPalette.newChat.needSetupTitlePrefix");
+  const needSetupTitleSuffix = t("commandPalette.newChat.needSetupTitleSuffix");
   return (
     <div
       data-testid={`agent-picker-item-${a.id}`}
@@ -116,19 +154,50 @@ function AgentRow({ item }: AgentRowProps) {
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div
           className="truncate text-sm text-foreground"
-          title={t("commandPalette.newChat.itemTitle", { agentName: a.name })}
+          title={t(
+            needSetup
+              ? "commandPalette.newChat.needSetupTitle"
+              : "commandPalette.newChat.itemTitle",
+            { agentName: a.name },
+          )}
         >
-          <span className="text-muted-foreground">
-            {t("commandPalette.newChat.itemPrefix")}{" "}
-          </span>
-          <span className="font-medium">{a.name}</span>
+          {needSetup ? (
+            <>
+              <span className="text-muted-foreground">
+                {needSetupTitlePrefix}{" "}
+              </span>
+              <span className="font-medium">{a.name}</span>
+              {needSetupTitleSuffix ? (
+                <span> {needSetupTitleSuffix}</span>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <span className="text-muted-foreground">
+                {t("commandPalette.newChat.itemPrefix")}{" "}
+              </span>
+              <span className="font-medium">{a.name}</span>
+            </>
+          )}
         </div>
-        {a.chattableHint ? (
+        {needSetup ? (
+          <div className="truncate text-2xs text-muted-foreground">
+            {reasonText(a, t)}
+          </div>
+        ) : a.chattableHint ? (
           <div className="truncate text-2xs text-muted-foreground">
             {a.chattableHint}
           </div>
         ) : null}
       </div>
+      {needSetup ? (
+        <Badge
+          variant="outline"
+          className="border-status-waiting/40 bg-status-waiting-bg px-1.5 py-0 text-2xs text-foreground"
+        >
+          {t("commandPalette.newChat.needSetupBadge")}
+        </Badge>
+      ) : null}
       <kbd
         className={cn(
           "rounded-sm border border-border bg-card px-1.5 py-0.5 font-mono text-2xs font-medium text-muted-foreground",
@@ -153,6 +222,11 @@ function isProjectsRoute(pathname: string): boolean {
 
 function onSelect(item: NewChatItem, ctx: OnSelectCtx): void {
   ctx.close();
+  // 不可对话：不建会话，打开任务 2 的引导弹窗（面板关闭、弹窗接管）。
+  if (!item.agent.chattable) {
+    ctx.openNotChattableDialog(item.agent);
+    return;
+  }
   writeLastAgentId(item.agentId);
   ctx.openNewSession(item.agentId);
   try {

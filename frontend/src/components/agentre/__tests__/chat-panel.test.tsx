@@ -16,6 +16,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import * as React from "react";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 const sonnerMocks = vi.hoisted(() => ({
@@ -4475,5 +4476,93 @@ describe("ChatPanel · notice 错误详情", () => {
     await waitFor(() => {
       expect(screen.queryByTestId("notice-detail")).toBeNull();
     });
+  });
+});
+
+// ─── 任务 3：新会话 tab 输入守卫 ─────────────────────────────────────────────
+//
+// 不可对话 Agent 的 kind:"new" tab：输入框上方内联引导块 + ChatComposer 禁用 +
+// 占位「请先配置 Agent 后端」；可对话 Agent 的新 tab 现状不变。ChatComposer 在
+// 本文件被 mock 成桩，props 记录在 componentMocks.chatComposerProps，据此断言
+// disabled / placeholder 是否传导。引导块内含 useNavigate，测试用 MemoryRouter 包一层。
+describe("ChatPanel · 新会话 tab 输入守卫（非可对话 Agent）", () => {
+  function newSessionAgentFor(overrides: Record<string, unknown>) {
+    return {
+      id: 7,
+      name: "CEO 助手",
+      backendType: "builtin",
+      chattable: true,
+      chattableHint: "",
+      blockReason: "",
+      ...overrides,
+    } as never;
+  }
+
+  it("Given 非可对话 Agent 的新 tab, When 渲染, Then 显示内联引导块（徽标+标题+原因+主/次按钮）且 ChatComposer 被禁用并提示先配置", () => {
+    resetStore();
+    mockSessionStore.session = null;
+    render(
+      <MemoryRouter>
+        <ChatPanel
+          sessionId={0}
+          newSessionAgent={newSessionAgentFor({
+            chattable: false,
+            blockReason: "no-backend",
+          })}
+        />
+      </MemoryRouter>,
+    );
+
+    const guard = screen.getByTestId("new-session-guard");
+    expect(guard).toBeInTheDocument();
+    expect(guard).toHaveAttribute("role", "alert");
+    expect(guard).toHaveAttribute("aria-live", "polite");
+    // 徽标（复用 agent-list 的未配置后端徽标文案）
+    expect(
+      within(guard).getByText(/Backend not configured/i),
+    ).toBeInTheDocument();
+    // 标题：配置完成后即可与 {{name}} 对话
+    expect(
+      within(guard).getByText(/start chatting with CEO 助手 once configured/i),
+    ).toBeInTheDocument();
+    // 原因描述（复用任务 2 的 no-backend 原因）
+    expect(
+      within(guard).getByText(/no Agent backend configured/i),
+    ).toBeInTheDocument();
+    // 主按钮 + 次按钮（复用任务 2 的 CTA 文案）
+    expect(
+      within(guard).getByRole("button", {
+        name: /Configure Agent backend/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(guard).getByRole("button", {
+        name: /Go to Agent backend settings/i,
+      }),
+    ).toBeInTheDocument();
+
+    const composer = componentMocks.chatComposerProps.at(-1);
+    expect(composer?.disabled).toBe(true);
+    expect(composer?.placeholder).toBe("Configure the Agent backend first");
+  });
+
+  it("Given 可对话 Agent 的新 tab, When 渲染, Then 不显示引导块且 ChatComposer 保持可用", () => {
+    resetStore();
+    mockSessionStore.session = null;
+    render(
+      <MemoryRouter>
+        <ChatPanel
+          sessionId={0}
+          newSessionAgent={newSessionAgentFor({
+            chattable: true,
+            blockReason: "",
+          })}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByTestId("new-session-guard")).toBeNull();
+    const composer = componentMocks.chatComposerProps.at(-1);
+    expect(composer?.disabled).toBeFalsy();
   });
 });
