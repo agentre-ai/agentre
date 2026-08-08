@@ -31,5 +31,6 @@ func migrationList() []*gormigrate.Migration {
 		migration202608080008(), // app_settings + proxy defaults
 		migration202608080009(), // server_state + paired_agentreds
 		migration202608080010(), // issues + labels + issue_labels + label defaults
+		migration202608080011(), // agent_exec_targets + 单元素回填
 	}
 }

@@ -117,6 +117,7 @@ func Init(ctx context.Context) (*Runtime, error) {
 	app_setting_repo.RegisterAppSetting(app_setting_repo.NewAppSetting())
 	department_repo.RegisterDepartment(department_repo.NewDepartment())
 	agent_repo.RegisterAgent(agent_repo.NewAgent())
+	agent_repo.RegisterAgentExecTarget(agent_repo.NewAgentExecTarget())
 	hook_repo.RegisterHook(hook_repo.NewHook())
 	hook_repo.RegisterHookEvent(hook_repo.NewHookEvent())
 	chat_repo.RegisterSession(chat_repo.NewSession())

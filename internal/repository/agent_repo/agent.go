@@ -48,12 +48,25 @@ func NewAgent() AgentRepo          { return &agentRepo{} }
 
 type agentRepo struct{}
 
+// Create 落 Agent 行，并把它的 AgentBackendID 落成单元素执行目标列表（0 = 空列表）。
+// 两张表必须同事务：只落一半会让 Agent 派发不到 backend。
 func (r *agentRepo) Create(ctx context.Context, a *agent_entity.Agent) error {
-	return db.Ctx(ctx).Create(a).Error
+	return db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(a).Error; err != nil {
+			return err
+		}
+		return insertExecTargets(tx, a.ID, primaryTargetList(a.AgentBackendID))
+	})
 }
 
+// Update 落 Agent 行，并把执行目标列表整表替换成当前的单元素列表。
 func (r *agentRepo) Update(ctx context.Context, a *agent_entity.Agent) error {
-	return db.Ctx(ctx).Save(a).Error
+	return db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(a).Error; err != nil {
+			return err
+		}
+		return replaceExecTargets(tx, a.ID, primaryTargetList(a.AgentBackendID))
+	})
 }
 
 func (r *agentRepo) Find(ctx context.Context, id int64) (*agent_entity.Agent, error) {
@@ -65,7 +78,7 @@ func (r *agentRepo) Find(ctx context.Context, id int64) (*agent_entity.Agent, er
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	return hydrateOne(ctx, out)
 }
 
 func (r *agentRepo) FindByName(ctx context.Context, name string) (*agent_entity.Agent, error) {
@@ -77,7 +90,7 @@ func (r *agentRepo) FindByName(ctx context.Context, name string) (*agent_entity.
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	return hydrateOne(ctx, out)
 }
 
 func (r *agentRepo) FindSystem(ctx context.Context) (*agent_entity.Agent, error) {
@@ -91,7 +104,7 @@ func (r *agentRepo) FindSystem(ctx context.Context) (*agent_entity.Agent, error)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	return hydrateOne(ctx, out)
 }
 
 func (r *agentRepo) List(ctx context.Context) ([]*agent_entity.Agent, error) {
@@ -100,7 +113,10 @@ func (r *agentRepo) List(ctx context.Context) ([]*agent_entity.Agent, error) {
 		Where("status = ?", consts.ACTIVE).
 		Order("department_id ASC, parent_agent_id ASC, sort_order ASC, id ASC").
 		Find(&rows).Error
-	return rows, err
+	if err != nil {
+		return rows, err
+	}
+	return rows, hydrateExecTargets(ctx, rows)
 }
 
 func (r *agentRepo) ListByDepartment(ctx context.Context, departmentID int64) ([]*agent_entity.Agent, error) {
@@ -109,7 +125,10 @@ func (r *agentRepo) ListByDepartment(ctx context.Context, departmentID int64) ([
 		Where("department_id = ? AND parent_agent_id = ? AND status = ?", departmentID, int64(0), consts.ACTIVE).
 		Order("sort_order ASC, id ASC").
 		Find(&rows).Error
-	return rows, err
+	if err != nil {
+		return rows, err
+	}
+	return rows, hydrateExecTargets(ctx, rows)
 }
 
 func (r *agentRepo) ListByParent(ctx context.Context, parentAgentID int64) ([]*agent_entity.Agent, error) {
@@ -118,17 +137,27 @@ func (r *agentRepo) ListByParent(ctx context.Context, parentAgentID int64) ([]*a
 		Where("parent_agent_id = ? AND status = ?", parentAgentID, consts.ACTIVE).
 		Order("sort_order ASC, id ASC").
 		Find(&rows).Error
-	return rows, err
+	if err != nil {
+		return rows, err
+	}
+	return rows, hydrateExecTargets(ctx, rows)
 }
 
+// ListByBackend 列出执行目标里引用了该 backend 的活跃 Agent。
 func (r *agentRepo) ListByBackend(ctx context.Context, backendID int64) ([]*agent_entity.Agent, error) {
 	var rows []*agent_entity.Agent
 	err := db.Ctx(ctx).
-		Where("agent_backend_id = ? AND status = ?", backendID, consts.ACTIVE).
+		Where("id IN (SELECT agent_id FROM agent_exec_targets WHERE agent_backend_id = ?) AND status = ?",
+			backendID, consts.ACTIVE).
 		Find(&rows).Error
-	return rows, err
+	if err != nil {
+		return rows, err
+	}
+	return rows, hydrateExecTargets(ctx, rows)
 }
 
+// CountByBackends 统计每个 backend 被多少个活跃 Agent 的执行目标引用。同一个 Agent
+// 即便把同一个 backend 排了两档也只算一次。
 func (r *agentRepo) CountByBackends(ctx context.Context, backendIDs []int64) (map[int64]int64, error) {
 	out := make(map[int64]int64, len(backendIDs))
 	if len(backendIDs) == 0 {
@@ -138,10 +167,11 @@ func (r *agentRepo) CountByBackends(ctx context.Context, backendIDs []int64) (ma
 		AgentBackendID int64 `gorm:"column:agent_backend_id"`
 		Cnt            int64 `gorm:"column:cnt"`
 	}
-	err := db.Ctx(ctx).Table("agents").
-		Select("agent_backend_id, COUNT(*) AS cnt").
-		Where("agent_backend_id IN ? AND status = ?", backendIDs, consts.ACTIVE).
-		Group("agent_backend_id").
+	err := db.Ctx(ctx).Table("agent_exec_targets").
+		Select("agent_exec_targets.agent_backend_id AS agent_backend_id, COUNT(DISTINCT agent_exec_targets.agent_id) AS cnt").
+		Joins("JOIN agents ON agents.id = agent_exec_targets.agent_id").
+		Where("agent_exec_targets.agent_backend_id IN ? AND agents.status = ?", backendIDs, consts.ACTIVE).
+		Group("agent_exec_targets.agent_backend_id").
 		Scan(&rows).Error
 	if err != nil {
 		return nil, err

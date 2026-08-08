@@ -29,15 +29,18 @@ type AgentToolItem struct {
 
 // Agent 一条 Agent 记录。
 type Agent struct {
-	ID             int64  `gorm:"column:id;primaryKey;autoIncrement"`
-	Name           string `gorm:"column:name;type:text;not null"`
-	Description    string `gorm:"column:description;type:text;not null;default:''"`
-	AvatarColor    string `gorm:"column:avatar_color;type:text;not null;default:''"`
-	AvatarIcon     string `gorm:"column:avatar_icon;type:text;not null;default:''"`
-	AvatarDataURL  string `gorm:"column:avatar_data_url;type:text;not null;default:''"`
-	SystemBadge    string `gorm:"column:system_badge;type:text;not null;default:''"`
-	DepartmentID   int64  `gorm:"column:department_id;type:bigint;not null;default:0"`
-	ParentAgentID  int64  `gorm:"column:parent_agent_id;type:bigint;not null;default:0"`
+	ID            int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	Name          string `gorm:"column:name;type:text;not null"`
+	Description   string `gorm:"column:description;type:text;not null;default:''"`
+	AvatarColor   string `gorm:"column:avatar_color;type:text;not null;default:''"`
+	AvatarIcon    string `gorm:"column:avatar_icon;type:text;not null;default:''"`
+	AvatarDataURL string `gorm:"column:avatar_data_url;type:text;not null;default:''"`
+	SystemBadge   string `gorm:"column:system_badge;type:text;not null;default:''"`
+	DepartmentID  int64  `gorm:"column:department_id;type:bigint;not null;default:0"`
+	ParentAgentID int64  `gorm:"column:parent_agent_id;type:bigint;not null;default:0"`
+	// AgentBackendID 是 Agent 执行目标列表的**派生值**：sort_order 最小的那一档，
+	// 没有目标行则为 0。仓储读取时一律由 agent_exec_targets 补齐；agents 表的
+	// agent_backend_id 列只保留写入供回滚窗口用，不再被读取（R15）。
 	AgentBackendID int64  `gorm:"column:agent_backend_id;type:bigint;not null;default:0"`
 	SortOrder      int    `gorm:"column:sort_order;type:int;not null;default:0"`
 	PromptJSON     string `gorm:"column:prompt_json;type:text;not null;default:'[]'"`
