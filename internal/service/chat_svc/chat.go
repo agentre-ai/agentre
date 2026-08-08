@@ -99,7 +99,6 @@ type ChatSvc interface {
 	Stop(ctx context.Context, req *StopRequest) (*StopResponse, error)
 	StopBackgroundTask(ctx context.Context, req *StopBackgroundTaskRequest) (*StopBackgroundTaskResponse, error)
 	SetPermissionMode(ctx context.Context, req *SetPermissionModeRequest) (*SetPermissionModeResponse, error)
-	SetSessionModel(ctx context.Context, sessionID int64, model string) error
 	Regenerate(ctx context.Context, req *RegenerateRequest) (*SendResponse, error)
 	Edit(ctx context.Context, req *EditRequest) (*SendResponse, error)
 	Rename(ctx context.Context, req *RenameRequest) (*RenameResponse, error)
@@ -550,7 +549,6 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		Session: ChatSessionDetail{
 			ID:                     sess.ID,
 			AgentID:                sess.AgentID,
-			ModelOverride:          sess.ModelOverride,
 			Title:                  sess.Title,
 			AgentStatus:            sess.AgentStatus,
 			NeedsAttention:         sess.IsWaitingForUser(),
@@ -609,8 +607,6 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		}
 		if prov != nil {
 			resp.Session.LLMProviderType = prov.Type
-			resp.Session.LLMProviderKey = be.LLMProviderKey
-			resp.Session.ProviderDefaultModel = strings.TrimSpace(prov.Model)
 		}
 		resp.Session.ContextWindow = resolveContextWindowWithRuntime(sess, prov, msgs)
 
@@ -737,57 +733,43 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	return &LaunchCommandResponse{Command: cmd, BackendType: be.Type}, nil
 }
 
-// modelDeviationPayload 是偏离提示持久化时写进 blocks.NoticeBlock.Text 的小 JSON。
-// NoticeBlock 是 cago 库的 UI-only 块,只有 Level/Text 两个字段(库类型,不能加字段),
-// 所以把 selected/actual 两个模型 id 编码进 Text;前端投影(noticeBlockToChatBlock)
-// 解回 ChatBlock.SelectedModel/ActualModel 再用 t() 渲染。该块从不发给 LLM。
+// providerFallbackPayload 是供应商回退提示持久化时写进 blocks.NoticeBlock.Text 的小 JSON
+// （spec 决策 8）。NoticeBlock 是 cago 库的 UI-only 块,只有 Level/Text 两个字段(库类型,
+// 不能加字段),所以把会话所选 provider_key 编码进 Text;前端投影(noticeBlockToChatBlock)
+// 解回 ChatBlock.ProviderKey 再用 t() 渲染。该块从不发给 LLM。
 // 旧数据 / 非结构化文本的 NoticeBlock 走 Text 原样渲染兜底。
-type modelDeviationPayload struct {
-	Selected string `json:"selected"`
-	Actual   string `json:"actual"`
+type providerFallbackPayload struct {
+	ProviderKey string `json:"providerKey"`
 }
 
-func encodeModelDeviation(override, actual string) string {
-	b, _ := json.Marshal(modelDeviationPayload{Selected: override, Actual: actual})
+func encodeProviderFallback(providerKey string) string {
+	b, _ := json.Marshal(providerFallbackPayload{ProviderKey: providerKey})
 	return string(b)
 }
 
-// decodeModelDeviation 把 NoticeBlock.Text 还原成 selected/actual。
+// decodeProviderFallback 把 NoticeBlock.Text 还原成会话所选 provider_key。
 // ok=false 表示文本不是本功能产出的结构化负载(旧数据/其它来源的 notice),调用方应
 // 原样渲染 Text。
-func decodeModelDeviation(text string) (selected, actual string, ok bool) {
-	var p modelDeviationPayload
+func decodeProviderFallback(text string) (providerKey string, ok bool) {
+	var p providerFallbackPayload
 	if err := json.Unmarshal([]byte(text), &p); err != nil {
-		return "", "", false
+		return "", false
 	}
-	if p.Selected == "" || p.Actual == "" {
-		return "", "", false
+	if p.ProviderKey == "" {
+		return "", false
 	}
-	return p.Selected, p.Actual, true
-}
-
-func modelDeviationNotice(override, actual string) *blocks.NoticeBlock {
-	override = strings.TrimSpace(override)
-	actual = strings.TrimSpace(actual)
-	if override == "" || actual == "" || override == actual {
-		return nil
-	}
-	return &blocks.NoticeBlock{
-		Level: "info",
-		Text:  encodeModelDeviation(override, actual),
-	}
+	return p.ProviderKey, true
 }
 
 // noticeBlockToChatBlock 把持久化的 blocks.NoticeBlock 投影成前端 ChatBlock。
-// 结构化偏离提示(本功能产出的 {"selected":..,"actual":..} 小 JSON)解回
-// SelectedModel/ActualModel,Text 置空——前端走 t() 渲染;非结构化旧数据原样透传 Text。
+// 供应商回退提示(本功能产出的 {"providerKey":..} 小 JSON)解回 ProviderKey、Text 置空
+// —— 前端走 t() 渲染;非结构化旧数据原样透传 Text。
 func noticeBlockToChatBlock(tb blocks.NoticeBlock) ChatBlock {
-	if selected, actual, ok := decodeModelDeviation(tb.Text); ok {
+	if key, ok := decodeProviderFallback(tb.Text); ok {
 		return ChatBlock{
-			Type:          "notice",
-			Level:         tb.Level,
-			SelectedModel: selected,
-			ActualModel:   actual,
+			Type:        "notice",
+			Level:       tb.Level,
+			ProviderKey: key,
 		}
 	}
 	return ChatBlock{Type: "notice", Level: tb.Level, Text: tb.Text}
@@ -1414,9 +1396,15 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 	}
 
 	if req.SessionID == 0 {
-		modelOverride, merr := normalizeModelOverride(ctx, req.ModelOverride)
-		if merr != nil {
-			return nil, merr
+		// 新建会话所选 LLM 供应商（可选，决策 2）：非空时校验供应商存在/active/与后端
+		// kind 兼容，校验通过后与 Session 一起 Create 落库；空串 = 跟随 agent 绑定。
+		providerKey := strings.TrimSpace(req.ProviderKey)
+		if providerKey != "" {
+			sessionProv, perr := s.validateNewSessionProvider(ctx, be, providerKey)
+			if perr != nil {
+				return nil, perr
+			}
+			prov = sessionProv
 		}
 		// 项目上下文（可选）：仅在新建会话时生效；已存在的会话不再换项目。
 		projectID, perr := s.resolveProjectContext(ctx, req.ProjectID, targetAgentID)
@@ -1435,7 +1423,7 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 			// 抢跑——前端拿到空串后 messages.length>0 时会把 bypass pill 错灰。
 			// runtime 后续仍按 resolveLaunchMode 结果幂等覆盖,处理后端默认值回落。
 			PermissionModeAtLaunch: permissionMode,
-			ModelOverride:          modelOverride,
+			ProviderKey:            providerKey,
 			Title:                  sessionTitleFromFirstMessage(text),
 			// idle 落库;running 由 startTurn 事务内的 Update 原子翻转 —— 事务失败
 			// 时不残留 running(否则空会话永久卡 running,还会 block 退出)。
@@ -1455,13 +1443,24 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 		}
 	}
 
+	// 已有会话：会话 provider_key 优先于 agent 绑定解析（决策 3）；所选供应商缺失/停用/
+	// 不兼容 → 回退 agent 绑定并追加一条持久 notice（决策 8）。新建会话已在校验后落库,
+	// 无需再走覆盖。
+	// 远端 backend 不走这里：会话 provider 随 wire 透传由 daemon 自解（决策 9, task 2），
+	// 本机 provider 表反映不了 daemon 配置, 本地查不到不代表远端缺失, 不得据此发 notice。
+	var providerFallbackNotice *blocks.NoticeBlock
+	if req.SessionID > 0 && sess.ProviderKey != "" && !be.IsRemote() {
+		prov, providerFallbackNotice = s.sessionProviderOverride(ctx, be, sess.ProviderKey, prov)
+	}
+
 	var prelocked *trylockMutex
 	if gate != nil {
 		prelocked = gate.lock
 		gateOwned = false
 	}
 	return s.startTurn(ctx, sess, a, be, prov, userBlocksForSend(text, imageBlocks), nil /*preTxHook*/, nil /*replacement*/, "" /*forkAnchor*/, turnExtras{
-		emitTurnStartedBypass: req.EmitTurnStartedBypass,
+		emitTurnStartedBypass:  req.EmitTurnStartedBypass,
+		providerFallbackNotice: providerFallbackNotice,
 	}, prelocked)
 }
 
@@ -1630,6 +1629,58 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, agentID int64) (
 	}
 
 	return a, be, prov, nil
+}
+
+// validateNewSessionProvider 校验新建会话所选供应商（spec 决策 2）：非空时供应商必须
+// 存在、IsActive 且与后端 kind 兼容（ProviderTypeMatch），否则 Send 直接报错（复用不可
+// 对话的错误语义，不在落库后才发现）。返回该校验通过的供应商供本轮 prov 使用。
+func (s *chatSvc) validateNewSessionProvider(ctx context.Context, be *agent_backend_entity.AgentBackend, providerKey string) (*llm_provider_entity.LLMProvider, error) {
+	key := strings.TrimSpace(providerKey)
+	if key == "" {
+		return nil, nil
+	}
+	kind := be.Kind()
+	if kind == nil {
+		return nil, i18n.NewError(ctx, code.AgentBackendInvalidType)
+	}
+	prov, err := llm_provider_repo.LLMProvider().FindByKey(ctx, key)
+	if err != nil {
+		return nil, operationFailedWithCause(ctx, err)
+	}
+	if prov == nil || !prov.IsActive() {
+		return nil, i18n.NewError(ctx, code.ChatAgentNotChattable)
+	}
+	if !kind.ProviderTypeMatch(llm_provider_entity.ProviderType(prov.Type)) {
+		return nil, i18n.NewError(ctx, code.ChatAgentNotChattable)
+	}
+	return prov, nil
+}
+
+// sessionProviderOverride 应用「会话 provider_key > agent 绑定」的供应商优先级
+// （spec 决策 3）。sessKey 为空时原样返回 baseProv（无会话覆盖）。
+// 会话所选供应商缺失 / 停用 / 与后端 kind 不兼容 → 回退 agent 绑定（baseProv）并返回
+// 一条持久 notice（spec 决策 8），供 runTurn 追加进 transcript；provider_key 不清除，
+// 供应商恢复后自动回到会话所选。
+func (s *chatSvc) sessionProviderOverride(
+	ctx context.Context,
+	be *agent_backend_entity.AgentBackend,
+	sessKey string,
+	baseProv *llm_provider_entity.LLMProvider,
+) (*llm_provider_entity.LLMProvider, *blocks.NoticeBlock) {
+	key := strings.TrimSpace(sessKey)
+	if key == "" {
+		return baseProv, nil
+	}
+	prov, err := llm_provider_repo.LLMProvider().FindByKey(ctx, key)
+	kind := be.Kind()
+	if err == nil && prov != nil && prov.IsActive() && kind != nil &&
+		kind.ProviderTypeMatch(llm_provider_entity.ProviderType(prov.Type)) {
+		return prov, nil
+	}
+	return baseProv, &blocks.NoticeBlock{
+		Level: "info",
+		Text:  encodeProviderFallback(key),
+	}
 }
 
 // AgentBackendHasCapability 报告某 agent 的后端 runtime 是否声明指定能力(领域无关探针)。
@@ -2210,76 +2261,6 @@ func (s *chatSvc) refreshPermissionModeForAutoContinue(ctx context.Context, sess
 		return
 	}
 	sess.PermissionMode = fresh.PermissionMode
-}
-
-func normalizeModelOverride(ctx context.Context, model string) (string, error) {
-	if model == "" {
-		return "", nil
-	}
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return "", i18n.NewError(ctx, code.InvalidParameter)
-	}
-	return model, nil
-}
-
-// modelOverrideSwitchable 报告该后端是否消费会话级模型覆盖(v1 有实测依据的四类:
-// builtin / claudecode / codex / piagent,与前端 ModelPill 的 modelSwitchable 同一集合)。
-// openclaw 切换是 follow-up,不在 v1 范围 —— 若给这类会话下发 override,openclaw runtime
-// 会忽略它,而 runTurn 又拿 req.ModelOverride 跟 result.Model 比对产出偏离提示,每轮都会
-// 误报「所选 X 未生效,实际 Y」。门禁放在 runTurn(而非 SetSessionModel):会话的 agent 可能
-// 在设了 override 之后改绑到非 v1 后端,落库的 override 不该在新后端上继续生效。
-func modelOverrideSwitchable(be *agent_backend_entity.AgentBackend) bool {
-	if be == nil {
-		return false
-	}
-	switch agent_backend_entity.BackendType(be.Type) {
-	case agent_backend_entity.TypeBuiltin,
-		agent_backend_entity.TypeClaudeCode,
-		agent_backend_entity.TypeCodex,
-		agent_backend_entity.TypePiAgent:
-		return true
-	default:
-		return false
-	}
-}
-
-// modelOverrideForBackend 返回本轮到 runtime 下发的会话级模型覆盖。仅 v1 可切换后端
-// 透传;其它后端一律空串,防止 override 被忽略后逐轮误报偏离提示。
-func modelOverrideForBackend(sess *chat_entity.Session, be *agent_backend_entity.AgentBackend) string {
-	if !modelOverrideSwitchable(be) {
-		return ""
-	}
-	return strings.TrimSpace(sess.ModelOverride)
-}
-
-// SetSessionModel sets or clears the persisted model override for an existing session.
-// Model ids are intentionally not checked against the provider catalog: CLI-login
-// sessions and provider-compatible custom ids are valid inputs at this service boundary.
-func (s *chatSvc) SetSessionModel(ctx context.Context, sessionID int64, model string) error {
-	if sessionID <= 0 {
-		return i18n.NewError(ctx, code.InvalidParameter)
-	}
-	model, err := normalizeModelOverride(ctx, model)
-	if err != nil {
-		return err
-	}
-	sess, err := chat_repo.Session().Find(ctx, sessionID)
-	if err != nil {
-		return operationFailedWithCause(ctx, err)
-	}
-	if sess == nil {
-		return i18n.NewError(ctx, code.ChatSessionNotFound)
-	}
-	// 单列写入:model_override 在整行 Save 里被 Omit(见 sessionRepo.Update),只能通过
-	// 专用方法写 —— 否则用户在轮次中途换的模型会被该轮收尾的整行 Save 盖回旧值。
-	if err := chat_repo.Session().UpdateModelOverride(ctx, sessionID, model); err != nil {
-		logger.Ctx(ctx).Warn("chat_svc.SetSessionModel: persist model override failed",
-			zap.Int64("sessionId", sessionID),
-			zap.Error(err))
-		return operationFailedWithCause(ctx, err)
-	}
-	return nil
 }
 
 // SetPermissionMode 让前端把 CLI 会话切到指定 mode。
@@ -3029,6 +3010,10 @@ type turnExtras struct {
 	// emitTurnStartedBypass: 见 SendRequest.EmitTurnStartedBypass。startTurn 在建好
 	// assistant 消息后, 经会话级旁路把 per-turn 流名推给已打开的查看者。
 	emitTurnStartedBypass bool
+	// providerFallbackNotice:会话 provider_key 指向的供应商缺失/停用/不兼容,本轮回退
+	// agent 绑定(spec 决策 8)时由 send 填充;runTurn 把它追加成一条持久 transcript notice。
+	// 随自动续轮一路携带 —— 回退期间每轮都提示,与 #26 偏离提示"每次发生都提示"先例一致。
+	providerFallbackNotice *blocks.NoticeBlock
 }
 
 type sessionTurnGate struct {
@@ -3579,7 +3564,6 @@ func (s *chatSvc) prepareTurnRun(
 	req := agentruntime.RunRequest{
 		Backend:           be,
 		Provider:          prov,
-		ModelOverride:     modelOverrideForBackend(sess, be),
 		AgentID:           a.ID,
 		SessionID:         sess.ID,
 		Cwd:               cwd,
@@ -3943,10 +3927,11 @@ func (s *chatSvc) runTurn(
 		if result.ContextWindow > 0 {
 			sess.ContextWindow = result.ContextWindow
 		}
-		// 本轮请求的模型与实际运行模型不一致时补一条 UI-only 偏离提示。必须排在
-		// assistantMsg.Model 被 result.Model 覆盖之后:比对的是 runner 上报的实际值。
-		if notice := modelDeviationNotice(req.ModelOverride, result.Model); notice != nil {
-			finalBlocks = append(finalBlocks, *notice)
+		// 会话所选供应商缺失/停用/不兼容、本轮回退 agent 绑定(spec 决策 8):追加一条
+		// 持久 notice。必须排在 assistantMsg.Model 被 result.Model 覆盖之后与 SetBlocks
+		// 之前。
+		if extras.providerFallbackNotice != nil {
+			finalBlocks = append(finalBlocks, *extras.providerFallbackNotice)
 		}
 	}
 	_ = assistantMsg.SetBlocks(finalBlocks)

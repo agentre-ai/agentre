@@ -2017,7 +2017,6 @@ func TestSend_NewSession(t *testing.T) {
 		m.session.EXPECT().Create(gomock.Any(), gomock.Any()).
 			DoAndReturn(func(_ context.Context, s *chat_entity.Session) error {
 				assert.Equal(t, firstUserText, s.Title)
-				assert.Equal(t, "custom-model", s.ModelOverride)
 				s.ID = 100
 				return nil
 			})
@@ -2045,7 +2044,7 @@ func TestSend_NewSession(t *testing.T) {
 		m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 		resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{
-			AgentID: 7, Text: firstUserText, ModelOverride: "custom-model",
+			AgentID: 7, Text: firstUserText,
 		})
 		assert.NoError(t, err)
 		assert.Equal(t, int64(100), resp.SessionID)
@@ -2078,7 +2077,7 @@ func TestSend_ExistingSessionUsesSessionAgentBackend(t *testing.T) {
 	t.Cleanup(restore)
 
 	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
-		ID: 100, AgentID: 7, AgentStatus: "idle", ModelOverride: "stored-model", Status: consts.ACTIVE,
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
 	}, nil)
 	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
 		ID: 7, Name: "Correct", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
@@ -2108,7 +2107,7 @@ func TestSend_ExistingSessionUsesSessionAgentBackend(t *testing.T) {
 	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{
-		SessionID: 100, AgentID: 99, Text: "hi", ModelOverride: "ignored-model",
+		SessionID: 100, AgentID: 99, Text: "hi",
 	})
 	assert.NoError(t, err)
 	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
@@ -2119,7 +2118,6 @@ func TestSend_ExistingSessionUsesSessionAgentBackend(t *testing.T) {
 		assert.Equal(t, int64(7), req.AgentID)
 		assert.Equal(t, int64(100), req.SessionID)
 		assert.Equal(t, "hi", req.UserText)
-		assert.Equal(t, "stored-model", req.ModelOverride)
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for runtime request")
 	}

@@ -285,12 +285,11 @@ type ChatBlock struct {
 	Text  string `json:"text,omitempty"`  // text / thinking / tool_result / notice 文本
 	Level string `json:"level,omitempty"` // notice 级别
 
-	// notice 块专用:结构化偏离提示的模型 id(selected=override, actual=实际运行模型)。
+	// notice 块专用:供应商回退提示的会话所选 provider_key（spec 决策 8）。
 	// 持久化时编码进 cago blocks.NoticeBlock.Text 的小 JSON,投影(noticeBlockToChatBlock)
-	// 解回这里;旧的非结构化 notice 无此字段,前端回退到 Text 原样渲染。
-	SelectedModel string          `json:"selectedModel,omitempty"`
-	ActualModel   string          `json:"actualModel,omitempty"`
-	Image         *ChatBlockImage `json:"image,omitempty"`
+	// 解回这里;非结构化旧 notice 无此字段,前端回退到 Text 原样渲染。
+	ProviderKey string          `json:"providerKey,omitempty"`
+	Image       *ChatBlockImage `json:"image,omitempty"`
 
 	// tool_use:
 	ToolUseID string         `json:"toolUseId,omitempty"`
@@ -493,13 +492,8 @@ type ChatSessionDetail struct {
 	// 的 PromptTokens 只含未缓存输入，要叠加 CachedTokens + CacheCreationTokens 才是
 	// 总上下文；OpenAI 系的 PromptTokens 已是总数。空串表示后端未绑定 provider（CLI 登录态）。
 	LLMProviderType string `json:"llmProviderType"`
-	// LLMProviderKey 是 backend 绑定的 provider key；空串 = 未绑（CLI 登录态）。
-	// 前端 ModelPill 用它与 ListLLMProviders() 匹配 provider id 拉 /v1/models 列表。
-	LLMProviderKey       string `json:"llmProviderKey"`
-	ModelOverride        string `json:"modelOverride"`
-	ProviderDefaultModel string `json:"providerDefaultModel"`
-	Title                string `json:"title"`
-	AgentStatus          string `json:"agentStatus"`
+	Title           string `json:"title"`
+	AgentStatus     string `json:"agentStatus"`
 	// ActiveStream 仅在 LoadSession 时填:该会话有正在跑的 turn 时,给出其 per-turn
 	// wails 事件名("chat:event:<sessionID>:<assistantMessageID>"),让中途打开本会话的
 	// 前端 openStream 重挂到实时流。子 agent 调用轮 / 自主轮等"非前端发起"的 turn 没有 Send
@@ -708,8 +702,11 @@ type SendRequest struct {
 	//   - codex: default / plan
 	// 空串表示不改已有会话；新建 codex 会话空串按 default 落库。
 	PermissionMode string `json:"permissionMode,omitempty"`
-	// ModelOverride 仅新建会话时生效；已有会话通过 SetSessionModel 切换。
-	ModelOverride string `json:"modelOverride,omitempty"`
+	// ProviderKey 仅新建会话（SessionID=0）生效：所选 LLM 供应商 key，随首条消息与
+	// Session 一同 Create 落库（spec 决策 2）。空串 = 跟随 agent 绑定。已有会话忽略
+	// （B 不允许事后改，无 Setter）。非空时校验：供应商必须存在、IsActive 且与后端
+	// kind 兼容（ProviderTypeMatch），否则 Send 报错。
+	ProviderKey string `json:"providerKey,omitempty"`
 	// EmitTurnStartedBypass 表示本轮由"非查看者"发起(子 agent 调用经 subagent_svc
 	// 阻塞起轮),需经会话级旁路 chat:autonomous:<sessionId> 把 per-turn 流名推给该会话
 	// 已打开(可能在后台)的 ChatPanel, 让它翻 running + openStream —— 否则只有发起者

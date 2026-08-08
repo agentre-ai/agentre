@@ -1,0 +1,199 @@
+package chat_svc
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"github.com/cago-frame/agents/agent/blocks"
+	"github.com/cago-frame/cago/pkg/consts"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo/mock_agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo/mock_chat_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
+)
+
+// directRunRunner 记录下发的 RunRequest 并回一个固定实际模型，供 runTurn 直连测试用。
+type directRunRunner struct {
+	request     chan agentruntime.RunRequest
+	actualModel string
+}
+
+func (*directRunRunner) Capabilities() capability.Capabilities {
+	return capability.Capabilities{}
+}
+
+func (r *directRunRunner) Run(_ context.Context, req agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	r.request <- req
+	events := make(chan agentruntime.Event)
+	close(events)
+	return events, &agentruntime.RunResult{Model: r.actualModel}, nil
+}
+
+type directRunMocks struct {
+	agent    *mock_agent_repo.MockAgentRepo
+	backend  *mock_agent_backend_repo.MockAgentBackendRepo
+	provider *mock_llm_provider_repo.MockLLMProviderRepo
+	session  *mock_chat_repo.MockSessionRepo
+	message  *mock_chat_repo.MockMessageRepo
+}
+
+func setupDirectRunTest(t *testing.T) (*directRunMocks, context.Context) {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	m := &directRunMocks{
+		agent:    mock_agent_repo.NewMockAgentRepo(ctrl),
+		backend:  mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl),
+		provider: mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl),
+		session:  mock_chat_repo.NewMockSessionRepo(ctrl),
+		message:  mock_chat_repo.NewMockMessageRepo(ctrl),
+	}
+	agent_repo.RegisterAgent(m.agent)
+	agent_backend_repo.RegisterAgentBackend(m.backend)
+	llm_provider_repo.RegisterLLMProvider(m.provider)
+	chat_repo.RegisterSession(m.session)
+	chat_repo.RegisterMessage(m.message)
+	return m, context.Background()
+}
+
+// TestRunTurn_ProviderFallbackAppendsPersistentNotice 钉死决策 8：会话 provider_key
+// 指向的供应商缺失/停用 → 本轮回退 agent 绑定，并在 assistant transcript 追加一条
+// 持久 notice（结构化 {"providerKey":..}，前端 t() 渲染）。notice 随 runTurn 的
+// turnExtras 携带，不依赖 result.Model（与已删除的模型偏离提示解耦）。
+func TestRunTurn_ProviderFallbackAppendsPersistentNotice(t *testing.T) {
+	m, ctx := setupDirectRunTest(t)
+	var streamEvents []ChatStreamEvent
+	s := NewChat(EmitterFunc(func(_ context.Context, _ string, payload any) {
+		if event, ok := payload.(ChatStreamEvent); ok {
+			streamEvents = append(streamEvents, event)
+		}
+	})).(*chatSvc)
+	runner := &directRunRunner{
+		request:     make(chan agentruntime.RunRequest, 1),
+		actualModel: "actual-model",
+	}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, runner)
+	t.Cleanup(restore)
+
+	sess := &chat_entity.Session{
+		ID: 100, AgentID: 7, ProviderKey: "gone-provider", Status: consts.ACTIVE,
+	}
+	a := &agent_entity.Agent{ID: 7, AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`}
+	be := &agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}
+	prov := &llm_provider_entity.LLMProvider{
+		ProviderKey: "key-21", Type: string(llm_provider_entity.TypeAnthropic), Model: "provider-default", Status: consts.ACTIVE,
+	}
+	assistant := &chat_entity.Message{ID: 1001, SessionID: 100, Role: "assistant", BlocksJSON: "[]"}
+
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+	var persisted *chat_entity.Message
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, msg *chat_entity.Message) error {
+			msgCopy := *msg
+			persisted = &msgCopy
+			return nil
+		}).AnyTimes()
+
+	s.runTurn(ctx, sess, a, be, prov, nil, assistant, "stream", "", false, nil, turnExtras{
+		providerFallbackNotice: &blocks.NoticeBlock{Level: "info", Text: encodeProviderFallback("gone-provider")},
+	})
+
+	select {
+	case req := <-runner.request:
+		assert.Empty(t, req.ModelOverride, "#26 已移除,runTurn 不再下发会话级模型覆盖")
+	default:
+		t.Fatal("runtime did not receive a request")
+	}
+	require.NotNil(t, persisted)
+	persistedBlocks, err := persisted.GetBlocks()
+	require.NoError(t, err)
+	require.Len(t, persistedBlocks, 1, "回退时 transcript 应追加一条持久 notice")
+	notice, ok := persistedBlocks[0].(blocks.NoticeBlock)
+	require.True(t, ok)
+	assert.Equal(t, "info", notice.Level)
+	var payload struct {
+		ProviderKey string `json:"providerKey"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(notice.Text), &payload))
+	assert.Equal(t, "gone-provider", payload.ProviderKey, "结构化 payload 携带被回退的会话 provider_key")
+
+	var liveNotice bool
+	for _, event := range streamEvents {
+		if event.Kind != StreamDone || event.Message == nil {
+			continue
+		}
+		for _, block := range event.Message.Blocks {
+			if block.Type == "notice" && block.ProviderKey == "gone-provider" {
+				liveNotice = true
+			}
+		}
+	}
+	assert.True(t, liveNotice, "完成的流必须携带该持久 notice")
+}
+
+// TestRunTurn_NoModelDeviationNotice 钉死「不再产生模型偏离提示」：即使 runner 上报的
+// 实际模型与请求模型不同,transcript 也不得再追加偏离 notice（#26 已整体移除,
+// ChatBlock.selectedModel/actualModel 与 modelDeviationNotice 一并删除）。
+func TestRunTurn_NoModelDeviationNotice(t *testing.T) {
+	m, ctx := setupDirectRunTest(t)
+	s := NewChat(NoopEmitter{}).(*chatSvc)
+	runner := &directRunRunner{
+		request:     make(chan agentruntime.RunRequest, 1),
+		actualModel: "actual-model",
+	}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, runner)
+	t.Cleanup(restore)
+
+	sess := &chat_entity.Session{
+		ID: 100, AgentID: 7, ProviderKey: "key-99", Status: consts.ACTIVE,
+	}
+	a := &agent_entity.Agent{ID: 7, AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`}
+	be := &agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-99", Status: consts.ACTIVE,
+	}
+	prov := &llm_provider_entity.LLMProvider{
+		ProviderKey: "key-99", Type: string(llm_provider_entity.TypeAnthropic), Model: "provider-default", Status: consts.ACTIVE,
+	}
+	assistant := &chat_entity.Message{ID: 1001, SessionID: 100, Role: "assistant", BlocksJSON: "[]"}
+
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+	var persisted *chat_entity.Message
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, msg *chat_entity.Message) error {
+			msgCopy := *msg
+			persisted = &msgCopy
+			return nil
+		}).AnyTimes()
+
+	s.runTurn(ctx, sess, a, be, prov, nil, assistant, "stream", "", false, nil, turnExtras{})
+
+	select {
+	case req := <-runner.request:
+		assert.Empty(t, req.ModelOverride)
+	default:
+		t.Fatal("runtime did not receive a request")
+	}
+	require.NotNil(t, persisted)
+	persistedBlocks, err := persisted.GetBlocks()
+	require.NoError(t, err)
+	require.Empty(t, persistedBlocks, "不再存在模型偏离提示,transcript 无 notice 块")
+}
