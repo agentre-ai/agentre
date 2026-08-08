@@ -123,10 +123,9 @@ func login(cmd *cobra.Command, deps loginDeps, st *state.State, serverURL string
 		// devices.fingerprint),也按它把 LAN 与账号两个来源合并成设备面板的一行(R15)。
 		// 登记裸 uuid 会让两边永远对不上:中转恒报「这台 daemon 从未登记过」,面板恒把
 		// 已认领的机器标成未认领。
-		"fingerprint":  rpc.DaemonFingerprint(st.InstanceUUID()),
-		"platform":     deps.platform,
-		"version":      deps.version,
-		"capabilities": map[string]bool{"compute": true},
+		"fingerprint": rpc.DaemonFingerprint(st.InstanceUUID()),
+		"platform":    deps.platform,
+		"version":     deps.version,
 	}, &authorize); err != nil {
 		return fmt.Errorf("authorize device login: %w", err)
 	}

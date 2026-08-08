@@ -30,11 +30,10 @@ const accountForDeviceFingerprint = "agentre-device-fingerprint"
 // ---- request / response DTOs（私有，只在本包内用）----
 
 type deviceAuthorizeReq struct {
-	DeviceKind   string          `json:"device_kind"`
-	Fingerprint  string          `json:"fingerprint"`
-	Platform     string          `json:"platform"`
-	Version      string          `json:"version"`
-	Capabilities map[string]bool `json:"capabilities"`
+	DeviceKind  string `json:"device_kind"`
+	Fingerprint string `json:"fingerprint"`
+	Platform    string `json:"platform"`
+	Version     string `json:"version"`
 }
 
 type deviceAuthorizeResp struct {
@@ -120,11 +119,10 @@ func (s *service) StartLogin(ctx context.Context, serverURL string) (*StartLogin
 	row.ServerURL = serverURL
 
 	req := deviceAuthorizeReq{
-		DeviceKind:   "desktop",
-		Fingerprint:  row.DeviceFingerprint,
-		Platform:     runtimePlatform(),
-		Version:      buildVersion(),
-		Capabilities: map[string]bool{"compute": true, "client": true, "file_browse": true},
+		DeviceKind:  "desktop",
+		Fingerprint: row.DeviceFingerprint,
+		Platform:    runtimePlatform(),
+		Version:     buildVersion(),
 	}
 	var env envelope[deviceAuthorizeResp]
 	if _, err := s.getClient().do(ctx, http.MethodPost, "/v1/oauth/device/authorize", req, &env); err != nil {
