@@ -165,7 +165,6 @@ describe("RemoteDevicesPanel", () => {
         Platform: "linux",
         Version: "0.3.0",
         Fingerprint: "fp-1",
-        Capabilities: {},
         LastSeenAt: 1_700_000_000_000,
         Status: 1,
         // 中转路径可达 = daemon 的中继在线登记(R20),不是账号侧授权标志。

@@ -68,7 +68,6 @@ const accountDevice = (
   Platform: "linux",
   Version: "0.3.0",
   Fingerprint: "fp-1",
-  Capabilities: {},
   LastSeenAt: 1_700_000_000_000,
   Status: 1, // ACTIVE
   Online: true, // 中继在线登记(R20)

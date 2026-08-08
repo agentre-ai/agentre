@@ -41,7 +41,9 @@ func TestLoginCompletesDeviceFlowAndPersistsOpaqueAccountClaim(t *testing.T) {
 			assert.Equal(t, rpc.DaemonFingerprint(st.InstanceUUID()), body["fingerprint"])
 			assert.Equal(t, "linux", body["platform"])
 			assert.Equal(t, "dev", body["version"])
-			assert.Equal(t, true, body["capabilities"].(map[string]any)["compute"])
+			// 能力概念已从账号侧移除：授权一台设备拿到的就是账号的完整权限，
+			// 再自报一份服务端不校验、也不据以限制任何事的清单只是噪声。
+			assert.NotContains(t, body, "capabilities")
 			_, _ = io.WriteString(w, `{"device_code":"code-1","user_code":"ABCD-EFGH","verification_uri":"https://verify.example/device","verification_uri_complete":"https://verify.example/device?user_code=ABCD-EFGH","interval":1,"expires_in":60}`)
 		case "/v1/oauth/device/token":
 			polls++

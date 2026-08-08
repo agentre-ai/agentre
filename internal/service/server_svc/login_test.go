@@ -40,6 +40,7 @@ func setupServerSvc(t *testing.T, srvURL string) (server_svc.ServerSvc, *mock_se
 func TestStartLogin_Success(t *testing.T) {
 	Convey("StartLogin healthchecks then issues device-flow authorize and persists server_state", t, func() {
 		var authorizeHits atomic.Int32
+		var authorizeBody atomic.Pointer[map[string]any]
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			switch r.URL.Path {
@@ -47,6 +48,11 @@ func TestStartLogin_Success(t *testing.T) {
 				_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"version":"v0.1.0","status":"ok","db_ping":true,"redis":true}}`))
 			case "/v1/oauth/device/authorize":
 				authorizeHits.Add(1)
+				// 请求体只在这里捞出来，断言留到 Convey 块里做：handler 跑在
+				// 另一条 goroutine 上，So 在那儿会因为拿不到 convey 上下文而 panic。
+				var body map[string]any
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				authorizeBody.Store(&body)
 				_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"device_code":"dc","user_code":"A4F-7Q2","verification_uri":"http://h/device","verification_uri_complete":"http://h/device?user_code=A4F-7Q2","interval":5,"expires_in":600}}`))
 			default:
 				w.WriteHeader(http.StatusNotFound)
@@ -82,6 +88,13 @@ func TestStartLogin_Success(t *testing.T) {
 		So(res.UserCode, ShouldEqual, "A4F-7Q2")
 		So(res.VerificationURIComplete, ShouldEqual, "http://h/device?user_code=A4F-7Q2")
 		So(authorizeHits.Load(), ShouldEqual, int32(1))
+
+		body := authorizeBody.Load()
+		So(body, ShouldNotBeNil)
+		So((*body)["device_kind"], ShouldEqual, "desktop")
+		// 能力概念已从账号侧移除，桌面端不再自报一份没人校验的清单。
+		_, hasCaps := (*body)["capabilities"]
+		So(hasCaps, ShouldBeFalse)
 	})
 }
 

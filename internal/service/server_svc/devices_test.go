@@ -22,8 +22,8 @@ func TestListDevices(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"devices":[
-				{"id":42,"name":"m1","kind":"desktop","platform":"darwin/arm64","capabilities":{"compute":true},"last_seen_at":123,"status":1,"online":false,"is_this_device":true},
-				{"id":43,"name":"m2","kind":"agentred","platform":"linux/amd64","capabilities":{"compute":true,"client":true},"last_seen_at":456,"status":1,"online":true,"is_this_device":false}
+				{"id":42,"name":"m1","kind":"desktop","platform":"darwin/arm64","last_seen_at":123,"status":1,"online":false,"is_this_device":true},
+				{"id":43,"name":"m2","kind":"agentred","platform":"linux/amd64","last_seen_at":456,"status":1,"online":true,"is_this_device":false}
 			]}}`))
 		}))
 		defer srv.Close()
@@ -38,9 +38,7 @@ func TestListDevices(t *testing.T) {
 		So(len(out), ShouldEqual, 2)
 		So(out[0].ID, ShouldEqual, int64(42))
 		So(out[0].IsThisDevice, ShouldBeTrue)
-		So(out[0].Capabilities["compute"], ShouldBeTrue)
 		So(out[1].IsThisDevice, ShouldBeFalse)
-		So(out[1].Capabilities["client"], ShouldBeTrue)
 		// 中继在线登记(R20)必须透传到桌面端 —— 设备面板靠它判定中转路径
 		// 是否可达(R15「呈现可达路径而非凭据来源」),丢掉它就只剩 Status 可用。
 		So(out[0].Online, ShouldBeFalse)
