@@ -174,6 +174,83 @@ func TestPreparedStreamCloseInterruptsBlockedPromptWrite(t *testing.T) {
 	}
 }
 
+// Given closing either process pipe can let the process-group leader exit
+// before its tool child, when termination has no grace period, then the tree
+// kill must happen while the leader can still address the whole group.
+func TestZeroGraceTerminationKillsProcessTreeBeforeClosingPipes(t *testing.T) {
+	process := newExitOnPipeCloseProcess()
+	proc := &rpcProcess{
+		handle: process,
+		stdin:  process.stdin,
+		lines:  &exitOnStopScanner{process: process},
+		stderr: &lockedBuffer{},
+		done:   process.done,
+	}
+
+	require.NoError(t, proc.terminate(context.Background(), 0))
+	assert.Equal(t, []string{"signal", "kill", "stop", "close"}, process.events)
+	assert.True(t, process.childKilled, "closing a process pipe first loses the group leader and leaves its child alive")
+}
+
+type exitOnPipeCloseProcess struct {
+	stdin        *exitOnCloseWriter
+	done         chan struct{}
+	events       []string
+	leaderExited bool
+	childKilled  bool
+}
+
+func newExitOnPipeCloseProcess() *exitOnPipeCloseProcess {
+	process := &exitOnPipeCloseProcess{done: make(chan struct{})}
+	process.stdin = &exitOnCloseWriter{process: process}
+	return process
+}
+
+func (p *exitOnPipeCloseProcess) Stdin() io.Writer { return p.stdin }
+func (*exitOnPipeCloseProcess) Stdout() io.Reader  { return strings.NewReader("") }
+func (*exitOnPipeCloseProcess) Stderr() io.Reader  { return strings.NewReader("") }
+func (p *exitOnPipeCloseProcess) Wait() error {
+	<-p.done
+	return nil
+}
+func (p *exitOnPipeCloseProcess) Kill() error {
+	p.events = append(p.events, "kill")
+	p.childKilled = !p.leaderExited
+	return nil
+}
+func (p *exitOnPipeCloseProcess) Signal(os.Signal) error {
+	p.events = append(p.events, "signal")
+	return nil
+}
+
+func (p *exitOnPipeCloseProcess) exitLeader(event string) {
+	p.events = append(p.events, event)
+	if !p.leaderExited {
+		p.leaderExited = true
+		close(p.done)
+	}
+}
+
+type exitOnStopScanner struct {
+	process *exitOnPipeCloseProcess
+}
+
+func (*exitOnStopScanner) Scan() bool    { return false }
+func (*exitOnStopScanner) Bytes() []byte { return nil }
+func (*exitOnStopScanner) Text() string  { return "" }
+func (*exitOnStopScanner) Err() error    { return nil }
+func (s *exitOnStopScanner) Stop()       { s.process.exitLeader("stop") }
+
+type exitOnCloseWriter struct {
+	process *exitOnPipeCloseProcess
+}
+
+func (*exitOnCloseWriter) Write(data []byte) (int, error) { return len(data), nil }
+func (w *exitOnCloseWriter) Close() error {
+	w.process.exitLeader("close")
+	return nil
+}
+
 type blockingWriteCloser struct {
 	mu        sync.Mutex
 	blockAt   int
@@ -434,21 +511,34 @@ done
 		}),
 		WithKillGrace(100*time.Millisecond),
 	)
-	client.startupTimeout = time.Second
+	client.startupTimeout = 5 * time.Second
 	ctx, cancel := context.WithCancel(context.Background())
 	prepared, err := client.PrepareStream(ctx, "hello", RunCaptureUserAnchor())
 	require.NoError(t, err)
 	stream, err := prepared.Start(ctx)
 	require.NoError(t, err)
 
-	parentPID := readPIDEventually(t, parentPIDFile)
-	toolPID := readPIDEventually(t, toolPIDFile)
+	// The script writes each PID before the RPC response that PrepareStream or
+	// Start awaits, so both files are ordered protocol output rather than an
+	// eventually-consistent side channel.
+	parentPID := readPID(t, parentPIDFile)
+	toolPID := readPID(t, toolPIDFile)
 	t.Cleanup(func() {
 		cancel()
 		terminatePID(parentPID)
 		terminatePID(toolPID)
 	})
 	return stream, cancel, parentPID, toolPID
+}
+
+func readPID(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is a test-owned file under t.TempDir.
+	require.NoError(t, err)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	require.NoError(t, err)
+	require.Positive(t, pid)
+	return pid
 }
 
 func readPIDEventually(t *testing.T, path string) int {
@@ -484,7 +574,15 @@ func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	return exec.Command("kill", "-0", strconv.Itoa(pid)).Run() == nil //nolint:gosec // G204: fixed executable with an OS-assigned test PID.
+	// kill -0 also succeeds for a dead process that remains as a zombie until
+	// its new parent reaps it. ps lets this integration test distinguish work
+	// that is still running from an already-terminated process-table entry.
+	output, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // G204: fixed executable with an OS-assigned test PID.
+	if err != nil {
+		return false
+	}
+	state := strings.TrimSpace(string(output))
+	return state != "" && !strings.HasPrefix(state, "Z")
 }
 
 func terminatePID(pid int) {

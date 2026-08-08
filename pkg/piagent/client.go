@@ -851,14 +851,34 @@ func (p *rpcProcess) terminate(ctx context.Context, grace time.Duration) error {
 	if p == nil {
 		return nil
 	}
-	if stopper, ok := p.lines.(interface{ Stop() }); ok {
-		stopper.Stop()
+	stopLines := func() {
+		if stopper, ok := p.lines.(interface{ Stop() }); ok {
+			stopper.Stop()
+		}
 	}
 	if p.handle == nil {
+		stopLines()
 		p.stopWriter()
 		p.waitForWrites()
 		return nil
 	}
+	if grace == 0 {
+		// Cancellation settlement has already exhausted its grace window. Kill the
+		// tree while both process pipes still keep the group leader addressable;
+		// tearing either pipe down first can strand a descendant in the old group.
+		_ = p.handle.Signal(interruptSignal())
+		_ = p.handle.Kill()
+		stopLines()
+		p.stopWriter()
+		p.waitForWrites()
+		select {
+		case <-p.done:
+			return wrapExitError(p.waitErr, p.stderr.String())
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	stopLines()
 	_ = p.handle.Signal(interruptSignal())
 	p.stopWriter()
 	p.waitForWrites()
