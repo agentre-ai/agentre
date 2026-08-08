@@ -5,16 +5,16 @@ import (
 	"gorm.io/gorm"
 )
 
-// migration202605220002 建 departments 表。
+// migration202608080002 建 departments 表。
 //
 // 字段语义：
 //   - parent_id      0 = 顶级部门（与 CEO Agent 同层）
 //   - lead_agent_id  0 = 未指定部门长
 //   - accent_color   "agent-1".."agent-10" / "neutral" / ""
 //   - status         cago consts: ACTIVE / DELETE
-func migration202605220002() *gormigrate.Migration {
+func migration202608080002() *gormigrate.Migration {
 	return &gormigrate.Migration{
-		ID: "202605220002",
+		ID: "202608080002",
 		Migrate: func(tx *gorm.DB) error {
 			if err := tx.Exec(`CREATE TABLE IF NOT EXISTS departments (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,

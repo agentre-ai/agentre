@@ -5,7 +5,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// migration202605220006 建 chat_sessions / chat_messages 两张表。
+// migration202608080006 建 chat_sessions / chat_messages 两张表。
 //
 // chat_sessions —— 一条会话 = 一个 Agent + 一份 cwd 上下文。
 //   - provider_session_id      cago cliagent Session id；builtin 写 "builtin-<id>"
@@ -21,9 +21,9 @@ import (
 //   - total_input_tokens       runtime translator 按 family 聚合的"本次 API call 输入大小"
 //     （Anthropic = prompt+cached+cacheCreation；OpenAI = prompt）
 //   - device_id                空 = 本地；非空 = remote device id 字符串（仅展示用）
-func migration202605220006() *gormigrate.Migration {
+func migration202608080006() *gormigrate.Migration {
 	return &gormigrate.Migration{
-		ID: "202605220006",
+		ID: "202608080006",
 		Migrate: func(tx *gorm.DB) error {
 			if err := tx.Exec(`CREATE TABLE IF NOT EXISTS chat_sessions (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,10 +33,15 @@ func migration202605220006() *gormigrate.Migration {
 	last_message_at INTEGER NOT NULL DEFAULT 0,
 	provider_session_id TEXT NOT NULL DEFAULT '',
 	project_id INTEGER NOT NULL DEFAULT 0,
+	purpose TEXT NOT NULL DEFAULT '',
 	last_read_at INTEGER NOT NULL DEFAULT 0,
 	context_window INTEGER NOT NULL DEFAULT 0,
 	permission_mode TEXT NOT NULL DEFAULT '',
 	permission_mode_at_launch TEXT NOT NULL DEFAULT '',
+	model_override TEXT NOT NULL DEFAULT '',
+	exec_device_id BIGINT NOT NULL DEFAULT 0,
+	exec_daemon_fingerprint TEXT NOT NULL DEFAULT '',
+	event_cursor BIGINT NOT NULL DEFAULT 0,
 	status INTEGER NOT NULL DEFAULT 1,
 	createtime INTEGER NOT NULL DEFAULT 0,
 	updatetime INTEGER NOT NULL DEFAULT 0

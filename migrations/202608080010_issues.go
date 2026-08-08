@@ -5,10 +5,10 @@ import (
 	"gorm.io/gorm"
 )
 
-// migration202605220011 建 issues / labels / issue_labels 三张表，并 seed 10 个内置标签。
-func migration202605220011() *gormigrate.Migration {
+// migration202608080010 建 issues / labels / issue_labels 三张表，并 seed 10 个内置标签。
+func migration202608080010() *gormigrate.Migration {
 	return &gormigrate.Migration{
-		ID: "202605220011",
+		ID: "202608080010",
 		Migrate: func(tx *gorm.DB) error {
 			if err := tx.Exec(`CREATE TABLE IF NOT EXISTS issues (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -17,6 +17,10 @@ func migration202605220011() *gormigrate.Migration {
 	body TEXT NOT NULL DEFAULT '',
 	state TEXT NOT NULL DEFAULT 'open',
 	agent_status TEXT NOT NULL DEFAULT 'idle',
+	stage TEXT NOT NULL DEFAULT 'todo',
+	position REAL NOT NULL DEFAULT 0,
+	assignee_agent_id INTEGER NOT NULL DEFAULT 0,
+	session_id INTEGER NOT NULL DEFAULT 0,
 	source TEXT NOT NULL DEFAULT 'manual',
 	closed_at INTEGER NOT NULL DEFAULT 0,
 	status INTEGER NOT NULL DEFAULT 1,
@@ -29,6 +33,9 @@ func migration202605220011() *gormigrate.Migration {
 				return err
 			}
 			if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_issues_project ON issues(project_id, status)`).Error; err != nil {
+				return err
+			}
+			if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_issues_board ON issues(status, stage, position)`).Error; err != nil {
 				return err
 			}
 

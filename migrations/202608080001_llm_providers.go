@@ -5,7 +5,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// migration202605220001 建 llm_providers 表 —— 用户配置的 LLM 供应商。
+// migration202608080001 建 llm_providers 表 —— 用户配置的 LLM 供应商。
 //
 // 字段语义：
 //   - type           cago provider 实现：anthropic / openai-chat / openai-response
@@ -17,9 +17,9 @@ import (
 //   - context_window 上下文窗口 token 数（0 = 走 cago catalog 默认）
 //   - provider_key   稳定 UUID，跨机器引用用，agent_backends.llm_provider_key 指向它
 //   - status         cago consts: ACTIVE / DELETE
-func migration202605220001() *gormigrate.Migration {
+func migration202608080001() *gormigrate.Migration {
 	return &gormigrate.Migration{
-		ID: "202605220001",
+		ID: "202608080001",
 		Migrate: func(tx *gorm.DB) error {
 			if err := tx.Exec(`CREATE TABLE IF NOT EXISTS llm_providers (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,

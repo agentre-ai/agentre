@@ -316,7 +316,6 @@ daemon 通过 `db.WithContextDB(ctx, handle)` 在其 ctx 边界注入句柄，�
 | `internal/daemon/handlers` 出口单测（fake 日志 + fake 推送） | R2 推送失败不影响落库；R3 落库失败不推进 `seq` 且不推送 | `internal/daemon/handlers/runtime_test.go`（已 988 行同类） |
 | `internal/pkg/agentruntime/runtimes/remote` 重连状态机单测（fake conn） | R4 断连不注入错误；R6 跳号触发补洞、重复 `seq` 丢弃；R12 实例标识不匹配则游标失效；重连超上限才注入 `ErrDaemonDisconnected` | `remote/runtime_test.go` |
 | `internal/daemon/handlers/mcpproxy` 单测 | R17 隧道无目标时返回面向 LLM 可读的工具错误而非裸 503；会话继续运行不被终止 | `internal/daemon/handlers/mcpproxy_internal_test.go` |
-| `internal/daemon/migrations/*_test.go` | 建表、索引、回滚 | `migrations/202606160001_group_features_test.go`（项目规范中允许起真库的例外） |
 | 前端 `useSessionWithOverlays` / 会话状态 store（vitest） | R15 等待输入映射 `waiting`、中断映射 `error`；连接态不进 `AgentStatus`（守卫：该联合类型仍只有四个取值） | `frontend/src/hooks/__tests__/use-session-with-overlays.test.tsx` |
 | 前端转录流指示器组件（vitest） | R13 重连态渲染断连形态而非打字形态、恢复后换回；动画带 reduced-motion 修饰 | `frontend/src/components/agentre/__tests__/transcript-card.test.tsx` |
 | 前端滚动状态与跳转控件（vitest） | R14 补齐不改滚动位置；控件在非贴底且有新增时出现、贴底时不出现；条数与待处理项数正确，待处理信息除色点外另有文字 | `frontend/src/components/agentre/chat-panel-scroll-state.test.ts` |

@@ -599,7 +599,7 @@ Only touch this when adding new fields:
 
 OpenClaw is the reference for a Gateway-native backend whose authentication cannot live in entity DTOs:
 
-1. **Entity/migration** — `TypeOpenClaw` has dedicated Gateway URL, agent, model, and fixed session-mode fields. Loopback may use `ws://`; every non-loopback address requires `wss://`. Migration `202607240001` adds no token/ciphertext column.
+1. **Entity/migration** — `TypeOpenClaw` has dedicated Gateway URL, agent, model, and fixed session-mode fields. Loopback may use `ws://`; every non-loopback address requires `wss://`. The `agent_backends` baseline stores no token/ciphertext column.
 2. **Secret boundary** — `agent_backend_svc` stores tokens through `internal/pkg/keychain` as `agentre.openclaw.backend.<backendID>.token` and stores the Ed25519 identity seed separately. DTOs expose `hasToken` only. OpenClaw-specific create/update/test Wails methods accept a transient token argument; the editor never receives the saved token.
 3. **Protocol client** — `internal/pkg/openclawgateway` implements challenge/connect, exact protocol-4 negotiation, required operator scopes, req/res routing, event sequence gaps, timeouts, reconnect, feature validation, and read-only agent/model discovery.
 4. **Runtime** — `internal/pkg/agentruntime/runtimes/openclaw` submits `agent` once with the UUID `idempotencyKey` required by the official schema and a stable `agentre:<backendID>:<chatSessionID>` session key. Reconnect/gap reconciliation uses `exec.approval.list` followed by `agent.wait`; it never blindly resends the message. Abort sends exactly `chat.abort {sessionKey,runId}` and converges through that stable identity plus a one-call guard because the official closed abort schema rejects an added idempotency field.

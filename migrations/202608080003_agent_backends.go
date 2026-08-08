@@ -5,7 +5,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// migration202605220003 建 agent_backends 表 —— 一条 backend = 一个可被多个 Agent
+// migration202608080003 建 agent_backends 表 —— 一条 backend = 一个可被多个 Agent
 // 共享引用的「后端实例」。
 //
 // 字段语义：
@@ -21,9 +21,9 @@ import (
 //   - reasoning_effort        思考力度六档（"" / low / medium / high / xhigh / max）
 //   - default_permission_mode 仅 claudecode：spawn 时 --permission-mode（"" / default / acceptEdits / plan / bypassPermissions）
 //   - status                  cago consts: ACTIVE / DELETE
-func migration202605220003() *gormigrate.Migration {
+func migration202608080003() *gormigrate.Migration {
 	return &gormigrate.Migration{
-		ID: "202605220003",
+		ID: "202608080003",
 		Migrate: func(tx *gorm.DB) error {
 			if err := tx.Exec(`CREATE TABLE IF NOT EXISTS agent_backends (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,6 +38,11 @@ func migration202605220003() *gormigrate.Migration {
 	env_json TEXT NOT NULL DEFAULT '{}',
 	reasoning_effort TEXT NOT NULL DEFAULT '',
 	default_permission_mode TEXT NOT NULL DEFAULT '',
+	default_model TEXT NOT NULL DEFAULT '',
+	openclaw_gateway_url TEXT NOT NULL DEFAULT '',
+	openclaw_agent_id TEXT NOT NULL DEFAULT '',
+	openclaw_default_model TEXT NOT NULL DEFAULT '',
+	openclaw_session_mode TEXT NOT NULL DEFAULT '',
 	status INTEGER NOT NULL DEFAULT 1,
 	createtime INTEGER NOT NULL DEFAULT 0,
 	updatetime INTEGER NOT NULL DEFAULT 0

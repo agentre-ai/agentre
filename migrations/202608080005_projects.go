@@ -5,7 +5,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// migration202605220005 建 projects / project_agents / project_locations 三张表。
+// migration202608080005 建 projects / project_agents / project_locations 三张表。
 //
 // projects 承担「工作上下文」语义：名字 + 本地路径 + 成员 Agent。
 //   - parent_id  自引用，0 = 顶级；无外键，移动/删除级联由 service 校验
@@ -16,9 +16,9 @@ import (
 // project_locations 装载「远端 device 下，某个 project 的绝对路径」。本地 path 仍住在
 // projects.path（避免双源同步），本表不存空 device_id 的行。partial unique index 保证
 // 同一 (project, device) 只能有一行 ACTIVE，soft-delete 行可共存以回收 slot。
-func migration202605220005() *gormigrate.Migration {
+func migration202608080005() *gormigrate.Migration {
 	return &gormigrate.Migration{
-		ID: "202605220005",
+		ID: "202608080005",
 		Migrate: func(tx *gorm.DB) error {
 			if err := tx.Exec(`CREATE TABLE IF NOT EXISTS projects (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,6 +28,7 @@ func migration202605220005() *gormigrate.Migration {
 	color TEXT NOT NULL DEFAULT '',
 	description TEXT NOT NULL DEFAULT '',
 	path TEXT NOT NULL,
+	sort_order INTEGER NOT NULL DEFAULT 0,
 	status INTEGER NOT NULL DEFAULT 1,
 	createtime INTEGER NOT NULL DEFAULT 0,
 	updatetime INTEGER NOT NULL DEFAULT 0
@@ -35,6 +36,10 @@ func migration202605220005() *gormigrate.Migration {
 				return err
 			}
 			if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_projects_parent_id ON projects(parent_id, status)`).Error; err != nil {
+				return err
+			}
+			if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_projects_parent_sort
+ON projects(parent_id, status, sort_order, id)`).Error; err != nil {
 				return err
 			}
 

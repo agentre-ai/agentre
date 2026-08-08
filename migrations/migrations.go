@@ -21,42 +21,15 @@ func RunMigrations(db *gorm.DB) error {
 // migrationList 按时间升序列出全部迁移构造函数。
 func migrationList() []*gormigrate.Migration {
 	return []*gormigrate.Migration{
-		migration202605220001(), // llm_providers
-		migration202605220002(), // departments
-		migration202605220003(), // agent_backends
-		migration202605220004(), // agents + CEO seed
-		migration202605220005(), // projects + project_agents + project_locations
-		migration202605220006(), // chat_sessions + chat_messages
-		migration202605220007(), // hook_sources + hook_rules + hook_events
-		migration202605220008(), // app_settings + proxy host/port seed
-		migration202605220009(), // server_state + paired_agentreds
-		migration202605220010(), // projects.sort_order
-		migration202605220011(), // issues + labels + issue_labels + label seed
-		migration202606030001(), // group chat baseline
-		migration202606100001(), // agent_backends.default_model
-		migration202606160001(), // 群协作:agent 工具(org/group_create)+ 群任务/流程 + 群成员昵称
-		migration202606160002(), // chat_sessions.purpose(隐藏 subagent 委派会话)
-		migration202606240001(), // 编排能力基座:Run/Task 表 + chat_sessions.run_id + orchestrate 工具种子
-		migration202606240002(), // Hooks 脚本驱动重构:删 source/rule/event,建 hooks + hook_events
-		migration202606240003(), // 删群聊(能力并入编排):DROP 群 4 表 + chat_sessions.group_id + 重置工具种子
-		migration202606240004(), // hook_events 加 kind 列:区分脚本产出(output)与运行失败留痕(failure)
-		migration202606250001(), // hooks.interpreter_path:自定义解释器二进制路径
-		migration202606250002(), // workflows.tags/outline:流程库展示层(标签/步骤概览)
-		migration202607020001(), // issue 看板:stage/position/assignee_agent_id/session_id + 回填
-		migration202607030001(), // 编排可参与范围:orchestration_runs.allowed_agent_ids
-		migration202607030002(), // 回报分层:orch_tasks.summary
-		migration202607040001(), // workflows.graph/is_default + seed 默认流程
-		migration202607040002(), // 运行时进度 overlay:orch_tasks.node_ref + orchestration_runs.flow_graph
-		migration202607050001(), // workflows.template + 回填(带图=占位符 / 无图=content)
-		migration202607080001(), // 四内置流程取代旧默认 + DROP is_default
-		migration202607080002(), // 删步骤/DAG 列:workflows.graph/template/outline, runs.flow_graph, orch_tasks.node_ref
-		migration202607090001(), // 执行节点改名:orch_tasks → orch_dispatches
-		migration202607090002(), // 待办清单表 orch_tasks(新语义)
-		migration202607090003(), // 刷新四内置流程正文:删死参 isolate/死概念 node + 织入待办清单
-		migration202607140001(), // 移除编排子系统:DROP 编排/流程库 4 表 + chat_sessions.run_id + 清 orchestrate/workflow 工具种子
-		migration202607240001(), // OpenClaw backend 非敏感 Gateway 配置（token/device key 仅存 keychain）
-		migration202607280001(), // Codex 0.145 移除 on-failure approval，旧值归一到 on-request
-		migration202608010001(), // 远端会话执行位置与游标:chat_sessions.exec_device_id/exec_daemon_fingerprint/event_cursor
-		migration202608060001(), // chat_sessions.model_override:会话级模型覆盖
+		migration202608080001(), // llm_providers
+		migration202608080002(), // departments
+		migration202608080003(), // agent_backends
+		migration202608080004(), // agents + default agent
+		migration202608080005(), // projects + project_agents + project_locations
+		migration202608080006(), // chat_sessions + chat_messages
+		migration202608080007(), // hooks + hook_events
+		migration202608080008(), // app_settings + proxy defaults
+		migration202608080009(), // server_state + paired_agentreds
+		migration202608080010(), // issues + labels + issue_labels + label defaults
 	}
 }

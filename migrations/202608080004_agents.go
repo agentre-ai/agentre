@@ -5,7 +5,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// migration202605220004 建 agents 表并 seed 一条 CEO 助手。
+// migration202608080004 建 agents 表并 seed 一条 CEO 助手。
 //
 // 字段语义：
 //   - department_id    0 = 未直接挂部门；非 CEO 必须有 department_id 或 parent_agent_id
@@ -20,9 +20,9 @@ import (
 // 注：运行态由 chat_sessions.agent_status 承载；Agent 实体不再持有 agent_status。
 //
 // Seed：用 INSERT ... WHERE NOT EXISTS 保证幂等。
-func migration202605220004() *gormigrate.Migration {
+func migration202608080004() *gormigrate.Migration {
 	return &gormigrate.Migration{
-		ID: "202605220004",
+		ID: "202608080004",
 		Migrate: func(tx *gorm.DB) error {
 			if err := tx.Exec(`CREATE TABLE IF NOT EXISTS agents (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,6 +38,8 @@ func migration202605220004() *gormigrate.Migration {
 	sort_order INTEGER NOT NULL DEFAULT 0,
 	prompt_json TEXT NOT NULL DEFAULT '[]',
 	skills_json TEXT NOT NULL DEFAULT '[]',
+	tools_json TEXT NOT NULL DEFAULT '[]',
+	pinned BOOLEAN NOT NULL DEFAULT 0,
 	status INTEGER NOT NULL DEFAULT 1,
 	createtime INTEGER NOT NULL DEFAULT 0,
 	updatetime INTEGER NOT NULL DEFAULT 0
@@ -59,12 +61,12 @@ func migration202605220004() *gormigrate.Migration {
 
 			return tx.Exec(`INSERT INTO agents (
 	name, description, avatar_color, system_badge,
-	department_id, agent_backend_id, prompt_json, skills_json,
+	department_id, agent_backend_id, prompt_json, skills_json, tools_json,
 	status, createtime, updatetime
 )
 SELECT
 	'CEO 助手', '默认入口 · 不可删除', 'agent-1', 'DEFAULT',
-	0, 0, '[]', '[]',
+	0, 0, '[]', '[]', '[{"key":"org","enabled":true}]',
 	1, strftime('%s','now'), strftime('%s','now')
 WHERE NOT EXISTS (SELECT 1 FROM agents WHERE system_badge = 'DEFAULT')`).Error
 		},

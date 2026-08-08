@@ -5,7 +5,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// migration202608010001 建 agentred 侧持久化地基的两张表(见规格「持久化数据变化 /
+// migration202608080011 建 agentred 侧持久化地基的两张表(见规格「持久化数据变化 /
 // agentred 侧」)。
 //
 // daemon_sessions —— 会话表。复合主键 (peer_fingerprint, peer_session_id):会话 id
@@ -19,9 +19,9 @@ import (
 // peer_session_id, seq):日志的一行 = 一条本该发出的通知,method/payload 是原样的
 // JSON-RPC (method, params)。追加写;回收由 daemon.collectJournal 按留存窗口做
 // (安静满窗口的终态会话回收高水位以下的前缀),本迁移不建任何清理路径。
-func migration202608010001() *gormigrate.Migration {
+func migration202608080011() *gormigrate.Migration {
 	return &gormigrate.Migration{
-		ID: "202608010001",
+		ID: "202608080011",
 		Migrate: func(tx *gorm.DB) error {
 			if err := tx.Exec(`CREATE TABLE IF NOT EXISTS daemon_sessions (
 	peer_fingerprint TEXT NOT NULL,
