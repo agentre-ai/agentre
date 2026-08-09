@@ -57,6 +57,22 @@ describe("cc-usage-store", () => {
     expect(after).toBe(before);
   });
 
+  it("同值短路: fetchedAtMs 变了但数值全同, 仍不换 Map 引用", () => {
+    // 真实场景:60s ticker 每次 probe 都写新的 fetchedAtMs(manager.go 里 nowMs),
+    // 但配额百分比常常一动不动。此时不该让所有订阅者集体 re-render。
+    act(() => {
+      useCCUsageStore.getState().upsert("local", sample());
+    });
+    const before = useCCUsageStore.getState().byDevice;
+    act(() => {
+      useCCUsageStore
+        .getState()
+        .upsert("local", { ...sample(), fetchedAtMs: 1_060_000 } as UsageState);
+    });
+    const after = useCCUsageStore.getState().byDevice;
+    expect(after).toBe(before);
+  });
+
   it("不同值时换 Map 引用", () => {
     act(() => {
       useCCUsageStore
