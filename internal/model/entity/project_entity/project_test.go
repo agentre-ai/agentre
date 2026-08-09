@@ -18,6 +18,7 @@ func TestProjectCheck(t *testing.T) {
 		{"nil receiver", nil, true},
 		{"empty name", &Project{Name: "", Path: "/tmp/x", Color: "agent-1"}, true},
 		{"empty path", &Project{Name: "x", Path: "", Color: "agent-1"}, true},
+		{"empty path but local path missing (R10)", &Project{Name: "x", Path: "", Color: "agent-1", LocalPathMissing: true}, false},
 		{"negative parent id", &Project{Name: "x", Path: "/tmp/x", ParentID: -1, Color: "agent-1"}, true},
 		{"invalid color", &Project{Name: "x", Path: "/tmp/x", Color: "rainbow"}, true},
 		{"empty color allowed", &Project{Name: "x", Path: "/tmp/x", Color: ""}, false},
@@ -36,4 +37,12 @@ func TestProjectCheck(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestProjectIsGitRepo_LocalPathMissing 锁住 R11 的读取点语义:「本机未配置路径」
+// 由状态位判定,即使调用方误传了非空 Path 也不去碰文件系统(不再仅靠 Path 是否
+// 为空推断)。
+func TestProjectIsGitRepo_LocalPathMissing(t *testing.T) {
+	p := &Project{Name: "x", Path: "/definitely/not/checked", LocalPathMissing: true}
+	assert.False(t, p.IsGitRepo())
 }

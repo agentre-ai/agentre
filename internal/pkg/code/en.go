@@ -144,6 +144,7 @@ var enUS = map[int]string{
 	ProjectAgentNotFound:     "Referenced agent does not exist",
 	ProjectHasChildren:       "Project still has child projects",
 	ProjectHasActiveSessions: "Project still has open sessions",
+	ProjectLocalPathMissing:  "This project has no local path configured on this machine yet",
 
 	// Issue
 	IssueNotFound:          "Issue not found",

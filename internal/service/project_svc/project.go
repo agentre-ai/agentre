@@ -77,9 +77,13 @@ func (s *projectSvc) Create(ctx context.Context, req *CreateProjectRequest) (*pr
 	if err := p.Check(ctx); err != nil {
 		return nil, err
 	}
-	// 路径必须存在 —— 避免用户填错路径后 cwd 解析时才发现。
-	if _, err := os.Stat(p.Path); err != nil {
-		return nil, i18n.NewError(ctx, code.ProjectPathNotExist)
+	// 路径必须存在 —— 避免用户填错路径后 cwd 解析时才发现。「本机未配置路径」
+	// (LocalPathMissing，R10)的项目行没有路径可校验，跳过这一步(R11 读取点)；
+	// Check() 已保证此时 Path 非空，两者互斥。
+	if !p.LocalPathMissing {
+		if _, err := os.Stat(p.Path); err != nil {
+			return nil, i18n.NewError(ctx, code.ProjectPathNotExist)
+		}
 	}
 	// 父项目存在且 active。
 	if p.ParentID > 0 {

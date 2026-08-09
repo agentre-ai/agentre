@@ -144,6 +144,7 @@ var zhCN = map[int]string{
 	ProjectAgentNotFound:     "引用的 Agent 不存在或已删除",
 	ProjectHasChildren:       "项目下还有子项目，无法删除",
 	ProjectHasActiveSessions: "项目下还有未归档的会话，无法删除",
+	ProjectLocalPathMissing:  "该项目在本机尚未配置路径",
 
 	// Issue
 	IssueNotFound:          "issue 不存在",

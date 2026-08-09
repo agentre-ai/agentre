@@ -201,6 +201,7 @@ const (
 	_                                       // (removed) ProjectWorktreeNotImplemented
 	_                                       // (removed) ProjectMergeStrategyInvalid
 	_                                       // (removed) ProjectAtLeastOneWorkMode
+	ProjectLocalPathMissing                 // 本机未配置该项目的路径(R10,与 ProjectLocationMissing/WorkspaceFsNoCwd 均可区分)
 )
 
 // Project Location 18100~ (远端 device 路径子表)

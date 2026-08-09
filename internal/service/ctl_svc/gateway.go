@@ -18,10 +18,14 @@ type AgentGateway interface {
 }
 
 // ProjectInfo 是控制 API 回传的扁平项目信息(与 project_svc 的树形态解耦)。
+//
+// LocalPathMissing 显式标注「本机未配置路径」(R10):Path 为空时,调用方必须靠
+// 这个字段判断是"本来就没配"还是别的情况,不能靠 Path == "" 推断(决策 21)。
 type ProjectInfo struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
-	Path string `json:"path"`
+	ID               int64  `json:"id"`
+	Name             string `json:"name"`
+	Path             string `json:"path"`
+	LocalPathMissing bool   `json:"localPathMissing,omitempty"`
 }
 
 // ProjectGateway 控制 API 对项目列表的窄依赖：拿到扁平化的可派发项目。
@@ -78,7 +82,12 @@ func (projectSvcGateway) List(ctx context.Context) ([]ProjectInfo, error) {
 			if n == nil || n.Project == nil {
 				continue
 			}
-			out = append(out, ProjectInfo{ID: n.Project.ID, Name: n.Project.Name, Path: n.Project.Path})
+			out = append(out, ProjectInfo{
+				ID:               n.Project.ID,
+				Name:             n.Project.Name,
+				Path:             n.Project.Path,
+				LocalPathMissing: n.Project.LocalPathMissing,
+			})
 			walk(n.Children)
 		}
 	}
