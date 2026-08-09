@@ -64,6 +64,16 @@ func (r *rig) expectCall(method string, req any) *gomock.Call {
 	return r.client.EXPECT().Call(r.ctx, method, req, gomock.Any())
 }
 
+// expectCallCtx 与 expectCall 相同,只是 ctx 只做 Any 匹配:SearchFiles 会给这
+// 一跳套一层超时 ctx(遍历不能无限期挂着),匹配不到调用方原来的那个 ctx。
+func (r *rig) expectCallCtx(method string, req any) *gomock.Call {
+	r.rd.EXPECT().Pool().Return(r.pool)
+	r.pool.EXPECT().Borrow(gomock.Any(), gomock.Any()).Return(r.lease, nil)
+	r.lease.EXPECT().Client().Return(r.client)
+	r.lease.EXPECT().Release()
+	return r.client.EXPECT().Call(gomock.Any(), method, req, gomock.Any())
+}
+
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...) //nolint:gosec // G204: test helper, args 来自测试内常量
@@ -619,6 +629,87 @@ func TestGitFileContent_ErrorMapping(t *testing.T) {
 			_, err := r.svc.GitFileContent(r.ctx, 42, "a.txt")
 			require.Error(t, err)
 			assert.Equal(t, i18n.NewError(r.ctx, code.WorkspaceFsDeviceOffline).Error(), err.Error())
+		})
+	})
+}
+
+// ── SearchFiles:按 deviceID 路由 + 截断信号 + 错误映射 ──────────────────────
+
+func TestSearchFiles_RoutesByDeviceID(t *testing.T) {
+	convey.Convey("SearchFiles 按 deviceID 路由", t, func() {
+		convey.Convey("deviceID=0 → 本机 in-process 递归遍历,不借租约", func() {
+			dir := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "src"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "src", "Target.go"), nil, 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "other.txt"), nil, 0o644))
+			r := newRig(t, 0, dir)
+			// rd 上没有任何 EXPECT:一旦走了远端分支,gomock 会直接判错。
+
+			view, err := r.svc.SearchFiles(r.ctx, 42, "target", false)
+			require.NoError(t, err)
+			assert.False(t, view.Truncated)
+			require.Len(t, view.Hits, 1)
+			assert.Equal(t, "src/Target.go", view.Hits[0].Path)
+			assert.False(t, view.Hits[0].IsDir)
+		})
+
+		convey.Convey("deviceID≠0 → 走 RPC,root 用服务解析出的 cwd,截断标志透传", func() {
+			r := newRig(t, 7, "/remote/work")
+			r.expectCallCtx(wire.MethodSearchFiles, wire.SearchFilesReq{
+				Root: "/remote/work", Query: "target", IncludeIgnored: true,
+			}).DoAndReturn(func(_ context.Context, _ string, _ any, out any) error {
+				resp := out.(*wire.SearchFilesResp)
+				resp.Hits = []wire.SearchHit{{Path: "src/target.go"}, {Path: "target-dir", IsDir: true}}
+				resp.Truncated = true
+				return nil
+			})
+
+			view, err := r.svc.SearchFiles(r.ctx, 42, "target", true)
+			require.NoError(t, err)
+			assert.True(t, view.Truncated)
+			require.Len(t, view.Hits, 2)
+			assert.Equal(t, "src/target.go", view.Hits[0].Path)
+			assert.True(t, view.Hits[1].IsDir)
+		})
+	})
+}
+
+func TestSearchFiles_ErrorMapping(t *testing.T) {
+	convey.Convey("SearchFiles 错误映射复用 20800 段", t, func() {
+		convey.Convey("cwd 为空 → WorkspaceFsNoCwd,不借租约", func() {
+			r := newRig(t, 7, "")
+			_, err := r.svc.SearchFiles(r.ctx, 42, "target", false)
+			require.Error(t, err)
+			assert.Equal(t, i18n.NewError(r.ctx, code.WorkspaceFsNoCwd).Error(), err.Error())
+		})
+
+		convey.Convey("远端方法不存在 → WorkspaceFsDaemonOutdated(远端 agentred 版本过旧)", func() {
+			r := newRig(t, 7, "/remote/work")
+			r.expectCallCtx(wire.MethodSearchFiles, gomock.Any()).
+				Return(&rpc.Error{Code: -32601, Message: "Method not found"})
+			_, err := r.svc.SearchFiles(r.ctx, 42, "target", false)
+			require.Error(t, err)
+			assert.Equal(t, i18n.NewError(r.ctx, code.WorkspaceFsDaemonOutdated).Error(), err.Error())
+			assert.NotEqual(t, i18n.NewError(r.ctx, code.RemoteRunnerCallFailed).Error(), err.Error(),
+				"必须与通用远端调用失败区分开,否则前端无法提示升级 agentred")
+		})
+
+		convey.Convey("借不到租约 → WorkspaceFsDeviceOffline", func() {
+			r := newRig(t, 7, "/remote/work")
+			r.rd.EXPECT().Pool().Return(r.pool)
+			r.pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(nil, errors.New("dial fail"))
+			_, err := r.svc.SearchFiles(r.ctx, 42, "target", false)
+			require.Error(t, err)
+			assert.Equal(t, i18n.NewError(r.ctx, code.WorkspaceFsDeviceOffline).Error(), err.Error())
+		})
+
+		convey.Convey("本机遍历被 ctx 取消 → 读取失败,而不是一份看着完整的空结果", func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			r := newRig(t, 0, t.TempDir())
+			_, err := r.svc.SearchFiles(ctx, 42, "target", false)
+			require.Error(t, err)
+			assert.Equal(t, i18n.NewError(ctx, code.WorkspaceFsReadFailed).Error(), err.Error())
 		})
 	})
 }

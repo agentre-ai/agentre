@@ -115,3 +115,18 @@ func (mr *MockWorkspaceFsSvcMockRecorder) ReadFile(ctx, sessionID, relPath any) 
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReadFile", reflect.TypeOf((*MockWorkspaceFsSvc)(nil).ReadFile), ctx, sessionID, relPath)
 }
+
+// SearchFiles mocks base method.
+func (m *MockWorkspaceFsSvc) SearchFiles(ctx context.Context, sessionID int64, query string, includeIgnored bool) (*workspace_fs_svc.SearchFilesView, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SearchFiles", ctx, sessionID, query, includeIgnored)
+	ret0, _ := ret[0].(*workspace_fs_svc.SearchFilesView)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SearchFiles indicates an expected call of SearchFiles.
+func (mr *MockWorkspaceFsSvcMockRecorder) SearchFiles(ctx, sessionID, query, includeIgnored any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SearchFiles", reflect.TypeOf((*MockWorkspaceFsSvc)(nil).SearchFiles), ctx, sessionID, query, includeIgnored)
+}

@@ -16,19 +16,33 @@ import (
 
 // Options 注入测试 hook。生产用 NewHandlers(Options{}) 全用默认。
 type Options struct {
-	MaxEntries int // 默认 pkgworkspacefs.DefaultMaxEntries(2000)
+	MaxEntries    int // 默认 pkgworkspacefs.DefaultMaxEntries(2000)
+	MaxSearchHits int // 默认 pkgworkspacefs.DefaultMaxSearchHits(500)
+	MaxSearchDirs int // 默认 pkgworkspacefs.DefaultMaxSearchDirs(20000)
 }
 
 // Handlers 持有 workspacefs RPC 方法集合,便于将来注入 dependency。
 type Handlers struct {
-	maxEntries int
+	maxEntries    int
+	maxSearchHits int
+	maxSearchDirs int
 }
 
 // NewHandlers 构造 Handlers,未填字段使用安全默认值。
 func NewHandlers(opts Options) *Handlers {
-	h := &Handlers{maxEntries: opts.MaxEntries}
+	h := &Handlers{
+		maxEntries:    opts.MaxEntries,
+		maxSearchHits: opts.MaxSearchHits,
+		maxSearchDirs: opts.MaxSearchDirs,
+	}
 	if h.maxEntries <= 0 {
 		h.maxEntries = pkgworkspacefs.DefaultMaxEntries
+	}
+	if h.maxSearchHits <= 0 {
+		h.maxSearchHits = pkgworkspacefs.DefaultMaxSearchHits
+	}
+	if h.maxSearchDirs <= 0 {
+		h.maxSearchDirs = pkgworkspacefs.DefaultMaxSearchDirs
 	}
 	return h
 }
@@ -37,8 +51,8 @@ func NewHandlers(opts Options) *Handlers {
 // daemon)。生产传 requireAuth 包装,测试可传 identity。
 type WrapFunc = func(rpc.HandlerFunc) rpc.HandlerFunc
 
-// Register 把 ListDir / GitChanges / GitBranches / ReadFile / GitFileContent
-// 挂到 registry。
+// Register 把 ListDir / GitChanges / GitBranches / ReadFile / GitFileContent /
+// SearchFiles 挂到 registry。
 //   - wrap 用来套 requireAuth(生产)或 identity(单测)
 //   - handler 返回的 wire sentinel 在此翻成 *rpc.Error,客户端 FromJSONRPCError
 //     反向 rehydrate
@@ -48,6 +62,7 @@ func Register(reg *rpc.Registry, h *Handlers, wrap WrapFunc) {
 	reg.Register(wire.MethodGitBranches, wrap(translateSentinel(handleGitBranches(h))))
 	reg.Register(wire.MethodReadFile, wrap(translateSentinel(handleReadFile(h))))
 	reg.Register(wire.MethodGitFileContent, wrap(translateSentinel(handleGitFileContent(h))))
+	reg.Register(wire.MethodSearchFiles, wrap(translateSentinel(handleSearchFiles(h))))
 }
 
 func handleListDir(h *Handlers) rpc.HandlerFunc {
@@ -107,6 +122,18 @@ func handleGitFileContent(h *Handlers) rpc.HandlerFunc {
 			}
 		}
 		return h.GitFileContent(ctx, req)
+	}
+}
+
+func handleSearchFiles(h *Handlers) rpc.HandlerFunc {
+	return func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var req wire.SearchFilesReq
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &req); err != nil {
+				return nil, rpc.ErrInvalidParams
+			}
+		}
+		return h.SearchFiles(ctx, req)
 	}
 }
 
