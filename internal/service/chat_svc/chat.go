@@ -1070,6 +1070,13 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 	if err != nil {
 		return nil, err
 	}
+	// 会话 provider_key 优先于 agent 绑定解析（决策 3），与 send / Regenerate / Edit
+	// 同源：Compact 也是本地 turn 入口，#26 时代经 prepareTurnRun 的 ModelOverride 走
+	// 会话级模型覆盖，override 移除后这里必须补上同款解析，否则带 provider_key 的会话
+	// 在 compact 轮会悄悄退回 agent 绑定。所选供应商缺失/停用/不兼容 → 回退 agent 绑定
+	// 并追加一条持久 notice（决策 8，随 turnExtras 携带）。远端 backend 不走这里——
+	// 会话 provider 随 wire 透传由 daemon 自解（决策 9）。
+	prov, providerFallbackNotice := s.resolveSessionProvider(ctx, sess, be, prov)
 	gate, err := s.acquireTurnGate(ctx, sess, be)
 	if err != nil {
 		return nil, err
@@ -1104,7 +1111,7 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 		return nil, i18n.NewError(ctx, code.ChatCompactUnsupported)
 	}
 	gateOwned = false
-	resp, err := s.startCompactTurn(ctx, sess, a, be, prov, gate.lock)
+	resp, err := s.startCompactTurn(ctx, sess, a, be, prov, turnExtras{providerFallbackNotice: providerFallbackNotice}, gate.lock)
 	if err != nil {
 		releasePreflight()
 		return nil, err
@@ -3346,6 +3353,7 @@ func (s *chatSvc) startCompactTurn(
 	a *agent_entity.Agent,
 	be *agent_backend_entity.AgentBackend,
 	prov *llm_provider_entity.LLMProvider,
+	extras turnExtras,
 	prelocked *trylockMutex,
 ) (*CompactResponse, error) {
 	lock := prelocked
@@ -3404,7 +3412,7 @@ func (s *chatSvc) startCompactTurn(
 			s.activeCancels.CompareAndDelete(sess.ID, turnControl)
 			cancel()
 		}()
-		s.runTurn(turnCtx, sess, a, be, prov, nil, assistantMsg, stream, "", true, nil, turnExtras{})
+		s.runTurn(turnCtx, sess, a, be, prov, nil, assistantMsg, stream, "", true, nil, extras)
 		return nil
 	}, gogo.WithIgnorePanic())
 

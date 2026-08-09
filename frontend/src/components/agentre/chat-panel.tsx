@@ -95,7 +95,11 @@ import {
 import { computeComposerContextUsage } from "./chat-panel-context-usage";
 import { blockReasonToCta, navigateToTarget } from "./not-chattable";
 import { PermissionModePill, usePermissionMode } from "./permission-mode";
-import { ProviderPill, useProviderPill } from "./model-pill";
+import {
+  ProviderPill,
+  useProviderPill,
+  isProviderSelectableBackend,
+} from "./model-pill";
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
 import { AgentAvatar, DeviceTag, StatusDot } from "./primitives";
 import { QueuedMessagesBar } from "./queued-messages-bar";
@@ -1327,11 +1331,11 @@ function ChatPanel({
   // 切换器（决策 7）。openclaw 不消费 agentre provider,不渲染（决策 4）。
   // 拉取按 sessionId===0 && 可选项后端 双重门控 —— 否则打开任意已有会话都会白打一次
   // ListLLMProviders（对每个已绑供应商的真实 HTTP 请求,不是本地目录）。
+  // 可选项后端集合与 use-provider-pill 的 PROVIDER_SELECTABLE_BACKENDS 共用同一判定
+  // （isProviderSelectableBackend），避免两处各自维护一份后端名单漂移 —— 渲染门控与
+  // 拉取门控必须永远一致，否则新增可选项后端时 pill 会拉了列表却不渲染（或反之）。
   const providerSelectableBackend =
-    activeBackendType === "builtin" ||
-    activeBackendType === "claudecode" ||
-    activeBackendType === "codex" ||
-    activeBackendType === "piagent";
+    isProviderSelectableBackend(activeBackendType);
   const providerPill = useProviderPill({
     backendType:
       sessionId === 0 && providerSelectableBackend ? activeBackendType : "",
