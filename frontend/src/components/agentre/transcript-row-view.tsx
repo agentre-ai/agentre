@@ -701,39 +701,12 @@ function RenderItemView({
         />
       );
     }
-    case "notice": {
-      const selected = item.block.selectedModel;
-      const actual = item.block.actualModel;
-      // 结构化偏离提示:两个模型 id 由后端投影填充(SelectedModel/ActualModel),文案走
-      // t()、模型名以等宽字体展示。旧的非结构化 notice 无这两个字段 → 回退 Text 原样渲染。
-      if (selected && actual) {
-        return (
-          <section
-            role="status"
-            aria-label={t("chat.notice.modelDeviation.sentence", {
-              selected,
-              actual,
-            })}
-            data-testid="model-deviation-notice"
-            className="flex w-full max-w-measure items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-aux text-muted-foreground"
-          >
-            <TriangleAlert
-              className="mt-0.5 size-3.5 shrink-0 text-status-warning"
-              aria-hidden="true"
-            />
-            <span className="min-w-0 flex-1 break-words">
-              {t("chat.notice.modelDeviation.selected")}{" "}
-              <span className="font-mono">{selected}</span>{" "}
-              {t("chat.notice.modelDeviation.actual")}{" "}
-              <span className="font-mono">{actual}</span>
-            </span>
-          </section>
-        );
-      }
+    case "notice":
+      // notice 块:供应商回退等持久 notice 的 Text 原样渲染（既有 NoticeBlock 渲染）。
       return (
         <section
           role="status"
-          data-testid="model-deviation-notice"
+          data-testid="transcript-notice"
           className="flex w-full max-w-measure items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-aux text-muted-foreground"
         >
           <span className="min-w-0 flex-1 break-words">
@@ -741,7 +714,6 @@ function RenderItemView({
           </span>
         </section>
       );
-    }
     case "unknown":
       return (
         <div className="rounded-lg border border-dashed border-border px-3 py-2 font-mono text-aux text-muted-foreground">

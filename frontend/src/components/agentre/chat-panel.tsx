@@ -95,7 +95,7 @@ import {
 import { computeComposerContextUsage } from "./chat-panel-context-usage";
 import { blockReasonToCta, navigateToTarget } from "./not-chattable";
 import { PermissionModePill, usePermissionMode } from "./permission-mode";
-import { ModelPill, useModelPill } from "./model-pill";
+import { ProviderPill, useProviderPill } from "./model-pill";
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
 import { AgentAvatar, DeviceTag, StatusDot } from "./primitives";
 import { QueuedMessagesBar } from "./queued-messages-bar";
@@ -1322,30 +1322,20 @@ function ChatPanel({
       session?.agentStatus === "running" ||
       session?.agentStatus === "waiting");
 
-  // ModelPill：会话级模型覆盖。已绑 provider（llmProviderKey 非空）→ /v1/models 列表；
-  // 未绑 + 已有会话 → 灰显；未绑 + 新建会话 → 自由输入。新建会话的瞬态选择经
-  // doSend 的 SendRequest.ModelOverride 透传给后端落库（已有会话走 SetChatSessionModel）。
-  // 会话级模型切换 v1 只覆盖四个有实测依据的后端(builtin/claudecode/codex/piagent,
-  // 见规格决策 6);openclaw 切换记为 follow-up,不在 v1 范围 —— 不渲染 ModelPill,
-  // 否则新建 openclaw 会话会出现自由输入 pill,override 被 openclaw runtime 忽略,
-  // 每轮还会误报偏离提示。
-  const modelSwitchable =
+  // ProviderPill:新建会话（sessionId===0）的 LLM 供应商选择器,替换原模型 pill。
+  // 只列与后端兼容的供应商（决策 4）,未绑 agent 也显示（决策 5）;已有会话无任何
+  // 切换器（决策 7）。openclaw 不消费 agentre provider,不渲染（决策 4）。
+  // 拉取按 sessionId===0 && 可选项后端 双重门控 —— 否则打开任意已有会话都会白打一次
+  // ListLLMProviders（对每个已绑供应商的真实 HTTP 请求,不是本地目录）。
+  const providerSelectableBackend =
     activeBackendType === "builtin" ||
     activeBackendType === "claudecode" ||
     activeBackendType === "codex" ||
     activeBackendType === "piagent";
-
-  // provider key 也随 modelSwitchable 门控:useModelPill 一拿到 key 就会去拉
-  // /v1/models（ListLLMModels 是对供应商的真实鉴权 HTTP 请求,不是本地目录）。
-  // 不门控的话,打开任意一个绑了 provider 的 openclaw 会话都会白打一次供应商 API,
-  // 结果没有任何 pill 能消费。
-  const modelPill = useModelPill({
-    sessionId,
-    llmProviderKey: modelSwitchable
-      ? (session?.llmProviderKey ?? newSessionAgent?.llmProviderKey ?? "")
-      : "",
-    initialOverride: session?.modelOverride,
-    providerDefaultModel: session?.providerDefaultModel,
+  const providerPill = useProviderPill({
+    backendType:
+      sessionId === 0 && providerSelectableBackend ? activeBackendType : "",
+    boundProviderKey: newSessionAgent?.llmProviderKey,
   });
 
   // prop 优先，无 prop 时降级到内部派生值。
@@ -1640,9 +1630,11 @@ function ChatPanel({
         permissionMode:
           permissionModeOverride ??
           (isModeSwitchable ? permissionMode.mode : ""),
-        // 新建会话首发前预选：瞬态模型随 SendRequest.ModelOverride 透传落库。
-        // 已有会话忽略（走 SetChatSessionModel），后端 Send 已约定该字段只读新建路径。
-        ...(targetSessionId === 0 ? { modelOverride: modelPill.override } : {}),
+        // 新建会话首发前预选：瞬态供应商随 SendRequest.ProviderKey 透传,与 Session
+        // 一同落库（决策 2）。已有会话后端忽略该字段（B 不允许事后改,无 Setter）。
+        ...(targetSessionId === 0 && providerPill.providerKey
+          ? { providerKey: providerPill.providerKey }
+          : {}),
       };
       if (images.length > 0) {
         sendPayload.images = images.map((image) => ({
@@ -2802,7 +2794,9 @@ function ChatPanel({
                   ) : null
                 }
                 modelSlot={
-                  modelSwitchable ? <ModelPill {...modelPill} /> : null
+                  sessionId === 0 && providerSelectableBackend ? (
+                    <ProviderPill {...providerPill} />
+                  ) : null
                 }
                 onShiftTab={
                   isModeSwitchable && !modeSwitchingDisabled

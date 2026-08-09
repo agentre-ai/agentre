@@ -49,7 +49,6 @@ const appMocks = vi.hoisted(() => ({
   ResolveLocalCommandScope: vi.fn(),
   SendChatMessage: vi.fn(),
   SetChatGoal: vi.fn(),
-  SetChatSessionModel: vi.fn().mockResolvedValue(undefined),
   StartChatGoal: vi.fn(),
   StopChatMessage: vi.fn(),
   TerminalClose: vi.fn(),
@@ -2815,7 +2814,7 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("sessionId=0 + newSessionAgent 时渲染 ModelPill，首发 Send 把瞬态 override 随 SendRequest.ModelOverride 透传", async () => {
+  it("sessionId=0 + newSessionAgent 时渲染供应商选择器，选中后首发 Send 把 providerKey 透传", async () => {
     resetStore();
     mockSessionStore.session = null;
     appMocks.SendChatMessage.mockResolvedValue({
@@ -2824,7 +2823,19 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
       stream: "chat:event:42:1001",
       userMessageId: 1000,
     });
-    // 未绑 provider 的新建会话：弹层走自由输入，pill 可用。
+    // 未绑 provider（CLI 登录态）的新建会话：供应商选择器照常显示（决策 5）。
+    // claudecode 只兼容 anthropic 类型，列表里只有 Acme Claude。
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [
+        {
+          id: 11,
+          providerKey: "acme-anthropic",
+          name: "Acme Claude",
+          type: "anthropic",
+          model: "claude-sonnet-4-5",
+        },
+      ],
+    });
     render(
       <ChatPanel
         sessionId={0}
@@ -2840,14 +2851,13 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
       />,
     );
 
-    const pill = await screen.findByTestId("model-pill");
-    expect(pill).not.toBeDisabled();
+    const pill = await screen.findByTestId("provider-pill");
+    await waitFor(() => expect(pill).not.toBeDisabled());
 
     const user = userEvent.setup();
     await user.click(pill);
-    await user.type(
-      screen.getByLabelText(/Type a model ID/),
-      "cli-model{Enter}",
+    await user.click(
+      within(screen.getByRole("listbox")).getByText("Acme Claude"),
     );
 
     const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
@@ -2861,13 +2871,48 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
         expect.objectContaining({
           sessionId: 0,
           agentId: 7,
-          modelOverride: "cli-model",
+          providerKey: "acme-anthropic",
         }),
       );
     });
   });
 
-  it("openclaw 新建会话不渲染 ModelPill（openclaw 切换记为 follow-up，不在 v1 范围）", () => {
+  it("sessionId=0 + 已绑 agent 的新建会话：未选时 pill 显示 agent 绑定供应商名", async () => {
+    resetStore();
+    mockSessionStore.session = null;
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [
+        {
+          id: 11,
+          providerKey: "acme-anthropic",
+          name: "Acme Claude",
+          type: "anthropic",
+          model: "claude-sonnet-4-5",
+        },
+      ],
+    });
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Eng",
+            agentBackendId: 1,
+            backendType: "claudecode",
+            llmProviderKey: "acme-anthropic",
+          } as never
+        }
+      />,
+    );
+
+    const pill = await screen.findByTestId("provider-pill");
+    await waitFor(() => expect(pill).not.toBeDisabled());
+    // 未选时 pill 显示 agent 绑定供应商名（决策 5：已绑 → 绑定供应商名）。
+    expect(pill).toHaveTextContent("Acme Claude");
+  });
+
+  it("openclaw 新建会话不渲染供应商选择器（openclaw 不消费 agentre provider）", () => {
     resetStore();
     mockSessionStore.session = null;
     render(
@@ -2885,37 +2930,46 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
       />,
     );
 
-    expect(screen.queryByTestId("model-pill")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("provider-pill")).not.toBeInTheDocument();
   });
 
-  it("openclaw 已有会话不渲染 ModelPill（同为 follow-up 范围外）", () => {
+  it("已有会话（含 openclaw）不渲染供应商选择器（决策 7：无 pill、无只读徽标）", () => {
     resetStore();
     mockSessionStore.session = makeSession({
-      backendType: "openclaw",
-      llmProviderKey: "",
+      backendType: "claudecode",
+      llmProviderKey: "acme-anthropic",
     });
     render(<ChatPanel sessionId={42} newSessionAgent={null} />);
 
-    expect(screen.queryByTestId("model-pill")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("provider-pill")).not.toBeInTheDocument();
   });
 
-  it("不可切换后端（openclaw）绑了 provider 时也不拉模型列表：ListLLMModels 是对供应商 /v1/models 的真实网络请求，拉了也没有 pill 能用", async () => {
+  it("已有会话不拉 ListLLMProviders：供应商选择器只在新建会话渲染", async () => {
     resetStore();
     mockSessionStore.session = makeSession({
-      backendType: "openclaw",
-      llmProviderKey: "provider-key",
+      backendType: "claudecode",
+      llmProviderKey: "acme-anthropic",
     });
+    // 本文件无 beforeEach 清 mock，先前测试的调用会累计 —— 这里先清掉只看本测试。
+    appMocks.ListLLMProviders.mockClear();
     appMocks.ListLLMProviders.mockResolvedValue({
-      items: [{ id: 11, providerKey: "provider-key", name: "Acme" }],
+      items: [
+        {
+          id: 11,
+          providerKey: "acme-anthropic",
+          name: "Acme",
+          type: "anthropic",
+          model: "claude-sonnet-4-5",
+        },
+      ],
     });
 
     render(<ChatPanel sessionId={42} newSessionAgent={null} />);
 
     await waitFor(() => {
-      expect(screen.queryByTestId("model-pill")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("provider-pill")).not.toBeInTheDocument();
     });
     expect(appMocks.ListLLMProviders).not.toHaveBeenCalled();
-    expect(appMocks.ListLLMModels).not.toHaveBeenCalled();
   });
 });
 
