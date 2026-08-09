@@ -81,7 +81,6 @@ func TestSend_NewSession_PersistsAndValidatesProviderKey(t *testing.T) {
 		case req := <-runner.requests:
 			require.NotNil(t, req.Provider)
 			assert.Equal(t, "key-99", req.Provider.ProviderKey, "本轮 prov 应取会话所选供应商")
-			assert.Empty(t, req.ModelOverride, "runTurn 不再下发会话级模型覆盖")
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out waiting for runtime request")
 		}

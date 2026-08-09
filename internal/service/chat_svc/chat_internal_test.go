@@ -619,6 +619,53 @@ func installMockPool(t *testing.T, ctrl *gomock.Controller, svc *chatSvc, device
 	return m
 }
 
+// TestPrepareTurnRun_RemoteSendsEffectiveProviderKey 钉死决策 9 桌面侧:远端 backend
+// 组装 RunRequest 时 wire 必须带 effectiveProviderKey(会话 provider_key 优先),
+// 而不是 agent 绑定 —— daemon 按它自解。
+func TestPrepareTurnRun_RemoteSendsEffectiveProviderKey(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	svc := &chatSvc{}
+	installMockPool(t, ctrl, svc, 7)
+
+	sess := &chat_entity.Session{ID: 100, AgentID: 7, ProviderKey: "session-key"}
+	a := &agent_entity.Agent{ID: 7, AgentBackendID: 12}
+	be := &agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "agent-bound-key",
+		DeviceID: "7",
+	}
+
+	prepared, err := svc.prepareTurnRun(context.Background(), sess, a, be, nil, nil, nil, "", false, false)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	assert.Equal(t, "session-key", prepared.req.LLMProviderKey, "远端应透传 effectiveProviderKey(会话 provider_key 优先)")
+	assert.Nil(t, prepared.req.Provider, "远端不跨机器携带明文 APIKey")
+}
+
+// TestPrepareTurnRun_RemoteNoSessionProviderKeyFallsBackToAgentBinding 钉死决策 9
+// 边界:会话无 provider_key 时 effectiveProviderKey = agent 绑定。
+func TestPrepareTurnRun_RemoteNoSessionProviderKeyFallsBackToAgentBinding(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	svc := &chatSvc{}
+	installMockPool(t, ctrl, svc, 7)
+
+	sess := &chat_entity.Session{ID: 101, AgentID: 7, ProviderKey: ""}
+	a := &agent_entity.Agent{ID: 7, AgentBackendID: 12}
+	be := &agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "agent-bound-key",
+		DeviceID: "7",
+	}
+
+	prepared, err := svc.prepareTurnRun(context.Background(), sess, a, be, nil, nil, nil, "", false, false)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	assert.Equal(t, "agent-bound-key", prepared.req.LLMProviderKey, "无会话 provider_key 时回落到 agent 绑定")
+	assert.Nil(t, prepared.req.Provider)
+}
+
 // TestBorrowRemoteRuntime_SharesConnAcrossSessions verifies the refcount cache:
 // 同一 device 多次借出返回同一 *remote.Runtime 实例;release 减计数,归零摘出 map。
 func TestBorrowRemoteRuntime_SharesConnAcrossSessions(t *testing.T) {

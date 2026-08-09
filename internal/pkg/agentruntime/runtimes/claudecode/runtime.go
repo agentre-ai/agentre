@@ -558,13 +558,6 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 		cur = nil
 	}
 
-	// 模型是启动期 flag:effectiveModel 变化 → evict + 重 spawn(镜像上面
-	// launchedEffort 先例)。模型未变则走下方复用分支,LRU 缓存保留。
-	if cur != nil && cur.launchedModel != claudeEffectiveModel(req) {
-		r.cache.Remove(key)
-		cur = nil
-	}
-
 	if cur != nil {
 		// 复用现有 CLI 子进程:不重新 spawn,因此本轮没有新的 --permission-mode
 		// 下发。回吐当前缓存的 mode 让 chat_svc 写库幂等(值不变即 noop)。
@@ -646,7 +639,6 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 		pool:           r.cache,
 		poolKey:        key,
 		launchedEffort: req.Backend.ReasoningEffort,
-		launchedModel:  claudeEffectiveModel(req),
 		permissionMode: runtimeMode,
 		tasks:          newTaskAggregator(),
 	}

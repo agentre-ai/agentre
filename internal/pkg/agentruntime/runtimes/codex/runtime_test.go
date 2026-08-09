@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -218,8 +217,8 @@ func TestRun_ModelResolution(t *testing.T) {
 		// sess.Model() 只在 app-server 的 thread start/resume 结果里带 model 时才有值
 		// (pkg/codex ensureThread → s.model = thread.Model)。观测不到时不能拿死常量
 		// defaultModelID 冒充实际模型:那既会把一个从没跑过的模型 id 写进
-		// assistantMsg.Model,又会让 chat_svc 的偏离提示把「观测不到」误判成
-		// 「所选 X 未生效,实际 gpt-5.5」——每一轮都误报。
+		// assistantMsg.Model,又会让 chat_svc 把「观测不到」误判成「所选模型未生效」
+		// —— 每一轮都误报。
 		Convey("Given app-server does not report model, when a provider model is configured, then it is reported instead of the hardcoded default", func() {
 			restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
 				return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-silent"}, nil
@@ -243,9 +242,9 @@ func TestRun_ModelResolution(t *testing.T) {
 			So(result.Model, ShouldEqual, "glm-4.6")
 		})
 
-		Convey("Given app-server does not report model, when an override is requested, then the override is reported (no false deviation notice)", func() {
+		Convey("Given the thread reports its actual model (sess.Model), then RunResult.Model reports the thread actual", func() {
 			restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
-				return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-silent"}, nil
+				return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-actual", model: "gpt-5.5"}, nil
 			})
 			defer restore()
 
@@ -254,35 +253,10 @@ func TestRun_ModelResolution(t *testing.T) {
 					Type:    string(agent_backend_entity.TypeCodex),
 					EnvJSON: "{}",
 				},
-				Provider:      &llm_provider_entity.LLMProvider{Model: "gpt-5.4"},
-				ModelOverride: "glm-4.6",
-				SessionID:     1,
-				Cwd:           t.TempDir(),
-				UserText:      "hello",
-			})
-			So(err, ShouldBeNil)
-			for range events {
-			}
-
-			So(result.Model, ShouldEqual, "glm-4.6")
-		})
-
-		Convey("Given ModelOverride resumes the thread onto a new model, then RunResult.Model reports the thread actual (sess.Model)", func() {
-			restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
-				return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-override", model: "gpt-5.5"}, nil
-			})
-			defer restore()
-
-			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
-				Backend: &agent_backend_entity.AgentBackend{
-					Type:    string(agent_backend_entity.TypeCodex),
-					EnvJSON: "{}",
-				},
-				Provider:      &llm_provider_entity.LLMProvider{Model: "gpt-5.4"},
-				ModelOverride: "gpt-5.5",
-				SessionID:     1,
-				Cwd:           t.TempDir(),
-				UserText:      "hello",
+				Provider:  &llm_provider_entity.LLMProvider{Model: "gpt-5.4"},
+				SessionID: 1,
+				Cwd:       t.TempDir(),
+				UserText:  "hello",
 			})
 			So(err, ShouldBeNil)
 			for range events {
@@ -293,34 +267,34 @@ func TestRun_ModelResolution(t *testing.T) {
 	})
 }
 
-// TestRun_ModelChangeEvictsAndRespawns 锁住会话级模型覆盖在 codex 的语义:app-server
-// 进程会被 CLISessionPool 跨轮复用,而 WithModel 绑定在 Client 创建时 —— 模型变了必须
-// 像 claudecode 的 launchedEffort/launchedModel 先例那样 evict + 重 spawn,否则下一轮
-// 复用池里旧模型进程,切换不生效(RunResult.Model 仍旧模型,偏离提示误报)。
+// TestRun_ModelChangeEvictsAndRespawns 锁住 codex 的模型 evict 语义:app-server 进程会
+// 被 CLISessionPool 跨轮复用,而 WithModel 绑定在 Client 创建时 —— provider.Model 变了
+// (会话选供应商换绑定等)必须 evict + 重 spawn,否则下一轮复用池里旧模型进程,模型不生效
+// (RunResult.Model 仍旧模型)。#26 会话级 override 已移除,模型变化只看 provider.Model。
 func TestRun_ModelChangeEvictsAndRespawns(t *testing.T) {
-	Convey("Given 同一 codex 会话两轮用不同 ModelOverride", t, func() {
+	Convey("Given 同一 codex 会话两轮 provider.Model 不同", t, func() {
 		var spawnCount int32
 		restore := SetSessionFactoryForTest(func(req agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
 			atomic.AddInt32(&spawnCount, 1)
 			model := "gpt-5.5"
-			if om := strings.TrimSpace(req.ModelOverride); om != "" {
-				model = om
+			if req.Provider != nil {
+				model = req.Provider.Model
 			}
 			return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-x", model: model}, nil
 		})
 		defer restore()
 
 		r := New()
-		run := func(override string) *agentruntime.RunResult {
+		run := func(providerModel string) *agentruntime.RunResult {
 			events, result, err := r.Run(context.Background(), agentruntime.RunRequest{
 				Backend: &agent_backend_entity.AgentBackend{
 					Type:    string(agent_backend_entity.TypeCodex),
 					EnvJSON: "{}",
 				},
-				SessionID:     77,
-				Cwd:           t.TempDir(),
-				UserText:      "hi",
-				ModelOverride: override,
+				Provider:  &llm_provider_entity.LLMProvider{Model: providerModel},
+				SessionID: 77,
+				Cwd:       t.TempDir(),
+				UserText:  "hi",
 			})
 			So(err, ShouldBeNil)
 			for range events {
@@ -328,7 +302,7 @@ func TestRun_ModelChangeEvictsAndRespawns(t *testing.T) {
 			return result
 		}
 
-		Convey("When 首轮 override=A, Then 线程模型为 A", func() {
+		Convey("When 首轮 provider.Model=A, Then 线程模型为 A", func() {
 			So(run("gpt-5.5").Model, ShouldEqual, "gpt-5.5")
 			So(atomic.LoadInt32(&spawnCount), ShouldEqual, 1)
 		})
@@ -339,7 +313,7 @@ func TestRun_ModelChangeEvictsAndRespawns(t *testing.T) {
 			So(atomic.LoadInt32(&spawnCount), ShouldEqual, 1)
 		})
 
-		Convey("When 第二轮 override 变化为 B, Then evict + 重 spawn,线程模型为 B", func() {
+		Convey("When 第二轮 provider.Model 变化为 B, Then evict + 重 spawn,线程模型为 B", func() {
 			run("gpt-5.5")
 			second := run("gpt-5.6")
 			So(second.Model, ShouldEqual, "gpt-5.6")

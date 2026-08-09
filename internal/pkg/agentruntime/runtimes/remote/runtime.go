@@ -466,6 +466,7 @@ func (p *remotePreparedRun) Start(ctx context.Context) (<-chan agentruntime.Even
 	}
 	p.session.mu.Lock()
 	p.session.result.LaunchPermissionMode = ack.LaunchPermissionMode
+	p.session.result.ProviderFallbackKey = ack.ProviderFallbackKey
 	p.session.mu.Unlock()
 	logger.Ctx(ctx).Info("remote runtime: Pi generation started",
 		zap.Int64("sessionId", ack.SessionID),
@@ -522,6 +523,7 @@ func (r *Runtime) runDirect(ctx context.Context, req agentruntime.RunRequest) (<
 	sess.providerSessionID = strings.TrimSpace(ack.ProviderSessionID)
 	sess.result.ProviderSessionID = ack.ProviderSessionID
 	sess.result.LaunchPermissionMode = ack.LaunchPermissionMode
+	sess.result.ProviderFallbackKey = ack.ProviderFallbackKey
 	sess.mu.Unlock()
 	if ack.SessionID != req.SessionID {
 		r.mu.Lock()
@@ -574,7 +576,6 @@ func buildRunParams(req agentruntime.RunRequest) (wire.RunParams, error) {
 		MCPServers:        req.MCPServers,
 		EnabledPlugins:    req.EnabledPlugins,
 		LLMProviderKey:    req.LLMProviderKey,
-		ModelOverride:     req.ModelOverride,
 	}, nil
 }
 

@@ -231,10 +231,8 @@ type RunParams struct {
 	EnabledPlugins map[string]bool `json:"enabledPlugins,omitempty"`
 	// LLMProviderKey 是 desktop 端关联的 provider stable key（UUID）。
 	// daemon 用它做 ProviderLookup（FindByKey），不需要 desktop 越线传 APIKey。
+	// 决策 9 后它携带 effectiveProviderKey（会话 provider_key 优先），daemon 自解。
 	LLMProviderKey string `json:"llmProviderKey,omitempty"`
-	// ModelOverride 是本会话的模型覆盖值（''=跟随供应商默认），随 wire 过线，
-	// daemon 侧组装 RunRequest 时回填，让远端会话的模型切换同样生效。
-	ModelOverride string `json:"modelOverride,omitempty"`
 }
 
 // MCPProxyRequest 是 daemon→desktop 隧道里一次 MCP HTTP 请求的封装。daemon 把 CLI 子进程
@@ -265,10 +263,16 @@ type MCPProxyResponse struct {
 // RunResult.LaunchPermissionMode,让 chat_svc 在主进程侧持久化到
 // session.PermissionModeAtLaunch。空串 = runtime 未指定(其它 backend / 复
 // 用现有 CLI 进程)。
+//
+// ProviderFallbackKey 是决策 9 的回退信号:wire 带 effectiveProviderKey(会话
+// provider_key 优先),daemon 自解时该 key 缺失/非 active → 回退 agent 绑定(或 CLI
+// 登录态)执行,并把被回退的 key 放进此字段回传。非空时桌面端据此追加一条持久
+// notice(与本地 Q3 一致);空串 = 未回退。
 type RunAck struct {
 	SessionID            int64  `json:"sessionId"`
 	ProviderSessionID    string `json:"providerSessionId,omitempty"`
 	LaunchPermissionMode string `json:"launchPermissionMode,omitempty"`
+	ProviderFallbackKey  string `json:"providerFallbackKey,omitempty"`
 }
 
 // SteerParams 等同 agentruntime.Steerer.Steer 的入参。

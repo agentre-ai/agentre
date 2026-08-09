@@ -345,14 +345,12 @@ func gatewayDeps(req agentruntime.RunRequest) CLIDeps {
 	return CLIDeps{Token: req.GatewayToken, GatewayURL: req.GatewayURL}
 }
 
-// codexEffectiveModel 统一模型解析规则(codex 版):effectiveModel =
-// firstNonEmpty(req.ModelOverride, req.Provider.Model)。codex 无 backend 默认模型字段
-// (DefaultModel 仅 claudecode 用),所以规则只取前两项,与规格 §模型解析与各后端生效一致。
-// 它是 buildLaunchSpec 与 acquireSession 判「模型变化 → evict」的同一取值源。
+// codexEffectiveModel 统一模型解析规则(codex 版):#26 会话级模型覆盖已移除,
+// effectiveModel 直接回落供应商默认(req.Provider.Model)。codex 无 backend 默认模型字段
+// (DefaultModel 仅 claudecode 用),CLI 登录态(provider=nil)返回空,交由调用方按
+// defaultModelID 兜底。它是 buildLaunchSpec 与 acquireSession 判「模型变化 → evict」
+// 的同一取值源。
 func codexEffectiveModel(req agentruntime.RunRequest) string {
-	if m := strings.TrimSpace(req.ModelOverride); m != "" {
-		return m
-	}
 	if req.Provider != nil {
 		return strings.TrimSpace(req.Provider.Model)
 	}

@@ -28,9 +28,11 @@ import (
 )
 
 // directRunRunner 记录下发的 RunRequest 并回一个固定实际模型，供 runTurn 直连测试用。
+// providerFallbackKey 非空时模拟远端 daemon 回传的回退信号(决策 9)。
 type directRunRunner struct {
-	request     chan agentruntime.RunRequest
-	actualModel string
+	request             chan agentruntime.RunRequest
+	actualModel         string
+	providerFallbackKey string
 }
 
 func (*directRunRunner) Capabilities() capability.Capabilities {
@@ -41,7 +43,7 @@ func (r *directRunRunner) Run(_ context.Context, req agentruntime.RunRequest) (<
 	r.request <- req
 	events := make(chan agentruntime.Event)
 	close(events)
-	return events, &agentruntime.RunResult{Model: r.actualModel}, nil
+	return events, &agentruntime.RunResult{Model: r.actualModel, ProviderFallbackKey: r.providerFallbackKey}, nil
 }
 
 type directRunMocks struct {
@@ -118,7 +120,7 @@ func TestRunTurn_ProviderFallbackAppendsPersistentNotice(t *testing.T) {
 
 	select {
 	case req := <-runner.request:
-		assert.Empty(t, req.ModelOverride, "#26 已移除,runTurn 不再下发会话级模型覆盖")
+		assert.Equal(t, "key-21", req.Provider.ProviderKey, "回退后 prov 应为 agent 绑定")
 	default:
 		t.Fatal("runtime did not receive a request")
 	}
@@ -188,7 +190,7 @@ func TestRunTurn_NoModelDeviationNotice(t *testing.T) {
 
 	select {
 	case req := <-runner.request:
-		assert.Empty(t, req.ModelOverride)
+		assert.Equal(t, "key-99", req.Provider.ProviderKey, "本轮 prov 应为会话所选供应商")
 	default:
 		t.Fatal("runtime did not receive a request")
 	}
@@ -196,4 +198,61 @@ func TestRunTurn_NoModelDeviationNotice(t *testing.T) {
 	persistedBlocks, err := persisted.GetBlocks()
 	require.NoError(t, err)
 	require.Empty(t, persistedBlocks, "不再存在模型偏离提示,transcript 无 notice 块")
+}
+
+// TestRunTurn_RemoteFallbackSignalAppendsPersistentNotice 钉死决策 9 桌面侧收尾：远端
+// daemon 自解 effectiveProviderKey 失败、回退 agent 绑定后经 ack → RunResult 回传的
+// providerFallbackKey,runTurn 必须据此在 transcript 追加同一条持久 notice(与本地 Q3
+// 一致);未回退时(result.ProviderFallbackKey 为空)不追加。
+func TestRunTurn_RemoteFallbackSignalAppendsPersistentNotice(t *testing.T) {
+	m, ctx := setupDirectRunTest(t)
+	s := NewChat(NoopEmitter{}).(*chatSvc)
+	runner := &directRunRunner{
+		request:             make(chan agentruntime.RunRequest, 1),
+		providerFallbackKey: "gone-provider",
+	}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, runner)
+	t.Cleanup(restore)
+
+	sess := &chat_entity.Session{
+		ID: 100, AgentID: 7, ProviderKey: "gone-provider", Status: consts.ACTIVE,
+	}
+	a := &agent_entity.Agent{ID: 7, AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`}
+	be := &agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}
+	prov := &llm_provider_entity.LLMProvider{
+		ProviderKey: "key-21", Type: string(llm_provider_entity.TypeAnthropic), Model: "provider-default", Status: consts.ACTIVE,
+	}
+	assistant := &chat_entity.Message{ID: 1001, SessionID: 100, Role: "assistant", BlocksJSON: "[]"}
+
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+	var persisted *chat_entity.Message
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, msg *chat_entity.Message) error {
+			msgCopy := *msg
+			persisted = &msgCopy
+			return nil
+		}).AnyTimes()
+
+	s.runTurn(ctx, sess, a, be, prov, nil, assistant, "stream", "", false, nil, turnExtras{})
+
+	select {
+	case <-runner.request:
+	default:
+		t.Fatal("runtime did not receive a request")
+	}
+	require.NotNil(t, persisted)
+	persistedBlocks, err := persisted.GetBlocks()
+	require.NoError(t, err)
+	require.Len(t, persistedBlocks, 1, "回退信号必须追加一条持久 notice")
+	notice, ok := persistedBlocks[0].(blocks.NoticeBlock)
+	require.True(t, ok)
+	assert.Equal(t, "info", notice.Level)
+	var payload struct {
+		ProviderKey string `json:"providerKey"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(notice.Text), &payload))
+	assert.Equal(t, "gone-provider", payload.ProviderKey, "持久 notice 携带被回退的会话 provider_key")
 }

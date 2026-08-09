@@ -761,6 +761,17 @@ func decodeProviderFallback(text string) (providerKey string, ok bool) {
 	return p.ProviderKey, true
 }
 
+// firstNonEmpty 返回第一个非空白参数(全空白 → "")。会话级 provider_key 优先于
+// agent 绑定取 effectiveProviderKey 用(决策 3/9)。
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // noticeBlockToChatBlock 把持久化的 blocks.NoticeBlock 投影成前端 ChatBlock。
 // 供应商回退提示(本功能产出的 {"providerKey":..} 小 JSON)解回 ProviderKey、Text 置空
 // —— 前端走 t() 渲染;非结构化旧数据原样透传 Text。
@@ -3599,8 +3610,9 @@ func (s *chatSvc) prepareTurnRun(
 	if be.IsRemote() {
 		// 远端 backend: daemon 自家有 ProviderLookup + Gateway,该自家解。
 		// GatewayURL/Token 是 desktop 的 127.0.0.1，Provider 又含明文 APIKey，
-		// 都不跨机器；daemon 按 LLMProviderKey 从自己的配置解析。
-		req.LLMProviderKey = be.LLMProviderKey
+		// 都不跨机器；wire 透传 effectiveProviderKey（会话 provider_key 优先，
+		// 决策 9），daemon 按它从自己的配置解析；无会话 key 时回落 agent 绑定。
+		req.LLMProviderKey = firstNonEmpty(sess.ProviderKey, be.LLMProviderKey)
 		req.Provider = nil
 	} else if shouldSignChatGateway(be) {
 		// Claude Code local 需要 gateway token 给 PostToolUse hook；Codex local
@@ -3927,11 +3939,20 @@ func (s *chatSvc) runTurn(
 		if result.ContextWindow > 0 {
 			sess.ContextWindow = result.ContextWindow
 		}
-		// 会话所选供应商缺失/停用/不兼容、本轮回退 agent 绑定(spec 决策 8):追加一条
-		// 持久 notice。必须排在 assistantMsg.Model 被 result.Model 覆盖之后与 SetBlocks
-		// 之前。
+		// 会话所选供应商缺失/停用/不兼容、本轮回退 agent 绑定(spec 决策 8,本地):追加
+		// 一条持久 notice。必须排在 assistantMsg.Model 被 result.Model 覆盖之后与
+		// SetBlocks 之前。
 		if extras.providerFallbackNotice != nil {
 			finalBlocks = append(finalBlocks, *extras.providerFallbackNotice)
+		}
+		// 远端(决策 9):daemon 按 wire 的 effectiveProviderKey 自解失败、回退 agent
+		// 绑定后经 ack 回传被回退的 provider_key,这里据此追加同一条持久 notice(与
+		// 本地 Q3 一致;provider_key 不清除)。
+		if result.ProviderFallbackKey != "" {
+			finalBlocks = append(finalBlocks, blocks.NoticeBlock{
+				Level: "info",
+				Text:  encodeProviderFallback(result.ProviderFallbackKey),
+			})
 		}
 	}
 	_ = assistantMsg.SetBlocks(finalBlocks)
