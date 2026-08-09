@@ -86,12 +86,19 @@ func insertExecTargets(tx *gorm.DB, agentID int64, targets []*agent_entity.Agent
 	}
 	rows := make([]*agent_entity.AgentExecTarget, 0, len(targets))
 	for i, t := range targets {
-		rows = append(rows, &agent_entity.AgentExecTarget{
+		row := &agent_entity.AgentExecTarget{
 			AgentID:        agentID,
 			AgentBackendID: t.AgentBackendID,
 			SortOrder:      i,
 			SkillsJSON:     t.SkillsJSON,
-		})
+		}
+		// 同步标识在行创建时就地生成（R1/R12a）。注意：Replace 是整表
+		// delete-then-reinsert（见本文件 replaceExecTargets 的注释），因此每次
+		// 替换都会给幸存下来的档重新生成一个新标识——执行目标行的跨机身份稳定
+		// 依赖这套写法先改成按档 diff 更新，属于后续任务（真正的上行/下行落地）
+		// 要解决的问题，本任务只保证列存在且新建行不为空。
+		row.EnsureSyncID()
+		rows = append(rows, row)
 	}
 	return tx.Create(&rows).Error
 }

@@ -88,10 +88,15 @@ func TestExecTargetReplace(t *testing.T) {
 	mock.ExpectExec("DELETE FROM `agent_exec_targets` WHERE agent_id = \\?").
 		WithArgs(int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	// 参数顺序跟随 AgentExecTarget 的字段声明顺序:agent_id/agent_backend_id/
+	// sort_order/skills_json 之后是内嵌的 SyncMeta 六列——sync_id 在
+	// insertExecTargets 里就地生成(R1/R12a),其余五项是未触碰的零值。
 	mock.ExpectExec("INSERT INTO `agent_exec_targets`").
 		WithArgs(
 			int64(42), int64(7), 0, `[{"id":"superpowers@x","enabled":true}]`,
+			sqlmock.AnyArg(), int64(0), int64(0), int64(0), "", int64(0),
 			int64(42), int64(9), 1, `[]`,
+			sqlmock.AnyArg(), int64(0), int64(0), int64(0), "", int64(0),
 		).
 		WillReturnResult(sqlmock.NewResult(2, 2))
 	mock.ExpectCommit()
@@ -127,7 +132,10 @@ func TestExecTargetReplace_DroppingATargetDropsItsSkills(t *testing.T) {
 		WithArgs(int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO `agent_exec_targets`").
-		WithArgs(int64(42), int64(9), 0, `[{"id":"kept@x","enabled":true}]`).
+		WithArgs(
+			int64(42), int64(9), 0, `[{"id":"kept@x","enabled":true}]`,
+			sqlmock.AnyArg(), int64(0), int64(0), int64(0), "", int64(0),
+		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -222,7 +230,10 @@ func TestCreateWritesSingleExecTarget(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT INTO `agents`").WillReturnResult(sqlmock.NewResult(42, 1))
 	mock.ExpectExec("INSERT INTO `agent_exec_targets`").
-		WithArgs(int64(42), int64(7), 0, `[{"id":"superpowers@x","enabled":true}]`).
+		WithArgs(
+			int64(42), int64(7), 0, `[{"id":"superpowers@x","enabled":true}]`,
+			sqlmock.AnyArg(), int64(0), int64(0), int64(0), "", int64(0),
+		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -256,7 +267,10 @@ func TestUpdateReplacesExecTarget(t *testing.T) {
 		WithArgs(int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO `agent_exec_targets`").
-		WithArgs(int64(42), int64(9), 0, `[{"id":"opsctl@x","enabled":true}]`).
+		WithArgs(
+			int64(42), int64(9), 0, `[{"id":"opsctl@x","enabled":true}]`,
+			sqlmock.AnyArg(), int64(0), int64(0), int64(0), "", int64(0),
+		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 

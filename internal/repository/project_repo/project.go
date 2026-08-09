@@ -49,11 +49,16 @@ func (r *projectRepo) Create(ctx context.Context, p *project_entity.Project) err
 		p.Createtime = now
 	}
 	p.Updatetime = now
+	// 同步标识在行创建时就地生成，未登录期间也照常写入（R1/R12a）。
+	p.EnsureSyncID()
 	return db.Ctx(ctx).Create(p).Error
 }
 
 func (r *projectRepo) Update(ctx context.Context, p *project_entity.Project) error {
 	p.Updatetime = time.Now().UnixMilli()
+	// 迁移前已存在、还没有标识的历史行在下一次落库时补齐（JIT），已有标识的行
+	// 原样保留（R1：终身不变）。
+	p.EnsureSyncID()
 	return db.Ctx(ctx).Save(p).Error
 }
 

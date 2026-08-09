@@ -34,6 +34,8 @@ func (r *projectAgentRepo) Add(ctx context.Context, projectID, agentID int64) er
 		AgentID:   agentID,
 		JoinedAt:  time.Now().UnixMilli(),
 	}
+	// 同步标识在行创建时就地生成，未登录期间也照常写入（R1/R12a）。
+	row.EnsureSyncID()
 	// 联合主键存在时报错 —— service 层用 ListByProject 预检或忽略；此 repo 不做 upsert。
 	return db.Ctx(ctx).Create(row).Error
 }

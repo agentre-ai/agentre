@@ -9,6 +9,7 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/cago-frame/cago/pkg/i18n"
 
+	"github.com/agentre-ai/agentre/internal/model/entity/syncmeta_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 )
 
@@ -53,6 +54,8 @@ type Agent struct {
 	Pinned     bool   `gorm:"column:pinned;type:boolean;not null;default:0"`
 	Createtime int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
 	Updatetime int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
+	// SyncMeta 账号级同步元数据（R1，366 行）。
+	syncmeta_entity.SyncMeta `gorm:"embedded"`
 }
 
 func (*Agent) TableName() string { return "agents" }

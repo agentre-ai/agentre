@@ -56,6 +56,8 @@ func (r *projectLocationRepo) Create(ctx context.Context, p *project_location_en
 	if p.Status == 0 {
 		p.Status = consts.ACTIVE
 	}
+	// 同步标识在行创建时就地生成，未登录期间也照常写入（R1/R12a）。
+	p.EnsureSyncID()
 	return db.Ctx(ctx).Create(p).Error
 }
 

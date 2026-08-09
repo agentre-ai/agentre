@@ -12,6 +12,7 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/cago-frame/cago/pkg/i18n"
 
+	"github.com/agentre-ai/agentre/internal/model/entity/syncmeta_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 )
 
@@ -33,6 +34,9 @@ type Project struct {
 	Status           int   `gorm:"column:status;type:int;not null;default:1"`
 	Createtime       int64 `gorm:"column:createtime;type:bigint;not null;default:0"`
 	Updatetime       int64 `gorm:"column:updatetime;type:bigint;not null;default:0"`
+	// SyncMeta 账号级同步元数据（R1，366 行）。注意 Path 本身不加同步元数据、不
+	// 参与同步载荷（决策 6）——这一份是整行（名称/图标/颜色/层级/排序等）的。
+	syncmeta_entity.SyncMeta `gorm:"embedded"`
 }
 
 func (*Project) TableName() string { return "projects" }

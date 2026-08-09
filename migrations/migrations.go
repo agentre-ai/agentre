@@ -36,5 +36,7 @@ func migrationList() []*gormigrate.Migration {
 		migration202608080013(), // project_locations 自然键改为 (project, daemon_fingerprint)
 		migration202608080014(), // agent_exec_targets.skills_json（技能授权下沉到执行目标行）
 		migration202608080015(), // chat_sessions.exec_agent_backend_id（会话钉住的执行目标档）
+		migration202608080016(), // 账号级七张表加同步元数据（sync_id 部分唯一索引等六列）
+		migration202608080017(), // 新建 sync_lost_changes / sync_outbound_queue / sync_inbound_queue
 	}
 }

@@ -1,6 +1,10 @@
 package agent_entity
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/agentre-ai/agentre/internal/model/entity/syncmeta_entity"
+)
 
 // AgentExecTarget Agent 有序执行目标列表里的一项（R15）。列表的每一项是一个
 // backend；backend 自己的 device_id 决定这一档落在哪台机器上（空 = 当前桌面端，
@@ -16,6 +20,8 @@ type AgentExecTarget struct {
 	AgentBackendID int64  `gorm:"column:agent_backend_id;type:bigint;not null"`
 	SortOrder      int    `gorm:"column:sort_order;type:int;not null;default:0"`
 	SkillsJSON     string `gorm:"column:skills_json;type:text;not null;default:'[]'"`
+	// SyncMeta 账号级同步元数据（R1，366 行）。
+	syncmeta_entity.SyncMeta `gorm:"embedded"`
 }
 
 func (*AgentExecTarget) TableName() string { return "agent_exec_targets" }

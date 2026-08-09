@@ -53,6 +53,8 @@ type agentRepo struct{}
 // a.SkillsJSON 是仓储写入载荷（agent_entity.Agent.SkillsJSON 字段注释）：技能授权
 // 的存放位置已下沉到执行目标行（R15e），这里只是把调用方给的值原样转落到那一行。
 func (r *agentRepo) Create(ctx context.Context, a *agent_entity.Agent) error {
+	// 同步标识在行创建时就地生成，未登录期间也照常写入（R1/R12a）。
+	a.EnsureSyncID()
 	return db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(a).Error; err != nil {
 			return err
@@ -64,6 +66,9 @@ func (r *agentRepo) Create(ctx context.Context, a *agent_entity.Agent) error {
 // Update 落 Agent 行，并把执行目标列表整表替换成当前的单元素列表（带着
 // a.SkillsJSON，见 Create 的注释）。
 func (r *agentRepo) Update(ctx context.Context, a *agent_entity.Agent) error {
+	// 迁移前已存在、还没有标识的历史行在下一次落库时补齐（JIT），已有标识的行
+	// 原样保留（R1：终身不变）。
+	a.EnsureSyncID()
 	return db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(a).Error; err != nil {
 			return err

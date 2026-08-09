@@ -34,6 +34,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_repo"
+	"github.com/agentre-ai/agentre/internal/repository/syncqueue_repo"
 	"github.com/agentre-ai/agentre/internal/service/agent_backend_svc"
 	"github.com/agentre-ai/agentre/internal/service/app_settings_svc"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
@@ -125,6 +126,11 @@ func Init(ctx context.Context) (*Runtime, error) {
 	project_repo.RegisterProject(project_repo.NewProject())
 	project_repo.RegisterProjectAgent(project_repo.NewProjectAgent())
 	project_location_repo.RegisterProjectLocation(project_location_repo.NewProjectLocation())
+	// 本地同步骨架三张表（387-390 行）：真正的入队/出队/上行/下行是后续任务，
+	// 这里只注册仓储读写口，让它们有地方落脚。
+	syncqueue_repo.RegisterLostChange(syncqueue_repo.NewLostChange())
+	syncqueue_repo.RegisterOutboundQueue(syncqueue_repo.NewOutboundQueue())
+	syncqueue_repo.RegisterInboundQueue(syncqueue_repo.NewInboundQueue())
 	project_svc.SetDefault(project_svc.New())
 	issue_repo.RegisterIssue(issue_repo.NewIssue())
 	issue_repo.RegisterLabel(issue_repo.NewLabel())

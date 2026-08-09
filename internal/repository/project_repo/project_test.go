@@ -36,6 +36,36 @@ func TestProjectCreate(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestProjectCreate_GivenNoLogin_ProducesNoObservableDifference R12:未登录时
+// 本规格引入的一切都不存在——新增的同步元数据列照常本地写入(sync_id 就地生成,
+// R1/R12a),但不改变既有的读写路径,也不产生任何额外副作用。这里没有给
+// server_state_repo 注册任何实现,若 Create 曾经尝试读取登录态就会在这里 panic;
+// 全部既有业务列(parent_id/name/.../updatetime)与 sync_account_id 等五项账号级
+// 元数据原样是未触碰的零值,只有 sync_id 被生成。
+func TestProjectCreate_GivenNoLogin_ProducesNoObservableDifference(t *testing.T) {
+	ctx, mock, repo := setupProjectRepo(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO `projects`").
+		WithArgs(
+			int64(0), "Agentre", "", "", "", "/Users/foo/Code/agentre", false, 1, consts.ACTIVE,
+			sqlmock.AnyArg(), sqlmock.AnyArg(), // createtime/updatetime: 本地写入时间,与登录态无关
+			sqlmock.AnyArg(), int64(0), int64(0), int64(0), "", int64(0), // sync_id 生成,其余五项原样零值
+		).
+		WillReturnResult(sqlmock.NewResult(42, 1))
+	mock.ExpectCommit()
+
+	p := &project_entity.Project{
+		Name:      "Agentre",
+		Path:      "/Users/foo/Code/agentre",
+		SortOrder: 1,
+		Status:    consts.ACTIVE,
+	}
+	require.NoError(t, repo.Create(ctx, p))
+	assert.NoError(t, mock.ExpectationsWereMet())
+	assert.NotEmpty(t, p.SyncID, "R1:行创建时就地生成标识,不因未登录而跳过")
+	assert.Equal(t, int64(0), p.SyncAccountID, "未登录时不认领任何账号")
+}
+
 func TestProjectFindByName(t *testing.T) {
 	ctx, mock, repo := setupProjectRepo(t)
 	mock.ExpectQuery("SELECT \\* FROM `projects` WHERE parent_id = \\? AND name = \\? AND status = \\? ORDER BY `projects`.`id` LIMIT \\?").

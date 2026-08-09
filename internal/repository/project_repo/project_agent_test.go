@@ -21,8 +21,14 @@ func setupProjectAgentRepo(t *testing.T) (context.Context, sqlmock.Sqlmock, proj
 func TestProjectAgentAdd(t *testing.T) {
 	ctx, mock, repo := setupProjectAgentRepo(t)
 	mock.ExpectBegin()
+	// 参数顺序跟随 ProjectAgent 的字段声明顺序：project_id/agent_id/joined_at 之后
+	// 是内嵌的 SyncMeta 六列——sync_id 在 Add() 里就地生成(R1/R12a),其余五项是
+	// 未触碰的零值(账号认领/版本号/来源等留给后续任务)。
 	mock.ExpectExec("INSERT INTO `project_agents`").
-		WithArgs(int64(7), int64(42), sqlmock.AnyArg()).
+		WithArgs(
+			int64(7), int64(42), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), int64(0), int64(0), int64(0), "", int64(0),
+		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
