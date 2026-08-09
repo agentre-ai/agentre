@@ -513,7 +513,10 @@ function QuotaPanel({
   return (
     <div>
       <div className="flex items-center gap-1.5 border-b border-border px-3 py-2">
-        <Timer className="size-3.5 shrink-0 text-foreground" />
+        <Timer
+          className="size-3.5 shrink-0 text-foreground"
+          aria-hidden="true"
+        />
         <span className="text-xs font-semibold text-foreground">
           {t("chat.quota.panel.title")}
         </span>
