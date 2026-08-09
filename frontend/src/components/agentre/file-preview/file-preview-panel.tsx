@@ -54,6 +54,18 @@ type Props = {
 };
 
 /**
+ * targetKey 是一次取数的目标身份：**哪个会话的哪个文件**。
+ *
+ * 必须带上 sessionId 而不只是 path——面板不随会话切换重挂载（chat-panel 把
+ * sessionId 当普通 prop 传，没有 key），两个会话恰好都开着同一个 relPath 时，只看
+ * path 的「结果已就位」闸门在切换的那一帧读起来是成立的，于是上一个工作目录的同名
+ * 文件正文会真的被提交出去一帧。
+ */
+function targetKey(sessionId: number, path: string): string {
+  return `${sessionId}\n${path}`;
+}
+
+/**
  * FilePreviewPanel 是会话「文件」面板的最右一栏预览面板（spec「状态与布局」）：
  * 仅在该会话开着预览标签时渲染，可拖拽调宽（ResizableSidebar edge="left"，独立
  * persistenceKey）。标签条（≥ 2 个标签才出现）回答「打开了哪些」，header 回答
@@ -131,19 +143,21 @@ export function FilePreviewPanel({ sessionId }: Props) {
   const [reloadKey, setReloadKey] = React.useState(0);
   const readGenRef = React.useRef(0);
   const gitGenRef = React.useRef(0);
-  // readPath/gitPath 记录当前 readState/gitState 对应的是哪个文件的结果。切换文件
-  // 后、effect 把状态重置成 loading 之前的那一帧,readState/gitState 还是旧文件
-  // 的内容——若不加这道「结果必须匹配当前 path」的闸门,那一帧会把旧文件正文渲染
-  // 在新文件名之下(一帧错内容,spec 决策 12 的切文件场景)。
-  const [readPath, setReadPath] = React.useState<string | null>(null);
-  const [gitPath, setGitPath] = React.useState<string | null>(null);
+  // readTarget/gitTarget 记录当前 readState/gitState 对应的是**哪个会话的哪个
+  // 文件**的结果。切换之后、effect 把状态重置成 loading 之前的那一帧,
+  // readState/gitState 还是上一个目标的内容——若不加这道「结果必须匹配当前目标」
+  // 的闸门,那一帧会把旧正文渲染在新标题之下(一帧错内容,spec 决策 12 的切文件
+  // 场景)。目标的身份见 targetKey——它是会话 + 文件,不只是文件。
+  const target = path === undefined ? null : targetKey(sessionId, path);
+  const [readTarget, setReadTarget] = React.useState<string | null>(null);
+  const [gitTarget, setGitTarget] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     // 代际先于 return 自增:标签全关掉时此前在途的读取同样要作废。
     readGenRef.current += 1;
     const gen = readGenRef.current;
     if (!path) return;
-    setReadPath(path);
+    setReadTarget(targetKey(sessionId, path));
     setReadState({ status: "loading" });
     WorkspaceFsReadFile(sessionId, path).then(
       (view) => {
@@ -168,7 +182,7 @@ export function FilePreviewPanel({ sessionId }: Props) {
       setGitState({ status: "idle" });
       return;
     }
-    setGitPath(path);
+    setGitTarget(targetKey(sessionId, path));
     setGitState({ status: "loading" });
     WorkspaceFsGitFileContent(sessionId, path).then(
       (view) => {
@@ -198,8 +212,8 @@ export function FilePreviewPanel({ sessionId }: Props) {
   const segmentLabel = (seg: FilePreviewSegment): string =>
     t(SEGMENT_LABEL_KEY[seg]);
 
-  const readSettled = readPath === path;
-  const gitSettled = gitPath === path;
+  const readSettled = readTarget === target;
+  const gitSettled = gitTarget === target;
   const isLoading =
     readState.status === "loading" ||
     !readSettled ||

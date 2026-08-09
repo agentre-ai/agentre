@@ -652,6 +652,7 @@
       "hint": "输入以按文件名搜索",
       "empty": "没有匹配“{{query}}”的文件",
       "emptyHint": "默认不搜索被忽略的文件",
+      "truncatedEmptyHint": "搜索没走完就停了，这不是完整结果",
       "truncated": "只显示了前 {{limit}} 个结果",
       "loading": "正在搜索…",
       "readFailed": "搜索失败",

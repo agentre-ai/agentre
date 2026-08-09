@@ -312,7 +312,13 @@ export function SidebarRow({
           {body}
         </button>
       ) : (
-        <div className={bodyClassName}>{body}</div>
+        // 不可交互的行同样要认 ariaLabel:搜索结果的高亮把 basename 拆成
+        // <mark> + 纯文本几个兄弟节点,无障碍名计算会在节点之间插进空格,而目录
+        // 命中与不在 allowlist 内的文件恰恰全落在这一支——ariaLabel 正是为它们
+        // 传进来的(见 nameChildren 的说明与 directory-search-panel.tsx)。
+        <div aria-label={ariaLabel} className={bodyClassName}>
+          {body}
+        </div>
       )}
       {withMenu ? (
         <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>

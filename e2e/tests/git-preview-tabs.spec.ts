@@ -11,8 +11,8 @@ import { seedDirtyGitRepo } from "../fixtures/git-repo";
 // ChatContextSidebar / FilePreviewPanel 三处，各自的单测都 mock 掉另外两边，
 // 结构上覆盖不到它们的接合处（尤其是 SidebarRow 的 onClick / onDoubleClick 在真实
 // 浏览器里的事件序列——见 frontend/src/components/agentre/chat-context-sidebar/
-// views/sidebar-row.tsx 与 frontend/src/stores/chat-sidebar-store.ts 的
-// PreviewClickOutcome / restoreClobberedPreviewTab）。
+// views/sidebar-row.tsx 的 clobberedTempRef 与 frontend/src/stores/
+// chat-sidebar-store.ts 的 restoreClobberedPreviewTab）。
 //
 // Git 页要有真实变动行：种子会话的 cwd 落在
 // <AGENTRE_DATA_DIR>/agents/<agentID>/（project_svc 对自由会话 ProjectID=0 的

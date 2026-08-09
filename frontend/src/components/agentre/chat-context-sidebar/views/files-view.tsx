@@ -2,6 +2,7 @@ import { ChevronDown, ChevronRight, Folder } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { basename } from "../../file-preview/file-meta";
 import {
   collapseDirChain,
   deriveFileTree,
@@ -50,11 +51,6 @@ function DiffBadge({ plus, minus }: { plus: number; minus: number }) {
       {minus > 0 ? <span className="text-destructive">−{minus}</span> : null}
     </span>
   );
-}
-
-function basename(path: string): string {
-  const parts = path.split(/[\\/]/);
-  return parts[parts.length - 1] ?? path;
 }
 
 export function FilesView({

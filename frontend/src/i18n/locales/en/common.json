@@ -652,6 +652,7 @@
       "hint": "Type to search files by name",
       "empty": "No files match \"{{query}}\"",
       "emptyHint": "Ignored files are excluded from search by default",
+      "truncatedEmptyHint": "The search stopped before it finished, so this is not the whole picture",
       "truncated": "Showing the first {{limit}} results only",
       "loading": "Searching…",
       "readFailed": "Search failed",

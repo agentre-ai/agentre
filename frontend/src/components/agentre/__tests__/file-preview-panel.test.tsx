@@ -2,6 +2,7 @@ import "@testing-library/jest-dom/vitest";
 
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import * as React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const readFileMock = vi.fn();
@@ -561,6 +562,46 @@ describe("FilePreviewPanel", () => {
       name: "File preview",
     });
     expect(within(panel).getByText("README.md")).toBeInTheDocument();
+  });
+
+  it("never paints the previous session's body when both sessions have the same file open", async () => {
+    // 面板不会随会话切换重挂载(chat-panel 把 sessionId 当普通 prop 传,没有 key),
+    // 「结果是否已就位」的闸门只看 path 的话,两个会话都开着同一个 relPath 时它在
+    // 切换的那一帧读起来是「已就位」——而 readState 里躺着的还是上一个会话的正文,
+    // 于是上一个工作目录的 README 会在新会话的标题下被真正提交、渲染出来一帧。
+    //
+    // 断言的是「提交出去的那一帧长什么样」:onCommit 挂在 useLayoutEffect 上,它在
+    // 每次提交后、浏览器绘制前同步跑,拿到的就是那一帧真实的 DOM 内容。
+    readFileMock.mockImplementation((sessionId: number) =>
+      Promise.resolve(textView(`body of session ${sessionId}`)),
+    );
+    openPreview("README.md", 7, "directory");
+    openPreview("README.md", 8, "directory");
+
+    const commits: string[] = [];
+    function Harness({ sessionId }: { sessionId: number }) {
+      const ref = React.useRef<HTMLDivElement>(null);
+      React.useLayoutEffect(() => {
+        commits.push(ref.current?.textContent ?? "");
+      });
+      return (
+        <div ref={ref}>
+          <FilePreviewPanel sessionId={sessionId} />
+        </div>
+      );
+    }
+
+    const { rerender } = render(<Harness sessionId={7} />);
+    await screen.findByText("body of session 7");
+
+    commits.length = 0;
+    rerender(<Harness sessionId={8} />);
+
+    expect(commits).not.toHaveLength(0);
+    expect(
+      commits.filter((frame) => frame.includes("body of session 7")),
+    ).toEqual([]);
+    await screen.findByText("body of session 8");
   });
 
   it("re-reads the open file when the session turn ends (doneTick)", async () => {

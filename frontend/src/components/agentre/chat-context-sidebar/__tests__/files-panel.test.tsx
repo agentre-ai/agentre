@@ -853,6 +853,34 @@ describe("FilesPanel directory search", () => {
     ]);
   });
 
+  it("(d) keeps a highlighted hit's accessible name intact on rows that are not previewable", async () => {
+    // 高亮把 basename 拆成 <mark> + 纯文本几个兄弟节点，无障碍名计算会在节点之间
+    // 插入空格（"no tes"）。目录命中与不在 allowlist 内的文件恰恰是「不可预览」
+    // 那一类行——也就是搜索结果里最常见的形态，这一类行同样必须给出未拆分的
+    // 可访问名，否则读屏念出的文件名是碎的。
+    searchMock.mockResolvedValue({
+      hits: [{ path: "src/notes", isDir: true }],
+      truncated: false,
+    });
+    renderPanel({});
+    await switchTo(/directory/i);
+    await userEvent.click(searchToggle());
+
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+    fireEvent.change(searchInput(), { target: { value: "no" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+
+    const row = screen.getByTestId("search-row");
+    expect(within(row).getByText("no").tagName).toBe("MARK");
+    expect(screen.getByRole("option", { name: "notes" })).toBe(row);
+  });
+
   it("(e) shows a hint and does not call the backend while the query is empty; backspacing to empty stays in search mode instead of falling back to the tree", async () => {
     renderPanel({});
     await switchTo(/directory/i);
@@ -921,6 +949,35 @@ describe("FilesPanel directory search", () => {
     expect(
       screen.getByText(/showing the first 2 results only/i),
     ).toBeInTheDocument();
+  });
+
+  it("(e) does not claim 'no match' when the traversal budget ran out before any hit was found", async () => {
+    // 后端的目录数预算打满时会回 truncated=true 且 hits 为空
+    // （internal/daemon/workspacefs/handler_search_test.go 的
+    // TestSearchFiles_TruncatedByDirBudget 就是这个形状）。这份结果**不完整**，
+    // 光说「没有匹配的文件」等于把「没找到」与「没找完」混为一谈。
+    searchMock.mockResolvedValue({ hits: [], truncated: true });
+    renderPanel({});
+    await switchTo(/directory/i);
+    await userEvent.click(searchToggle());
+
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+    fireEvent.change(searchInput(), { target: { value: "zzz" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+
+    expect(
+      screen.getByText(/search stopped before it finished/i),
+    ).toBeInTheDocument();
+    // 「默认不搜索被忽略的文件」那条常规提示在这里是误导：结果不完整与忽略项无关。
+    expect(
+      screen.queryByText(/ignored files are excluded/i),
+    ).not.toBeInTheDocument();
   });
 
   it("(e) shows a loading state right after typing, before the debounced call fires", async () => {

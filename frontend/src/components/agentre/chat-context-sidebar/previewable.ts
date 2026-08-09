@@ -118,14 +118,28 @@ const ABS_WINDOWS = /^[A-Za-z]:[\\/]/;
 /**
  * 把文件面板一条路径换算成相对会话 cwd 的路径。返回 null 表示换算不出来（会话
  * 没有 cwd，或绝对路径落在 cwd 之外）。相对路径（目录 / Git 模式）原样通过。
+ *
+ * 结果恒用 "/" 分隔：这个字符串就是预览标签的身份（chat-sidebar-store 的
+ * `FilePreviewTab.path`），而三个模式给进来的形状并不一致——「目录」模式自己按
+ * "/" 拼、「Git」模式的路径直接来自后端（恒 "/"），只有「变动」模式的行路径来自
+ * 工具调用，Windows 会话上是 "\" 分隔。不在这一处归一，同一个文件从两个模式点开
+ * 会开出两个标签。后端两端都用 `filepath.FromSlash` 还原本地分隔符
+ * （internal/pkg/workspacefs/listdir.go 的 resolveRelPath），"/" 是安全的。
  */
 export function toRelPath(path: string, cwd: string): string | null {
   if (cwd === "") return null;
-  if (!ABS_POSIX.test(path) && !ABS_WINDOWS.test(path)) return path;
+  if (!ABS_POSIX.test(path) && !ABS_WINDOWS.test(path)) {
+    return toSlash(path);
+  }
   const sep = cwd.includes("\\") ? "\\" : "/";
   const prefix = cwd.endsWith("/") || cwd.endsWith("\\") ? cwd : `${cwd}${sep}`;
   if (path === cwd || !path.startsWith(prefix)) return null;
-  return path.slice(prefix.length);
+  return toSlash(path.slice(prefix.length));
+}
+
+/** 会话级 relPath 的规范分隔符是 "/"（Windows 会话的 "\" 在这里归一）。 */
+function toSlash(relPath: string): string {
+  return relPath.replace(/\\/g, "/");
 }
 
 /**

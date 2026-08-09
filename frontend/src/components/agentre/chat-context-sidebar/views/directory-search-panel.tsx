@@ -131,7 +131,14 @@ function SearchBody({
     return (
       <PanelNotice
         text={t("chatContext.search.empty", { query })}
-        hint={t("chatContext.search.emptyHint")}
+        // 一条命中都没有、但遍历已经触及预算：结果**不完整**，「没有匹配的文件」
+        // 单独出现会把「没找到」说成「找完了没有」。截断说明平时挂在结果列表末
+        // 尾，空结果时那条列表根本不渲染，这里是它唯一的出口。
+        hint={
+          state.truncated
+            ? t("chatContext.search.truncatedEmptyHint")
+            : t("chatContext.search.emptyHint")
+        }
       />
     );
   }
