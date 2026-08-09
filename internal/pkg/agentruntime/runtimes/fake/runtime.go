@@ -25,6 +25,16 @@ import (
 // ReplyPrefix 是所有假回复的前缀,前端据此断言并与用户消息区分。
 const ReplyPrefix = "e2e-fake-reply: "
 
+// ContextWindowTokens 是 fake 上报的模型上下文窗口。
+//
+// 必须上报,否则 chat_svc.resolveContextWindowWithRuntime 三级兜底全落空
+// (session 无值 → provider 无值 → llmcatalog 查不到 "e2e-fake-model"),
+// session.ContextWindow 留 0,前端底栏 `contextUsage.max > 0` 为假,
+// ContextMeter 整块不渲染 —— e2e 里就没法观测上下文相关的任何行为。
+//
+// 取 1M 而不是随便一个数:顺带让 formatTokens 的 M 档在真实 app 里被走到。
+const ContextWindowTokens = 1_000_000
+
 // SystemAssertDirectivePrefix 触发 system prompt 可观测断言:e2e-assert-system:<needle>。
 const SystemAssertDirectivePrefix = "e2e-assert-system:"
 
@@ -82,13 +92,16 @@ func New() *Runtime {
 
 // Capabilities 返回最小能力集:CapAbort 支撑停止按钮;
 // CapMCPTools 让 e2e 的 MCP 工具注入接缝生效(org/subagent/hook 等写工具
-// 需要 backend 声明此 cap 才会被注入)。fake 实际消费注入的 MCPServers(调各 tool
-// endpoint),但不真正执行 LLM,只回显文本。
+// 需要 backend 声明此 cap 才会被注入);CapSetPermission 让前端的
+// isModeSwitchable 为真,PermissionModePill 才会渲染出来供 e2e 观测
+// (fake 不真的执行权限模式,只是让这块 UI 有观测对象)。fake 实际消费注入的
+// MCPServers(调各 tool endpoint),但不真正执行 LLM,只回显文本。
 func (r *Runtime) Capabilities() capability.Capabilities {
 	return capability.Capabilities{
 		Set: map[capability.Capability]bool{
-			capability.CapAbort:    true,
-			capability.CapMCPTools: true,
+			capability.CapAbort:         true,
+			capability.CapMCPTools:      true,
+			capability.CapSetPermission: true,
 		},
 	}
 }
@@ -99,6 +112,7 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	result := &agentruntime.RunResult{
 		ProviderSessionID: fmt.Sprintf("e2e-fake-%d", req.SessionID),
 		Model:             "e2e-fake-model",
+		ContextWindow:     ContextWindowTokens,
 	}
 	reply := ReplyPrefix + req.UserText
 	if needle, ok := parseOnePartDirective(req.UserText, SystemAssertDirectivePrefix); ok {
@@ -338,7 +352,8 @@ func (r *Runtime) emitLongThinking(ctx context.Context, out chan<- agentruntime.
 }
 
 // splitChunks 按 rune 边界把 s 切成最多 n 个 rune 的片段。
-func splitChunks(s string, n int) []string {	if n <= 0 || s == "" {
+func splitChunks(s string, n int) []string {
+	if n <= 0 || s == "" {
 		return nil
 	}
 	runes := []rune(s)
