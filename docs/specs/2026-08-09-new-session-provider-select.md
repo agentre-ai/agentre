@@ -90,7 +90,7 @@
 
 | Seam | 验证内容 | Prior art |
 |---|---|---|
-| 实体 / 迁移 | `Session.ProviderKey` 默认 `''`、空值可过 `Check`；基线迁移含 `provider_key`、不含 `model_override`；其余既有迁移未被改动（除基线豁免外） | `session_test.go` + 迁移测试 |
+| 实体 / 迁移 | `Session.ProviderKey` 默认 `''`、空值可过 `Check`；其余既有迁移未被改动（除基线豁免外）。基线 schema（含 `provider_key`、不含 `model_override`）由真实 app 启动 + 运行时 e2e 验证（PRAGMA），不设迁移 SQL 单测 | `session_test.go` |
 | `chat_svc` 单元（mockgen repo mock，不连 DB） | 新建 Send 带 `ProviderKey` 落库并校验（不存在 / inactive / 不兼容 → 错误）；已有会话 `provider_key` 优先于 agent 绑定；无 `provider_key` → agent 绑定；供应商缺失回退 agent 绑定 + notice；不再产生模型偏离提示 | `chat_test.go` 现有 runTurn / 权限模式测试 |
 | 远端 wire | 透传 effectiveProviderKey；daemon 缺 key → 回退 + 回传信号 | `wire_test.go` + `daemon` handler 测试 |
 | 前端（vitest） | 新建会话供应商选择器只列兼容供应商；未绑也显示；openclaw 不渲染；已有会话无 pill；瞬态选择随 Send 透传；i18n key 覆盖 | `model-pill.test.tsx` 改造 |
