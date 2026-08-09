@@ -1,8 +1,10 @@
 # 会话内切换 LLM 模型
 
-> Status: Draft
+> Status: Superseded
 > Owner: chat experience / backend
 > Last updated: 2026-08-06
+>
+> **Superseded by [2026-08-09 新建会话选择 LLM 供应商（替换会话级模型切换）](./2026-08-09-new-session-provider-select.md)（2026-08-09 批准）。** 会话级模型切换（#26）未发版即被整体移除：`model_override` 列 / entity 字段 / repo / `SetChatSessionModel` / `SendRequest.ModelOverride` / 模型偏离提示 / 四后端模型覆盖 / 远端 wire 全部删除，新建会话改为选择 LLM 供应商（`provider_key`）。本文件的 Objective / Design decisions / 数据与状态 / 切换流程 / UI / 偏离提示 均为已定决策，现全部由 2026-08-09 规格取代，仅作历史留存，不再实施。
 
 **Objective:** 用户能在会话对话框（composer）里为**当前会话**选择一个不同的 LLM 模型：选择持久化到该会话，自下一轮起生效，覆盖四个可切换后端（builtin / claudecode / codex / piagent）以及远端 `agentred` 执行；若后端静默回退到所选之外的模型，会话里出现一条提示。新建会话在首发消息前也能预选模型。
 
