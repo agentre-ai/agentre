@@ -572,7 +572,11 @@
       "fromDevice": "From {{device}}",
       "me": "Me"
     },
-    "notice": {},
+    "notice": {
+      "providerFallback": {
+        "sentence": "Selected provider {{provider}} is unavailable; fell back to the agent binding"
+      }
+    },
     "meta": {
       "cacheHit": "Cache hit",
       "cacheWrite": "Cache write",

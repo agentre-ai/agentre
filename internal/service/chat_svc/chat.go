@@ -1457,11 +1457,10 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 	// 已有会话：会话 provider_key 优先于 agent 绑定解析（决策 3）；所选供应商缺失/停用/
 	// 不兼容 → 回退 agent 绑定并追加一条持久 notice（决策 8）。新建会话已在校验后落库,
 	// 无需再走覆盖。
-	// 远端 backend 不走这里：会话 provider 随 wire 透传由 daemon 自解（决策 9, task 2），
-	// 本机 provider 表反映不了 daemon 配置, 本地查不到不代表远端缺失, 不得据此发 notice。
+	// 远端 backend 不走这里：会话 provider 随 wire 透传由 daemon 自解（决策 9, task 2）。
 	var providerFallbackNotice *blocks.NoticeBlock
-	if req.SessionID > 0 && sess.ProviderKey != "" && !be.IsRemote() {
-		prov, providerFallbackNotice = s.sessionProviderOverride(ctx, be, sess.ProviderKey, prov)
+	if req.SessionID > 0 {
+		prov, providerFallbackNotice = s.resolveSessionProvider(ctx, sess, be, prov)
 	}
 
 	var prelocked *trylockMutex
@@ -1665,6 +1664,23 @@ func (s *chatSvc) validateNewSessionProvider(ctx context.Context, be *agent_back
 		return nil, i18n.NewError(ctx, code.ChatAgentNotChattable)
 	}
 	return prov, nil
+}
+
+// resolveSessionProvider 把「会话 provider_key > agent 绑定」应用到已有会话的 turn 入口
+// （send / Regenerate / Edit，决策 3）：本地后端按会话 provider_key 解析 prov，所选
+// 供应商缺失/停用/不兼容时回退 agent 绑定并返回一条持久 notice（决策 8）。远端后端不
+// 走这里——会话 provider 随 wire 透传给 daemon 自解（决策 9，prepareTurnRun 里按
+// effectiveProviderKey 取 key），本地 provider 表反映不了 daemon 配置，不得据此发 notice。
+func (s *chatSvc) resolveSessionProvider(
+	ctx context.Context,
+	sess *chat_entity.Session,
+	be *agent_backend_entity.AgentBackend,
+	prov *llm_provider_entity.LLMProvider,
+) (*llm_provider_entity.LLMProvider, *blocks.NoticeBlock) {
+	if sess == nil || sess.ProviderKey == "" || be == nil || be.IsRemote() {
+		return prov, nil
+	}
+	return s.sessionProviderOverride(ctx, be, sess.ProviderKey, prov)
 }
 
 // sessionProviderOverride 应用「会话 provider_key > agent 绑定」的供应商优先级
@@ -2496,8 +2512,13 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 		replacement = newTranscriptReplacementLifecycle(sess.ID, anchorSeq, req.MessageID)
 		preTx = nil
 	}
+	// 会话 provider_key 优先于 agent 绑定解析（决策 3），与 send 同源；所选供应商
+	// 缺失/停用/不兼容 → 回退 agent 绑定并追加一条持久 notice（决策 8）。
+	prov, providerFallbackNotice := s.resolveSessionProvider(ctx, sess, be, prov)
 	gateOwned = false
-	return s.startTurn(ctx, sess, a, be, prov, userBlocks, preTx, replacement, forkAnchor, turnExtras{}, gate.lock)
+	return s.startTurn(ctx, sess, a, be, prov, userBlocks, preTx, replacement, forkAnchor, turnExtras{
+		providerFallbackNotice: providerFallbackNotice,
+	}, gate.lock)
 }
 
 // Edit 编辑历史 user 消息后用新文本重跑 turn。截到目标 user 消息（含）开始的全部
@@ -2591,6 +2612,9 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 		replacement = newTranscriptReplacementLifecycle(sess.ID, anchorSeq, req.MessageID)
 		preTx = nil
 	}
+	// 会话 provider_key 优先于 agent 绑定解析（决策 3），与 send 同源；所选供应商
+	// 缺失/停用/不兼容 → 回退 agent 绑定并追加一条持久 notice（决策 8）。
+	prov, providerFallbackNotice := s.resolveSessionProvider(ctx, sess, be, prov)
 	gateOwned = false
 	return s.startTurn(
 		ctx,
@@ -2602,7 +2626,7 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 		preTx,
 		replacement,
 		forkAnchor,
-		turnExtras{},
+		turnExtras{providerFallbackNotice: providerFallbackNotice},
 		gate.lock,
 	)
 }

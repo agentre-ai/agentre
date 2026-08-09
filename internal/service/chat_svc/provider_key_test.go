@@ -218,6 +218,65 @@ func TestSend_ExistingSession_NoProviderKeyUsesAgentBinding(t *testing.T) {
 	}
 }
 
+// TestRegenerate_ExistingSession_ProviderKeyOverridesAgentBinding 钉死决策 3：已有会话
+// 的 Regenerate 重跑也必须按「会话 provider_key > agent 绑定」解析 prov —— 否则会话
+// 选了供应商 X，重新生成的一轮却悄悄用 agent 绑定供应商，行为不一致。
+func TestRegenerate_ExistingSession_ProviderKeyOverridesAgentBinding(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+
+	runner := &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, runner)
+	t.Cleanup(restore)
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", ProviderKey: "key-99", Status: consts.ACTIVE,
+	}, nil)
+	m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(&chat_entity.Message{
+		ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("v1"),
+	}, nil)
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{
+		{ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("hi")},
+		{ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("v1")},
+	}, nil).AnyTimes()
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Eng", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeAnthropic)), nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-99").Return(newActiveProvider("key-99", string(llm_provider_entity.TypeAnthropic)), nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(100), 1).Return(int64(2), nil)
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	newIDs := []int64{2000, 2001}
+	var calls int
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			msg.ID = newIDs[calls]
+			calls++
+			return nil
+		}).Times(2)
+	m.dbMock.ExpectCommit()
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	resp, err := m.svc.Regenerate(ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
+	assert.NoError(t, err)
+	assert.NotZero(t, resp.AssistantMessageID)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	select {
+	case req := <-runner.requests:
+		require.NotNil(t, req.Provider)
+		assert.Equal(t, "key-99", req.Provider.ProviderKey, "Regenerate 重跑必须按会话 provider_key 解析,而非 agent 绑定")
+	case <-time.After(2 * time.Second):
+		t.Fatal("runtime never received the regenerated turn")
+	}
+}
+
 // TestSend_ExistingSession_MissingSessionProviderFallsBackWithNotice 钉死决策 8：会话
 // provider_key 指向的供应商缺失 → 本轮回退 agent 绑定,并追加一条持久 transcript notice;
 // provider_key 不清除。

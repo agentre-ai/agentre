@@ -701,8 +701,10 @@ function RenderItemView({
         />
       );
     }
-    case "notice":
-      // notice 块:供应商回退等持久 notice 的 Text 原样渲染（既有 NoticeBlock 渲染）。
+    case "notice": {
+      // notice 块:供应商回退 notice 由后端投影成结构化 providerKey(providerFallbackPayload),
+      // 文案走 t();其它来源/旧数据的非结构化 notice 原样渲染 Text。
+      const providerKey = item.block.providerKey;
       return (
         <section
           role="status"
@@ -710,10 +712,15 @@ function RenderItemView({
           className="flex w-full max-w-measure items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-aux text-muted-foreground"
         >
           <span className="min-w-0 flex-1 break-words">
-            {item.block.text ?? ""}
+            {providerKey
+              ? t("chat.notice.providerFallback.sentence", {
+                  provider: providerKey,
+                })
+              : (item.block.text ?? "")}
           </span>
         </section>
       );
+    }
     case "unknown":
       return (
         <div className="rounded-lg border border-dashed border-border px-3 py-2 font-mono text-aux text-muted-foreground">

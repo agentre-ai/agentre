@@ -572,7 +572,11 @@
       "fromDevice": "来自 {{device}}",
       "me": "我"
     },
-    "notice": {},
+    "notice": {
+      "providerFallback": {
+        "sentence": "所选供应商 {{provider}} 不可用，已回退 agent 绑定"
+      }
+    },
     "meta": {
       "cacheHit": "缓存命中",
       "cacheWrite": "缓存写入",

@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
+import i18n from "@/i18n";
 import {
   TranscriptRenderContext,
   TranscriptRowView,
@@ -15,6 +16,7 @@ import type { TranscriptRow } from "../transcript-rows";
 
 type NoticeBlock = {
   text?: string;
+  providerKey?: string;
 };
 
 function noticeRow(block: NoticeBlock): TranscriptRow {
@@ -83,5 +85,19 @@ describe("transcript notice block", () => {
   it("renders an empty-text notice as an empty status box (no crash)", () => {
     renderRow(noticeRow({ text: "" }));
     expect(screen.getByTestId("transcript-notice")).toBeInTheDocument();
+  });
+
+  it("renders a provider-fallback notice（结构化 providerKey）走 i18n 文案", () => {
+    // 决策 8：会话所选供应商缺失/停用 → 回退 agent 绑定并追加持久 notice，
+    // 文案「所选供应商 X 不可用，已回退 agent 绑定」必须显示，而不是空框。
+    renderRow(noticeRow({ providerKey: "gone-provider" }));
+
+    expect(
+      screen.getByText(
+        i18n.t("chat.notice.providerFallback.sentence", {
+          provider: "gone-provider",
+        }),
+      ),
+    ).toBeInTheDocument();
   });
 });
