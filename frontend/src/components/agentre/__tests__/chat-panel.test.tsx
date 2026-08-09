@@ -41,7 +41,6 @@ const appMocks = vi.hoisted(() => ({
   GetChatLaunchCommand: vi.fn(),
   GetChatGoal: vi.fn(),
   ListLLMProviders: vi.fn().mockResolvedValue({ items: [] }),
-  ListLLMModels: vi.fn().mockResolvedValue({ items: [] }),
   LoadChatSession: vi.fn(),
   MarkChatSessionRead: vi.fn().mockResolvedValue({}),
   RegenerateChatMessage: vi.fn(),
