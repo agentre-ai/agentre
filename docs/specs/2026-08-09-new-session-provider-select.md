@@ -94,7 +94,7 @@
 | `chat_svc` 单元（mockgen repo mock，不连 DB） | 新建 Send 带 `ProviderKey` 落库并校验（不存在 / inactive / 不兼容 → 错误）；已有会话 `provider_key` 优先于 agent 绑定；无 `provider_key` → agent 绑定；供应商缺失回退 agent 绑定 + notice；不再产生模型偏离提示 | `chat_test.go` 现有 runTurn / 权限模式测试 |
 | 远端 wire | 透传 effectiveProviderKey；daemon 缺 key → 回退 + 回传信号 | `wire_test.go` + `daemon` handler 测试 |
 | 前端（vitest） | 新建会话供应商选择器只列兼容供应商；未绑也显示；openclaw 不渲染；已有会话无 pill；瞬态选择随 Send 透传；i18n key 覆盖 | `model-pill.test.tsx` 改造 |
-| 无法自动化的 | CLI 后端绑定供应商后的真实模型解析（回归靠现有 eval 套件） | `docs/codex-backend-eval.md` |
+| 无法自动化的 | CLI 后端绑定供应商后的真实模型解析（回归靠现有 eval 套件） | `pkg/codex/behavior_eval_test.go` |
 
 ## Open questions
 

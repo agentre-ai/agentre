@@ -85,13 +85,7 @@ function walkSourceFiles(dir: string, out: string[] = []): string[] {
 
 function walkProductionSourceFiles(): string[] {
   const sourceRoot = path.resolve(process.cwd(), "src");
-  const mockupsRoot = `${path.join(sourceRoot, "mockups")}${path.sep}`;
-  // Mockups have standalone development entrypoints and are not reachable
-  // from the product application. Keep production guards exhaustive without
-  // treating those visual design fixtures as shipped UI.
-  return walkSourceFiles(sourceRoot).filter(
-    (file) => !file.startsWith(mockupsRoot),
-  );
+  return walkSourceFiles(sourceRoot);
 }
 
 function collectStaticCommonI18nKeys(): string[] {

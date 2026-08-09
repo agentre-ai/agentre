@@ -242,7 +242,7 @@ The following breaks down the protocol details, field semantics, and claudecode/
 
 ##### A. Steerer / SteerCanceler / SteerDrainer — mid-turn injection
 
-Interface signatures (`internal/pkg/agentruntime/runner.go:366-411`):
+Interface signatures (`Steerer`, `SteerCanceler`, and `SteerDrainer` in `internal/pkg/agentruntime/runner.go`):
 
 ```go
 type Steerer interface {
@@ -268,7 +268,7 @@ type SteerDrainer interface {
 
 ##### B. Aborter — the "Stop" button
 
-Interface signature (runner.go:426-428):
+Interface signature (`Aborter` in `internal/pkg/agentruntime/runner.go`):
 
 ```go
 type Aborter interface {
@@ -285,7 +285,7 @@ type Aborter interface {
 
 > **piagent currently does not support this** (no equivalent protocol). **codex does** — via the app-server `requestApproval` protocol (`runtimes/codex/runtime.go` `SubmitToolPermission`); it carries allow/deny + alwaysAllowSession but **drops DenyReason** (the deny-message param is ignored, since the codex protocol has no deny-feedback field). The following uses claudecode as the blueprint; copy the relevant parts when a new backend has an equivalent protocol.
 
-Interface signature (runner.go:218-220):
+Interface signature (`ToolPermissionSink` in `internal/pkg/agentruntime/runner.go`):
 
 ```go
 type ToolPermissionSink interface {
@@ -307,7 +307,7 @@ type ToolPermissionSink interface {
    }
    ```
 
-2. **chat_svc persists** (`internal/service/chat_svc/tool_permission.go:22-53`):
+2. **chat_svc persists** (`internal/service/chat_svc/tool_permission.go`):
    - Converts it to a `blocks.ToolPermissionBlock` and adds it to the acc.
    - Projects it into a `ChatBlock{Type:"tool_permission_request"}` pushed to the frontend; canonical carries `ToolPermission{...}` or (when ToolName=="ExitPlanMode") `PlanApproveRequest{...}`.
 
@@ -339,7 +339,7 @@ type ToolPermissionSink interface {
 
 ##### D. AskAnswerSink — reverse-asking the user a question
 
-Interface signature (runner.go:255-257):
+Interface signature (`UserAskSink` in `internal/pkg/agentruntime/runner.go`):
 
 ```go
 type AskAnswerSink interface {
@@ -367,7 +367,7 @@ type AskAnswerSink interface {
    }
    ```
 
-2. **chat_svc persists `blocks.UserAskBlock`** + projects ChatBlock + the canonical UserAsk DTO (`internal/service/chat_svc/ask_user_question.go:21-83`).
+2. **chat_svc persists `blocks.UserAskBlock`** + projects ChatBlock + the canonical UserAsk DTO (`internal/service/chat_svc/ask_user_question.go`).
 
 3. **Frontend renders the UserAskCard**: single-select radio / multi-select checkbox / Other text field / IsSecret password field; provides two buttons Answer + Skip.
 
@@ -394,7 +394,7 @@ type AskAnswerSink interface {
 
 ##### E. PermissionModeSetter — switching permission mode at runtime
 
-Interface signature (runner.go:441-443):
+Interface signature (`PermissionModeSetter` in `internal/pkg/agentruntime/runner.go`):
 
 ```go
 type PermissionModeSetter interface {
@@ -452,13 +452,13 @@ const showBypass = session.permission_mode_at_launch === "bypassPermissions"
 ExitPlanMode is a plan-exit protocol implemented by **reusing the ToolPermission channel** (claudecode-specific; codex has no equivalent):
 
 1. After the CLI finishes planning in plan mode, it calls the `ExitPlanMode` tool → the backend emits `ToolPermissionRequest{ToolName: "ExitPlanMode", Input: {plan: "..."}}`.
-2. chat_svc detects `ToolName=="ExitPlanMode"` in `tool_permission.go:34-41`, and **additionally assembles** `Canonical = PlanApproveRequest{Plan, Actions}`, so the frontend renders with `PlanApproveCard` (instead of the generic ToolPermissionCard).
-3. `Actions` is assembled by `handlers.BuildPlanApproveActions(launchPermissionMode)` in the ToolPermissionRequest handler (`internal/service/chat_svc/handlers/plan_approve.go:16-32`), with the rules:
+2. chat_svc detects `ToolName=="ExitPlanMode"` in `internal/service/chat_svc/handlers/tool_permission.go`, and **additionally assembles** `Canonical = PlanApproveRequest{Plan, Actions}`, so the frontend renders with `PlanApproveCard` (instead of the generic ToolPermissionCard).
+3. `Actions` is assembled by `handlers.BuildPlanApproveActions(launchPermissionMode)` in the ToolPermissionRequest handler (`internal/service/chat_svc/handlers/plan_approve.go`), with the rules:
    - normal launch (empty / default / acceptEdits / plan) → `[plan.approve.accept_edits, plan.approve.manual, plan.refine]`
    - launch="bypassPermissions" → the first item is **replaced** with `plan.approve.bypass_permissions` (not appended), yielding `[plan.approve.bypass_permissions, plan.approve.manual, plan.refine]`
    - `plan.refine` carries `RequiresFeedback: true` — the frontend expands a feedback textarea; after the user submits, it goes through `Allow=false` + `DenyReason=feedback` (the CLI feeds the message back to the AI as a tool_result to continue planning), **not** allow + switch back to plan mode
-4. The frontend calls `AnswerToolPermission` according to the action the user clicked: approve kinds → `Allow=true, TargetPermissionMode=mapPlanApproveAction(actionID)` (see `plan_action.go:198-210`: bypass→`bypassPermissions` / accept_edits→`acceptEdits` / manual→`default`); refine → `Allow=false, DenyReason=feedback`.
-5. The service first calls `SubmitToolPermission()` (after the CLI receives an approve, it automatically switches plan → default). When `Allow=true` and `TargetPermissionMode` is non-empty and not `"default"`, it **relays** a call to `SetPermissionMode()` to switch to the target — so `acceptEdits` / `bypassPermissions` relay, `Manual` (=`default`) does not relay, and `refine` does not relay either since `Allow=false` (`tool_permission.go:131`).
+4. The frontend calls `AnswerToolPermission` according to the action the user clicked: approve kinds → `Allow=true, TargetPermissionMode=mapPlanApproveAction(actionID)` (see `internal/service/chat_svc/plan_action.go`: bypass→`bypassPermissions` / accept_edits→`acceptEdits` / manual→`default`); refine → `Allow=false, DenyReason=feedback`.
+5. The service first calls `SubmitToolPermission()` (after the CLI receives an approve, it automatically switches plan → default). When `Allow=true` and `TargetPermissionMode` is non-empty and not `"default"`, it **relays** a call to `SetPermissionMode()` to switch to the target — so `acceptEdits` / `bypassPermissions` relay, `Manual` (=`default`) does not relay, and `refine` does not relay either since `Allow=false` (`internal/service/chat_svc/tool_permission.go`).
 
 **Key points for onboarding a new backend**: for a backend that has plan-exit semantics, naming the ToolName `"ExitPlanMode"` lets it directly reuse the frontend PlanApproveCard — do not invent a new tool name.
 
@@ -481,10 +481,10 @@ agentruntime.PlanUpdated{Plan: canonical.PlanUpdate{
 - **claudecode has two paths** —
   - `TodoWrite` tool calls go through the translator → `ToolCall.Canonical = canonical.PlanUpdate` (**does not** emit a separate PlanUpdated event; the frontend just reads canonical off the ToolCall);
   - `TaskCreate` / `TaskUpdate` incremental calls have `claudecode/task_aggregator.go` maintain the full task list across turns, emitting a full `agentruntime.PlanUpdated` snapshot on each change.
-- **codex**: two triggers — the `turn/plan/updated` notification sends `Steps[]`; `item/plan/delta + item/completed{type:"plan"}` streams `Text`. The translator funnels them into the same PlanUpdated event, so downstream no longer branches on the two states (`runtimes/codex/translator.go:57-80`). codex also, while in plan mode, attaches `[plan.execute, plan.refine]` two actions to the PlanUpdate via `attachPlanModeActions`, and the frontend PlanCard renders the buttons directly.
+- **codex**: two triggers — the `turn/plan/updated` notification sends `Steps[]`; `item/plan/delta + item/completed{type:"plan"}` streams `Text`. The translator funnels them into the same PlanUpdated event, so downstream no longer branches on the two states (`internal/pkg/agentruntime/runtimes/codex/translator.go`). codex also, while in plan mode, attaches `[plan.execute, plan.refine]` two actions to the PlanUpdate via `attachPlanModeActions`, and the frontend PlanCard renders the buttons directly.
 - **PlanText preserves the trailing newline**: after trimming, the frontend markdown renderer mistakes it for "no trailing newline" and breaks the formatting — use only `strings.TrimSpace` to judge "is it empty", and **do not** trim before emitting.
 
-**chat_svc persists a PlanBlock** (`internal/service/chat_svc/plan_block.go:16-73`):
+**chat_svc persists a PlanBlock** (`internal/service/chat_svc/plan_block.go`):
 - projects it into a `ChatBlock{Type:"plan"}`
 - the frontend PlanCard renders the full text; `TaskProgressBar` reads `steps[].status` for the progress bar
 - multiple PlanUpdated within the same turn go through mutate (overwriting by PlanBlock key), without repeatedly landing new blocks
@@ -600,7 +600,7 @@ OpenClaw is the reference for a Gateway-native backend whose authentication cann
 3. **Protocol client** — `internal/pkg/openclawgateway` implements challenge/connect, exact protocol-4 negotiation, required operator scopes, req/res routing, event sequence gaps, timeouts, reconnect, feature validation, and read-only agent/model discovery.
 4. **Runtime** — `internal/pkg/agentruntime/runtimes/openclaw` submits `agent` once with the UUID `idempotencyKey` required by the official schema and a stable `agentre:<backendID>:<chatSessionID>` session key. Reconnect/gap reconciliation uses `exec.approval.list` followed by `agent.wait`; it never blindly resends the message. Abort sends exactly `chat.abort {sessionKey,runId}` and converges through that stable identity plus a one-call guard because the official closed abort schema rejects an added idempotency field.
 5. **Approvals** — `CapExecApproval` / `ExecApprovalSink` is distinct from `CapToolPermission`. Requested/resolved events persist a dedicated `exec_approval` block. Resolution sends exactly `{id, decision}` because that official closed schema also rejects extra idempotency fields; duplicate/racing resolutions converge by approval ID and terminal state. AgentRE trusts Gateway `allowedDecisions`, never reconstructs a Node `systemRunPlan`, and never treats approval terminal as execution terminal.
-6. **Frontend** — settings use `OpenClawBackendFields`; transcript rendering uses the dedicated OpenClaw exec approval card. Both use production shadcn/design-system primitives and bilingual i18n, not `frontend/src/mockups`.
+6. **Frontend** — settings use `OpenClawBackendFields`; transcript rendering uses the dedicated OpenClaw exec approval card. Both use production shadcn/design-system primitives and bilingual i18n.
 7. **Remote boundary** — approval event codecs are wire-compatible, but the daemon does not register the runtime because there is no daemon-local secret enrollment/reference. `RunParams` contains no OpenClaw secret; remote execution reports capability unavailable.
 
 ---

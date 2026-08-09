@@ -103,7 +103,7 @@
 | 各 runtime 单元（fake session / sqlmock 无关） | builtin/codex/piagent/claudecode 的 effectiveModel 解析（override > provider > 默认）；claudecode 模型变化 evict+respawn、未变复用 | 各 `runtime_test.go`；claudecode `launchedEffort` 测试先例 |
 | 远端 wire | `RunParams.ModelOverride` 编解码 round-trip；daemon handler 组装 `req.ModelOverride` | `wire_test.go` + `daemon/runtime_imports_test.go` |
 | 前端（vitest） | ModelPill 渲染态（默认/已覆盖/加载中/错误行）、**未绑已有会话灰显 disable + tooltip**、**未绑新建会话自由输入**、popover 交互、新建会话瞬态传递；i18n key 覆盖 | `permission-mode` 相关测试 + `i18n.test.ts` |
-| 无法自动化的 | 各 CLI 对"换模型 resume"的真实行为（本次调研已用真实 claude/codex/pi 无 token 实测，见 Problem/设计决策依据）；后续回归靠 codex/claude 后端 eval 套件 | `docs/codex-backend-eval.md` |
+| 无法自动化的 | 各 CLI 对"换模型 resume"的真实行为（本次调研已用真实 claude/codex/pi 无 token 实测，见 Problem/设计决策依据）；后续回归靠 codex/claude 后端 eval 套件 | `pkg/codex/behavior_eval_test.go` |
 
 ## Open questions
 

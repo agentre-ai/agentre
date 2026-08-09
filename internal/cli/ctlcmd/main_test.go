@@ -77,6 +77,19 @@ func TestRun_NoArgs(t *testing.T) {
 	}
 }
 
+func TestRun_GivenHelpWhenPrintedThenUsesAgrctlCommand(t *testing.T) {
+	code, out, errs := runCLI([]string{"help"}, func(string) (string, bool) { return "", false })
+	if code != 0 {
+		t.Fatalf("code = %d, want 0 (stderr=%s)", code, errs)
+	}
+	if !strings.Contains(out, "agrctl ctl") {
+		t.Fatalf("stdout = %q, want agrctl ctl command", out)
+	}
+	if strings.Contains(out, "agentre ctl") {
+		t.Fatalf("stdout = %q, must not advertise removed agentre ctl command", out)
+	}
+}
+
 func TestRun_UnknownSubcommand(t *testing.T) {
 	code, _, errs := runCLI([]string{"bogus"}, func(string) (string, bool) { return "", false })
 	if code != 2 {

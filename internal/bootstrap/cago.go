@@ -185,7 +185,7 @@ func Init(ctx context.Context) (*Runtime, error) {
 	hooktool_svc.Default().SetGatewayBaseURL(gw.BaseURL())
 	chat_svc.RegisterTurnMCPProvider(hooktool_svc.Default().BuildTurnMCP)
 
-	// 本地控制 API(/ctl/*):供外部 `agentre ctl` CLI 驱动——列 agent/项目、给指定 agent
+	// 本地控制 API(/ctl/*):供外部 `agrctl ctl` CLI 驱动——列 agent/项目、给指定 agent
 	// 建会话并派发任务(等价于「@ 某 agent 发消息」),无需注入 MCP。deps 走 repo/svc 单例
 	// (chat 网关懒解析 chat_svc.Chat(),兼容 RegisterChat 尚未执行的时序)。BaseURL 就绪后把
 	// 「实际 URL + 控制 token」写进 AppDataDir 的握手文件,CLI 据此定位并鉴权。

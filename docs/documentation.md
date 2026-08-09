@@ -40,7 +40,6 @@ Stage the files intended for the commit, then set `VERIFY_TREE="$(git write-tree
 | [`debugging.md`](./debugging.md) | Diagnosing runtime issues: SQLite / log commands, table → feature mapping, reproduction commands, common pitfalls. |
 | [`agent-backend.md`](./agent-backend.md) | The full path to wiring in a new AI Agent backend (entity / migration / runtime / translator / capability / daemon import / frontend gating). |
 | [`session-lifecycle.md`](./session-lifecycle.md) | Rules for creating and reusing `chat_sessions`, including future issue/hook dispatch and remote-execution ownership. |
-| [`codex-backend-eval.md`](./codex-backend-eval.md) | The deterministic, token-free Codex app-server behavior eval: machine-readable command, state-machine invariants, scenario rubric, independent judge guidance, and the optional real-CLI boundary. |
 | [`../e2e/README.md`](../e2e/README.md) | The Playwright + fake-runtime e2e **harness** (root `e2e/` package): the committed-vs-scratch split, `make e2e` / `make e2e-scratch`, the architecture and IPC bridge, the `e2e` build-tag seam that keeps the fake out of production builds, isolation guarantees (ports 34216 / 52401, the single-instance lock), writing a committed core-flow spec, hard-won harness engineering lessons, extension seams, and the file map. Owns the **machine**; what an ad-hoc run must produce is [`verification.md`](./verification.md)'s. |
 | [`../e2e/scratch/README.md`](../e2e/scratch/README.md) | The throwaway-spec convention + starter template, and when a scenario earns its own directory. |
 | [`verification.md`](./verification.md) | What a real-app verification run must **leave behind**: when it is warranted, the `e2e/scratch/<task-name>/` evidence layout, `report.md` created before the run, choosing the evidence form, honest reporting, and the one-place-only verdict table for spec acceptance. Defers all harness mechanics to [`../e2e/README.md`](../e2e/README.md). |
@@ -132,6 +131,12 @@ git ls-files --cached -- AGENTS.md CLAUDE.md CONTRIBUTING.md 'docs/*.md' 'docs/*
   # Strip fenced blocks and inline code first: sample paths are not links.
   git show ":$doc" | sed '/^```/,/^```/d' | sed -E 's/`[^`]*`//g' \
     | grep -oE '\]\(([^)]+)\)' | sed -E 's/^\]\(|\)$//g' | grep -vE '^https?:|^#|^mailto:' | while IFS= read -r link; do
+    # These are evidence placeholders that become real only after the report template is copied.
+    if [[ "$doc" == docs/references/verification-report-template.md &&
+          "$link" =~ ^(screenshots|logs|resources)/ ]]; then
+      echo "skip   template evidence placeholder $doc → $link"
+      continue
+    fi
     target="$(python3 -c 'import posixpath,sys; print(posixpath.normpath(sys.argv[1]))' "$(dirname "$doc")/${link%%#*}")"
     if [[ "$target" == ../* ]]; then
       echo "BROKEN out-of-repository target $doc → $link"

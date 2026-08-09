@@ -1,5 +1,3 @@
-import type { NavigateFunction } from "react-router-dom";
-
 export type ShortcutScope = "global" | "session" | "tabs";
 
 export type ModifierKind = "primary" | "primary-shift";
@@ -21,12 +19,6 @@ export type ShortcutDef = {
 export type AttentionEntry = {
   agentId: number;
   sessionId: number;
-};
-
-export type ShortcutCtx = {
-  navigate: NavigateFunction;
-  attentionEntries: AttentionEntry[];
-  selectChatSession: (agentId: number, sessionId: number) => void;
 };
 
 // Bridge object injected by <PaletteScopeBridge/>. ShortcutsProvider keeps it

@@ -2,12 +2,8 @@ package update_svc
 
 import "context"
 
-// Service 是 update_svc 对外暴露的依赖倒置接口；App 绑定层通过 Update() 获取实现。
-//
-// 之所以不直接暴露包级函数，是为了：
-//  1. 让 App 层依赖接口，可被 mockgen / 手写 fake 替换，方便单测。
-//  2. 后续若要加缓存（避免 24h 内重复请求 GitHub API）/ rate-limit / 重试，
-//     直接换 default 实现即可，调用方无感。
+// Service 是 update_svc 对外暴露的依赖倒置接口；App 绑定层通过 Update()
+// 获取可替换实现，测试可通过 RegisterUpdate 注入 fake。
 //
 //go:generate mockgen -source service.go -destination mock_update_svc/mock_service.go
 type Service interface {

@@ -27,7 +27,7 @@ const (
 	RouteMCPPrefix       = "/mcp/"
 	RouteHookInbox       = "/hook/v1/inbox"
 	// RouteCtlPrefix 本地控制 API 前缀（/ctl/*），由 RegisterControl 注册的 handler
-	// 统一接管，供 `agentre ctl` 外部 CLI 驱动（新建会话/派发任务等）。
+	// 统一接管，供 `agrctl ctl` 外部 CLI 驱动（新建会话/派发任务等）。
 	RouteCtlPrefix = "/ctl/"
 )
 
@@ -36,7 +36,7 @@ func DefaultRoutes() []string {
 	return []string{RouteAnthropic, RouteOpenAIResponses, RouteOpenAIChat, RouteHookInbox, RouteMCPPrefix + "*"}
 }
 
-// TokenIssuer 给 Prober / 未来 chat flow 用：发临时 token、撤销 token、读 URL。
+// TokenIssuer 给 Prober 和 chat flow 发临时 token、撤销 token、读 URL。
 type TokenIssuer interface {
 	IssueToken(ctx context.Context, backend *agent_backend_entity.AgentBackend, ttl time.Duration) (token string, err error)
 	RevokeToken(token string)
