@@ -239,11 +239,61 @@ in mind when changing it.
 | `e2e/tests/*.spec.ts` | committed **core-flow** specs (chat smoke/reload plus approved org/subagent tool flows) | yes |
 | `e2e/scratch/**/*.spec.ts` | throwaway specs, either flat quick looks or `<task-name>/verify.spec.ts` scenarios | **no (gitignored)** |
 | `e2e/scratch/README.md` | scratch convention + starter template | yes |
-| `e2e/package.json` → `setup` / `test` / `test:scratch` | one-time install+Chromium / run suite / run scratch | yes |
-| `Makefile` → `e2e` / `e2e-scratch` | thin aliases for `cd e2e && pnpm test` / `pnpm run test:scratch` | yes |
+| `e2e/package.json` → `setup` / `test` / `test:scratch` / `test:sync` | one-time install+Chromium / run suite / run scratch / run the sync suite (§10) | yes |
+| `Makefile` → `e2e` / `e2e-scratch` / `e2e-sync` | thin aliases for `cd e2e && pnpm test` / `pnpm run test:scratch` / `pnpm run test:sync` | yes |
 | `e2e/fakes/install.go` (`//go:build e2e`) / `install_noop.go` (`//go:build !e2e`) | register the fake + seed / no-op | yes |
+| `e2e/fakes/login.go` (`//go:build e2e`) | seed a logged-in desktop from env, for §10 only (no-op without it) | yes |
+| `e2e/run-e2e-sync.mjs` / `playwright.sync.config.ts` / `sync/` / `fixtures/sync.ts` | the sync suite: runner, config, specs, oracles (§10) | yes |
 | `internal/pkg/agentruntime/runtimes/fake/` | the deterministic fake runtime (entire package `//go:build e2e`) | yes |
 
 Turn execution uses the fake Claude Code runtime only; E2E also seeds a Codex backend and deterministic Claude/Codex skill discovery, but does not fake or execute Codex turns. The committed suite covers chat smoke, session reload, and the approved org/subagent injected-tool flows (the fake acts as an MCP client — see §8).
 Settings / multi-backend / codex / remote e2e remain future specs that reuse this same harness
 and the fake-runtime seam above.
+
+## 10. The sync suite (`make e2e-sync`) — a real server and a simulated peer
+
+`e2e/sync/` is a **third** mode, separate from §1's two. It verifies workspace
+multi-device sync (`docs/specs/2026-08-07-workspace-sync.md`), which by definition
+cannot be checked with one app: it needs a real `agentre-server`, a real account,
+and a second client.
+
+```
+make e2e-sync  →  cd e2e && pnpm run test:sync  →  node run-e2e-sync.mjs
+  ├─ builds agentre-server + cmd/synce2e            (GOWORK=off, sibling checkout)
+  ├─ starts the server on a FREE port against the developer's PostgreSQL + Redis
+  │    (a scratch copy of configs/config.yaml — the repo's own file is untouched)
+  ├─ seeds ONE throwaway account with three devices, straight into PostgreSQL
+  ├─ puts a cut-able proxy in front of the server (the desktop talks to that)
+  ├─ runs playwright with playwright.sync.config.ts
+  └─ ALWAYS deletes exactly the rows it seeded, then prints the residue
+```
+
+**It is not in CI and not part of `make e2e`.** It depends on the developer's
+database; when that is unreachable the runner fails with a message naming what is
+missing — it never skips and never reports a pass it did not get.
+
+Three things it adds that the other modes do not have:
+
+| Piece | Why |
+|---|---|
+| `synce2e seed` / `cleanup` (agentre-server `cmd/synce2e`) | Desktop login ends at GitHub OAuth, which nobody can click here. Seeding writes an account + devices + one refresh token per device directly; every run gets its own account and its own fingerprints, and cleanup is scoped to that one user id — no `TRUNCATE`, nothing that belongs to anyone else |
+| `e2e/fakes/login.go` (`//go:build e2e`) | Turns the seeded identity (passed in through `AGENTRE_E2E_SERVER_URL` / `_SERVER_USER_ID` / `_DEVICE_ID` / `_DEVICE_FINGERPRINT` / `_REFRESH_TOKEN`) into what a completed login leaves behind: the `server_state` row + two keychain entries + an access token. Without those env vars it is a no-op, so §4's suite still runs fully offline |
+| `synce2e peer` | A simulated second desktop: same `/v1/sync/*` endpoints, its own device identity, its own cursor and replica, and — the dimension R2b/R15 exist for — **its own set of paired agentred fingerprints**. It is deliberately not a second Wails instance: the bridge port and data dir are fixed values, so only one real app can run at a time |
+
+Gotchas learned building it:
+
+- **`wails dev` runs the app binary twice** — once to generate the frontend
+  bindings, once for real — so `fakes.Install` executes twice per run. Refresh
+  tokens rotate on use, so `login.go` prefers whatever is already in the keychain
+  over the seeded env value; replaying the spent one is "refresh token reuse
+  detected" and the desktop logs itself out.
+- **The network cut is a flag file.** `run-e2e-sync.mjs` proxies the desktop's
+  traffic and destroys every connection while `SYNCE2E_OFFLINE_FLAG` exists; specs
+  call `cutNetwork()` / `restoreNetwork()`. No control port, no IPC.
+- **The local-path report only rides the 30 s ticker** (R16, by design), so the
+  spec that checks it legitimately waits ~half a minute; the suite timeout is
+  raised accordingly.
+- **One spec is `test.fail()`** — a real product defect (a desktop's tombstone is
+  sent as `"payload": null` and the server's payload guard rejects it). It is
+  annotated, not hidden: when the defect is fixed the spec passes and the
+  annotation turns that into a build failure telling you to remove it.

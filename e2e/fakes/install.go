@@ -82,6 +82,8 @@ func (claudeSkillDiscoverer) Discover(context.Context, agentskill.DiscoverQuery)
 // 失败只记日志不 panic:e2e 环境异常应让 Playwright 用例红,而不是让 app 崩。
 func Install(ctx context.Context) {
 	installE2EKeychainOverride()
+	// 先接账号:随后 seed 出来的 backend / agent 才会带着账号进出站队列(R3)。
+	installE2ELoggedInAccount(ctx)
 	agentruntime.RegisterRuntime(agent_backend_entity.TypeClaudeCode, fakert.New())
 	agentskill.RegisterDiscoverer(agent_backend_entity.TypeClaudeCode, claudeSkillDiscoverer{})
 	agentskill.RegisterDiscoverer(agent_backend_entity.TypeCodex, codexSkillDiscoverer{})
@@ -118,9 +120,10 @@ func Install(ctx context.Context) {
 	}
 
 	if _, err := agent_svc.Agent().Update(ctx, &agent_svc.UpdateAgentRequest{
-		ID:             ceo.ID,
-		Name:           ceo.Name,
-		AgentBackendID: backendID,
+		ID:   ceo.ID,
+		Name: ceo.Name,
+		// R15 起 Update 写的是有序执行目标列表,不再是单个 AgentBackendID。
+		ExecTargets: []agent_svc.ExecTargetInputDTO{{AgentBackendID: backendID}},
 		// 开启工具:本 Update 会整体覆写工具数组(丢掉 migration 默认),故所有 e2e 用到
 		// 的工具都要在这里显式开。让 CEO 单聊轮注入对应 MCP server:
 		//   - subagent → /mcp/subagent/(subagent-tool.spec:agent_call 委派,无审批)
@@ -153,7 +156,8 @@ func Install(ctx context.Context) {
 			return
 		}
 	} else if _, err := agent_svc.Agent().Update(ctx, &agent_svc.UpdateAgentRequest{
-		ID: existing.ID, Name: existing.Name, AgentBackendID: backendID,
+		ID: existing.ID, Name: existing.Name,
+		ExecTargets: []agent_svc.ExecTargetInputDTO{{AgentBackendID: backendID}},
 	}); err != nil {
 		logger.Ctx(ctx).Error("e2efakes.Install: update member agent failed",
 			zap.String("name", memberName), zap.Error(err))
