@@ -606,7 +606,6 @@
         "authExpired": "Claude Code OAuth 已过期 · 请在 {{device}} 上运行 'claude /login'",
         "deviceOffline": "{{device}} 离线",
         "network": "Claude Code 配额 · {{device}}(网络错误, 显示上次值)",
-        "ok": "Claude Code 配额 · {{device}}",
         "rateLimited": "Claude Code 配额 · {{device}}(429 退避中, 显示上次值)"
       }
     },

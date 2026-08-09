@@ -1029,8 +1029,11 @@ function ChatComposer({
               {imageError}
             </div>
           ) : null}
-          {/* 底栏恒为单行:子项一律 shrink-0,靠 @container 分档隐藏来适配窄宽,
-              绝不允许内部文字折行把行高顶高(见 docs/specs 的 Hard invariant 1)。 */}
+          {/* 底栏恒为单行:靠 @container 分档隐藏装饰来适配窄宽,绝不允许内部文字
+              折行把行高顶高(Hard invariant 1),也绝不允许横向溢出把发送按钮裁出
+              可视区(Hard invariant 2)。
+              溢出优先级:按钮与两个 Pill 保持 shrink-0 不参与收缩,两个计量器是唯一
+              带 min-w-0 的让位者 —— 断点万一估窄,多出的宽度只吃掉计量器。 */}
           <div className="flex flex-nowrap items-center gap-2">
             {!editing && supportsImageInput ? (
               <>
