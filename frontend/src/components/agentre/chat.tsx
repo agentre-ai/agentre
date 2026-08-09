@@ -334,8 +334,9 @@ function quotaLevel(percent: number | null): QuotaLevel {
   return "ok";
 }
 
-// 三张配色表共用 quotaLevel。底栏与面板的"正常"色不同(底栏要退到背景里,
-// 面板里这个数字是主角),所以分成两张表,而不是拿 class 字符串去比较判断。
+// 配色表共用 quotaLevel 定级。文字色分表是因为"正常"态各处诉求不同(底栏配额要退到
+// 背景里,面板与上下文里这个数字是主角);填充色三处一致,故只有一张表。
+// 分表而不是拿 class 字符串去比较判断。
 const QUOTA_METER_TONE: Record<QuotaLevel, string> = {
   ok: "text-muted-foreground",
   warn: "text-status-waiting",
@@ -346,7 +347,7 @@ const QUOTA_PANEL_TONE: Record<QuotaLevel, string> = {
   warn: "text-status-waiting",
   danger: "text-status-error",
 };
-const QUOTA_FILL_TONE: Record<QuotaLevel, string> = {
+const LEVEL_FILL_TONE: Record<QuotaLevel, string> = {
   ok: "bg-primary",
   warn: "bg-status-waiting",
   danger: "bg-status-error",
@@ -515,7 +516,7 @@ function QuotaRow({
       </div>
       <span className="h-1 overflow-hidden rounded-sm bg-border">
         <span
-          className={cn("block h-1 rounded-sm", QUOTA_FILL_TONE[level])}
+          className={cn("block h-1 rounded-sm", LEVEL_FILL_TONE[level])}
           style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
         />
       </span>
@@ -616,7 +617,7 @@ function ContextMeter({ used, max }: { used: number; max: number }) {
   // 而底栏配额的"正常"态要退到背景里 —— 与 QUOTA_METER_TONE / QUOTA_PANEL_TONE
   // 同源不同表。
   const tone = CONTEXT_METER_TONE[level];
-  const fill = QUOTA_FILL_TONE[level];
+  const fill = LEVEL_FILL_TONE[level];
   return (
     <div
       className="flex min-w-0 items-center gap-2 overflow-hidden font-mono text-meta whitespace-nowrap text-muted-foreground"
