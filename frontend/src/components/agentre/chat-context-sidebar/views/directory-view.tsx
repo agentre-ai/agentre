@@ -9,6 +9,8 @@ import { useSessionStatus } from "@/stores/session-status-store";
 
 import type { workspace_fs_svc } from "@/../wailsjs/go/models";
 
+import { collapseDirChain, type ChainEntry } from "../derive";
+
 import { errorText, PanelNotice, PanelSkeleton } from "./panel-feedback";
 import { FileTypeIcon, SidebarRow } from "./sidebar-row";
 import { indentStyle } from "./tree-indent";
@@ -107,6 +109,36 @@ export function DirectoryView({ sessionId, cwd, remote, showIgnored }: Props) {
     for (const relPath of [ROOT, ...keep]) load(relPath);
   }, [sessionId, showIgnored, cwd, load, doneTick]);
 
+  // chainChildrenOf 是 collapseDirChain 在这个懒加载数据源下的 childrenOf：只读
+  // 已经取回的 levels，未加载的层返回 null——链压缩因此只折叠「已经知道」的部
+  // 分，绝不会为了探链本身去发起额外请求（spec「树形模式的链压缩」）。
+  const chainChildrenOf = React.useCallback(
+    (relPath: string): Array<ChainEntry<string>> | null => {
+      const level = levels[relPath];
+      if (level === undefined || level.status !== "loaded") return null;
+      return level.entries.map((entry) => ({
+        name: entry.name,
+        isDir: entry.isDir,
+        cursor: relPath ? `${relPath}/${entry.name}` : entry.name,
+      }));
+    },
+    [levels],
+  );
+
+  // 一个用户「展开」动作要能揭示整条已经缓存到的链，而不是每次只多下一段、
+  // 逼用户对同一行反复点击（第二次点击只会把它收起）。这个 effect 在展开的
+  // 起点仍处于「链探到头但还不知道再往下」时补一次取数；链每深入一层，
+  // levels 变化会让它再检查一遍，直到链的真正末端解析出来（分支/文件/空目
+  // 录）或失败为止——用户展开一次，压缩链背后的多级懒加载对其不可见。
+  React.useEffect(() => {
+    for (const start of expanded) {
+      const chain = collapseDirChain(start, start, chainChildrenOf);
+      if (chain.children === null && levels[chain.cursor] === undefined) {
+        load(chain.cursor);
+      }
+    }
+  }, [expanded, levels, chainChildrenOf, load]);
+
   const toggleDir = (relPath: string) => {
     const isOpen = expanded.has(relPath);
     setExpanded((prev) => {
@@ -174,8 +206,20 @@ export function DirectoryView({ sessionId, cwd, remote, showIgnored }: Props) {
   );
 
   const renderDir = (entry: Entry, relPath: string, depth: number) => {
+    // 展开/收起状态与「点这一行触发的取数」按链首（这一行在父层里的位置）为
+    // 键，与压缩前完全一致：链变长变短不会让已经记下的展开态或缓存失效。
     const isOpen = expanded.has(relPath);
-    const child = levels[relPath];
+    const chain = collapseDirChain(entry.name, relPath, chainChildrenOf);
+    const label = chain.names.join("/");
+    const chainPrefix =
+      chain.names.length > 1
+        ? `${chain.names.slice(0, -1).join("/")}/`
+        : undefined;
+    const displayName = chain.names[chain.names.length - 1];
+    // 链尾（chain.cursor）与展开后要渲染的那一层是同一个：无论链吸收了几
+    // 段，子项都只比这一行多缩进一级（spec「其子项缩进只增加一级」）。
+    const frontierPath = chain.cursor;
+    const frontierLevel = levels[frontierPath];
     return (
       <div key={relPath} className="flex flex-col">
         <SidebarRow
@@ -184,20 +228,21 @@ export function DirectoryView({ sessionId, cwd, remote, showIgnored }: Props) {
           remote={remote}
           sourceMode="directory"
           kind="dir"
-          path={relPath}
-          name={entry.name}
+          path={frontierPath}
+          name={displayName}
+          chainPrefix={chainPrefix}
           depth={depth}
-          title={relPath}
+          title={label}
           expanded={isOpen}
           onToggle={() => toggleDir(relPath)}
           ariaLabel={
             isOpen
-              ? t("chatContext.files.collapseFolder", { name: entry.name })
-              : t("chatContext.files.expandFolder", { name: entry.name })
+              ? t("chatContext.files.collapseFolder", { name: label })
+              : t("chatContext.files.expandFolder", { name: label })
           }
           lead={
             <>
-              {child?.status === "loading" ? (
+              {frontierLevel?.status === "loading" ? (
                 <Spinner
                   className="size-3.5 shrink-0"
                   aria-label={t("chatContext.directory.loading")}
@@ -220,7 +265,9 @@ export function DirectoryView({ sessionId, cwd, remote, showIgnored }: Props) {
           }}
         />
         {isOpen ? (
-          <div className="flex flex-col">{renderLevel(relPath, depth + 1)}</div>
+          <div className="flex flex-col">
+            {renderLevel(frontierPath, depth + 1)}
+          </div>
         ) : null}
       </div>
     );

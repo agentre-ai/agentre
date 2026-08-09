@@ -45,8 +45,14 @@ type Props = {
   kind: "file" | "dir";
   /** 行的路径：「变动」模式可能是工具调用给的绝对路径，其余模式相对 cwd。 */
   path: string;
-  /** 显示名（basename 或目录名）。 */
+  /** 显示名（basename、目录名，或链压缩行的末段）。 */
   name: string;
+  /**
+   * 链压缩行独有：链中除末段外的前缀（含尾部 "/"，如 "internal/service/"）。
+   * 未设置时按普通单段名渲染，行为与压缩前完全一致。设置时整段「前缀 + name」
+   * 作为一个整体从头截断（保留末段）——与 Git 页目录后缀的截断方向一致。
+   */
+  chainPrefix?: string;
   depth: number;
   title?: string;
   /** 仅「变动」模式的文件行：跳到该文件最后被改动的轮次。 */
@@ -90,6 +96,7 @@ export function SidebarRow({
   kind,
   path,
   name,
+  chainPrefix,
   depth,
   title,
   onJumpToTurn,
@@ -152,10 +159,26 @@ export function SidebarRow({
     onCopy: copy,
   };
 
+  const nameNode = chainPrefix ? (
+    // 压缩行的截断方向反过来：dir="rtl" + text-left 让省略号落在开头，尾部
+    // （末段，节点的身份）永远保留，与 Git 页目录后缀的截断方向一致。
+    <span
+      dir="rtl"
+      className="min-w-0 shrink truncate text-left font-mono"
+      data-testid="chain-name"
+    >
+      <span className="opacity-55" data-testid="chain-prefix">
+        {chainPrefix}
+      </span>
+      {name}
+    </span>
+  ) : (
+    <span className="min-w-0 shrink truncate font-mono">{name}</span>
+  );
   const body = (
     <>
       {lead}
-      <span className="min-w-0 shrink truncate font-mono">{name}</span>
+      {nameNode}
       {trailing}
     </>
   );

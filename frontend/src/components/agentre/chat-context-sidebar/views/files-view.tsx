@@ -2,9 +2,33 @@ import { ChevronDown, ChevronRight, Folder } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
-import { deriveFileTree, type FileEntry, type FileTreeNode } from "../derive";
+import {
+  collapseDirChain,
+  deriveFileTree,
+  type ChainEntry,
+  type FileEntry,
+  type FileTreeNode,
+} from "../derive";
 
 import { FileTypeIcon, SidebarRow } from "./sidebar-row";
+
+type DirNode = Extract<FileTreeNode, { kind: "dir" }>;
+
+/**
+ * treeChildrenOf 是 collapseDirChain 在「变动」模式下的 childrenOf：整棵树一次性
+ * 已知（deriveFileTree 的产物），所以恒不返回 null——链压缩在这个模式下总能探到
+ * 底，唯一会让链终止的是遇到文件或分支，不存在「还不知道」的情况。
+ */
+function treeChildrenOf(
+  node: FileTreeNode,
+): Array<ChainEntry<FileTreeNode>> | null {
+  if (node.kind !== "dir") return null;
+  return node.children.map((child) => ({
+    name: child.kind === "dir" ? child.name : basename(child.entry.path),
+    isDir: child.kind === "dir",
+    cursor: child,
+  }));
+}
 
 type Props = {
   sessionId: number;
@@ -66,29 +90,43 @@ export function FilesView({
     );
   }
 
-  const renderDir = (
-    node: Extract<FileTreeNode, { kind: "dir" }>,
-    dirPath: string,
-    depth: number,
-  ) => {
-    const isCollapsed = collapsed.has(dirPath);
+  const renderDir = (node: DirNode, parentPath: string, depth: number) => {
+    // 链压缩（spec「路径展示」）：只包含一个子目录且不直接包含文件的目录链折
+    // 叠为一行。「变动」模式的整棵树一次性可得，chain.children 因此恒不为
+    // null——链总能探到底（文件或分支），不存在「还不知道」的中间态。
+    const chain = collapseDirChain(node.name, node, treeChildrenOf);
+    const label = chain.names.join("/");
+    const chainPrefix =
+      chain.names.length > 1
+        ? `${chain.names.slice(0, -1).join("/")}/`
+        : undefined;
+    const displayName = chain.names[chain.names.length - 1];
+    const startPath = parentPath ? `${parentPath}/${node.name}` : node.name;
+    const terminalPath = parentPath ? `${parentPath}/${label}` : label;
+    // 展开/收起状态按链首（这一行在其父容器里的位置）为键，与压缩前保持同一份
+    // 语义——链变长变短不会让已经记下的展开态失效。
+    const isCollapsed = collapsed.has(startPath);
+    const terminalChildren = chain.children ?? [];
+
     return (
-      <div key={dirPath} className="flex flex-col">
+      <div key={startPath} className="flex flex-col">
         <SidebarRow
           sessionId={sessionId}
           cwd={cwd}
           remote={remote}
           sourceMode="changes"
           kind="dir"
-          path={dirPath}
-          name={node.name}
+          path={terminalPath}
+          name={displayName}
+          chainPrefix={chainPrefix}
+          title={label}
           depth={depth}
           expanded={!isCollapsed}
-          onToggle={() => toggleCollapse(dirPath)}
+          onToggle={() => toggleCollapse(startPath)}
           ariaLabel={
             isCollapsed
-              ? t("chatContext.files.expandFolder", { name: node.name })
-              : t("chatContext.files.collapseFolder", { name: node.name })
+              ? t("chatContext.files.expandFolder", { name: label })
+              : t("chatContext.files.collapseFolder", { name: label })
           }
           lead={
             <>
@@ -106,12 +144,19 @@ export function FilesView({
           testId="changes-row"
           withMenu={false}
         />
+        {/* 压缩后的行整体展开/收起；子项相对这一行只多缩进一级，无论链吸收
+            了多少段（spec「压缩后的行作为一个整体展开 / 收起，其子项缩进
+            只增加一级」）。 */}
         {!isCollapsed ? (
           <div className="flex flex-col">
-            {node.children.map((child) =>
-              child.kind === "dir"
-                ? renderDir(child, `${dirPath}/${child.name}`, depth + 1)
-                : renderFile(child.entry, depth + 1),
+            {terminalChildren.map((child) =>
+              child.isDir
+                ? renderDir(child.cursor as DirNode, terminalPath, depth + 1)
+                : renderFile(
+                    (child.cursor as Extract<FileTreeNode, { kind: "file" }>)
+                      .entry,
+                    depth + 1,
+                  ),
             )}
           </div>
         ) : null}
@@ -153,7 +198,7 @@ export function FilesView({
     <div className="flex flex-col gap-0.5 px-2 py-2.5">
       {tree.map((node) =>
         node.kind === "dir"
-          ? renderDir(node, node.name, 0)
+          ? renderDir(node, "", 0)
           : renderFile(node.entry, 0),
       )}
     </div>

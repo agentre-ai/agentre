@@ -527,3 +527,79 @@ describe("FilesPanel directory mode", () => {
     ).toMatchObject({ path: "main.go", sourceMode: "directory" });
   });
 });
+
+describe("FilesPanel directory mode 链压缩", () => {
+  beforeEach(() => {
+    useChatSidebarStore.setState({ filesMode: "directory" });
+  });
+
+  it("folds only what is already loaded, requests no unopened level up front, and cascades a single expand through every level as they arrive", async () => {
+    // internal -> service -> chat_svc 是一条单子目录、不直接含文件的链；
+    // chat_svc 自己才直接含文件，链在那里终止。
+    listDirMock.mockImplementation((_id: number, relPath: string) => {
+      if (relPath === "")
+        return Promise.resolve(listing([entry("internal", true)]));
+      if (relPath === "internal")
+        return Promise.resolve(listing([entry("service", true)]));
+      if (relPath === "internal/service")
+        return Promise.resolve(listing([entry("chat_svc", true)]));
+      if (relPath === "internal/service/chat_svc")
+        return Promise.resolve(listing([entry("chat.go")]));
+      throw new Error(`unexpected relPath ${relPath}`);
+    });
+    renderPanel({});
+
+    // 根加载完之后，链还没有任何一层被展开过——只折叠出「internal」自己
+    // 这一行，不为了探链去多打一次后端（「不触发额外的即时加载」）。
+    const foldedStart = await screen.findByRole("button", {
+      name: "Expand internal",
+    });
+    expect(listDirMock).toHaveBeenCalledTimes(1);
+    expect(listDirMock).toHaveBeenCalledWith(7, "", false);
+
+    // 用户只展开一次；链背后的多级懒加载逐层到达后应自动延展，直到探到
+    // chat_svc 直接含文件为止，压缩行的整体展开态对用户始终只是「一次点击」。
+    await userEvent.click(foldedStart);
+    const chatGo = await screen.findByText("chat.go");
+    expect(chatGo).toBeInTheDocument();
+
+    const foldedRow = screen.getByRole("button", {
+      name: "Collapse internal/service/chat_svc",
+    });
+    expect(within(foldedRow).getByTestId("chain-prefix")).toHaveTextContent(
+      "internal/service/",
+    );
+    expect(listDirMock).toHaveBeenCalledWith(7, "internal", false);
+    expect(listDirMock).toHaveBeenCalledWith(7, "internal/service", false);
+    expect(listDirMock).toHaveBeenCalledWith(
+      7,
+      "internal/service/chat_svc",
+      false,
+    );
+    expect(listDirMock).toHaveBeenCalledTimes(4);
+
+    // chat.go 只比压缩行多缩进一级，尽管链吸收了三段。
+    const chatGoRow = row("chat.go");
+    const folded = row("chat_svc");
+    expect(chatGoRow.style.paddingLeft).toBe(
+      `${Number.parseInt(folded.style.paddingLeft, 10) + 14}px`,
+    );
+  });
+
+  it("does not fold a directory whose own loaded level directly contains a file", async () => {
+    listDirMock.mockImplementation((_id: number, relPath: string) =>
+      Promise.resolve(
+        relPath === ""
+          ? listing([entry("app", true)])
+          : listing([entry("app.go")]),
+      ),
+    );
+    renderPanel({});
+
+    const appRow = await screen.findByRole("button", { name: "Expand app" });
+    await userEvent.click(appRow);
+    expect(await screen.findByText("app.go")).toBeInTheDocument();
+    // app 直接含 app.go，链不延展；不应该出现任何压缩前缀。
+    expect(screen.queryByTestId("chain-prefix")).toBeNull();
+  });
+});
