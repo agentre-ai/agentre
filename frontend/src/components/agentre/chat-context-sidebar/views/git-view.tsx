@@ -12,6 +12,7 @@ import {
 } from "../git-rows";
 
 import { PanelNotice, PanelSkeleton } from "./panel-feedback";
+import { SidebarList } from "./sidebar-list";
 import { SidebarRow } from "./sidebar-row";
 import type { GitChangesState, GitScope } from "./use-git-changes";
 
@@ -102,7 +103,11 @@ export function GitView({
   }
 
   return (
-    <div className="flex flex-col gap-0.5 px-2 py-2.5">
+    <SidebarList
+      variant="list"
+      label={t("chatContext.git.listAria")}
+      className="flex flex-col gap-0.5 px-2 py-2.5"
+    >
       {rows.map((row) => (
         <Row
           key={row.path}
@@ -117,7 +122,7 @@ export function GitView({
           {t("chatContext.git.truncated", { limit: rows.length })}
         </div>
       ) : null}
-    </div>
+    </SidebarList>
   );
 }
 

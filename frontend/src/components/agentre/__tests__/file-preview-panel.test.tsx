@@ -727,6 +727,55 @@ describe("FilePreviewPanel", () => {
       expect(store().previewTabsBySession[7].activePath).toBe("gone.md");
     });
 
+    it("moves between tabs with the arrow keys, activating the one focused", async () => {
+      const panel = await openTwoTabs();
+      const tabs = within(panel).getAllByRole("tab");
+
+      // roving tabindex：标签条整体只有活动标签一个 Tab 停靠点。
+      expect(tabs.map((el) => el.getAttribute("tabindex"))).toEqual([
+        "-1",
+        "0",
+      ]);
+
+      await userEvent.click(tabs[0]);
+      expect(tabs[0]).toHaveFocus();
+      expect(tabs.map((el) => el.getAttribute("tabindex"))).toEqual([
+        "0",
+        "-1",
+      ]);
+
+      await userEvent.keyboard("{ArrowRight}");
+      expect(tabs[1]).toHaveFocus();
+      expect(store().previewTabsBySession[7].activePath).toBe("b.md");
+      // 末尾不回绕。
+      await userEvent.keyboard("{ArrowRight}");
+      expect(tabs[1]).toHaveFocus();
+
+      await userEvent.keyboard("{ArrowLeft}");
+      expect(tabs[0]).toHaveFocus();
+      expect(store().previewTabsBySession[7].activePath).toBe("docs/a.md");
+      await userEvent.keyboard("{ArrowLeft}");
+      expect(tabs[0]).toHaveFocus();
+    });
+
+    it("closes the active tab on Esc from anywhere in the panel", async () => {
+      const panel = await openTwoTabs();
+
+      await userEvent.click(within(panel).getAllByRole("tab")[0]);
+      await userEvent.keyboard("{Escape}");
+
+      expect(store().previewTabsBySession[7].tabs).toHaveLength(1);
+      expect(store().previewTabsBySession[7].activePath).toBe("b.md");
+
+      // 最后一个标签也能用 Esc 关掉（此时标签条已收起，焦点在 header 上），
+      // 面板随之收起。
+      within(panel).getByRole("button", { name: "Close preview" }).focus();
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() =>
+        expect(store().previewTabsBySession[7]).toBeUndefined(),
+      );
+    });
+
     it("scrolls the active tab into view", async () => {
       const scrollIntoView = vi.fn();
       const original = HTMLElement.prototype.scrollIntoView;

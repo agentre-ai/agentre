@@ -219,82 +219,97 @@ export function FilePreviewPanel({ sessionId }: Props) {
           : "animate-in slide-in-from-right-6 duration-200 ease-out motion-reduce:animate-none",
       )}
     >
-      <PreviewTabStrip sessionId={sessionId} />
-      <header
-        className="flex h-10 shrink-0 items-center gap-1.5 border-b border-border pl-3 pr-2"
-        data-testid="file-preview-header"
+      {/*
+        Esc 关闭当前活动标签（served requirement「键盘与无障碍」）。挂在包住整
+        个面板内容的这一层上：标签条、header、正文里的任何位置按 Esc 都算数。
+        `contents` 让这个包装层不参与布局，面板仍是 ResizableSidebar 的直接
+        flex 列（ResizableSidebar 自己不转发键盘事件）。
+      */}
+      <div
+        className="contents"
+        onKeyDown={(event) => {
+          if (event.key !== "Escape" || event.defaultPrevented) return;
+          event.preventDefault();
+          handleClose();
+        }}
       >
-        <Icon
-          className="size-4 shrink-0 text-muted-foreground"
-          aria-hidden="true"
-        />
-        <span
-          className="shrink truncate font-mono text-xs font-semibold"
-          title={path}
+        <PreviewTabStrip sessionId={sessionId} />
+        <header
+          className="flex h-10 shrink-0 items-center gap-1.5 border-b border-border pl-3 pr-2"
+          data-testid="file-preview-header"
         >
-          {basename(path)}
-        </span>
-        {dir !== "" ? (
+          <Icon
+            className="size-4 shrink-0 text-muted-foreground"
+            aria-hidden="true"
+          />
           <span
-            className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground"
-            title={dir}
+            className="shrink truncate font-mono text-xs font-semibold"
+            title={path}
           >
-            {dir}
+            {basename(path)}
           </span>
-        ) : null}
-        {segments.length > 1 && effectiveSegment !== null ? (
-          <div
-            role="group"
-            aria-label={t("chatContext.filePreview.segmentGroup")}
-            className="flex shrink-0 items-center rounded-md border border-border p-0.5"
+          {dir !== "" ? (
+            <span
+              className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground"
+              title={dir}
+            >
+              {dir}
+            </span>
+          ) : null}
+          {segments.length > 1 && effectiveSegment !== null ? (
+            <div
+              role="group"
+              aria-label={t("chatContext.filePreview.segmentGroup")}
+              className="flex shrink-0 items-center rounded-md border border-border p-0.5"
+            >
+              {segments.map((seg) => (
+                <button
+                  key={seg}
+                  type="button"
+                  aria-pressed={effectiveSegment === seg}
+                  onClick={() => setPreviewSegment(sessionId, seg)}
+                  className={cn(
+                    "rounded px-1.5 py-0.5 text-[10px] transition-colors duration-150",
+                    effectiveSegment === seg
+                      ? "bg-accent font-semibold text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {segmentLabel(seg)}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <button
+            type="button"
+            aria-label={t("chatContext.filePreview.close")}
+            title={t("chatContext.filePreview.close")}
+            onClick={handleClose}
+            className="ml-0.5 shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground"
           >
-            {segments.map((seg) => (
-              <button
-                key={seg}
-                type="button"
-                aria-pressed={effectiveSegment === seg}
-                onClick={() => setPreviewSegment(sessionId, seg)}
-                className={cn(
-                  "rounded px-1.5 py-0.5 text-[10px] transition-colors duration-150",
-                  effectiveSegment === seg
-                    ? "bg-accent font-semibold text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {segmentLabel(seg)}
-              </button>
-            ))}
-          </div>
-        ) : null}
-        <button
-          type="button"
-          aria-label={t("chatContext.filePreview.close")}
-          title={t("chatContext.filePreview.close")}
-          onClick={handleClose}
-          className="ml-0.5 shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <X className="size-4" aria-hidden="true" />
-        </button>
-      </header>
-      <div className="flex min-h-0 flex-1 flex-col">
-        {isLoading ? (
-          <PanelSkeleton label={t("chatContext.filePreview.loading")} />
-        ) : (
-          <div
-            key={contentKey}
-            className="flex min-h-0 flex-1 flex-col animate-in fade-in duration-150 motion-reduce:animate-none"
-          >
-            <PanelBody
-              kind={kind}
-              segment={effectiveSegment}
-              showDiff={showDiff}
-              readState={readState}
-              gitState={gitState}
-              path={path}
-              onRetry={() => setReloadKey((k) => k + 1)}
-            />
-          </div>
-        )}
+            <X className="size-4" aria-hidden="true" />
+          </button>
+        </header>
+        <div className="flex min-h-0 flex-1 flex-col">
+          {isLoading ? (
+            <PanelSkeleton label={t("chatContext.filePreview.loading")} />
+          ) : (
+            <div
+              key={contentKey}
+              className="flex min-h-0 flex-1 flex-col animate-in fade-in duration-150 motion-reduce:animate-none"
+            >
+              <PanelBody
+                kind={kind}
+                segment={effectiveSegment}
+                showDiff={showDiff}
+                readState={readState}
+                gitState={gitState}
+                path={path}
+                onRetry={() => setReloadKey((k) => k + 1)}
+              />
+            </div>
+          )}
+        </div>
       </div>
     </ResizableSidebar>
   );

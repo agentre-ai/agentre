@@ -387,9 +387,8 @@ describe("行的右键菜单", () => {
     await setupUser().click(
       within(menu).getByRole("menuitem", { name: "Expand" }),
     );
-    expect(
-      within(rowOf("internal")).getByRole("button", { name: /internal/ }),
-    ).toHaveAttribute("aria-expanded", "true");
+    // 展开态挂在行（treeitem）上，不在行内按钮上。
+    expect(rowOf("internal")).toHaveAttribute("aria-expanded", "true");
   });
 
   it("远端会话下本机三项整项不渲染", async () => {

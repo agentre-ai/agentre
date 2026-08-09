@@ -63,10 +63,35 @@ export function PreviewTabStrip({ sessionId }: Props) {
   const tabs = entry?.tabs ?? [];
   if (tabs.length < 2) return null;
 
+  // ← / → 在标签间移动（served requirement「键盘与无障碍」）：焦点走到哪个标签
+  // 就把它激活（自动激活），与鼠标点击同一个语义；两端不回绕，和文件列表的上下
+  // 键一致。roving tabindex 与「哪个是活动标签」是同一件事，不另存一份焦点态。
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented) return;
+    const step =
+      event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+    if (step === 0) return;
+    const items = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]'),
+    );
+    const current = (event.target as HTMLElement).closest<HTMLElement>(
+      '[role="tab"]',
+    );
+    const index = current ? items.indexOf(current) : -1;
+    if (index < 0) return;
+    event.preventDefault();
+    const next = items[index + step];
+    if (!next) return;
+    const path = next.dataset.tabPath;
+    if (path !== undefined) activatePreviewTab(sessionId, path);
+    next.focus();
+  };
+
   return (
     <div
       role="tablist"
       aria-label={t("chatContext.filePreview.tabsAria")}
+      onKeyDown={handleKeyDown}
       className="flex h-[34px] shrink-0 items-stretch overflow-hidden border-b border-border bg-muted"
     >
       <div className="scrollbar-none flex h-full min-h-0 min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden">
@@ -139,8 +164,13 @@ function PreviewTab({
         <div
           role="tab"
           aria-selected={active}
+          // 标签自身走 roving tabindex：Tab 只停在活动标签上，其余靠 ← / →
+          // 走到（每个标签里的关闭按钮照旧可 Tab 到——那是非活动标签唯一的
+          // 键盘关闭途径，Esc 只管当前活动的那个）。
+          tabIndex={active ? 0 : -1}
           data-active={active}
           data-preview={tab.isPreview}
+          data-tab-path={tab.path}
           title={tab.path}
           onClick={onActivate}
           onDoubleClick={onDoublePromote}

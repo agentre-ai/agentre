@@ -32,6 +32,7 @@ import {
   RowMenu,
   type RowMenuModel,
 } from "./row-menu";
+import { useSidebarListRow } from "./sidebar-list";
 import { indentStyle } from "./tree-indent";
 import { openTarget, useOpenFile, useRevealFile } from "./use-open-file";
 
@@ -75,6 +76,12 @@ type Props = {
   /** 仅目录行。 */
   expanded?: boolean;
   onToggle?: () => void;
+  /**
+   * 键盘导航用的稳定行标识，默认取 `path`。链压缩的目录行必须传链首：链会随着
+   * 更深的层加载进来而变长，`path`（链尾）跟着变，roving 落点会因此被当成「这
+   * 一行没了」而弹回首行。
+   */
+  rowKey?: string;
   /** 主按钮的可访问名；目录行用「展开 / 收起 X」，文件行留空取文本内容。 */
   ariaLabel?: string;
   /** 名称之前的固定宽列：树模式是展开箭头 + 类型图标，Git 模式是状态字母。 */
@@ -119,6 +126,7 @@ export function SidebarRow({
   onJumpToTurn,
   expanded = false,
   onToggle,
+  rowKey,
   ariaLabel,
   lead,
   trailing,
@@ -128,6 +136,9 @@ export function SidebarRow({
   withMenu = true,
 }: Props) {
   const { t } = useTranslation();
+  // ⋯ 菜单受控：右键之外，键盘的 Shift+F10 / 菜单键也要能开出同一份菜单
+  // （ContextMenu 原语没有受控的 open，所以键盘走 DropdownMenu 这一份）。
+  const [menuOpen, setMenuOpen] = React.useState(false);
   const openPreview = useChatSidebarStore((s) => s.openPreview);
   const openPreviewInNewTab = useChatSidebarStore((s) => s.openPreviewInNewTab);
   const activePreviewPath = useChatSidebarStore(
@@ -176,6 +187,15 @@ export function SidebarRow({
     onCopy: copy,
   };
 
+  // 行接进所在列表的键盘模型：Enter / ←→ / Shift+F10 要执行的就是单击、展开收起
+  // 与右键菜单这同一组动作，不另起一套键盘专用分支。
+  const listRow = useSidebarListRow(`${kind}:${rowKey ?? path}`, {
+    toggle: kind === "dir" ? () => model.onToggle() : null,
+    activate:
+      kind === "file" && previewPath !== null ? () => model.onPreview() : null,
+    openMenu: withMenu ? () => setMenuOpen(true) : null,
+  });
+
   const nameNode = chainPrefix ? (
     // 压缩行的截断方向反过来：dir="rtl" + text-left 让省略号落在开头，尾部
     // （末段，节点的身份）永远保留，与 Git 页目录后缀的截断方向一致。
@@ -210,12 +230,20 @@ export function SidebarRow({
   const row = (
     <div
       {...rowData}
+      {...listRow}
+      // 展开态与层级挂在行上（不在行内按钮上）：行才是 treeitem，读屏据此宣告
+      // 「已展开 / 已收起、第几层」，键盘导航也读同一份属性。扁平列表没有层级，
+      // 只用 aria-selected 表达「这一行正开在预览面板里」。
+      aria-expanded={kind === "dir" ? expanded : undefined}
+      aria-level={listRow?.role === "treeitem" ? depth + 1 : undefined}
+      aria-selected={listRow ? active : undefined}
       data-testid={testId}
       data-name={name}
       title={title}
       style={indentStyle(depth)}
       className={cn(
         "group/row flex items-center gap-1.5 rounded-md pr-1 pl-2 text-xs text-muted-foreground transition-colors",
+        "outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
         interactive && "hover:bg-muted/50",
         active && "bg-accent text-accent-foreground",
         className,
@@ -224,8 +252,10 @@ export function SidebarRow({
       {interactive ? (
         <button
           type="button"
+          // 行内的按钮都不是 Tab 停靠点：整个列表对 Tab 只停一次，进列表之后靠
+          // 方向键走行、Shift+F10 开菜单。
+          tabIndex={-1}
           aria-label={ariaLabel}
-          aria-expanded={kind === "dir" ? expanded : undefined}
           className={bodyClassName}
           onClick={() =>
             kind === "dir" ? model.onToggle() : model.onPreview()
@@ -242,14 +272,16 @@ export function SidebarRow({
         <div className={bodyClassName}>{body}</div>
       )}
       {withMenu ? (
-        <DropdownMenu>
+        <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
           <DropdownMenuTrigger asChild>
             <button
               type="button"
+              tabIndex={-1}
               aria-label={t("chatContext.row.menu")}
               // 槽位恒占 24px、只切换可见性：条件渲染会让整行文字在 hover 时左右
-              // 跳（spec「行的形态与交互」）。
-              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity group-hover/row:opacity-100 hover:text-foreground focus-visible:opacity-100 data-[state=open]:opacity-100"
+              // 跳（spec「行的形态与交互」）。键盘走到这一行（行本身聚焦）时同样
+              // 显形，否则 ⋯ 这个入口对键盘用户是隐形的。
+              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity group-focus-within/row:opacity-100 group-hover/row:opacity-100 hover:text-foreground focus-visible:opacity-100 data-[state=open]:opacity-100"
             >
               <Ellipsis className="size-3.5" aria-hidden="true" />
             </button>

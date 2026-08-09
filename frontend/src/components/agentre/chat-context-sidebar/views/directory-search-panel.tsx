@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 import { PanelNotice, PanelSkeleton } from "./panel-feedback";
+import { SidebarList } from "./sidebar-list";
 import { FileTypeIcon, SidebarRow } from "./sidebar-row";
 import type { DirectorySearch, SearchHit } from "./use-directory-search";
 
@@ -136,7 +137,11 @@ function SearchBody({
   }
 
   return (
-    <div className="flex flex-col gap-0.5 px-2 py-2.5">
+    <SidebarList
+      variant="list"
+      label={t("chatContext.search.resultsAria")}
+      className="flex flex-col gap-0.5 px-2 py-2.5"
+    >
       {hits.map((hit) => (
         <SearchRow
           key={hit.path}
@@ -152,7 +157,7 @@ function SearchBody({
           {t("chatContext.search.truncated", { limit: hits.length })}
         </div>
       ) : null}
-    </div>
+    </SidebarList>
   );
 }
 

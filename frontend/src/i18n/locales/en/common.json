@@ -620,6 +620,7 @@
       "openFailed": "Failed to open file: {{error}}",
       "expandFolder": "Expand {{name}}",
       "collapseFolder": "Collapse {{name}}",
+      "treeAria": "Files changed in this session",
       "modes": {
         "label": "View mode",
         "changes": "Changes",
@@ -638,7 +639,8 @@
       "truncated": "Showing the first {{limit}} entries only",
       "noCwd": "This session has no working directory",
       "readFailed": "Failed to read the directory",
-      "retry": "Retry"
+      "retry": "Retry",
+      "treeAria": "Working directory files"
     },
     "search": {
       "placeholder": "Search files by name…",
@@ -649,7 +651,8 @@
       "emptyHint": "Ignored files are excluded from search by default",
       "truncated": "Showing the first {{limit}} results only",
       "loading": "Searching…",
-      "readFailed": "Search failed"
+      "readFailed": "Search failed",
+      "resultsAria": "Search results"
     },
     "git": {
       "label": "Git",
@@ -672,6 +675,7 @@
       "readFailed": "Failed to read git changes",
       "retry": "Retry",
       "truncated": "Showing the first {{limit}} changed files only",
+      "listAria": "Git changed files",
       "status": {
         "modified": "Modified",
         "added": "Added",

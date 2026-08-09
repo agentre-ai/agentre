@@ -10,6 +10,7 @@ import {
   type FileTreeNode,
 } from "../derive";
 
+import { SidebarList } from "./sidebar-list";
 import { FileTypeIcon, SidebarRow } from "./sidebar-row";
 
 type DirNode = Extract<FileTreeNode, { kind: "dir" }>;
@@ -117,6 +118,8 @@ export function FilesView({
           sourceMode="changes"
           kind="dir"
           path={terminalPath}
+          // 链首是这一行的稳定身份（链尾会随链变长而变），键盘落点按它记。
+          rowKey={startPath}
           name={displayName}
           chainPrefix={chainPrefix}
           title={label}
@@ -195,12 +198,16 @@ export function FilesView({
   );
 
   return (
-    <div className="flex flex-col gap-0.5 px-2 py-2.5">
+    <SidebarList
+      variant="tree"
+      label={t("chatContext.files.treeAria")}
+      className="flex flex-col gap-0.5 px-2 py-2.5"
+    >
       {tree.map((node) =>
         node.kind === "dir"
           ? renderDir(node, "", 0)
           : renderFile(node.entry, 0),
       )}
-    </div>
+    </SidebarList>
   );
 }

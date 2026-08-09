@@ -620,6 +620,7 @@
       "openFailed": "打开文件失败：{{error}}",
       "expandFolder": "展开 {{name}}",
       "collapseFolder": "收起 {{name}}",
+      "treeAria": "本会话改动的文件",
       "modes": {
         "label": "视图模式",
         "changes": "变动",
@@ -638,7 +639,8 @@
       "truncated": "只显示了前 {{limit}} 项",
       "noCwd": "这个会话没有工作目录",
       "readFailed": "读取目录失败",
-      "retry": "重试"
+      "retry": "重试",
+      "treeAria": "工作目录文件"
     },
     "search": {
       "placeholder": "按文件名搜索…",
@@ -649,7 +651,8 @@
       "emptyHint": "默认不搜索被忽略的文件",
       "truncated": "只显示了前 {{limit}} 个结果",
       "loading": "正在搜索…",
-      "readFailed": "搜索失败"
+      "readFailed": "搜索失败",
+      "resultsAria": "搜索结果"
     },
     "git": {
       "label": "Git",
@@ -672,6 +675,7 @@
       "readFailed": "读取 git 变动失败",
       "retry": "重试",
       "truncated": "只显示了前 {{limit}} 个变动文件",
+      "listAria": "Git 变动文件",
       "status": {
         "modified": "已修改",
         "added": "新增",

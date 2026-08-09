@@ -99,6 +99,13 @@ function row(name: string): HTMLElement {
   return found;
 }
 
+/** 行内按钮 → 它所在的那一行（treeitem 才是带 aria-expanded 的那个元素）。 */
+function rowOf(el: HTMLElement): HTMLElement {
+  const found = el.closest<HTMLElement>('[role="treeitem"]');
+  if (!found) throw new Error("button is not inside a treeitem");
+  return found;
+}
+
 beforeEach(() => {
   localStorage.clear();
   useChatSidebarStore.setState({
@@ -401,9 +408,9 @@ describe("FilesPanel directory mode", () => {
     );
 
     await waitFor(() => expect(listDirMock).toHaveBeenCalledWith(8, "", false));
-    expect(
-      await screen.findByRole("button", { name: /expand app/i }),
-    ).toHaveAttribute("aria-expanded", "false");
+    expect(rowOf(await screen.findByRole("button", { name: /expand app/i })))
+      // 展开态挂在行（treeitem）上，不在行内按钮上。
+      .toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("app.go")).toBeNull();
   });
 
@@ -431,7 +438,7 @@ describe("FilesPanel directory mode", () => {
     await waitFor(() => expect(listDirMock).toHaveBeenCalledTimes(4));
     expect(listDirMock).toHaveBeenCalledWith(7, "app", false);
     expect(
-      await screen.findByRole("button", { name: /collapse app/i }),
+      rowOf(await screen.findByRole("button", { name: /collapse app/i })),
     ).toHaveAttribute("aria-expanded", "true");
 
     // 别的会话结束不该惊动本面板。
@@ -619,7 +626,7 @@ describe("FilesPanel directory search", () => {
     await userEvent.click(searchToggle());
     expect(screen.getByText("app.go")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /collapse app/i }),
+      rowOf(screen.getByRole("button", { name: /collapse app/i })),
     ).toHaveAttribute("aria-expanded", "true");
     expect(listDirMock).toHaveBeenCalledTimes(2);
 

@@ -20,6 +20,7 @@ import {
 
 import { DirectorySearchPanel } from "./directory-search-panel";
 import { errorText, PanelNotice, PanelSkeleton } from "./panel-feedback";
+import { SidebarList } from "./sidebar-list";
 import { FileTypeIcon, SidebarRow } from "./sidebar-row";
 import { indentStyle } from "./tree-indent";
 import {
@@ -327,6 +328,9 @@ export function DirectoryView({
           sourceMode="directory"
           kind="dir"
           path={frontierPath}
+          // 链首是这一行的稳定身份：链会随着更深的层加载进来而变长，键盘落点
+          // 按链首记才不会在子项到达的那一刻被当成「这一行没了」。
+          rowKey={relPath}
           name={displayName}
           chainPrefix={chainPrefix}
           depth={depth}
@@ -440,9 +444,13 @@ export function DirectoryView({
   };
 
   return (
-    <div className="flex flex-col gap-0.5 px-2 py-2.5">
+    <SidebarList
+      variant="tree"
+      label={t("chatContext.directory.treeAria")}
+      className="flex flex-col gap-0.5 px-2 py-2.5"
+    >
       {renderLevel(ROOT, 0)}
-    </div>
+    </SidebarList>
   );
 }
 

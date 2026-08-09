@@ -48,6 +48,13 @@ const files: FileEntry[] = [
 
 const CWD = "/Users/me/proj";
 
+/** 行内按钮 → 它所在的那一行（treeitem 才是带 aria-expanded 的那个元素）。 */
+function rowOf(el: HTMLElement): HTMLElement {
+  const found = el.closest<HTMLElement>('[role="treeitem"]');
+  if (!found) throw new Error("button is not inside a treeitem");
+  return found;
+}
+
 /** 「用默认应用打开」现在只在行的 ⋯ 菜单里（行内不再有常驻图标按钮）。 */
 async function openWithDefaultApp(name: string) {
   const user = userEvent.setup({ pointerEventsCheck: 0 });
@@ -184,20 +191,20 @@ describe("FilesView", () => {
         onJumpToTurn={() => {}}
       />,
     );
-    const internalRow = screen.getByRole("button", { name: /internal/ });
-    expect(internalRow).toHaveAttribute("aria-expanded", "true");
+    const internalToggle = screen.getByRole("button", { name: /internal/ });
+    expect(rowOf(internalToggle)).toHaveAttribute("aria-expanded", "true");
     expect(
       screen.getByRole("button", { name: /chat\.go/ }),
     ).toBeInTheDocument();
 
-    await userEvent.click(internalRow);
-    expect(internalRow).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(internalToggle);
+    expect(rowOf(internalToggle)).toHaveAttribute("aria-expanded", "false");
     expect(
       screen.queryByRole("button", { name: /chat\.go/ }),
     ).not.toBeInTheDocument();
 
-    await userEvent.click(internalRow);
-    expect(internalRow).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(internalToggle);
+    expect(rowOf(internalToggle)).toHaveAttribute("aria-expanded", "true");
     expect(
       screen.getByRole("button", { name: /chat\.go/ }),
     ).toBeInTheDocument();
@@ -489,13 +496,13 @@ describe("FilesView 链压缩", () => {
       name: "Collapse internal/service/chat_svc",
     });
     await userEvent.click(toggle);
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(rowOf(toggle)).toHaveAttribute("aria-expanded", "false");
     expect(
       screen.queryByRole("button", { name: /chat\.go/ }),
     ).not.toBeInTheDocument();
 
     await userEvent.click(toggle);
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(rowOf(toggle)).toHaveAttribute("aria-expanded", "true");
     expect(
       screen.getByRole("button", { name: /chat\.go/ }),
     ).toBeInTheDocument();
