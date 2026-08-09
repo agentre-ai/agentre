@@ -10,6 +10,7 @@ import {
   Info,
   Keyboard,
   Network,
+  RefreshCw,
   Server,
   Sparkles,
   SunMoon,
@@ -39,6 +40,7 @@ import { LlmProvidersPanel } from "./llm-providers";
 import { SettingsProxyPanel } from "./settings-proxy";
 import { NotificationsPanel } from "./notifications-panel";
 import { KeyboardShortcutsPanel } from "./shortcuts";
+import { SyncPanel, useSyncStatus } from "./sync";
 import { UnderConstructionPage } from "./under-construction-page";
 import { UpdateSection } from "./update-section";
 
@@ -62,6 +64,7 @@ type SettingsPageId =
   | "mcp-servers"
   | "notifications"
   | "skills-tools"
+  | "sync"
   | "version-logs";
 
 const settingsPageIds = new Set<SettingsPageId>([
@@ -75,6 +78,7 @@ const settingsPageIds = new Set<SettingsPageId>([
   "mcp-servers",
   "notifications",
   "skills-tools",
+  "sync",
   "version-logs",
 ]);
 
@@ -132,6 +136,7 @@ const settingsNavSections: SettingsNavSection[] = [
         id: "remote-devices",
         labelKey: "settings.nav.remoteDevices",
       },
+      { icon: RefreshCw, id: "sync", labelKey: "settings.nav.sync" },
     ],
   },
   {
@@ -154,6 +159,7 @@ const underConstructionSettingsPages: Record<
     | "version-logs"
     | "data-backup"
     | "notifications"
+    | "sync"
   >,
   {
     descriptionKey: string;
@@ -279,13 +285,24 @@ type SettingsNavProps = {
   backendGap: boolean;
   onPageChange: (page: SettingsPageId) => void;
   providerGap: boolean;
+  // R12:未登录时「同步」这个导航项整个不出现(不是灰掉)。
+  syncEnabled: boolean;
 };
+
+// R12:未登录时本规格引入的一切都不存在——过滤掉「同步」这一项,不是禁用它。
+function visibleNavItems<T extends { id?: SettingsPageId }>(
+  items: T[],
+  syncEnabled: boolean,
+): T[] {
+  return syncEnabled ? items : items.filter((item) => item.id !== "sync");
+}
 
 function SettingsNav({
   activePage,
   backendGap,
   onPageChange,
   providerGap,
+  syncEnabled,
 }: SettingsNavProps) {
   const { t } = useTranslation();
   const showFullNav = useMediaQuery("(min-width: 1024px)");
@@ -317,7 +334,7 @@ function SettingsNav({
                 {t(section.labelKey)}
               </div>
             ) : null}
-            {section.items.map((item) => (
+            {visibleNavItems(section.items, syncEnabled).map((item) => (
               <SettingsNavButton
                 key={item.labelKey}
                 activePage={activePage}
@@ -612,7 +629,8 @@ function SettingsUnderConstruction({ page }: { page: SettingsPageId }) {
     page === "local-proxy" ||
     page === "version-logs" ||
     page === "data-backup" ||
-    page === "notifications"
+    page === "notifications" ||
+    page === "sync"
   ) {
     return null;
   }
@@ -664,6 +682,18 @@ function SettingsPage({
       a.blockReason === "backend-requires-provider",
   );
 
+  // R12:未登录时「同步」这一项整个不存在——不是灰掉、不是点进去提示先登录。
+  // `Status()` 未登录时返回 `{Enabled:false}` 而不是抛错,`status` 初始为
+  // `null`(加载中)同样按「不存在」处理,避免先出现再消失的闪烁。首次加载
+  // 完成之前不做重定向判断——否则一个合法已登录用户深链到 "sync" 会在
+  // `syncEnabled` 还没来得及从初始的 false 变 true 之前就被赶回「外观」。
+  const { status: syncStatus, loading: syncStatusLoading } = useSyncStatus();
+  const syncEnabled = syncStatus?.Enabled === true;
+  React.useEffect(() => {
+    if (syncStatusLoading) return;
+    if (activePage === "sync" && !syncEnabled) setActivePage("appearance");
+  }, [activePage, syncEnabled, syncStatusLoading]);
+
   return (
     <div
       data-slot="settings-page"
@@ -674,6 +704,7 @@ function SettingsPage({
         backendGap={backendGap}
         onPageChange={setActivePage}
         providerGap={providerGap}
+        syncEnabled={syncEnabled}
       />
       <main className="min-w-0 flex-1 overflow-auto bg-background">
         <div className="flex min-h-full w-full min-w-0 max-w-[1180px] flex-col gap-6 px-4 py-5 sm:px-6 lg:gap-8 lg:px-10 lg:py-8">
@@ -703,6 +734,10 @@ function SettingsPage({
             <DataBackupPanel />
           ) : activePage === "notifications" ? (
             <NotificationsPanel />
+          ) : activePage === "sync" ? (
+            syncEnabled ? (
+              <SyncPanel />
+            ) : null
           ) : activePage === "version-logs" ? (
             <UpdateSection />
           ) : (

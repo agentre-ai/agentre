@@ -2320,6 +2320,69 @@
       "piDescription": "调用 Pi Skill"
     }
   },
+  "sync": {
+    "title": "同步",
+    "description": "你的 Agent、部门、项目和项目路径，在所有已登录的桌面端之间保持一致。",
+    "status": {
+      "title": "同步状态",
+      "description": "改动会在 30 秒内送到你的其他桌面端。",
+      "badge": {
+        "upToDate": "已是最新",
+        "pending": "{{count}} 项待同步",
+        "unreachable": "连不上"
+      },
+      "lastSuccess": "上次成功同步",
+      "pending": "待同步",
+      "pendingCount": "{{count}} 项",
+      "unreachableTitle": "连不上账号服务器",
+      "unreachableDetail": "本地改动照常保存，连上后会自动补上去。正在按退避重试。",
+      "errorTitle": "同步失败",
+      "retry": "立即重试",
+      "retrying": "重试中…"
+    },
+    "lostChanges": {
+      "title": "没能同步的改动",
+      "description": "本地改动没能生效时，那个版本保留在这里 30 天，可随时恢复。",
+      "count": "{{count}} 条",
+      "empty": "所有改动都同步成功了。",
+      "reason": {
+        "overwritten": "被覆盖",
+        "discarded": "引用丢失",
+        "rejected": "超时未上传"
+      },
+      "overwrittenFrom": "来自「{{device}}」",
+      "discardedDetail": "依赖的对象超期未到达本机",
+      "rejectedDetail": "设备离线超过 30 天，已按服务端为准",
+      "entity": {
+        "project": "项目",
+        "department": "部门",
+        "agent": "Agent",
+        "agentBackend": "Agent 后端",
+        "execTarget": "执行目标",
+        "projectMember": "项目成员",
+        "projectLocation": "项目路径"
+      },
+      "content": "内容",
+      "restore": "恢复为我的版本",
+      "restoreHint": "恢复是一次普通修改，会照常同步到其他机器。",
+      "restoring": "恢复中…",
+      "restoreSucceeded": "已恢复",
+      "restoreFailed": "恢复失败",
+      "deletedBadge": "已被删除",
+      "deletedTitle": "这个 {{entity}} 已在「{{device}}」上被删除，恢复不会让它回来。",
+      "deletedTitleUnknownDevice": "这个 {{entity}} 已被删除，恢复不会让它回来。",
+      "deletedDescription": "恢复会把已删除的对象重新推上去，其他设备上它会无缘无故重新出现。你可以按下面这份内容新建一个——内容一模一样，但它是一个新对象。",
+      "recreate": "按这份内容新建",
+      "recreating": "新建中…",
+      "recreateSucceeded": "已新建",
+      "recreateFailed": "新建失败",
+      "discard": "丢弃这条记录",
+      "discarding": "丢弃中…",
+      "discardFailed": "丢弃失败",
+      "toggleExpand": "展开查看",
+      "toggleCollapse": "收起"
+    }
+  },
   "settings": {
     "agentBackend": {
       "description": "配置 Agent 的执行引擎与对应模型。工作目录 / 权限模式等运行时参数下放到「组织架构 → Agent」单独配置。",
@@ -2390,6 +2453,7 @@
       "remoteDevices": "远端",
       "settings": "设置",
       "skillsTools": "技能 / 工具",
+      "sync": "同步",
       "versionLogs": "版本 & 更新"
     },
     "underConstruction": {

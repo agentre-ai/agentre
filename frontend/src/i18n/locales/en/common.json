@@ -2320,6 +2320,69 @@
       "piDescription": "Invoke a Pi skill"
     }
   },
+  "sync": {
+    "title": "Sync",
+    "description": "Your agents, departments, projects, and project paths stay in sync across every signed-in desktop.",
+    "status": {
+      "title": "Sync status",
+      "description": "Changes reach your other desktops within 30 seconds.",
+      "badge": {
+        "upToDate": "Up to date",
+        "pending": "{{count}} pending",
+        "unreachable": "Unreachable"
+      },
+      "lastSuccess": "Last successful sync",
+      "pending": "Pending",
+      "pendingCount": "{{count}}",
+      "unreachableTitle": "Can't reach the account server",
+      "unreachableDetail": "Local changes are saved as usual and will catch up once reconnected. Retrying with backoff.",
+      "errorTitle": "Sync failed",
+      "retry": "Retry now",
+      "retrying": "Retrying…"
+    },
+    "lostChanges": {
+      "title": "Changes that didn't sync",
+      "description": "When a local change doesn't take effect, that version stays here for 30 days and can be restored anytime.",
+      "count": "{{count}}",
+      "empty": "Every change synced successfully.",
+      "reason": {
+        "overwritten": "Overwritten",
+        "discarded": "Reference missing",
+        "rejected": "Upload timed out"
+      },
+      "overwrittenFrom": "from \"{{device}}\"",
+      "discardedDetail": "A dependency didn't arrive in time",
+      "rejectedDetail": "Offline for more than 30 days; the server's version was kept",
+      "entity": {
+        "project": "Project",
+        "department": "Department",
+        "agent": "Agent",
+        "agentBackend": "Agent backend",
+        "execTarget": "Execution target",
+        "projectMember": "Project member",
+        "projectLocation": "Project path"
+      },
+      "content": "Content",
+      "restore": "Restore my version",
+      "restoreHint": "Restoring is a normal edit and syncs to your other machines as usual.",
+      "restoring": "Restoring…",
+      "restoreSucceeded": "Restored",
+      "restoreFailed": "Restore failed",
+      "deletedBadge": "Deleted",
+      "deletedTitle": "This {{entity}} was deleted on \"{{device}}\"; restoring won't bring it back.",
+      "deletedTitleUnknownDevice": "This {{entity}} was deleted elsewhere; restoring won't bring it back.",
+      "deletedDescription": "Restoring would push the deleted object back up, and it would reappear on other devices for no reason. You can create a new one from this content below instead — same content, but a new object.",
+      "recreate": "Create new from this",
+      "recreating": "Creating…",
+      "recreateSucceeded": "Created",
+      "recreateFailed": "Create failed",
+      "discard": "Discard this record",
+      "discarding": "Discarding…",
+      "discardFailed": "Discard failed",
+      "toggleExpand": "Expand",
+      "toggleCollapse": "Collapse"
+    }
+  },
   "settings": {
     "agentBackend": {
       "description": "Configure agent execution engines and their models. Runtime options such as working directory and permission mode are configured per agent in Organization → Agent.",
@@ -2390,6 +2453,7 @@
       "remoteDevices": "Remote",
       "settings": "Settings",
       "skillsTools": "Skills / Tools",
+      "sync": "Sync",
       "versionLogs": "Version & Updates"
     },
     "underConstruction": {
