@@ -1,20 +1,21 @@
-# Composer 底栏密度：三档容器降级 + 配额计量器重做
+# Composer 底栏密度：四档容器降级 + 配额计量器重做
 
 > Status: Draft
 > Owner: chat experience / frontend
-> Last updated: 2026-08-09（第 2 版：运行时验证后的两处修订 —— 决策 4 补「取整到 1000 即进 M」、新增决策 10 与「e2e fake runtime 的能力补齐」一节）
+> Last updated: 2026-08-09（第 4 版：用户裁定「上下文可以缩减但不要隐藏」。mockup 实测证明合并徽标只比「单纯砍装饰」省 25px，其省下的宽度几乎全部来自它藏起来的绝对 token 数 —— 遂放弃合并，改为只让装饰逐档让位，`120.5k / 1M` 与百分比四档全留。Hard invariant 3、决策 2/3、分档行为、断点随之改写）
 
-**Objective:** 让会话输入框底栏在任意 chat panel 宽度下都保持**单行、行高恒定**，同时把 Claude 订阅配额（5h / 7d）从"一行同色的纯文本 + 原生 `title`"改造成**双窗口独立取色 + 可键盘触达的 HoverCard 面板**，并修正上下文计量器的进位缺陷，使 `1000k` 这个字符串在任何输入下都不再出现（1M 上下文窗口读作 `1M`）。
+**Objective:** 让会话输入框底栏在任意 chat panel 宽度下都保持**单行、行高恒定、且不横向溢出**（发送按钮永远可见可点），同时把 Claude 订阅配额（5h / 7d）从"一行同色的纯文本 + 原生 `title`"改造成**双窗口独立取色 + 可键盘触达的 HoverCard 面板**，并修正上下文计量器的进位缺陷，使 `1000k` 这个字符串在任何输入下都不再出现（1M 上下文窗口读作 `1M`）。
 
 **Hard invariants:**
 
-1. **底栏永远单行。** 任何 chat panel 宽度下，底栏都不因内容折行而变高；降级靠隐藏 / 收缩元素，不靠 `flex-wrap`。
-2. **信息不因降级而丢失。** 上下文的绝对 token 数（`120.5k / 1M`）与两个配额窗口的百分比数字，在**每一档**都直接可见；被降级隐藏的只有文字标签、前缀与教学性提示，且其语义在 HoverCard / tooltip 中仍可取得。
-3. **`UsageState.reason` 的既有分支行为零回归。** `undefined` / 空 reason / `no_credentials` 仍整块不渲染；`ok` 与 stale 仍显示数字；`auth_expired` / `device_offline` / 无 stale 的 `network` 仍显示灰态占位。
-4. **HoverCard 不抢输入焦点。** 触发区可被 Tab 聚焦并因此展开面板，但展开动作不得把焦点从正在编辑的输入框移走，也不得吞掉 Enter 发送。
-5. **新增与改写的 UI 文案全部走 i18n**，`zh-CN` 与 `en` 双语，由 `src/__tests__/i18n.test.ts` 守卫；不硬编码中文。
-6. **动画克制且 reduced-motion 安全**，遵循 `docs/design.md` §8：HoverCard 走 Radix `data-state` + `tw-animate-css`，不引 Framer Motion。
-7. **表单控件仍统一走 shadcn `@/components/ui/*`**（本轮用既有的 `hover-card.tsx`，不新造弹层原语）。
+1. **底栏永远单行，且永不横向溢出。** 任何 chat panel 宽度下，底栏都不因内容折行而变高；降级靠隐藏 / 截断元素，不靠 `flex-wrap`。**行内容的实际宽度不得超过容器可视宽度**——把"折行变高"换成"溢出被裁"不算满足本条。
+2. **发送按钮与输入区永不参与溢出。** 发送 / 运行按钮、图片按钮在任何宽度下都完整可见可点；空间不足时先由两个计量器让位（`min-w-0` + 截断），而不是把按钮顶出可视区。这是上一版实现的实际失效点，单列为不变量以免再犯。
+3. **降级只砍装饰，不砍数据。** 两个配额窗口的百分比数字、上下文的绝对 token 数（`120.5k / 1M`）与上下文百分比，在**每一档**都直接可见于底栏行内（用户 2026-08-09 裁定："上下文的 UI/UX 可以缩减，但是不要隐藏"）。允许被降级隐藏的只有装饰与教学性元素：快捷键提示、「上下文」文字标签、`5h` / `7d` 前缀、上下文进度条、权限 Pill 的文字标签；其语义在 HoverCard / 既有 Popover 中仍可取得，无障碍播报不随之降级。
+4. **`UsageState.reason` 的既有分支行为零回归。** `undefined` / 空 reason / `no_credentials` 仍整块不渲染；`ok` 与 stale 仍显示数字；`auth_expired` / `device_offline` / 无 stale 的 `network` 仍显示灰态占位。
+5. **HoverCard 不抢输入焦点。** 触发区可被 Tab 聚焦并因此展开面板，但展开动作不得把焦点从正在编辑的输入框移走，也不得吞掉 Enter 发送。
+6. **新增与改写的 UI 文案全部走 i18n**，`zh-CN` 与 `en` 双语，由 `src/__tests__/i18n.test.ts` 守卫；不硬编码中文。
+7. **动画克制且 reduced-motion 安全**，遵循 `docs/design.md` §8：HoverCard 走 Radix `data-state` + `tw-animate-css`，不引 Framer Motion。
+8. **表单控件仍统一走 shadcn `@/components/ui/*`**（本轮用既有的 `hover-card.tsx`，不新造弹层原语）。
 
 ## Problem
 
@@ -24,7 +25,8 @@
 4. **唯一能回答"还有多久重置"的信息藏在原生 `title` 里。** 重置倒计时（`chat.tsx:392-399`）与 Sonnet / Opus 7d 拆分（`chat.tsx:400-405`）只进 `describeQuotaTitle`，经 `title=` 属性暴露。原生 `title` 需悬停约 1 秒、无法用键盘触达、无法着色、多行 `\n` 与用于缩进的两个前导空格在各平台渲染不一致。仓库其实已有 shadcn `hover-card.tsx` 与 `tooltip.tsx`。
 5. **两个相邻计量器视觉语言不一致，图标失去区分作用。** ContextMeter 有真实进度条（`chat.tsx:445-459`），QuotaMeter 是纯文本，两者却都用 `Gauge` 图标（`chat.tsx:373` 与 `chat.tsx:441`）；后果更重的配额（耗尽 = 硬停）反而没有任何量感。
 6. **百分比语义不明。** `chat.quota.aria` = "Claude Code 配额 5h {{five}}% 7d {{seven}}%"、`chat.quota.title.ok` = "Claude Code 配额 · {{device}}"，UI 里没有任何一处交代 43% 是**已用**还是**剩余**。后端 `ccoauth` 读的是 utilization（已用），该语义从未表达给用户。
-7. **`cc-usage-store` 的"同值短路"从未生效。** `frontend/src/stores/cc-usage-store.ts:32-48` 的 `shallowSameState` 把 `if (a.fetchedAtMs !== b.fetchedAtMs) return false;`（第 35 行）排在所有百分比比较**之前**，而 `internal/service/cc_usage_svc/manager.go:114 / 122 / 128` 每次 probe 都写入新的 `FetchedAtMs`。因此该函数在 60s 周期下恒返回 `false`，文件头部注释声称的"避免 60s tick 把数字 round 成同一个百分比却让所有订阅者集体 re-render"从未兑现。
+7. **第 1 版实现把"折行变高"换成了"溢出被裁"，发送按钮因此点不到。** 2026-08-09 真实应用实测（`e2e/scratch/2026-08-09-composer-footer-density/report.md`）：底栏 `flex-nowrap` + 每个子项 `shrink-0` 关掉了全部收缩余地，而四档降级只省下约 205px（实测内容宽 wide 821px → mid/narrow 616px），远不足以装进窄容器。六个实测真实宽度里有五个把发送按钮裁出可视区：视口 1280（右侧面板开着，composer 664）裁 38px、900 裁 63px、800 裁 163px、700 裁 58px、600 裁 158px；只有 composer 944 那一档装得下。行高确实恒为 32px，但代价是右侧内容连同发送按钮一起被切到画面外——比用户最初报告的"行变高"更严重。
+8. **`cc-usage-store` 的"同值短路"从未生效。** `frontend/src/stores/cc-usage-store.ts:32-48` 的 `shallowSameState` 把 `if (a.fetchedAtMs !== b.fetchedAtMs) return false;`（第 35 行）排在所有百分比比较**之前**，而 `internal/service/cc_usage_svc/manager.go:114 / 122 / 128` 每次 probe 都写入新的 `FetchedAtMs`。因此该函数在 60s 周期下恒返回 `false`，文件头部注释声称的"避免 60s tick 把数字 round 成同一个百分比却让所有订阅者集体 re-render"从未兑现。
 
 ## Actors and user stories
 
@@ -39,28 +41,32 @@
 | # | Decision | Basis and rejected option |
 |---|---|---|
 | 1 | 降级用 **`@container` 按 composer 自身宽度**触发，不用视口 media query | chat panel 的实际宽度取决于侧栏 / 右侧面板开合，视口宽度读不到它。仓库已有先例 `frontend/src/components/ui/field.tsx:47` 的 `@container/field-group`，Tailwind 4.3（`frontend/package.json:72`）原生支持。Rejected: 视口断点——同一窗口宽度下 panel 可窄可宽，必然误判；Rejected: `flex-wrap`——用户抱怨的正是"变高"，允许折行等于把 bug 正式化 |
-| 2 | 牺牲顺序固定为 **①快捷键提示 → ②「上下文」文字标签 → ③`5h`/`7d` 前缀 + 进度条 96px→40px → ④权限模式 Pill 退成纯图标** | 用户裁定（①②③ 为其明确勾选项，④ 为极窄兜底的裁定）。依据是信息密度递减：快捷键提示是一次性教学文案，标签与前缀可由图标 + HoverCard 补偿，进度条是数字的冗余表达。Rejected: 极窄档允许横向溢出 / 滚动——把"看不见"从可控降级变成不可控；Rejected: 极窄档改双行——与 Hard invariant 1 直接冲突 |
-| 3 | 上下文的**绝对 token 数任何一档都保留** | 用户明确未授权牺牲它——它是判断"还能聊多久"的唯一定量依据，百分比无法替代（60% of 1M 与 60% of 200k 决策不同）。Rejected: 极窄档把 token 数移入 HoverCard——它是底栏里被看得最频繁的数字，代价高于收益的 ~74px |
+| 2 | 牺牲顺序固定为 **①快捷键提示 → ②「上下文」文字标签 → ③`5h` / `7d` 前缀 + 上下文进度条 → ④权限模式 Pill 退成纯图标**，四步全部只砍装饰 | 用户裁定：上下文可以缩减但不要隐藏。①② 为其最初勾选项，③ 中的前缀亦是；进度条纳入牺牲项是本版新增——它与紧邻的百分比数字表达同一个量，是行内最贵（96px + gap）且信息冗余度最高的元素，而合并徽标一旦要保留绝对 token 数就不再划算（见决策 3）。Rejected: 窄档把两个计量器合并成单个 HoverCard 徽标（第 3 版决策）——已被 mockup 实测推翻；Rejected: 极窄档允许横向溢出 / 滚动——第 1 版实现的实际后果，发送按钮被裁出可视区（Problem 7）；Rejected: 极窄档改双行——与 Hard invariant 1 直接冲突 |
+| 3 | 上下文的**绝对 token 数与百分比在四档全部保留在行内**，让位的是它旁边的进度条 | 它是判断"还能聊多久"的唯一定量依据，百分比无法替代（60% of 1M 与 60% of 200k 决策不同）。第 3 版曾裁定窄档移入 HoverCard，理由是"物理上装不下"；2026-08-09 在 mockup 里对三种写法逐一实测后该理由不成立：合并且丢掉绝对数 **105px**、合并但保留绝对数 **190px**、不合并但去掉前缀与进度条 **215px** —— 合并只比"单纯砍装饰"省 **25px**，它省下的宽度几乎全部来自它藏起来的那个数字。既然数字必须留，合并就不值得为它多引入一个交互概念。据此四档需求降为 850 / 648 / 502 / 449px（mockup 现算，已含 `120.5k` 这类宽数字），全部落在断点之下。Rejected: 合并徽标——省 25px，代价是一个额外的交互概念与一条"数据藏进悬浮层"的先例；Rejected: 牺牲模型 Pill 的文字——"当前用哪个模型"同样是高频信息，且现在已无需要 |
 | 4 | `formatTokens` 补 **M 档**：`≥1e6` 时 `<10M` 保一位小数、`≥10M` 取整；**且 k 档一旦四舍五入到 1000 就改走 M 档** | 与现有 k 档（`>=100` 取整、否则一位小数）同构，读者不需要学两套规则。进位补充项是 2026-08-09 运行时验证后的用户裁定：若只按量级分档，`999_999` 会落在 k 档并渲染成 `1000k`——正是本轮要消灭的字符串，只是换了触发条件。Rejected: 一律一位小数——`10.0M` 冗余；Rejected: 仅在 max 侧换算——同一行内 `120.5k / 1M` 两侧单位不一致反而更难读（分子分母量级本就常差三个数量级，单位不同是正常的科学计数惯例）；Rejected: 容忍 `1000k` 边界——用户明确要求消灭该字符串 |
-| 10 | **e2e fake runtime 补两项能力**：`RunResult.ContextWindow` 上报一个 1M 上下文窗口、`Capabilities()` 增加 `CapSetPermission` | 2026-08-09 运行时验证发现四条验收项无法观测，根因全在 fake 而非实现：`chat-panel.tsx:1246` 的 `max = session.contextWindow`，而 fake 的 `Model: "e2e-fake-model"` 不在 `llmcatalog` 里、`RunResult.ContextWindow` 为 0 → `ContextMeter` 整块不渲染；`isModeSwitchable = caps.has("set_permission_mode")`（`chat-panel.tsx:1234`）而 fake 未声明该 cap → `PermissionModePill` 不渲染。补上后这四条即可在真实应用里观测。`chat.go:3943` 已有 `result.ContextWindow > 0 → sess.ContextWindow` 的落库路径，无需新接缝。Rejected: 把 fake 的 model 改成 `llmcatalog` 里的真实 model id——会把"用哪个真实模型"这一无关语义引进 fake，且 `runtime_test.go:50` 正断言该字符串；Rejected: 接受这四条永久 not observed——用户裁定先补 fake 再交付 |
 | 5 | 配额**两个窗口各自独立取色**，删除 `Math.max` 驱动的整行同色 | 直接解决 Problem 3。阈值沿用现状（≥90% `status-error`、≥75% `status-waiting`、否则 `muted-foreground`），不引入新阈值。Rejected: 保留整行同色、仅在 HoverCard 里区分——底栏正是"一眼判断"的场景，把区分推迟到悬停等于没解决 |
 | 6 | 原生 `title` → shadcn **HoverCard**，触发区可聚焦 | 直接解决 Problem 4。仓库已有 `frontend/src/components/ui/hover-card.tsx`。Rejected: `tooltip.tsx`——本轮面板含进度条、分组与脚注，超出 tooltip 的纯文本定位；Rejected: `popover.tsx`——Popover 会抢焦点，与 Hard invariant 4 冲突 |
 | 7 | 配额图标 `Gauge` → **`Timer`** | 直接解决 Problem 5：两个计量器不再同图标，且 `Timer` 表达"按时间窗口配给"这一配额本质。上下文保留 `Gauge`。Rejected: 给配额也加两条迷你进度条以对齐上下文——每条至少 40px，与本轮"底栏太挤"的主诉求直接对冲；量感改由面板内的进度条承载 |
 | 8 | HoverCard 脚注写明"百分比为**已用**比例" | 直接解决 Problem 6，且放在面板而非底栏，不占用稀缺的横向空间。Rejected: 在底栏文案里写「已用 43%」——每个窗口多约 30px，且四档降级下最先被牺牲，等于没写 |
 | 9 | `shallowSameState` 的 `fetchedAtMs` 比较**降级为兜底**：先比 reason / stale / 各百分比 / 各 resets_at，全同则判同、忽略 `fetchedAtMs` 差异 | 用户裁定本轮一并修。HoverCard 让 QuotaMeter 的渲染成本上升（多出 4 条进度条与分组），让 60s tick 在数值未变时不再触发 re-render 的收益随之变大。Rejected: 另开一轮——它与本轮改的是同一个功能域的同一条渲染链路，拆开反而使两轮都要碰 `QuotaMeter` |
+| 10 | **e2e fake runtime 补两项能力**：`RunResult.ContextWindow` 上报一个 1M 上下文窗口、`Capabilities()` 增加 `CapSetPermission` | 2026-08-09 运行时验证发现四条验收项无法观测，根因全在 fake 而非实现：`chat-panel.tsx:1246` 的 `max = session.contextWindow`，而 fake 的 `Model: "e2e-fake-model"` 不在 `llmcatalog` 里、`RunResult.ContextWindow` 为 0 → `ContextMeter` 整块不渲染；`isModeSwitchable = caps.has("set_permission_mode")`（`chat-panel.tsx:1234`）而 fake 未声明该 cap → `PermissionModePill` 不渲染。补上后这四条即可在真实应用里观测。`chat.go:3943` 已有 `result.ContextWindow > 0 → sess.ContextWindow` 的落库路径，无需新接缝。Rejected: 把 fake 的 model 改成 `llmcatalog` 里的真实 model id——会把"用哪个真实模型"这一无关语义引进 fake，且 `runtime_test.go:50` 正断言该字符串；Rejected: 接受这四条永久 not observed——用户裁定先补 fake 再交付 |
+| 11 | **底栏的溢出优先级写死**：发送 / 运行 / 图片按钮与权限、模型 Pill 保持 `shrink-0`；两个计量器改为 `min-w-0` + 截断，作为唯一的让位者 | 第 1 版给**每个**子项都加了 `shrink-0`，等于关掉全部收缩余地，装不下时整行溢出、发送按钮被裁出可视区（Problem 7）。让计量器成为唯一可压缩项，能保证即便某档断点估窄了，多出的宽度也只吃掉计量器而绝不动到按钮——断点精度因此不再是单点故障。Rejected: 全员可收缩（改动前的状态）——文字压缩换行导致行变高，正是用户最初报告的症状；Rejected: 只靠调准断点——真实内容宽随图片按钮、模型名长度、token 位数浮动约 137px，任何固定断点都可能被击穿 |
+| 12 | 断点按**实测内容宽 + 余量**定，且判据是**容器内容盒**（外宽减 `px-7` 的 56px） | 第 1 版的 640/480/380 取自 mockup，而 mockup 的底栏比真实应用窄，导致每一档都装不下（实测 wide 档需 821px、mid 档需 616px）。另外 `container-type: inline-size` 量的是内容盒，第 1 版按外宽推断，实际触发点比设定高 56px（composer 664 → 内容盒 608 → 已按 ≤640 档渲染），这条偏差此前无人察觉。第 2 版 mockup 已改为用真实应用实测宽度绘制、并由浏览器现算每档的内容需求 / 溢出量 / 发送键越界量，四档需求 850 / 648 / 502 / 449px 即由它给出；再留出约 100px 的真实世界浮动（图片按钮 +32、更长的模型名与权限标签）得到断点 1000 / 800 / 620，每档余量 118–152px。Rejected: 继续凭印象画 mockup 再估值——本轮已证明其代价；Rejected: 只靠调准断点而不设让位者——见决策 11 |
 
 ## 底栏分档行为
 
-底栏容器声明为具名容器（`composer`），四档按容器 inline-size 生效，档与档之间只增删 / 收缩元素，**任何一档都不允许换行**。断点取自本轮 mockup 的实测拖拽结果：
+底栏容器声明为具名容器（`composer`），四档按容器 **inline-size（内容盒 = 外宽 − `px-7` 的 56px）** 生效，档与档之间只增删 / 截断**装饰**元素，**任何一档都不允许换行，也不允许横向溢出**。断点由 mockup 按真实应用实测宽度现算的各档需求（850 / 648 / 502 / 449px）加约 100px 浮动余量推得：
 
-- **wide（> 640px）**：全部元素展开，与今天的宽屏形态一致。
-- **mid（≤ 640px）**：隐藏快捷键提示（`chat.composer.shortcuts.send` / `.edit`）；隐藏上下文计量器的「上下文」文字标签。图标、`120.5k / 1M`、进度条、百分比全部保留。
-- **narrow（≤ 480px）**：在 mid 基础上，隐藏配额的 `5h ` / `7d ` 前缀（渲染成 `43% · 18%`）；上下文进度条由 96px 收窄到 40px。两个窗口的百分比与上下文的绝对 token 数仍直接可见。
-- **ultra-narrow（≤ 380px）**：在 narrow 基础上，权限模式 Pill 隐藏其文字标签，退成「图标 + 下拉箭头」。该 Pill 的模式语义由其既有图标配色与既有 `title` / Popover 承载，不新增补偿机制。
+- **wide（> 1000px）**：全部元素展开。
+- **mid（≤ 1000px）**：隐藏快捷键提示（`chat.composer.shortcuts.send` / `.edit`）；隐藏上下文计量器的「上下文」文字标签。
+- **narrow（≤ 800px）**：在 mid 基础上，隐藏配额的 `5h` / `7d` 前缀（图标 + 两个百分比仍在，形如 `⏱ 96% · 18%`）；隐藏上下文的进度条。
+- **ultra-narrow（≤ 620px）**：在 narrow 基础上，权限模式 Pill 隐藏其文字标签，退成「图标 + 下拉箭头」。该 Pill 的模式语义由其既有图标配色与既有 `title` / Popover 承载，不新增补偿机制。
+
+**四档恒定可见**：配额图标与两个窗口的百分比、上下文图标与 `120.5k / 1M`、上下文百分比、模型 Pill、发送 / 运行按钮、图片按钮。上下文在最窄档仍读作 `◔ 120.5k / 1M 12%`，只是没有了那条进度条。
 
 被隐藏的元素一律从可访问性树中一并移除（用 `hidden` 语义而非仅视觉隐藏），避免屏幕阅读器读到用户看不见的文本；其语义补偿见下节与决策 2。
 
-底栏所有子项都必须显式不可收缩或显式可截断，杜绝"靠内部文字折行来适配"的隐式行为——这是 Problem 1 的根因，也是 Hard invariant 1 的实现前提。
+**溢出优先级（Hard invariant 2 的实现约束）**：发送 / 运行按钮、图片按钮、权限 Pill、模型 Pill 一律 `shrink-0`；两个计量器是唯一带 `min-w-0` 且允许截断的元素。任何一档下内容仍超宽时，先截断计量器，绝不把按钮顶出可视区。杜绝"靠内部文字折行来适配"的隐式行为——那是 Problem 1 的根因；也杜绝"靠溢出裁切来适配"——那是 Problem 7 的根因。
 
 ## 配额计量器
 
@@ -77,6 +83,8 @@
 倒计时沿用既有 `formatResetIn` 的 `XdYh` / `Xh` / `Xm` 形式与既有 `chat.quota.resetRemaining` 文案；`resets_at` 缺失时该行不显示倒计时，而不是显示空括号。
 
 **脚注与异常态。** 面板底部固定一行脚注说明百分比为**已用**比例。当 `reason` 为异常态时，脚注替换为该状态的说明并着 `status-waiting` 色：429 退避中 / 网络错误（两者均附"显示上次值"）、OAuth 已过期（含"请在 {{device}} 上运行 `claude /login`"）、设备离线。这些文案沿用既有 `chat.quota.title.*` 键的语义，从原生 `title` 迁入面板。
+
+**面板补一节「上下文」。** 面板在配额各行之下，以一条分隔线起一节上下文：`120.5k / 1M`、占用百分比与一条按阈值着色的进度条。它的作用是在 narrow 及更窄档还原行内被收走的那条进度条形态，而不是收纳被藏起来的数据——数据本来就没被藏（Hard invariant 3）。两个计量器各自保留独立的 `aria-label`，播报内容不随视觉降级而改变。
 
 **渲染分支。** 与现状完全一致，不变：`undefined` / 空 `reason` / `no_credentials` 整块不渲染；`ok` 或 stale 显示数字；`auth_expired` / `device_offline` / 无 stale 的 `network` 显示灰态占位（`—%`）。灰态占位下 HoverCard 仍可展开，面板只显示脚注说明的异常态。
 
@@ -99,7 +107,7 @@
 `e2e/` 的 fake runtime 需要多提供两样东西，否则本轮四条可观测要求在真实应用里根本没有渲染对象：
 
 - **上报一个 1M 的上下文窗口**，使 `ContextMeter` 在 e2e 会话中真实渲染，且分母恰好命中 M 档。
-- **声明 `set_permission_mode` 能力**，使 `PermissionModePill` 在 e2e 会话中真实渲染，从而能观测 ≤380 档的纯图标降级。
+- **声明 `set_permission_mode` 能力**，使 `PermissionModePill` 在 e2e 会话中真实渲染，从而能观测 ultra-narrow 档的纯图标降级。
 
 这两项只影响 `-tags e2e` 构建下的 fake，不改任何生产运行时的行为，也不改 `chat_svc` 既有的上下文窗口优先级（`session.ContextWindow` > `provider.ContextWindow` > `llmcatalog` 查表）。fake 回显文本、`ReplyPrefix`、`ProviderSessionID` 与 `Model` 字符串保持不变，既有 e2e 断言不受影响。
 
@@ -118,13 +126,14 @@
 |---|---|---|
 | `formatTokens` 纯函数单测（vitest） | 进位边界表：`999` / `12.3k` / `121k` / `999k` / `999_999 → 1M` / `1M` / `1.2M` / `10M`，含 k↔M 两侧临界与「取整到 1000 即进 M」 | 无（函数当前无直接单测）；`frontend/src/components/agentre/__tests__/chat.test.tsx` 为同文件测试宿主 |
 | fake runtime 的能力单测（Go） | fake 上报的上下文窗口与 `set_permission_mode` 能力 | `internal/pkg/agentruntime/runtimes/fake/runtime_test.go` 已有 `Capabilities` / `RunResult` 断言 |
-| Playwright e2e 真实宽度截图（`e2e/`） | 四档降级在真实浏览器下的最终布局：改变 chat panel 宽度后底栏**行高不变**、各档该显示 / 该隐藏的元素符合预期。这是唯一能真正验证"不折行"的手段——jsdom 不实现 `@container`，vitest 无法断言实际隐藏 | `e2e/README.md` 的 Playwright + fake-runtime harness；`docs/verification.md` 的证据留存约定 |
+| Playwright e2e 真实宽度截图（`e2e/`） | 四档降级在真实浏览器下的最终布局：改变 chat panel 宽度后底栏**行高不变**、各档该显示 / 该隐藏的元素符合预期，且**每一档都断言上下文的绝对 token 数与百分比仍在行内可见**（Hard invariant 3 的直接检查项）。这是唯一能真正验证"不折行"的手段——jsdom 不实现 `@container`，vitest 无法断言实际隐藏 | `e2e/README.md` 的 Playwright + fake-runtime harness；`docs/verification.md` 的证据留存约定 |
+| Playwright e2e **溢出与按钮可见性**断言 | 每一档都必须断言 `row.scrollWidth === row.clientWidth`（零溢出），以及发送按钮右缘不越过行的可视右缘。第二轮验证的教训：`isVisible()` 对"元素在 DOM 里但被溢出裁到画面外"返回 true，光看它会得到假绿——Problem 7 正是被截图而非断言抓到的 | 本轮 `e2e/scratch/2026-08-09-composer-footer-density/verify.spec.ts` 已有该测量代码 |
 
 用户裁定测试范围为「e2e 为主 + 仅补 `formatTokens` 边界表」，因此 **QuotaMeter 的状态矩阵（双窗口独立配色、HoverCard 各分支内容、各 `reason` 分支）不新增自动化覆盖**，改由收尾时的源码复审 + 真实应用运行观察承担。
 
 配额数值在 e2e 里由**浏览器侧合成的 `cc_usage:update` 推送**驱动（走生产订阅链路 `EventsOn → cc-usage-store → useCCUsage`），因为 e2e 环境没有 Claude OAuth 凭证、`cc_usage_svc` 只会给 `no_credentials`（该状态下 QuotaMeter 整块不渲染）。合成的只有数据来源，渲染、CSS 容器查询与 Radix 行为均为真。
 
-分档宽度在 e2e 里**直接给定 composer `<form>` 的宽度**，而非拖窗口：本 app 的侧栏在窄视口会自动收起，实测视口 1280 → composer 664、视口 1000 → composer 944（非单调），靠改视口够不到 ≤380 档。容器查询读的就是该元素的 inline-size，因此仍是真实浏览器跑真实 CSS。
+分档宽度在 e2e 里**直接给定 composer `<form>` 的宽度**，而非拖窗口：本 app 的侧栏在窄视口会自动收起，实测视口 1280 → composer 664、视口 1000 → composer 944（非单调），靠改视口够不到最窄档。容器查询读的就是该元素的 inline-size，因此仍是真实浏览器跑真实 CSS。
 
 **必须一并更新的既有测试（属于变更维护，不计入上述新增覆盖）**：`frontend/src/components/agentre/__tests__/chat.test.tsx:1585-1612` 现断言 `toHaveAttribute("title", expect.stringContaining("resets in 40m"))`（断言在 1605-1608 行）。原生 `title` 被 HoverCard 取代后该断言必然失败，需改为面板内容断言；同组其余用例（不渲染分支、数字渲染、stale、`auth_expired` 占位）对应 Hard invariant 3，应保持通过而不被削弱。
 
@@ -134,6 +143,7 @@
 
 ## Links
 
-- Mockup（本地，不入 Git）：`.dev-kit/artifacts/2026-08-09-composer-footer-density/mockups/footer.html` —— 四档实拍、明暗双主题、HoverCard 面板、before/after 折行对比；断点 640 / 480 / 380 由其可拖拽容器实测得出。
+- Mockup（本地，不入 Git）：`.dev-kit/artifacts/2026-08-09-composer-footer-density/mockups/footer-v2.html` —— 按**真实应用实测宽度**重做：实测基线表、四档可拖拽实拍、每档带实时读数（内容盒宽 / 当前档 / 内容需求 / 溢出量 / 发送键越界量）、合并方案与砍装饰方案的宽度对照、HoverCard 面板（含新增的 Context 一节）。当前四档读数均为**溢出 0px、发送键越界 0px**，且 `120.5k / 1M 12%` 在四档全部可见。第 1 版 `footer.html` **已删除**——它凭印象把权限+模型 Pill 画成约 186px（实测 242px）、上下文画成约 200px（实测 230px），整体低估约 90px，正是 Problem 7 的源头；留着会让评审读到两套互相矛盾的设计。
+- 验证证据（本地，不入 Git）：`e2e/scratch/2026-08-09-composer-footer-density/report.md` 及同目录 `screenshots/`。
 - `docs/design.md` §8（motion）、§10（reduced-motion）、色彩 token 表
 - `docs/frontend.md`（shadcn `@/components/ui/*` 与 i18n 强制约定）
