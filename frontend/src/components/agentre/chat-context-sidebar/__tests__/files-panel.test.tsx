@@ -35,7 +35,10 @@ vi.mock("@/../wailsjs/go/app/App", () => ({
   WorkspaceFsGitBranches: gitMocks.branches,
 }));
 
-import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
+import {
+  selectActivePreviewTab,
+  useChatSidebarStore,
+} from "@/stores/chat-sidebar-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
 import { FilesPanel } from "../views/files-panel";
@@ -89,7 +92,7 @@ beforeEach(() => {
     activeTab: "files",
     filesMode: "changes",
     showIgnored: false,
-    previewBySession: {},
+    previewTabsBySession: {},
   });
   useSessionStatusStore.getState().__reset();
   openPathMock.mockReset();
@@ -465,7 +468,9 @@ describe("FilesPanel directory mode", () => {
     await userEvent.click(
       within(row("chat.go")).getByRole("button", { name: /preview/i }),
     );
-    expect(useChatSidebarStore.getState().previewBySession[7]).toEqual({
+    expect(
+      selectActivePreviewTab(useChatSidebarStore.getState(), 7),
+    ).toMatchObject({
       path: "internal/chat.go",
       segment: null,
       sourceMode: "directory",
@@ -475,7 +480,9 @@ describe("FilesPanel directory mode", () => {
     await userEvent.click(
       within(row("logo.png")).getByRole("button", { name: /preview/i }),
     );
-    expect(useChatSidebarStore.getState().previewBySession[7]).toEqual({
+    expect(
+      selectActivePreviewTab(useChatSidebarStore.getState(), 7),
+    ).toMatchObject({
       path: "logo.png",
       segment: null,
       sourceMode: "directory",

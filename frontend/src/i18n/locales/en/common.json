@@ -671,6 +671,8 @@
       "panelAria": "File preview",
       "open": "Preview",
       "close": "Close preview",
+      "tabsAria": "Preview tabs",
+      "tabLimit": "Preview tabs are full (max {{limit}}). Close one first.",
       "loading": "Reading file…",
       "readFailed": "Failed to read file",
       "retry": "Retry",

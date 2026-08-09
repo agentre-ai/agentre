@@ -136,9 +136,9 @@ export function DirectoryView({ sessionId, cwd, remote, showIgnored }: Props) {
 
   const canOpen = cwd !== "" && !remote;
   const openFile = useOpenFile(cwd);
-  // 当前被预览文件的 relPath(按会话);与某文件行预览按钮同路径时高亮它。
+  // 当前活动预览标签的 relPath(按会话);与某文件行预览按钮同路径时高亮它。
   const previewPath = useChatSidebarStore(
-    (s) => s.previewBySession[sessionId]?.path,
+    (s) => s.previewTabsBySession[sessionId]?.activePath,
   );
   const openPreview = useChatSidebarStore((s) => s.openPreview);
 

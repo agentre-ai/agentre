@@ -73,9 +73,9 @@ export function GitView({
   const { t } = useTranslation();
   const openFile = useOpenFile(cwd);
   const canOpen = cwd !== "" && !remote;
-  // 当前被预览文件的 relPath(按会话);与某行预览按钮同路径时高亮它。
+  // 当前活动预览标签的 relPath(按会话);与某行预览按钮同路径时高亮它。
   const previewPath = useChatSidebarStore(
-    (s) => s.previewBySession[sessionId]?.path,
+    (s) => s.previewTabsBySession[sessionId]?.activePath,
   );
   const openPreview = useChatSidebarStore((s) => s.openPreview);
 

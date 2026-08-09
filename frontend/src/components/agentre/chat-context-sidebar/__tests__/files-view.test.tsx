@@ -14,7 +14,10 @@ vi.mock("@/../wailsjs/go/app/App", () => ({
   OpenPath: (p: string) => openPathMock(p),
 }));
 
-import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
+import {
+  selectActivePreviewTab,
+  useChatSidebarStore,
+} from "@/stores/chat-sidebar-store";
 
 import { FilesView } from "../views/files-view";
 
@@ -48,7 +51,7 @@ beforeEach(() => {
   openPathMock.mockResolvedValue(undefined);
   sonnerMocks.toast.error.mockReset();
   localStorage.clear();
-  useChatSidebarStore.setState({ previewBySession: {} });
+  useChatSidebarStore.setState({ previewTabsBySession: {} });
 });
 
 describe("FilesView", () => {
@@ -457,7 +460,9 @@ describe("FilesView preview button", () => {
     );
     await userEvent.click(previewBtn(/README\.md/)!);
 
-    expect(useChatSidebarStore.getState().previewBySession[1]).toEqual({
+    expect(
+      selectActivePreviewTab(useChatSidebarStore.getState(), 1),
+    ).toMatchObject({
       path: "README.md",
       segment: null,
       sourceMode: "changes",
@@ -487,7 +492,9 @@ describe("FilesView preview button", () => {
       within(row.parentElement!).getByRole("button", { name: /preview/i }),
     );
 
-    expect(useChatSidebarStore.getState().previewBySession[1]).toEqual({
+    expect(
+      selectActivePreviewTab(useChatSidebarStore.getState(), 1),
+    ).toMatchObject({
       path: "internal/service/chat_svc/chat.go",
       segment: null,
       sourceMode: "changes",

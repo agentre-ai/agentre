@@ -671,6 +671,8 @@
       "panelAria": "文件预览",
       "open": "预览",
       "close": "关闭预览",
+      "tabsAria": "预览标签",
+      "tabLimit": "预览标签已满（最多 {{limit}} 个），请先关闭一个",
       "loading": "正在读取文件…",
       "readFailed": "读取文件失败",
       "retry": "重试",

@@ -22,7 +22,10 @@ vi.mock("@/../wailsjs/go/app/App", () => ({
   WorkspaceFsGitBranches: (sessionId: number) => gitBranchesMock(sessionId),
 }));
 
-import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
+import {
+  selectActivePreviewTab,
+  useChatSidebarStore,
+} from "@/stores/chat-sidebar-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
 import { ChatContextSidebar } from "../index";
@@ -127,7 +130,7 @@ beforeEach(() => {
     filesMode: "changes",
     showIgnored: false,
     gitBaselineBySession: {},
-    previewBySession: {},
+    previewTabsBySession: {},
   });
   useSessionStatusStore.getState().__reset();
   openPathMock.mockReset();
@@ -297,7 +300,9 @@ describe("Git tab · 未提交档", () => {
         name: /preview/i,
       }),
     );
-    expect(useChatSidebarStore.getState().previewBySession[7]).toEqual({
+    expect(
+      selectActivePreviewTab(useChatSidebarStore.getState(), 7),
+    ).toMatchObject({
       path: "internal/a.go",
       segment: null,
       sourceMode: "git",

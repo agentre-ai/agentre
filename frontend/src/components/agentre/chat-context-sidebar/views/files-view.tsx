@@ -55,9 +55,9 @@ export function FilesView({
   const tree = React.useMemo(() => deriveFileTree(files), [files]);
   const filePathsKey = files.map((file) => file.path).join("\u0000");
 
-  // 当前被预览文件的 relPath(按会话);与某行的预览按钮同路径时高亮它。
+  // 当前活动预览标签的 relPath(按会话);与某行的预览按钮同路径时高亮它。
   const previewPath = useChatSidebarStore(
-    (s) => s.previewBySession[sessionId]?.path,
+    (s) => s.previewTabsBySession[sessionId]?.activePath,
   );
   const openPreview = useChatSidebarStore((s) => s.openPreview);
 
