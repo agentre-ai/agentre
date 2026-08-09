@@ -26,14 +26,49 @@ describe("chat-sidebar-store", () => {
     expect(raw).toContain('"open":false');
   });
 
-  it("switches activeTab between outline and files", () => {
+  it("switches activeTab between outline, files and git", () => {
     useChatSidebarStore.getState().setActiveTab("files");
     expect(useChatSidebarStore.getState().activeTab).toBe("files");
+    useChatSidebarStore.getState().setActiveTab("git");
+    expect(useChatSidebarStore.getState().activeTab).toBe("git");
   });
 
   it("rejects unknown tab values at runtime by no-op", () => {
     useChatSidebarStore.getState().setActiveTab("bogus" as ChatSidebarTab);
     expect(useChatSidebarStore.getState().activeTab).toBe("outline");
+  });
+
+  it("falls back to outline when the persisted active tab is invalid", async () => {
+    localStorage.setItem(
+      "chat-sidebar-state",
+      JSON.stringify({
+        state: { open: true, activeTab: "bogus" },
+        version: 0,
+      }),
+    );
+    await useChatSidebarStore.persist.rehydrate();
+    expect(useChatSidebarStore.getState().activeTab).toBe("outline");
+  });
+
+  it("falls back to outline when the persisted state has no active tab", async () => {
+    localStorage.setItem(
+      "chat-sidebar-state",
+      JSON.stringify({ state: { open: true }, version: 0 }),
+    );
+    await useChatSidebarStore.persist.rehydrate();
+    expect(useChatSidebarStore.getState().activeTab).toBe("outline");
+  });
+
+  it("keeps a valid persisted active tab of git", async () => {
+    localStorage.setItem(
+      "chat-sidebar-state",
+      JSON.stringify({
+        state: { open: true, activeTab: "git" },
+        version: 0,
+      }),
+    );
+    await useChatSidebarStore.persist.rehydrate();
+    expect(useChatSidebarStore.getState().activeTab).toBe("git");
   });
 
   it("defaults the files mode to changes and persists a switch", () => {
@@ -64,6 +99,20 @@ describe("chat-sidebar-store", () => {
       "chat-sidebar-state",
       JSON.stringify({
         state: { open: true, activeTab: "files", filesMode: "bogus" },
+        version: 0,
+      }),
+    );
+    await useChatSidebarStore.persist.rehydrate();
+    expect(useChatSidebarStore.getState().filesMode).toBe("changes");
+  });
+
+  it("falls back to changes when the persisted files mode is the removed git value", async () => {
+    // Git 已提升为顶层 tab（本轮决策 1），ChatFilesMode 从三值降为两值；旧版本
+    // 持久化下来的 "git" 现在是非法值，必须回落而不是原样保留。
+    localStorage.setItem(
+      "chat-sidebar-state",
+      JSON.stringify({
+        state: { open: true, activeTab: "files", filesMode: "git" },
         version: 0,
       }),
     );

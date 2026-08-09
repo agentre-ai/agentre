@@ -25,15 +25,11 @@ vi.mock("@/../wailsjs/go/app/App", () => ({
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
-import { FilesPanel } from "../views/files-panel";
+import { ChatContextSidebar } from "../index";
 
-import type { FileEntry } from "../derive";
+import type { chat_svc } from "../../../../../wailsjs/go/models";
 
 const CWD = "/Users/me/proj";
-
-const files: FileEntry[] = [
-  { path: "internal/service/chat_svc/chat.go", plus: 5, minus: 2, lastTurn: 3 },
-];
 
 type ChangeSeed = {
   path: string;
@@ -89,14 +85,17 @@ function setupUser() {
   return userEvent.setup({ pointerEventsCheck: 0 });
 }
 
-function renderPanel(props: Partial<React.ComponentProps<typeof FilesPanel>>) {
+function renderSidebar(
+  props: Partial<React.ComponentProps<typeof ChatContextSidebar>>,
+) {
   return render(
-    <FilesPanel
+    <ChatContextSidebar
       sessionId={7}
-      files={files}
+      messages={[] as chat_svc.ChatMessage[]}
+      activeMessageId={null}
+      onJumpToMessage={() => {}}
       cwd={CWD}
       remote={false}
-      onJumpToTurn={() => {}}
       {...props}
     />,
   );
@@ -110,16 +109,22 @@ function gitRow(path: string): HTMLElement {
   return found;
 }
 
+function gitTab(): HTMLElement {
+  return screen.getByRole("tab", { name: /^git/i });
+}
+
 async function switchScope(name: RegExp) {
   await userEvent.click(screen.getByRole("tab", { name }));
 }
 
 beforeEach(() => {
   localStorage.clear();
+  // Git 已从「文件」页内的一档提升为顶层 tab（决策 1），进入 Git 内容不再靠
+  // filesMode，而是靠 activeTab。
   useChatSidebarStore.setState({
     open: true,
-    activeTab: "files",
-    filesMode: "git",
+    activeTab: "git",
+    filesMode: "changes",
     showIgnored: false,
     gitBaselineBySession: {},
     previewBySession: {},
@@ -136,8 +141,8 @@ beforeEach(() => {
   sonnerMocks.toast.error.mockReset();
 });
 
-describe("FilesPanel git mode · 未提交档", () => {
-  it("asks for the uncommitted scope on entering git mode and renders flat rows", async () => {
+describe("Git tab · 未提交档", () => {
+  it("asks for the uncommitted scope on entering the git tab and renders flat rows", async () => {
     gitChangesMock.mockResolvedValue(
       changesView([
         {
@@ -149,7 +154,7 @@ describe("FilesPanel git mode · 未提交档", () => {
         { path: "go.mod", status: "modified", added: 2 },
       ]),
     );
-    renderPanel({});
+    renderSidebar({});
 
     await screen.findByText("turn.go");
     expect(gitChangesMock).toHaveBeenCalledWith(7, "uncommitted", "");
@@ -178,7 +183,7 @@ describe("FilesPanel git mode · 未提交档", () => {
         { path: "e/u.go", status: "untracked" },
       ]),
     );
-    renderPanel({});
+    renderSidebar({});
 
     await screen.findByText("m.go");
     for (const [path, label] of [
@@ -198,47 +203,57 @@ describe("FilesPanel git mode · 未提交档", () => {
     ).toHaveAttribute("aria-hidden", "true");
   });
 
-  it("shows the changed-file count on the Git segment", async () => {
+  it("shows the changed-file count on the top-level Git tab", async () => {
     gitChangesMock.mockResolvedValue(
       changesView([{ path: "a.go" }, { path: "b.go" }]),
     );
-    renderPanel({});
+    renderSidebar({});
 
-    await waitFor(() =>
-      expect(screen.getByRole("tab", { name: /^git/i })).toHaveTextContent(
-        "Git2",
-      ),
-    );
+    await waitFor(() => expect(gitTab()).toHaveTextContent("Git2"));
   });
 
-  it("drops the previous session's count when the session changes behind another mode", async () => {
+  it("shows no count on the Git tab until its data has loaded", async () => {
+    // 未加载 / 加载中都不显角标（决策：served requirement）。
+    useChatSidebarStore.setState({ activeTab: "files" });
     gitChangesMock.mockResolvedValue(
       changesView([{ path: "a.go" }, { path: "b.go" }]),
     );
-    const { rerender } = renderPanel({});
+    renderSidebar({});
 
-    const gitTab = () => screen.getByRole("tab", { name: /^git/i });
-    await waitFor(() => expect(gitTab().textContent).toBe("Git2"));
+    expect(gitTab()).toHaveTextContent("Git");
+    expect(gitTab()).not.toHaveTextContent("Git2");
+    expect(gitChangesMock).not.toHaveBeenCalled();
+  });
 
-    await userEvent.click(screen.getByRole("tab", { name: /^changes/i }));
+  it("drops the previous session's count when the session changes behind another tab", async () => {
+    gitChangesMock.mockResolvedValue(
+      changesView([{ path: "a.go" }, { path: "b.go" }]),
+    );
+    const { rerender } = renderSidebar({});
+
+    await waitFor(() => expect(gitTab()).toHaveTextContent("Git2"));
+
+    await userEvent.click(screen.getByRole("tab", { name: /^files/i }));
     rerender(
-      <FilesPanel
+      <ChatContextSidebar
         sessionId={8}
-        files={files}
+        messages={[]}
+        activeMessageId={null}
+        onJumpToMessage={() => {}}
         cwd={CWD}
         remote={false}
-        onJumpToTurn={() => {}}
       />,
     );
 
-    await waitFor(() => expect(gitTab().textContent).toBe("Git"));
+    await waitFor(() => expect(gitTab()).toHaveTextContent("Git"));
+    expect(gitTab()).not.toHaveTextContent("Git2");
   });
 
-  it("makes no git call at all while the 变动 mode is selected", async () => {
-    useChatSidebarStore.setState({ filesMode: "changes" });
-    renderPanel({});
+  it("makes no git call at all while browsing the Files tab", async () => {
+    useChatSidebarStore.setState({ activeTab: "files", filesMode: "changes" });
+    renderSidebar({});
 
-    await screen.findByRole("button", { name: /chat\.go/ });
+    await screen.findByRole("tab", { name: /^files/i });
     expect(gitChangesMock).not.toHaveBeenCalled();
     expect(gitBranchesMock).not.toHaveBeenCalled();
   });
@@ -247,7 +262,7 @@ describe("FilesPanel git mode · 未提交档", () => {
     gitChangesMock.mockResolvedValue(
       changesView([{ path: "a.go" }, { path: "b.go" }], { truncated: true }),
     );
-    renderPanel({});
+    renderSidebar({});
 
     expect(
       await screen.findByText(/showing the first 2 changed files/i),
@@ -256,13 +271,13 @@ describe("FilesPanel git mode · 未提交档", () => {
 
   it("opens a file on row click for a local session and stays inert for a remote one", async () => {
     gitChangesMock.mockResolvedValue(changesView([{ path: "internal/a.go" }]));
-    const { unmount } = renderPanel({});
+    const { unmount } = renderSidebar({});
 
     await userEvent.click(await screen.findByRole("button", { name: /a\.go/ }));
     expect(openPathMock).toHaveBeenCalledWith(`${CWD}/internal/a.go`);
 
     unmount();
-    renderPanel({ remote: true });
+    renderSidebar({ remote: true });
     await screen.findByText("a.go");
     expect(screen.queryByRole("button", { name: /a\.go/ })).toBeNull();
   });
@@ -274,7 +289,7 @@ describe("FilesPanel git mode · 未提交档", () => {
         { path: "asset.zip", status: "added" },
       ]),
     );
-    renderPanel({});
+    renderSidebar({});
     await screen.findByText("a.go");
 
     await userEvent.click(
@@ -301,7 +316,7 @@ describe("FilesPanel git mode · 未提交档", () => {
     gitChangesMock.mockResolvedValue(
       changesView([{ path: "internal/a.go", status: "modified" }]),
     );
-    renderPanel({ remote: true });
+    renderSidebar({ remote: true });
     await screen.findByText("a.go");
 
     // 远端整行不可点(无 open 按钮),但预览按钮仍在。
@@ -313,7 +328,7 @@ describe("FilesPanel git mode · 未提交档", () => {
   });
 });
 
-describe("FilesPanel git mode · 本分支档与基线", () => {
+describe("Git tab · 本分支档与基线", () => {
   it("switches to the branch scope and shows the effective baseline in the context bar", async () => {
     gitChangesMock.mockImplementation((_id: number, scope: string) =>
       Promise.resolve(
@@ -324,7 +339,7 @@ describe("FilesPanel git mode · 本分支档与基线", () => {
           : changesView([]),
       ),
     );
-    renderPanel({});
+    renderSidebar({});
 
     await switchScope(/this branch/i);
 
@@ -351,7 +366,7 @@ describe("FilesPanel git mode · 本分支档与基线", () => {
           }),
         ),
     );
-    renderPanel({});
+    renderSidebar({});
 
     await switchScope(/this branch/i);
     await user.click(
@@ -380,7 +395,7 @@ describe("FilesPanel git mode · 本分支档与基线", () => {
         // 后端在基线失效时回落到推断值，返回的 baseRef 与请求的不同。
         Promise.resolve(changesView([], { baseRef: "origin/main" })),
     );
-    renderPanel({});
+    renderSidebar({});
 
     await switchScope(/this branch/i);
 
@@ -408,7 +423,7 @@ describe("FilesPanel git mode · 本分支档与基线", () => {
           }),
         ),
     );
-    renderPanel({});
+    renderSidebar({});
 
     await switchScope(/this branch/i);
     await user.click(
@@ -435,7 +450,7 @@ describe("FilesPanel git mode · 本分支档与基线", () => {
     gitBranchesMock.mockResolvedValue(
       branchesView(["feat/x"], { defaultBaseline: "" }),
     );
-    renderPanel({});
+    renderSidebar({});
 
     await switchScope(/this branch/i);
 
@@ -453,7 +468,7 @@ describe("FilesPanel git mode · 本分支档与基线", () => {
         changesView([], { baseRef: scope === "branch" ? "origin/main" : "" }),
       ),
     );
-    renderPanel({});
+    renderSidebar({});
 
     expect(
       await screen.findByText(/working tree is clean/i),
@@ -466,10 +481,10 @@ describe("FilesPanel git mode · 本分支档与基线", () => {
   });
 });
 
-describe("FilesPanel git mode · 空态、错误与自动重拉", () => {
+describe("Git tab · 空态、错误与自动重拉、非 git 仓库时的 chrome", () => {
   it("shows the not-a-repo state with the guidance and hides the scope switch", async () => {
     gitChangesMock.mockResolvedValue(changesView([], { notARepo: true }));
-    renderPanel({});
+    renderSidebar({});
 
     expect(
       await screen.findByText(/not a git repository/i),
@@ -479,12 +494,14 @@ describe("FilesPanel git mode · 空态、错误与自动重拉", () => {
   });
 
   it("shows the no-working-directory state without calling the backend", async () => {
-    renderPanel({ cwd: "" });
+    renderSidebar({ cwd: "" });
 
     expect(
       await screen.findByText(/this session has no working directory/i),
     ).toBeInTheDocument();
     expect(gitChangesMock).not.toHaveBeenCalled();
+    // 没有工作目录时上下文条整条收起：只剩顶层 tab 一行常驻 chrome。
+    expect(screen.queryByRole("tab", { name: /uncommitted/i })).toBeNull();
   });
 
   it("surfaces the backend failure verbatim with a retry that refetches", async () => {
@@ -492,7 +509,7 @@ describe("FilesPanel git mode · 空态、错误与自动重拉", () => {
       new Error("Remote agentred is too old; please upgrade to use this view"),
     );
     gitChangesMock.mockResolvedValue(changesView([{ path: "a.go" }]));
-    renderPanel({});
+    renderSidebar({});
 
     expect(
       await screen.findByText(
@@ -507,7 +524,7 @@ describe("FilesPanel git mode · 空态、错误与自动重拉", () => {
 
   it("falls back to a generic failure when the rejection carries no message", async () => {
     gitChangesMock.mockRejectedValue("");
-    renderPanel({});
+    renderSidebar({});
 
     expect(
       await screen.findByText(/failed to read git changes/i),
@@ -515,7 +532,7 @@ describe("FilesPanel git mode · 空态、错误与自动重拉", () => {
   });
 
   it("refetches when the current session's turn ends", async () => {
-    renderPanel({});
+    renderSidebar({});
 
     await waitFor(() => expect(gitChangesMock).toHaveBeenCalledTimes(1));
 

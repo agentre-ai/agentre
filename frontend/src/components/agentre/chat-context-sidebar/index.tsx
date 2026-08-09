@@ -10,7 +10,10 @@ import { ResizableSidebar } from "../resizable-sidebar";
 import { deriveFiles, deriveOutline } from "./derive";
 import { TabBar } from "./tab-bar";
 import { FilesPanel } from "./views/files-panel";
+import { GitContextBar } from "./views/git-context-bar";
+import { GitView } from "./views/git-view";
 import { OutlineView } from "./views/outline-view";
+import { useGitChanges } from "./views/use-git-changes";
 
 type Msg = chat_svc.ChatMessage;
 
@@ -67,6 +70,11 @@ export function ChatContextSidebar({
       ? (messageIdToTurnUserId.get(activeMessageId) ?? null)
       : null;
 
+  // Git 页的取数挂在这一层：顶层 tab 的计数角标与 Git 页内容共用同一份状态；
+  // enabled 保证只有 Git 顶层 tab 可见时才打后端（决策 13），跟随 Git 从
+  // 「文件」页内一档提升为顶层 tab 而改挂在这里（此前挂在 FilesPanel 上）。
+  const git = useGitChanges({ sessionId, cwd, enabled: activeTab === "git" });
+
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
   // resolvedActiveId 变化时把对应 outline 行推到滚动区域底部，让右侧进度跟随 transcript。
@@ -93,10 +101,12 @@ export function ChatContextSidebar({
         onChange={setActiveTab}
         outlineCount={outline.length}
         filesCount={files.length}
+        gitCount={git.count}
       />
       {/*
-        「文件」页自带模式控件与上下文条，滚动容器在 FilesPanel 内部；「大纲」页
-        仍用这里的滚动容器（scrollRef 要拿它做 scrollIntoView）。
+        「文件」页自带两档胶囊与上下文条，滚动容器在 FilesPanel 内部；「大纲」页
+        仍用这里的滚动容器（scrollRef 要拿它做 scrollIntoView）；「Git」页的上下文
+        条与现状一致（两档 + 基线），非 git 仓库时整条收起（mockup 板 C2）。
       */}
       {activeTab === "outline" ? (
         <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
@@ -106,7 +116,7 @@ export function ChatContextSidebar({
             onSelect={onJumpToMessage}
           />
         </div>
-      ) : (
+      ) : activeTab === "files" ? (
         <FilesPanel
           sessionId={sessionId}
           files={files}
@@ -117,6 +127,29 @@ export function ChatContextSidebar({
             if (mid != null) onJumpToMessage(mid);
           }}
         />
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col">
+          {cwd !== "" && !git.notARepo ? (
+            <GitContextBar
+              scope={git.scope}
+              onScopeChange={git.setScope}
+              baseRef={git.baseRef}
+              branches={git.branches}
+              onSelectBaseline={git.selectBaseline}
+            />
+          ) : null}
+          <div className="min-h-0 flex-1 overflow-auto">
+            <GitView
+              sessionId={sessionId}
+              cwd={cwd}
+              remote={remote}
+              scope={git.scope}
+              baseRef={git.baseRef}
+              state={git.state}
+              onRetry={git.reload}
+            />
+          </div>
+        </div>
       )}
     </ResizableSidebar>
   );

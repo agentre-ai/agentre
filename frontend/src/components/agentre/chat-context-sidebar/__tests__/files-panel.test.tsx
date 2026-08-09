@@ -100,15 +100,11 @@ beforeEach(() => {
 });
 
 describe("FilesPanel mode switcher", () => {
-  it("renders three mode segments with 变动 selected by default and no backend call", () => {
+  it("renders two mode segments with 变动 selected by default and no backend call, Git no longer among them", () => {
     renderPanel({});
 
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((t) => t.textContent)).toEqual([
-      "Changes2",
-      "Directory",
-      "Git",
-    ]);
+    expect(tabs.map((t) => t.textContent)).toEqual(["Changes2", "Directory"]);
     expect(screen.getByRole("tab", { name: /changes/i })).toHaveAttribute(
       "aria-selected",
       "true",
@@ -117,6 +113,7 @@ describe("FilesPanel mode switcher", () => {
       "aria-selected",
       "false",
     );
+    expect(screen.queryByRole("tab", { name: /^git$/i })).toBeNull();
     // 「变动」模式零后端调用（硬不变量 1）。
     expect(listDirMock).not.toHaveBeenCalled();
   });
@@ -143,22 +140,21 @@ describe("FilesPanel mode switcher", () => {
     ).toBeInTheDocument();
   });
 
-  it("selects the git mode without touching the directory listing", async () => {
-    renderPanel({});
-
-    await switchTo(/^git$/i);
-    expect(useChatSidebarStore.getState().filesMode).toBe("git");
-    expect(listDirMock).not.toHaveBeenCalled();
-  });
-
-  it("shows the 显示忽略项 toggle only in directory mode", async () => {
+  it("shows the icon-only 显示忽略项 button, expressing pressed state, only in directory mode", async () => {
     renderPanel({});
     expect(screen.queryByRole("button", { name: /show ignored/i })).toBeNull();
 
     await switchTo(/directory/i);
-    expect(
-      await screen.findByRole("button", { name: /show ignored/i }),
-    ).toBeInTheDocument();
+    const toggle = await screen.findByRole("button", {
+      name: /show ignored/i,
+    });
+    expect(toggle).toBeInTheDocument();
+    // 纯图标：可见文本为空，可达名靠 aria-label 而不是可见 label。
+    expect(toggle).toHaveTextContent("");
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
 
     await switchTo(/changes/i);
     expect(screen.queryByRole("button", { name: /show ignored/i })).toBeNull();

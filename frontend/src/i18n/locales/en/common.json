@@ -624,8 +624,7 @@
       "modes": {
         "label": "View mode",
         "changes": "Changes",
-        "directory": "Directory",
-        "git": "Git"
+        "directory": "Directory"
       }
     },
     "directory": {
@@ -640,6 +639,7 @@
       "retry": "Retry"
     },
     "git": {
+      "label": "Git",
       "scope": {
         "label": "Comparison scope",
         "uncommitted": "Uncommitted",

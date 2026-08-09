@@ -624,8 +624,7 @@
       "modes": {
         "label": "视图模式",
         "changes": "变动",
-        "directory": "目录",
-        "git": "Git"
+        "directory": "目录"
       }
     },
     "directory": {
@@ -640,6 +639,7 @@
       "retry": "重试"
     },
     "git": {
+      "label": "Git",
       "scope": {
         "label": "对比范围",
         "uncommitted": "未提交",

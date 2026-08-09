@@ -1,10 +1,11 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export type ChatSidebarTab = "outline" | "files";
+/** 顶层三段：大纲 / 文件 / Git（Git 已从「文件」页内的一档提升为顶层 tab，决策 1）。 */
+export type ChatSidebarTab = "outline" | "files" | "git";
 
-/** 「文件」页内的三种视角：本次对话改过的文件 / 工作目录树 / git 变动。 */
-export type ChatFilesMode = "changes" | "directory" | "git";
+/** 「文件」页内的两种视角：本次对话改过的文件 / 工作目录树。 */
+export type ChatFilesMode = "changes" | "directory";
 
 /** 预览面板按文件类型提供的视图档位（spec 决策 7）；diff 已随需求修订去掉，仅 markdown 有意义。 */
 export type FilePreviewSegment = "render" | "text" | "split";
@@ -46,12 +47,15 @@ type ChatSidebarState = {
   clearPreview: (sessionId: number) => void;
 };
 
-const VALID_TABS: ReadonlySet<ChatSidebarTab> = new Set(["outline", "files"]);
+const VALID_TABS: ReadonlySet<ChatSidebarTab> = new Set([
+  "outline",
+  "files",
+  "git",
+]);
 
 const VALID_FILES_MODES: ReadonlySet<ChatFilesMode> = new Set([
   "changes",
   "directory",
-  "git",
 ]);
 
 const VALID_PREVIEW_SEGMENTS: ReadonlySet<FilePreviewSegment> = new Set([
@@ -127,10 +131,15 @@ function sanitizePreview(value: unknown): Record<number, FilePreviewSelection> {
   return normalized;
 }
 
-// 模式与「显示忽略项」是用户偏好，随侧栏状态一起持久化；持久化值可能来自更早
-// 的版本或被手改过的 localStorage，非法或缺失时一律回落到默认（模式回落到
-// 「变动」，忽略项回落到隐藏，基线表回落到空表）。
+// activeTab、模式与「显示忽略项」都是用户偏好，随侧栏状态一起持久化；持久化值
+// 可能来自更早的版本或被手改过的 localStorage，非法或缺失时一律回落到默认
+// （顶层 tab 回落到「大纲」，模式回落到「变动」，忽略项回落到隐藏，基线表回落
+// 到空表）。旧版本持久化下来的 filesMode "git" 在 VALID_FILES_MODES 收窄后
+// 自然落入这条回落路径，不需要单独的迁移逻辑。
 function sanitize(state: ChatSidebarState): ChatSidebarState {
+  const activeTab = VALID_TABS.has(state.activeTab)
+    ? state.activeTab
+    : "outline";
   const filesMode = VALID_FILES_MODES.has(state.filesMode)
     ? state.filesMode
     : "changes";
@@ -139,6 +148,7 @@ function sanitize(state: ChatSidebarState): ChatSidebarState {
   const gitBaselineBySession = sanitizeBaselines(state.gitBaselineBySession);
   const previewBySession = sanitizePreview(state.previewBySession);
   if (
+    activeTab === state.activeTab &&
     filesMode === state.filesMode &&
     showIgnored === state.showIgnored &&
     gitBaselineBySession === state.gitBaselineBySession &&
@@ -148,6 +158,7 @@ function sanitize(state: ChatSidebarState): ChatSidebarState {
   }
   return {
     ...state,
+    activeTab,
     filesMode,
     showIgnored,
     gitBaselineBySession,
