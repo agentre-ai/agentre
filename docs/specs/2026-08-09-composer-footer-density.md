@@ -2,9 +2,9 @@
 
 > Status: Draft
 > Owner: chat experience / frontend
-> Last updated: 2026-08-09
+> Last updated: 2026-08-09（第 2 版：运行时验证后的两处修订 —— 决策 4 补「取整到 1000 即进 M」、新增决策 10 与「e2e fake runtime 的能力补齐」一节）
 
-**Objective:** 让会话输入框底栏在任意 chat panel 宽度下都保持**单行、行高恒定**，同时把 Claude 订阅配额（5h / 7d）从"一行同色的纯文本 + 原生 `title`"改造成**双窗口独立取色 + 可键盘触达的 HoverCard 面板**，并修正上下文计量器在 1M 上下文窗口下显示 `1000k` 的进位缺陷。
+**Objective:** 让会话输入框底栏在任意 chat panel 宽度下都保持**单行、行高恒定**，同时把 Claude 订阅配额（5h / 7d）从"一行同色的纯文本 + 原生 `title`"改造成**双窗口独立取色 + 可键盘触达的 HoverCard 面板**，并修正上下文计量器的进位缺陷，使 `1000k` 这个字符串在任何输入下都不再出现（1M 上下文窗口读作 `1M`）。
 
 **Hard invariants:**
 
@@ -41,7 +41,8 @@
 | 1 | 降级用 **`@container` 按 composer 自身宽度**触发，不用视口 media query | chat panel 的实际宽度取决于侧栏 / 右侧面板开合，视口宽度读不到它。仓库已有先例 `frontend/src/components/ui/field.tsx:47` 的 `@container/field-group`，Tailwind 4.3（`frontend/package.json:72`）原生支持。Rejected: 视口断点——同一窗口宽度下 panel 可窄可宽，必然误判；Rejected: `flex-wrap`——用户抱怨的正是"变高"，允许折行等于把 bug 正式化 |
 | 2 | 牺牲顺序固定为 **①快捷键提示 → ②「上下文」文字标签 → ③`5h`/`7d` 前缀 + 进度条 96px→40px → ④权限模式 Pill 退成纯图标** | 用户裁定（①②③ 为其明确勾选项，④ 为极窄兜底的裁定）。依据是信息密度递减：快捷键提示是一次性教学文案，标签与前缀可由图标 + HoverCard 补偿，进度条是数字的冗余表达。Rejected: 极窄档允许横向溢出 / 滚动——把"看不见"从可控降级变成不可控；Rejected: 极窄档改双行——与 Hard invariant 1 直接冲突 |
 | 3 | 上下文的**绝对 token 数任何一档都保留** | 用户明确未授权牺牲它——它是判断"还能聊多久"的唯一定量依据，百分比无法替代（60% of 1M 与 60% of 200k 决策不同）。Rejected: 极窄档把 token 数移入 HoverCard——它是底栏里被看得最频繁的数字，代价高于收益的 ~74px |
-| 4 | `formatTokens` 补 **M 档**：`≥1e6` 时 `<10M` 保一位小数、`≥10M` 取整 | 与现有 k 档（`>=100` 取整、否则一位小数）同构，读者不需要学两套规则。Rejected: 一律一位小数——`10.0M` 冗余；Rejected: 仅在 max 侧换算——同一行内 `120.5k / 1M` 两侧单位不一致反而更难读（此为本轮采纳形态，因分子分母量级本就常差三个数量级，单位不同是正常的科学计数惯例） |
+| 4 | `formatTokens` 补 **M 档**：`≥1e6` 时 `<10M` 保一位小数、`≥10M` 取整；**且 k 档一旦四舍五入到 1000 就改走 M 档** | 与现有 k 档（`>=100` 取整、否则一位小数）同构，读者不需要学两套规则。进位补充项是 2026-08-09 运行时验证后的用户裁定：若只按量级分档，`999_999` 会落在 k 档并渲染成 `1000k`——正是本轮要消灭的字符串，只是换了触发条件。Rejected: 一律一位小数——`10.0M` 冗余；Rejected: 仅在 max 侧换算——同一行内 `120.5k / 1M` 两侧单位不一致反而更难读（分子分母量级本就常差三个数量级，单位不同是正常的科学计数惯例）；Rejected: 容忍 `1000k` 边界——用户明确要求消灭该字符串 |
+| 10 | **e2e fake runtime 补两项能力**：`RunResult.ContextWindow` 上报一个 1M 上下文窗口、`Capabilities()` 增加 `CapSetPermission` | 2026-08-09 运行时验证发现四条验收项无法观测，根因全在 fake 而非实现：`chat-panel.tsx:1246` 的 `max = session.contextWindow`，而 fake 的 `Model: "e2e-fake-model"` 不在 `llmcatalog` 里、`RunResult.ContextWindow` 为 0 → `ContextMeter` 整块不渲染；`isModeSwitchable = caps.has("set_permission_mode")`（`chat-panel.tsx:1234`）而 fake 未声明该 cap → `PermissionModePill` 不渲染。补上后这四条即可在真实应用里观测。`chat.go:3943` 已有 `result.ContextWindow > 0 → sess.ContextWindow` 的落库路径，无需新接缝。Rejected: 把 fake 的 model 改成 `llmcatalog` 里的真实 model id——会把"用哪个真实模型"这一无关语义引进 fake，且 `runtime_test.go:50` 正断言该字符串；Rejected: 接受这四条永久 not observed——用户裁定先补 fake 再交付 |
 | 5 | 配额**两个窗口各自独立取色**，删除 `Math.max` 驱动的整行同色 | 直接解决 Problem 3。阈值沿用现状（≥90% `status-error`、≥75% `status-waiting`、否则 `muted-foreground`），不引入新阈值。Rejected: 保留整行同色、仅在 HoverCard 里区分——底栏正是"一眼判断"的场景，把区分推迟到悬停等于没解决 |
 | 6 | 原生 `title` → shadcn **HoverCard**，触发区可聚焦 | 直接解决 Problem 4。仓库已有 `frontend/src/components/ui/hover-card.tsx`。Rejected: `tooltip.tsx`——本轮面板含进度条、分组与脚注，超出 tooltip 的纯文本定位；Rejected: `popover.tsx`——Popover 会抢焦点，与 Hard invariant 4 冲突 |
 | 7 | 配额图标 `Gauge` → **`Timer`** | 直接解决 Problem 5：两个计量器不再同图标，且 `Timer` 表达"按时间窗口配给"这一配额本质。上下文保留 `Gauge`。Rejected: 给配额也加两条迷你进度条以对齐上下文——每条至少 40px，与本轮"底栏太挤"的主诉求直接对冲；量感改由面板内的进度条承载 |
@@ -81,7 +82,7 @@
 
 ## 上下文计量器
 
-`formatTokens` 增加 M 档，规则与既有 k 档同构：小于 1000 原样；`[1e3, 1e6)` 走 k（商 ≥100 取整、否则一位小数）；`≥1e6` 走 M（商 ≥10 取整、否则一位小数）。据此 `1_000_000 → 1M`、`1_200_000 → 1.2M`、`10_000_000 → 10M`、`999_000 → 999k`。分子与分母各自独立换算，允许出现 `120.5k / 1M`。
+`formatTokens` 增加 M 档，规则与既有 k 档同构：小于 1000 原样；`[1e3, 1e6)` 走 k（商 ≥100 取整、否则一位小数）；`≥1e6` 走 M（商 ≥10 取整、否则一位小数，整数时省掉 `.0`）。**此外，k 档的取整结果一旦达到 1000，改按 M 档渲染**——`1000k` 这个字符串在任何输入下都不得出现。据此 `1_000_000 → 1M`、`1_200_000 → 1.2M`、`10_000_000 → 10M`、`999_000 → 999k`、`999_999 → 1M`、`120_500 → 121k`。分子与分母各自独立换算，允许出现 `121k / 1M`。
 
 其余行为不变：阈值配色、`role="progressbar"` 与 `aria-valuenow` 语义、`chat.context.aria` 的完整 `used / max` 播报均保持现状——分档隐藏的只有视觉标签，无障碍播报不降级。
 
@@ -93,9 +94,19 @@
 
 配额触发区保留既有 `chat.quota.aria` 的完整播报（含两个窗口的数值与设备名），不因分档隐藏前缀而降级。HoverCard 面板由 Radix 关联到触发区，可用 Esc 关闭。所有新增可见文案双语落地。
 
+## e2e fake runtime 的能力补齐
+
+`e2e/` 的 fake runtime 需要多提供两样东西，否则本轮四条可观测要求在真实应用里根本没有渲染对象：
+
+- **上报一个 1M 的上下文窗口**，使 `ContextMeter` 在 e2e 会话中真实渲染，且分母恰好命中 M 档。
+- **声明 `set_permission_mode` 能力**，使 `PermissionModePill` 在 e2e 会话中真实渲染，从而能观测 ≤380 档的纯图标降级。
+
+这两项只影响 `-tags e2e` 构建下的 fake，不改任何生产运行时的行为，也不改 `chat_svc` 既有的上下文窗口优先级（`session.ContextWindow` > `provider.ContextWindow` > `llmcatalog` 查表）。fake 回显文本、`ReplyPrefix`、`ProviderSessionID` 与 `Model` 字符串保持不变，既有 e2e 断言不受影响。
+
 ## Out of scope
 
 - **不改后端 `cc_usage_svc` / `ccoauth` 的任何契约、字段或 60s probe 周期。** 本轮只消费既有 `UsageState`。
+- **不给 `cc_usage_svc` 加 e2e fake 接缝。** 配额数值在验证时以浏览器侧合成 `cc_usage:update` 推送驱动，走的仍是生产订阅链路；为它专门造一套 fake 凭证/HTTP 桩超出本轮价值。
 - **不做配额告警 / 通知 / 自动切换设备。** 面板只呈现，不干预运行。
 - **不改权限模式 Pill 与模型 Pill 自身的交互、Popover 内容或可切换性**，只在 ultra-narrow 档隐藏权限 Pill 的文字标签。
 - **不做配额的历史曲线 / 趋势。**
@@ -105,10 +116,15 @@
 
 | Seam | What it verifies | Prior art |
 |---|---|---|
-| `formatTokens` 纯函数单测（vitest） | 进位边界表：`999` / `12.3k` / `120.5k` / `999k` / `1M` / `1.2M` / `10M`，含 k↔M 的两侧临界 | 无（函数当前无直接单测）；`frontend/src/components/agentre/__tests__/chat.test.tsx` 为同文件测试宿主 |
+| `formatTokens` 纯函数单测（vitest） | 进位边界表：`999` / `12.3k` / `121k` / `999k` / `999_999 → 1M` / `1M` / `1.2M` / `10M`，含 k↔M 两侧临界与「取整到 1000 即进 M」 | 无（函数当前无直接单测）；`frontend/src/components/agentre/__tests__/chat.test.tsx` 为同文件测试宿主 |
+| fake runtime 的能力单测（Go） | fake 上报的上下文窗口与 `set_permission_mode` 能力 | `internal/pkg/agentruntime/runtimes/fake/runtime_test.go` 已有 `Capabilities` / `RunResult` 断言 |
 | Playwright e2e 真实宽度截图（`e2e/`） | 四档降级在真实浏览器下的最终布局：改变 chat panel 宽度后底栏**行高不变**、各档该显示 / 该隐藏的元素符合预期。这是唯一能真正验证"不折行"的手段——jsdom 不实现 `@container`，vitest 无法断言实际隐藏 | `e2e/README.md` 的 Playwright + fake-runtime harness；`docs/verification.md` 的证据留存约定 |
 
 用户裁定测试范围为「e2e 为主 + 仅补 `formatTokens` 边界表」，因此 **QuotaMeter 的状态矩阵（双窗口独立配色、HoverCard 各分支内容、各 `reason` 分支）不新增自动化覆盖**，改由收尾时的源码复审 + 真实应用运行观察承担。
+
+配额数值在 e2e 里由**浏览器侧合成的 `cc_usage:update` 推送**驱动（走生产订阅链路 `EventsOn → cc-usage-store → useCCUsage`），因为 e2e 环境没有 Claude OAuth 凭证、`cc_usage_svc` 只会给 `no_credentials`（该状态下 QuotaMeter 整块不渲染）。合成的只有数据来源，渲染、CSS 容器查询与 Radix 行为均为真。
+
+分档宽度在 e2e 里**直接给定 composer `<form>` 的宽度**，而非拖窗口：本 app 的侧栏在窄视口会自动收起，实测视口 1280 → composer 664、视口 1000 → composer 944（非单调），靠改视口够不到 ≤380 档。容器查询读的就是该元素的 inline-size，因此仍是真实浏览器跑真实 CSS。
 
 **必须一并更新的既有测试（属于变更维护，不计入上述新增覆盖）**：`frontend/src/components/agentre/__tests__/chat.test.tsx:1585-1612` 现断言 `toHaveAttribute("title", expect.stringContaining("resets in 40m"))`（断言在 1605-1608 行）。原生 `title` 被 HoverCard 取代后该断言必然失败，需改为面板内容断言；同组其余用例（不渲染分支、数字渲染、stale、`auth_expired` 占位）对应 Hard invariant 3，应保持通过而不被削弱。
 
