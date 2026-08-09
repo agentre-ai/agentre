@@ -1504,8 +1504,12 @@ describe("formatTokens", () => {
     expect(formatTokens(12_500_000)).toBe("13M");
   });
 
-  it("k↔M 临界: 999_999 仍是 k, 1_000_000 进 M", () => {
-    expect(formatTokens(999_999)).toBe("1000k");
+  it("k 档取整到 1000 就进 M: 1000k 在任何输入下都不出现", () => {
+    // 999_999 按量级本该落 k 档, 但商四舍五入后是 1000 —— 那正是本轮要消灭的字符串。
+    expect(formatTokens(999_999)).toBe("1M");
+    expect(formatTokens(999_500)).toBe("1M");
+    // 边界另一侧: 取整后还是 999, 仍留在 k 档。
+    expect(formatTokens(999_499)).toBe("999k");
     expect(formatTokens(1_000_000)).toBe("1M");
   });
 });
