@@ -379,7 +379,7 @@ function QuotaMeter({
           type="button"
           className={cn(
             "flex shrink-0 cursor-default items-center gap-1.5 rounded-sm border border-transparent px-1 py-0.5",
-            "font-mono text-meta tabular-nums transition-colors",
+            "font-mono text-meta tabular-nums transition-colors motion-reduce:transition-none",
             "hover:border-border hover:bg-accent",
             "focus-visible:border-border focus-visible:bg-accent focus-visible:outline-none",
             offline ? "text-subtle-foreground" : "text-muted-foreground",
