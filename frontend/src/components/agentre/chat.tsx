@@ -319,21 +319,34 @@ export function formatResetIn(value: unknown, nowMs?: number): string {
   return `${days}d${hours}h`;
 }
 
-// quotaTone 把单个窗口的占用百分比映射成阈值色。每个窗口各自取色 —— 5h 告急
-// 不该把 7d 一起染红,否则用户看不出该等 3 小时还是等 4 天。
-function quotaTone(percent: number | null): string {
-  if (percent === null) return "text-muted-foreground";
-  if (percent >= 90) return "text-status-error";
-  if (percent >= 75) return "text-status-waiting";
-  return "text-muted-foreground";
+// quotaLevel 是配额告警阈值的唯一来源。每个窗口各自定级 —— 5h 告急不该把 7d
+// 一起染红,否则用户看不出该等 3 小时还是等 4 天。
+type QuotaLevel = "ok" | "warn" | "danger";
+
+function quotaLevel(percent: number | null): QuotaLevel {
+  if (percent === null) return "ok";
+  if (percent >= 90) return "danger";
+  if (percent >= 75) return "warn";
+  return "ok";
 }
 
-// quotaFillTone 是 quotaTone 的进度条对应色(面板里用)。
-function quotaFillTone(percent: number): string {
-  if (percent >= 90) return "bg-status-error";
-  if (percent >= 75) return "bg-status-waiting";
-  return "bg-primary";
-}
+// 三张配色表共用 quotaLevel。底栏与面板的"正常"色不同(底栏要退到背景里,
+// 面板里这个数字是主角),所以分成两张表,而不是拿 class 字符串去比较判断。
+const QUOTA_METER_TONE: Record<QuotaLevel, string> = {
+  ok: "text-muted-foreground",
+  warn: "text-status-waiting",
+  danger: "text-status-error",
+};
+const QUOTA_PANEL_TONE: Record<QuotaLevel, string> = {
+  ok: "text-foreground",
+  warn: "text-status-waiting",
+  danger: "text-status-error",
+};
+const QUOTA_FILL_TONE: Record<QuotaLevel, string> = {
+  ok: "bg-primary",
+  warn: "bg-status-waiting",
+  danger: "bg-status-error",
+};
 
 const QUOTA_HOVER_OPEN_DELAY_MS = 200;
 const QUOTA_HOVER_CLOSE_DELAY_MS = 100;
@@ -366,8 +379,12 @@ function QuotaMeter({
   const offline =
     data.reason === "auth_expired" || data.reason === "device_offline";
   // 灰态占位没有可信数值,整块压成 subtle;有数值时两个窗口各自取色。
-  const fiveTone = offline ? "text-subtle-foreground" : quotaTone(fiveH);
-  const sevenTone = offline ? "text-subtle-foreground" : quotaTone(sevenD);
+  const fiveTone = offline
+    ? "text-subtle-foreground"
+    : QUOTA_METER_TONE[quotaLevel(fiveH)];
+  const sevenTone = offline
+    ? "text-subtle-foreground"
+    : QUOTA_METER_TONE[quotaLevel(sevenD)];
 
   return (
     <HoverCard
@@ -463,6 +480,7 @@ function QuotaRow({
   t: TFunction;
 }) {
   const pct = Math.round(percent);
+  const level = quotaLevel(pct);
   const remaining = formatResetIn(resetsAt);
   return (
     <div className="flex flex-col gap-1">
@@ -476,9 +494,7 @@ function QuotaRow({
         <span
           className={cn(
             "ml-auto font-mono tabular-nums",
-            quotaTone(pct) === "text-muted-foreground"
-              ? "text-foreground"
-              : quotaTone(pct),
+            QUOTA_PANEL_TONE[level],
           )}
         >
           {pct}%
@@ -486,7 +502,7 @@ function QuotaRow({
       </div>
       <span className="h-1 overflow-hidden rounded-sm bg-border">
         <span
-          className={cn("block h-1 rounded-sm", quotaFillTone(pct))}
+          className={cn("block h-1 rounded-sm", QUOTA_FILL_TONE[level])}
           style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
         />
       </span>
