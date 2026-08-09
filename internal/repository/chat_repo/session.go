@@ -26,6 +26,11 @@ type SessionRepo interface {
 	ListAttentionByAgent(ctx context.Context, agentID int64, limit int) ([]*chat_entity.Session, error)
 	ListAttentionByAgentIncludingGroups(ctx context.Context, agentID int64, limit int) ([]*chat_entity.Session, error)
 	ListByProject(ctx context.Context, projectID int64) ([]*chat_entity.Session, error)
+	// ReassignProject 把 project_id 从 fromProjectID 整批改挂到 toProjectID（R11a
+	// 的项目合并）。刻意**不带 status / purpose 过滤**：软删的会话与子 agent 委派
+	// 会话在 ListByProject 里都看不见（后者被 nonSubagentScope 排除），逐行改挂必然
+	// 把它们漏在原地，而 R11a 要求合并后不留下任何指向已消失项目的引用。
+	ReassignProject(ctx context.Context, fromProjectID, toProjectID int64) error
 	CountByAgent(ctx context.Context, agentID int64) (int64, error)
 	CountByAgentIncludingGroups(ctx context.Context, agentID int64) (int64, error)
 	CountByAgents(ctx context.Context, agentIDs []int64) (map[int64]int64, error)
@@ -334,6 +339,16 @@ func (r *sessionRepo) ListByProject(ctx context.Context, projectID int64) ([]*ch
 		Find(&rows).Error
 	applySessionDerivedFields(rows)
 	return rows, err
+}
+
+// ReassignProject 见接口注释：WHERE 里只有 project_id，没有 status / purpose。
+func (r *sessionRepo) ReassignProject(ctx context.Context, fromProjectID, toProjectID int64) error {
+	return db.Ctx(ctx).Model(&chat_entity.Session{}).
+		Where("project_id = ?", fromProjectID).
+		Updates(map[string]any{
+			"project_id": toProjectID,
+			"updatetime": time.Now().UnixMilli(),
+		}).Error
 }
 
 // CountActiveByProject 统计项目下 status=ACTIVE 且 agent_status 在指定集合内的会话数。

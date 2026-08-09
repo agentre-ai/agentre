@@ -763,3 +763,19 @@ func TestSessionRepo_ListRemoteExecSessions(t *testing.T) {
 	assert.Equal(t, int64(4), got[1].ExecDeviceID)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+// TestSessionRepo_ReassignProject 钉死 R11a 的一句：合并后不允许留下任何指向已消失
+// 项目的引用。WHERE 里只能有 project_id —— 一旦加上 status 或 purpose，软删的会话
+// 与子 agent 委派会话就会被留在原地。
+func TestSessionRepo_ReassignProject(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions` SET `project_id`=\\?,`updatetime`=\\? WHERE project_id = \\?$").
+		WithArgs(int64(9), sqlmock.AnyArg(), int64(4)).
+		WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectCommit()
+
+	require.NoError(t, chat_repo.NewSession().ReassignProject(ctx, 4, 9))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

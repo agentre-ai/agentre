@@ -339,6 +339,20 @@ func (mr *MockSessionRepoMockRecorder) MarkRead(ctx, sessionID, ts any) *gomock.
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkRead", reflect.TypeOf((*MockSessionRepo)(nil).MarkRead), ctx, sessionID, ts)
 }
 
+// ReassignProject mocks base method.
+func (m *MockSessionRepo) ReassignProject(ctx context.Context, fromProjectID, toProjectID int64) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReassignProject", ctx, fromProjectID, toProjectID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ReassignProject indicates an expected call of ReassignProject.
+func (mr *MockSessionRepoMockRecorder) ReassignProject(ctx, fromProjectID, toProjectID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReassignProject", reflect.TypeOf((*MockSessionRepo)(nil).ReassignProject), ctx, fromProjectID, toProjectID)
+}
+
 // ResetActiveSessions mocks base method.
 func (m *MockSessionRepo) ResetActiveSessions(ctx context.Context) (int64, error) {
 	m.ctrl.T.Helper()

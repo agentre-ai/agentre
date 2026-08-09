@@ -3,8 +3,11 @@ package sync_svc
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strconv"
 
 	"github.com/cago-frame/cago/pkg/consts"
+	"gorm.io/gorm"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/project_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/project_location_entity"
@@ -62,10 +65,9 @@ func (projectAdapter) load(ctx context.Context, syncID string) (*outbound, error
 		return nil, err
 	}
 	return &outbound{
-		SyncID:      row.SyncID,
-		BaseVersion: row.SyncVersion,
-		UpdatedAt:   row.Updatetime,
-		Payload:     payload,
+		SyncID:    row.SyncID,
+		UpdatedAt: row.Updatetime,
+		Payload:   payload,
 	}, nil
 }
 
@@ -177,10 +179,9 @@ func (projectAgentAdapter) load(ctx context.Context, syncID string) (*outbound, 
 		return nil, err
 	}
 	return &outbound{
-		SyncID:      row.SyncID,
-		BaseVersion: row.SyncVersion,
-		UpdatedAt:   row.JoinedAt,
-		Payload:     payload,
+		SyncID:    row.SyncID,
+		UpdatedAt: row.JoinedAt,
+		Payload:   payload,
 	}, nil
 }
 
@@ -269,7 +270,6 @@ func (projectLocationAdapter) load(ctx context.Context, syncID string) (*outboun
 	}
 	return &outbound{
 		SyncID:              row.SyncID,
-		BaseVersion:         row.SyncVersion,
 		UpdatedAt:           row.Updatetime,
 		ProjectSyncID:       syncIDOf(project.SyncMeta),
 		AgentredFingerprint: row.DaemonFingerprint,
@@ -298,16 +298,53 @@ func (projectLocationAdapter) apply(ctx context.Context, in *inbound, resolved m
 	if err != nil {
 		return err
 	}
+	// device_id 是「由指纹解析出的本地缓存」（决策 26），**落地当场就解析**：本机
+	// 配对了那台 agentred 就填上，没配对留空（R2b，行与 path 照常留着，只是不参与
+	// 解析、不呈现）。留给「用户点开位置页签时再回填」是不够的——决策 34 的逐档
+	// 可用性判定与两个 cwd 解析点都按 device_id 查行，缓存空着它们一律判成「这台
+	// 机器上没配这个项目的路径」。
+	localID, err := localIDOfFingerprint(ctx, in.AgentredFingerprint)
+	if err != nil {
+		return err
+	}
+	deviceID := ""
+	if localID > 0 {
+		deviceID = strconv.FormatInt(localID, 10)
+	}
 	row.ProjectID, row.Path = projectID, p.Path
 	row.DaemonFingerprint = in.AgentredFingerprint
+	row.DeviceID = deviceID
 	row.Status = consts.ACTIVE
 	if !found {
-		// device_id 是本机解析缓存，落地时留空：本机配对了那台 agentred 时由
-		// project_location_svc 的 ListByProject 自动回填（R2b）。
-		row.SyncID, row.DeviceID = in.SyncID, ""
+		row.SyncID = in.SyncID
 		return project_location_repo.ProjectLocation().Create(ctx, row)
 	}
 	return project_location_repo.ProjectLocation().Update(ctx, row)
+}
+
+// syncIDAtNaturalKey 报告（项目同步标识, agentred 指纹）这个自然键上现在站着的是
+// 哪一行（决策 26）；没有活行时返回空串。R4b 的合并落败判定用它，见
+// downlink.recordMergeLosses。
+func (projectLocationAdapter) syncIDAtNaturalKey(ctx context.Context, in *inbound) (string, error) {
+	if in.ProjectSyncID == "" || in.AgentredFingerprint == "" {
+		return "", nil
+	}
+	projectID, err := syncstate_repo.SyncState().FindLocalID(ctx, syncwire.KindProject, in.ProjectSyncID)
+	if err != nil || projectID == 0 {
+		return "", err
+	}
+	row, err := project_location_repo.ProjectLocation().
+		FindByProjectAndFingerprint(ctx, projectID, in.AgentredFingerprint)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", nil
+		}
+		return "", err
+	}
+	if row == nil {
+		return "", nil
+	}
+	return row.SyncID, nil
 }
 
 func (projectLocationAdapter) remove(ctx context.Context, in *inbound) error {

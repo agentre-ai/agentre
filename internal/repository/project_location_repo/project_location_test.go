@@ -135,3 +135,17 @@ func TestProjectLocationRepo_Delete(t *testing.T) {
 	require.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+// TestProjectLocationRepo_ReassignProject 见 SessionRepo.ReassignProject 的同名
+// 用例：WHERE 里只能有 project_id，软删的路径记录也得跟着改挂（R11a）。
+func TestProjectLocationRepo_ReassignProject(t *testing.T) {
+	ctx, mock, repo := setupProjectLocationRepo(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `project_locations` SET `project_id`=\\?,`updatetime`=\\? WHERE project_id = \\?$").
+		WithArgs(int64(9), sqlmock.AnyArg(), int64(4)).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.ReassignProject(ctx, 4, 9))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

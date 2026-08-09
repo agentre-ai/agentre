@@ -2,17 +2,22 @@ package project_svc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/cago-frame/cago/pkg/i18n"
 	"gorm.io/gorm"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/project_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/project_location_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/syncqueue_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/syncwire"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 	"github.com/agentre-ai/agentre/internal/repository/issue_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_repo"
+	"github.com/agentre-ai/agentre/internal/repository/syncqueue_repo"
 )
 
 // Merge 见 ProjectSvc 接口注释（R11a）。
@@ -53,7 +58,7 @@ func (s *projectSvc) Merge(ctx context.Context, req *MergeProjectsRequest) (*pro
 		return nil, err
 	}
 
-	if err := reassignSessions(ctx, drop.ID, keep.ID); err != nil {
+	if err := chat_repo.Session().ReassignProject(ctx, drop.ID, keep.ID); err != nil {
 		return nil, err
 	}
 	if err := reassignProjectAgents(ctx, drop.ID, keep.ID); err != nil {
@@ -62,10 +67,10 @@ func (s *projectSvc) Merge(ctx context.Context, req *MergeProjectsRequest) (*pro
 	if err := reassignChildProjects(ctx, drop.ID, keep.ID); err != nil {
 		return nil, err
 	}
-	if err := reassignIssues(ctx, drop.ID, keep.ID); err != nil {
+	if err := issue_repo.Issue().ReassignProject(ctx, drop.ID, keep.ID); err != nil {
 		return nil, err
 	}
-	if err := reassignProjectLocations(ctx, drop.ID, keep.ID); err != nil {
+	if err := s.reassignProjectLocations(ctx, keep, drop); err != nil {
 		return nil, err
 	}
 
@@ -90,22 +95,6 @@ func chooseMergeWinner(a, b *project_entity.Project) (keep, drop *project_entity
 		return a, b
 	}
 	return b, a
-}
-
-// reassignSessions 把 chat_sessions.project_id 从 dropID 改挂到 keepID。会话没有
-// 天然唯一约束要防重——每条会话只属于一个项目，直接整行 Save 即可。
-func reassignSessions(ctx context.Context, dropID, keepID int64) error {
-	sessions, err := chat_repo.Session().ListByProject(ctx, dropID)
-	if err != nil {
-		return err
-	}
-	for _, sess := range sessions {
-		sess.ProjectID = keepID
-		if err := chat_repo.Session().Update(ctx, sess); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // reassignProjectAgents 把 project_agents 从 dropID 改挂到 keepID，去重：一个
@@ -148,52 +137,84 @@ func reassignChildProjects(ctx context.Context, dropID, keepID int64) error {
 			return err
 		}
 	}
-	return nil
+	// 上面那一轮只走得到**活跃**的子项目（它们要各自发一次同步通知）；软删的子项目
+	// ListByParent 看不见，parent_id 却照样指着 dropID。R11a 不允许合并后留下任何
+	// 指向已消失项目的引用，因此再扫一次，不带 status 判据。
+	return project_repo.Project().ReassignParent(ctx, dropID, keepID)
 }
 
-// reassignIssues 把 issues.project_id 从 dropID 改挂到 keepID。
-func reassignIssues(ctx context.Context, dropID, keepID int64) error {
-	issues, err := issue_repo.Issue().List(ctx, issue_repo.ListFilter{ProjectID: dropID})
-	if err != nil {
-		return err
-	}
-	for _, iss := range issues {
-		iss.ProjectID = keepID
-		if err := issue_repo.Issue().Update(ctx, iss); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// reassignProjectLocations 把 project_locations 从 dropID 改挂到 keepID（R4b 的
-// 自然键处理）：两边对同一台 agentred(按指纹)各有一行时不能都改挂到 keepID，
-// 否则撞 (project, fingerprint) 自然键——这里保留 keep 已有的那行，drop 的那行
-// 直接删除。完整的「按 R4 取胜者 / 按 R5 记录落败者」需要账号级冲突记录基础设施
-// （task 7/8/9 的范围，尚未落地）；在此之前用「keep 侧优先」这个确定性规则收敛，
-// 保证合并后不残留任何指向已消失项目的行——这是本条唯一被测试覆盖的不变量。
-func reassignProjectLocations(ctx context.Context, dropID, keepID int64) error {
-	dropLocs, err := project_location_repo.ProjectLocation().ListByProject(ctx, dropID)
+// reassignProjectLocations 把 project_locations 从 drop 改挂到 keep（R4b 的自然键
+// 处理）：两边对同一台 agentred（按指纹）各有一行时不能都改挂，否则撞
+// (project, fingerprint) 自然键 —— keep 侧那行胜出（它就是合并保留下来的那个身份），
+// **落败的那行按 R5 记一条「被覆盖」再软删**，用户在设置的「没能同步的改动」里还能
+// 把那条路径找回来（R11a 末段点名了这一条）。
+//
+// 收尾整批再改挂一次：软删的路径记录在 ListByProject 里看不见，但它们的 project_id
+// 照样指着即将消失的 drop —— R11a 要求一处不落。自然键的唯一索引只管 status=1 的行，
+// 因此这一批（含刚刚落败被软删的那行）不会撞键。
+func (s *projectSvc) reassignProjectLocations(ctx context.Context, keep, drop *project_entity.Project) error {
+	dropLocs, err := project_location_repo.ProjectLocation().ListByProject(ctx, drop.ID)
 	if err != nil {
 		return err
 	}
 	for _, loc := range dropLocs {
 		if loc.DaemonFingerprint != "" {
-			existing, ferr := project_location_repo.ProjectLocation().FindByProjectAndFingerprint(ctx, keepID, loc.DaemonFingerprint)
+			existing, ferr := project_location_repo.ProjectLocation().FindByProjectAndFingerprint(ctx, keep.ID, loc.DaemonFingerprint)
 			if ferr != nil && !errors.Is(ferr, gorm.ErrRecordNotFound) {
 				return ferr
 			}
 			if existing != nil {
+				if err := s.recordLostLocation(ctx, keep, loc); err != nil {
+					return err
+				}
 				if err := project_location_repo.ProjectLocation().Delete(ctx, loc.ID); err != nil {
 					return err
 				}
 				continue
 			}
 		}
-		loc.ProjectID = keepID
+		loc.ProjectID = keep.ID
 		if err := project_location_repo.ProjectLocation().Update(ctx, loc); err != nil {
 			return err
 		}
 	}
-	return nil
+	return project_location_repo.ProjectLocation().ReassignProject(ctx, drop.ID, keep.ID)
+}
+
+// recordLostLocation 把 R4b 里落败的那一行路径记录写进 R5 的「没能同步的改动」
+// 列表：与同步引擎写的是同一张表、同一个仓储（syncqueue_repo.LostChange），因此
+// 用户看到的是同一份列表、同一套恢复动作（决策 12）。
+//
+// 未认领的行（SyncAccountID = 0，登录前建的或换过账号）不写：R12 / R13a 下同步侧
+// 一行都不该产生，那份内容本来也不会出现在任何账号的列表里。
+//
+// ProjectSyncID 落 keep 的标识而不是 drop 的：drop 马上就没了，恢复只可能落回
+// 保留下来的那个项目（R5a）。
+func (s *projectSvc) recordLostLocation(
+	ctx context.Context, keep *project_entity.Project, loser *project_location_entity.ProjectLocation,
+) error {
+	if loser.SyncAccountID == 0 {
+		return nil
+	}
+	// 正文形状与同步引擎给 project_location 的一致（只有 path）；自然键的另两项
+	// 走 LostChange 的顶层字段，不进正文。
+	payload, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{Path: loser.Path})
+	if err != nil {
+		return err
+	}
+	now := s.now()
+	return syncqueue_repo.LostChange().Create(ctx, &syncqueue_entity.LostChange{
+		SyncAccountID:       loser.SyncAccountID,
+		EntityType:          syncwire.KindProjectLocation,
+		EntitySyncID:        loser.SyncID,
+		BaseVersion:         loser.SyncVersion,
+		Reason:              syncqueue_entity.ReasonOverwritten,
+		PayloadJSON:         string(payload),
+		ProjectSyncID:       keep.SyncID,
+		AgentredFingerprint: loser.DaemonFingerprint,
+		OccurredAt:          now,
+		Createtime:          now,
+	})
 }

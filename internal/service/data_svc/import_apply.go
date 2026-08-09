@@ -556,10 +556,12 @@ func applyAgents(ctx context.Context, b BundleV1, actions map[string]ItemAction,
 		if a.DepartmentKey != "" {
 			deptID = km.depts[a.DepartmentKey]
 		}
-		backendID := int64(0)
-		if a.AgentBackendKey != "" {
-			backendID = km.backends[a.AgentBackendKey]
-		}
+		// 执行目标列表是导入侧唯一的真相来源（R15f）：新 bundle 直接用 execTargets
+		// 数组，老 bundle（整个没有这个 key）才回落到 agentBackendKey + skillsJSON 的
+		// 单元素转换。agents 行上的 AgentBackendID/SkillsJSON 两个保留列只作为 ① 的
+		// 镜像写入（与 agent_svc.Update 同一条约定），不参与任何决策。
+		targets := execTargetsFromBundle(a, km)
+		primaryBackendID, primarySkills := primaryTargetMirror(targets)
 
 		// 找 (deptID, name) 匹配
 		list, err := agent_repo.Agent().ListByDepartment(ctx, deptID)
@@ -576,7 +578,7 @@ func applyAgents(ctx context.Context, b BundleV1, actions map[string]ItemAction,
 
 		act := actions[actionKey(string(ScopeOrganization), a.ExportKey)]
 		var localID int64
-		applyExecTargets := false
+		replaceExecTargets := false
 		switch act {
 		case ActionSkip:
 			counts["skipped"]++
@@ -594,18 +596,18 @@ func applyAgents(ctx context.Context, b BundleV1, actions map[string]ItemAction,
 			existing.AvatarDataURL = a.AvatarDataURL
 			existing.SystemBadge = a.SystemBadge
 			existing.DepartmentID = deptID
-			existing.AgentBackendID = backendID
+			existing.AgentBackendID = primaryBackendID
 			existing.SortOrder = a.SortOrder
 			existing.PromptJSON = a.PromptJSON
-			existing.SkillsJSON = a.SkillsJSON
+			existing.SkillsJSON = primarySkills
 			existing.Updatetime = now
-			// ParentAgentID 留待 backfill
-			if err := agent_repo.Agent().Update(ctx, existing); err != nil {
+			// ParentAgentID 留待 backfill。整张执行目标列表随这一次写入一起落库：
+			// 先塌成单元素再补一次替换会把幸存的档删掉重插，同步标识跟着重铸（R1）。
+			if err := agent_repo.Agent().UpdateWithTargets(ctx, existing, targets); err != nil {
 				return err
 			}
 			km.agents[a.ExportKey] = existing.ID
 			counts["overwrote"]++
-			localID, applyExecTargets = existing.ID, true
 		case ActionDuplicate:
 			row := &agent_entity.Agent{
 				Name:           a.Name,
@@ -615,10 +617,10 @@ func applyAgents(ctx context.Context, b BundleV1, actions map[string]ItemAction,
 				AvatarDataURL:  a.AvatarDataURL,
 				SystemBadge:    a.SystemBadge,
 				DepartmentID:   deptID,
-				AgentBackendID: backendID,
+				AgentBackendID: primaryBackendID,
 				SortOrder:      a.SortOrder,
 				PromptJSON:     a.PromptJSON,
-				SkillsJSON:     a.SkillsJSON,
+				SkillsJSON:     primarySkills,
 				Status:         consts.ACTIVE,
 				Createtime:     now,
 				Updatetime:     now,
@@ -638,7 +640,7 @@ func applyAgents(ctx context.Context, b BundleV1, actions map[string]ItemAction,
 			}
 			km.agents[a.ExportKey] = row.ID
 			counts["duplicated"]++
-			localID, applyExecTargets = row.ID, true
+			localID, replaceExecTargets = row.ID, true
 		case ActionCreate:
 			if existing != nil {
 				// V1: preview can't detect agent conflict because dept resolution requires apply-time keymap.
@@ -655,10 +657,10 @@ func applyAgents(ctx context.Context, b BundleV1, actions map[string]ItemAction,
 				AvatarDataURL:  a.AvatarDataURL,
 				SystemBadge:    a.SystemBadge,
 				DepartmentID:   deptID,
-				AgentBackendID: backendID,
+				AgentBackendID: primaryBackendID,
 				SortOrder:      a.SortOrder,
 				PromptJSON:     a.PromptJSON,
-				SkillsJSON:     a.SkillsJSON,
+				SkillsJSON:     primarySkills,
 				Status:         consts.ACTIVE,
 				Createtime:     now,
 				Updatetime:     now,
@@ -668,39 +670,38 @@ func applyAgents(ctx context.Context, b BundleV1, actions map[string]ItemAction,
 			}
 			km.agents[a.ExportKey] = row.ID
 			counts["created"]++
-			localID, applyExecTargets = row.ID, true
+			localID, replaceExecTargets = row.ID, true
 		default:
 			return i18n.NewError(ctx, code.DataImportInvalidAction)
 		}
 
-		// execTargets 数组存在时(哪怕显式为空)才显式落执行目标列表,覆盖掉上面
-		// Create/Update 内建从 AgentBackendID/SkillsJSON 派生出的单元素列表；数组
-		// 不存在(老 bundle)则什么都不做——Create/Update 那一步已经把
-		// agentBackendKey + skillsJSON 转成单元素列表了,这里不重复实现一遍
-		// 同一套转换(R15f)。
-		if applyExecTargets {
-			if targets := execTargetsFromBundle(a, km); targets != nil {
-				if err := agent_repo.AgentExecTarget().Replace(ctx, localID, targets); err != nil {
-					return err
-				}
+		// 新建走的是「先落 Agent 行、再落列表」两步:agent_repo.Create 内建的单元素
+		// 转换只表达得了 ①,整张列表在这里补齐(overwrite 已由 UpdateWithTargets 一次
+		// 落完)。
+		if replaceExecTargets {
+			if err := agent_repo.AgentExecTarget().Replace(ctx, localID, targets); err != nil {
+				return err
 			}
 		}
 	}
 	return nil
 }
 
-// execTargetsFromBundle 把 bundle 里的 execTargets 数组翻成待写入的执行目标行:
+// execTargetsFromBundle 给出这个 Agent 待写入的完整执行目标列表(下标即 sort_order)。
 // BackendKey 通过 keymap 解析成本地 backend id(与遗留 AgentBackendKey 现有的
-// 非强校验风格一致——解不出来退化成 0,不在这里报错)。返回 nil 表示 bundle 没带
-// 这个数组(老 bundle),调用方据此完全不碰 AgentExecTargetRepo,让
-// agent_repo.Create/Update 内建的单元素转换走 agentBackendKey + skillsJSON,与
-// 迁移共用同一份代码(R15f)。
+// 非强校验风格一致——解不出来退化成 0,不在这里报错)。
 //
-// execTargets 数组一旦存在(哪怕是显式空数组),agentBackendKey / skillsJSON 这两个
-// 遗留字段就不再参与任何决策——它们在这个函数里根本不会被读到。
+// execTargets 数组存在时(哪怕是显式空数组),agentBackendKey / skillsJSON 这两个
+// 遗留字段不再被读取(R15f 守卫);整个数组不存在才是老 bundle,按 agentBackendKey +
+// skillsJSON 落成单元素列表(agentBackendKey 为空则是空列表),这一步与迁移、与仓储
+// 的单档写入共用 agent_entity.PrimaryExecTargets 同一份转换。
 func execTargetsFromBundle(a BundleAgent, km *keyMap) []*agent_entity.AgentExecTarget {
 	if a.ExecTargets == nil {
-		return nil
+		backendID := int64(0)
+		if a.AgentBackendKey != "" {
+			backendID = km.backends[a.AgentBackendKey]
+		}
+		return agent_entity.PrimaryExecTargets(backendID, a.SkillsJSON)
 	}
 	ordered := append([]BundleExecTarget(nil), a.ExecTargets...)
 	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].SortOrder < ordered[j].SortOrder })
@@ -717,6 +718,16 @@ func execTargetsFromBundle(a BundleAgent, km *keyMap) []*agent_entity.AgentExecT
 		})
 	}
 	return out
+}
+
+// primaryTargetMirror 取 ① 的 backend 与技能授权:agents 上那两个保留列（
+// agent_backend_id / skills_json）只是执行目标列表的镜像，写着是为了回滚窗口，
+// 谁都不再读它们（R15e / R15f）。空列表时是零值。
+func primaryTargetMirror(targets []*agent_entity.AgentExecTarget) (int64, string) {
+	if len(targets) == 0 {
+		return 0, ""
+	}
+	return targets[0].AgentBackendID, targets[0].SkillsJSON
 }
 
 // backfillOrg 第二遍:用 keymap 把 department.LeadAgentID 和 agent.ParentAgentID 填回去。
@@ -761,7 +772,10 @@ func backfillOrg(ctx context.Context, b BundleV1, km *keyMap, now int64) error {
 		}
 		row.ParentAgentID = parentID
 		row.Updatetime = now
-		if err := agent_repo.Agent().Update(ctx, row); err != nil {
+		// 只改 Agent 这一行:执行目标列表在第一遍已经按 bundle 落好了,而 Update 会
+		// 把它整表替换成 Agent 行上那两个保留列折出来的单元素列表——多档的 Agent
+		// 一旦有上级,导进来的第 ② 档往后会当场被吞掉(R15f)。
+		if err := agent_repo.Agent().UpdateRow(ctx, row); err != nil {
 			return err
 		}
 	}

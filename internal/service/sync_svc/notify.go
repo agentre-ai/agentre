@@ -6,8 +6,10 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
+	"github.com/agentre-ai/agentre/internal/model/entity/syncmeta_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/syncqueue_entity"
 	"github.com/agentre-ai/agentre/internal/repository/syncqueue_repo"
+	"github.com/agentre-ai/agentre/internal/repository/syncstate_repo"
 )
 
 // NotifyLocalChange 入队 + 当场触发一次上行（R3）。
@@ -42,6 +44,37 @@ func (s *service) NotifyLocalChange(ctx context.Context, ch LocalChange) {
 				zap.String("kind", ch.Kind), zap.Error(err))
 		}
 	})
+}
+
+// claimUnowned 落实 R12a：登录前已有的行——它们还不属于任何账号——在登录后归入
+// 当前账号，并**带着自己那个同步标识**正常上行。它们不是别人的数据，只是还没上过云。
+//
+// 每一轮同步都跑一次，不另记「认领过没有」的状态：认领只匹配 sync_account_id = 0
+// 的存活行，第一轮之后就是空集。属于**另一个**账号的行一行不动（R13a）。
+func (s *service) claimUnowned(ctx context.Context, accountID int64) error {
+	for _, kind := range syncKinds {
+		rows, err := syncstate_repo.SyncState().ClaimUnowned(ctx, kind, accountID)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			continue
+		}
+		for _, row := range rows {
+			// 基版本沿用行上那一个：server 从没见过的行是 0，按 R4a 当新建处理。
+			if err := s.enqueue(ctx, accountID, LocalChange{
+				Kind: kind, Op: OpCreate,
+				Meta: syncmeta_entity.SyncMeta{
+					SyncID: row.SyncID, SyncAccountID: accountID, SyncVersion: row.Version,
+				},
+			}); err != nil {
+				return err
+			}
+		}
+		logger.Ctx(ctx).Info("sync_svc.claimUnowned: claimed rows that predate login",
+			zap.String("kind", kind), zap.Int("count", len(rows)))
+	}
+	return nil
 }
 
 // enqueue 把一条本地改动（连同它的从属行 / 子行）写进出站队列。

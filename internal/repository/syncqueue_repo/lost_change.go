@@ -1,11 +1,12 @@
 // Package syncqueue_repo 提供本地同步骨架三张表的持久化访问：没能同步的改动
 // （LostChangeRepo），以及分出站 / 入站两个方向的同步队列（OutboundQueueRepo /
 // InboundQueueRepo）。本包目前只做基础读写；真正的入队 / 出队 / 30 天回收是
-// 后续任务，这里只给它们留位置。
+// 三张表的 30 天回收由 sync_svc 在每一轮下行结束时执行（gcDeferred / gcLostChanges）。
 package syncqueue_repo
 
 import (
 	"context"
+	"time"
 
 	"github.com/cago-frame/cago/database/db"
 
@@ -35,6 +36,15 @@ func NewLostChange() LostChangeRepo { return &lostChangeRepo{} }
 type lostChangeRepo struct{}
 
 func (r *lostChangeRepo) Create(ctx context.Context, row *syncqueue_entity.LostChange) error {
+	// Createtime 是 30 天留存窗口的判据（R5）：留 0 会让这一条在下一次回收时立刻
+	// 被当成早已过期而删掉。写入方忘了填就在这里补上，别让「可追回」悄悄落空。
+	now := time.Now().UnixMilli()
+	if row.Createtime == 0 {
+		row.Createtime = now
+	}
+	if row.OccurredAt == 0 {
+		row.OccurredAt = now
+	}
 	return db.Ctx(ctx).Create(row).Error
 }
 

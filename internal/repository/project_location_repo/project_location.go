@@ -27,6 +27,12 @@ type ProjectLocationRepo interface {
 	FindByProjectAndDevice(ctx context.Context, projectID int64, deviceID string) (*project_location_entity.ProjectLocation, error)
 	FindByProjectAndFingerprint(ctx context.Context, projectID int64, fingerprint string) (*project_location_entity.ProjectLocation, error)
 	ListByProject(ctx context.Context, projectID int64) ([]*project_location_entity.ProjectLocation, error)
+	// ReassignProject 把 project_id 从 fromProjectID 整批改挂到 toProjectID（R11a
+	// 的项目合并收尾）。刻意**不带 status 过滤**：软删的路径记录在 ListByProject 里
+	// 看不见，逐行改挂会把它们留在原地指向一个已消失的项目。自然键的唯一索引只管
+	// status=1 的行，因此改挂软删行不会撞 (project, fingerprint)——活跃行之间的
+	// 撞键由调用方先按 R4b 收敛掉。
+	ReassignProject(ctx context.Context, fromProjectID, toProjectID int64) error
 	UpdatePath(ctx context.Context, id int64, path string) error
 	// Update 整行落库（同步落地用：路径与存活状态一次写完，device_id 缓存由调用方
 	// 从既有行带过来，不在这里推断）。
@@ -106,6 +112,16 @@ func (r *projectLocationRepo) ListByProject(ctx context.Context, projectID int64
 		return nil, err
 	}
 	return out, nil
+}
+
+// ReassignProject 见接口注释：WHERE 里只有 project_id，没有 status。
+func (r *projectLocationRepo) ReassignProject(ctx context.Context, fromProjectID, toProjectID int64) error {
+	return db.Ctx(ctx).Model(&project_location_entity.ProjectLocation{}).
+		Where("project_id = ?", fromProjectID).
+		Updates(map[string]any{
+			"project_id": toProjectID,
+			"updatetime": time.Now().UnixMilli(),
+		}).Error
 }
 
 func (r *projectLocationRepo) UpdatePath(ctx context.Context, id int64, path string) error {

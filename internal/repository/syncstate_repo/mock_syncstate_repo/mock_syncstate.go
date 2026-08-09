@@ -14,6 +14,7 @@ import (
 	reflect "reflect"
 
 	syncmeta_entity "github.com/agentre-ai/agentre/internal/model/entity/syncmeta_entity"
+	syncstate_repo "github.com/agentre-ai/agentre/internal/repository/syncstate_repo"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -39,6 +40,21 @@ func NewMockSyncStateRepo(ctrl *gomock.Controller) *MockSyncStateRepo {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockSyncStateRepo) EXPECT() *MockSyncStateRepoMockRecorder {
 	return m.recorder
+}
+
+// ClaimUnowned mocks base method.
+func (m *MockSyncStateRepo) ClaimUnowned(ctx context.Context, kind string, accountID int64) ([]syncstate_repo.ClaimedRow, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ClaimUnowned", ctx, kind, accountID)
+	ret0, _ := ret[0].([]syncstate_repo.ClaimedRow)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ClaimUnowned indicates an expected call of ClaimUnowned.
+func (mr *MockSyncStateRepoMockRecorder) ClaimUnowned(ctx, kind, accountID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClaimUnowned", reflect.TypeOf((*MockSyncStateRepo)(nil).ClaimUnowned), ctx, kind, accountID)
 }
 
 // FindLocalID mocks base method.

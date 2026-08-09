@@ -65,7 +65,7 @@ func TestAgentAdapter_LoadEmitsAvatarHashNotContent(t *testing.T) {
 	syncstate_repo.RegisterSyncState(state)
 
 	avatar := &stubAvatarTransport{}
-	out, err := agentAdapter{avatar: avatar}.load(context.Background(), "agent-1")
+	out, err := (&agentAdapter{avatar: avatar}).load(context.Background(), "agent-1")
 	require.NoError(t, err)
 	require.NotNil(t, out)
 
@@ -79,6 +79,41 @@ func TestAgentAdapter_LoadEmitsAvatarHashNotContent(t *testing.T) {
 	assert.Equal(t, avatarHash(testAvatarDataURL), avatar.putCalls[0].Hash)
 	assert.Equal(t, testAvatarDataURL, avatar.putCalls[0].Content)
 	assert.Equal(t, "image/png", avatar.putCalls[0].ContentType)
+}
+
+// TestAgentAdapter_LoadTwice_UploadsTheSameContentOnce R16a/决策 28：正文按内容
+// 哈希**单独传一次**，「接收方尚未持有该哈希时才」传。改个名字就把几 MB 的头像
+// 正文重发一遍，正是决策 28 要避免的那个代价。换了头像（哈希变了）当然要再传。
+func TestAgentAdapter_LoadTwice_UploadsTheSameContentOnce(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	state := mock_syncstate_repo.NewMockSyncStateRepo(ctrl)
+	dataURL := testAvatarDataURL
+	state.EXPECT().FindRow(gomock.Any(), syncwire.KindAgent, "agent-1", gomock.Any()).DoAndReturn(
+		func(_ context.Context, _, _ string, dest any) (bool, error) {
+			row := dest.(*agent_entity.Agent)
+			*row = agent_entity.Agent{
+				ID: 5, Name: "Ava", AvatarDataURL: dataURL,
+				SyncMeta: syncmeta_entity.SyncMeta{SyncID: "agent-1"},
+			}
+			return true, nil
+		}).AnyTimes()
+	syncstate_repo.RegisterSyncState(state)
+
+	avatar := &stubAvatarTransport{}
+	ad := &agentAdapter{avatar: avatar}
+	ctx := context.Background()
+
+	_, err := ad.load(ctx, "agent-1")
+	require.NoError(t, err)
+	_, err = ad.load(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Len(t, avatar.putCalls, 1, "同一份正文只推一次")
+
+	dataURL = "data:image/png;base64,aGVsbG8td29ybGQ="
+	_, err = ad.load(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, avatar.putCalls, 2, "换头像照常再推一次（哈希变了）")
+	assert.Equal(t, avatarHash(dataURL), avatar.putCalls[1].Hash)
 }
 
 // TestAgentAdapter_LoadWithoutAvatar_SkipsUpload 没有自定义头像时载荷里的
@@ -95,7 +130,7 @@ func TestAgentAdapter_LoadWithoutAvatar_SkipsUpload(t *testing.T) {
 	syncstate_repo.RegisterSyncState(state)
 
 	avatar := &stubAvatarTransport{}
-	out, err := agentAdapter{avatar: avatar}.load(context.Background(), "agent-1")
+	out, err := (&agentAdapter{avatar: avatar}).load(context.Background(), "agent-1")
 	require.NoError(t, err)
 
 	var payload map[string]any
@@ -121,7 +156,7 @@ func TestAgentAdapter_LoadAvatarUploadFailure_StillReturnsPayload(t *testing.T) 
 	syncstate_repo.RegisterSyncState(state)
 
 	avatar := &failingPutAvatarTransport{err: errors.New("upload failed")}
-	out, err := agentAdapter{avatar: avatar}.load(context.Background(), "agent-1")
+	out, err := (&agentAdapter{avatar: avatar}).load(context.Background(), "agent-1")
 	require.NoError(t, err, "头像上传失败不该让整个 Agent 上行失败")
 	require.NotNil(t, out)
 
@@ -156,7 +191,7 @@ func TestAgentAdapter_ApplyFetchesAvatarWhenNotHeld(t *testing.T) {
 	hash := avatarHash(testAvatarDataURL)
 	avatar := &stubAvatarTransport{getContent: testAvatarDataURL, getContentType: "image/png"}
 
-	err := agentAdapter{avatar: avatar}.apply(context.Background(), &inbound{
+	err := (&agentAdapter{avatar: avatar}).apply(context.Background(), &inbound{
 		Kind: syncwire.KindAgent, SyncID: "agent-1", Version: 1,
 		Payload: []byte(`{"name":"Landed","avatar_hash":"` + hash + `"}`),
 	}, map[string]int64{})
@@ -193,7 +228,7 @@ func TestAgentAdapter_ApplySkipsFetchWhenAlreadyHoldingSameHash(t *testing.T) {
 	agent_repo.RegisterAgent(agents)
 
 	avatar := &stubAvatarTransport{}
-	err := agentAdapter{avatar: avatar}.apply(context.Background(), &inbound{
+	err := (&agentAdapter{avatar: avatar}).apply(context.Background(), &inbound{
 		Kind: syncwire.KindAgent, SyncID: "agent-1", Version: 2,
 		Payload: []byte(`{"name":"Renamed","avatar_hash":"` + hash + `"}`),
 	}, map[string]int64{})
@@ -221,7 +256,7 @@ func TestAgentAdapter_ApplyFallsBackToInitialsWhenFetchFails(t *testing.T) {
 	hash := avatarHash(testAvatarDataURL)
 	avatar := &stubAvatarTransport{getErr: errors.New("timeout")}
 
-	err := agentAdapter{avatar: avatar}.apply(context.Background(), &inbound{
+	err := (&agentAdapter{avatar: avatar}).apply(context.Background(), &inbound{
 		Kind: syncwire.KindAgent, SyncID: "agent-1", Version: 1,
 		Payload: []byte(`{"name":"Landed","avatar_hash":"` + hash + `"}`),
 	}, map[string]int64{})
@@ -255,7 +290,7 @@ func TestAgentAdapter_ApplyClearsAvatarWhenHashEmpty(t *testing.T) {
 	agent_repo.RegisterAgent(agents)
 
 	avatar := &stubAvatarTransport{}
-	err := agentAdapter{avatar: avatar}.apply(context.Background(), &inbound{
+	err := (&agentAdapter{avatar: avatar}).apply(context.Background(), &inbound{
 		Kind: syncwire.KindAgent, SyncID: "agent-1", Version: 2,
 		Payload: []byte(`{"name":"Renamed"}`),
 	}, map[string]int64{})
@@ -282,7 +317,7 @@ func TestAgentAdapter_ApplyGivenNilAvatarTransport_FallsBackGracefully(t *testin
 	agent_repo.RegisterAgent(agents)
 
 	hash := avatarHash(testAvatarDataURL)
-	err := agentAdapter{}.apply(context.Background(), &inbound{
+	err := (&agentAdapter{}).apply(context.Background(), &inbound{
 		Kind: syncwire.KindAgent, SyncID: "agent-1", Version: 1,
 		Payload: []byte(`{"name":"Landed","avatar_hash":"` + hash + `"}`),
 	}, map[string]int64{})

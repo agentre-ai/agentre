@@ -167,9 +167,13 @@ func (s *service) buildPushItem(ctx context.Context, p *pending) (*syncwire.Push
 		return nil, false, nil
 	}
 	return &syncwire.PushItem{
-		Kind:                p.kind,
-		SyncID:              p.syncID,
-		BaseVersion:         out.BaseVersion,
+		Kind:   p.kind,
+		SyncID: p.syncID,
+		// 基版本取**入队时**记下的那一个，不是此刻行上的 SyncVersion（R4a、决策 27）：
+		// 编辑与出队之间落了一次他端下行时，行上的版本已经被那次下行推到了最新，
+		// 拿它上行等于永远「基版本 == 当前版本」，server 判不出冲突，R5 的「被覆盖」
+		// 永不写——那正是决策 27 要兜住的场景。
+		BaseVersion:         p.baseVersion,
 		UpdatedAt:           out.UpdatedAt,
 		AgentredFingerprint: out.AgentredFingerprint,
 		ProjectSyncID:       out.ProjectSyncID,
@@ -218,13 +222,15 @@ func (s *service) applyPushResult(
 
 	if res.Status == syncwire.PushStatusConflict {
 		if err := s.recordLostChange(ctx, accountID, &syncqueue_entity.LostChange{
-			EntityType:   p.kind,
-			EntitySyncID: p.syncID,
-			BaseVersion:  res.OverwrittenVersion,
-			Reason:       syncqueue_entity.ReasonOverwritten,
-			PayloadJSON:  string(item.Payload),
-			OriginDevice: strconv.FormatInt(res.OverwrittenDeviceID, 10),
-			OccurredAt:   now,
+			EntityType:          p.kind,
+			EntitySyncID:        p.syncID,
+			BaseVersion:         res.OverwrittenVersion,
+			Reason:              syncqueue_entity.ReasonOverwritten,
+			PayloadJSON:         string(item.Payload),
+			ProjectSyncID:       item.ProjectSyncID,
+			AgentredFingerprint: item.AgentredFingerprint,
+			OriginDevice:        strconv.FormatInt(res.OverwrittenDeviceID, 10),
+			OccurredAt:          now,
 		}); err != nil {
 			return err
 		}
@@ -259,12 +265,14 @@ func (s *service) acceptRemoteTombstone(
 		return err
 	}
 	return s.recordLostChange(ctx, accountID, &syncqueue_entity.LostChange{
-		EntityType:   p.kind,
-		EntitySyncID: p.syncID,
-		BaseVersion:  res.Version,
-		Reason:       syncqueue_entity.ReasonRejected,
-		PayloadJSON:  string(item.Payload),
-		OccurredAt:   now,
+		EntityType:          p.kind,
+		EntitySyncID:        p.syncID,
+		BaseVersion:         res.Version,
+		Reason:              syncqueue_entity.ReasonRejected,
+		PayloadJSON:         string(item.Payload),
+		ProjectSyncID:       item.ProjectSyncID,
+		AgentredFingerprint: item.AgentredFingerprint,
+		OccurredAt:          now,
 	})
 }
 
@@ -291,18 +299,18 @@ func (s *service) reevaluateAfterResync(
 			survivors = append(survivors, p)
 			continue
 		}
-		payload := ""
-		if item, ok, berr := s.buildPushItem(ctx, p); berr == nil && ok {
-			payload = string(item.Payload)
-		}
-		if err := s.recordLostChange(ctx, accountID, &syncqueue_entity.LostChange{
+		lost := &syncqueue_entity.LostChange{
 			EntityType:   p.kind,
 			EntitySyncID: p.syncID,
 			BaseVersion:  p.baseVersion,
 			Reason:       syncqueue_entity.ReasonRejected,
-			PayloadJSON:  payload,
 			OccurredAt:   s.now(),
-		}); err != nil {
+		}
+		if item, ok, berr := s.buildPushItem(ctx, p); berr == nil && ok {
+			lost.PayloadJSON = string(item.Payload)
+			lost.ProjectSyncID, lost.AgentredFingerprint = item.ProjectSyncID, item.AgentredFingerprint
+		}
+		if err := s.recordLostChange(ctx, accountID, lost); err != nil {
 			return nil, err
 		}
 		if err := s.dropQueueRows(ctx, p.queueIDs); err != nil {

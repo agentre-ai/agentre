@@ -69,10 +69,9 @@ func (departmentAdapter) load(ctx context.Context, syncID string) (*outbound, er
 		return nil, err
 	}
 	return &outbound{
-		SyncID:      row.SyncID,
-		BaseVersion: row.SyncVersion,
-		UpdatedAt:   row.Updatetime,
-		Payload:     payload,
+		SyncID:    row.SyncID,
+		UpdatedAt: row.Updatetime,
+		Payload:   payload,
 	}, nil
 }
 
@@ -137,11 +136,15 @@ type agentPayload struct {
 
 // agentAdapter 的 avatar 字段是头像内容存取的窄接口（R16a）；nil 时（单机模式、
 // 或测试直接构造 agentAdapter{}）优雅退化，见 avatarTransport 的文档。
-type agentAdapter struct{ avatar avatarTransport }
+type agentAdapter struct {
+	avatar avatarTransport
+	// uploaded 记下已经推给对端的头像哈希，同一份正文只推一次（R16a）。
+	uploaded avatarUploaded
+}
 
-func (agentAdapter) kind() string { return syncwire.KindAgent }
+func (*agentAdapter) kind() string { return syncwire.KindAgent }
 
-func (a agentAdapter) load(ctx context.Context, syncID string) (*outbound, error) {
+func (a *agentAdapter) load(ctx context.Context, syncID string) (*outbound, error) {
 	row := &agent_entity.Agent{}
 	found, err := syncstate_repo.SyncState().FindRow(ctx, syncwire.KindAgent, syncID, row)
 	if err != nil || !found {
@@ -183,27 +186,32 @@ func (a agentAdapter) load(ctx context.Context, syncID string) (*outbound, error
 		return nil, err
 	}
 	return &outbound{
-		SyncID:      row.SyncID,
-		BaseVersion: row.SyncVersion,
-		UpdatedAt:   row.Updatetime,
-		Payload:     payload,
+		SyncID:    row.SyncID,
+		UpdatedAt: row.Updatetime,
+		Payload:   payload,
 	}, nil
 }
 
 // putAvatarBestEffort 把本机持有的头像正文按内容哈希推给对端（server）。上传
 // 失败不影响 Agent 本身照常同步——load 仍然返回一份带 AvatarHash 的合法载荷，
 // 失败只记日志（R16a：头像取不到或传输失败时该 Agent 照常同步）。
-func (a agentAdapter) putAvatarBestEffort(ctx context.Context, syncID, hash, dataURL string) {
+func (a *agentAdapter) putAvatarBestEffort(ctx context.Context, syncID, hash, dataURL string) {
 	if a.avatar == nil {
 		return
 	}
+	// 同一份正文只推一次（R16a）：对端已经持有这个哈希，再推一遍只是白白重发几 MB。
+	if a.uploaded.mark(hash) {
+		return
+	}
 	if err := a.avatar.PutAvatar(ctx, hash, avatarContentType(dataURL), dataURL); err != nil {
+		// 没推成功就不算推过：撤销标记，下一轮同步再试（不阻塞本次 Agent 上行）。
+		a.uploaded.forget(hash)
 		logger.Ctx(ctx).Debug("sync_svc.agentAdapter: avatar upload failed, agent still syncs",
 			zap.String("syncId", syncID), zap.Error(err))
 	}
 }
 
-func (agentAdapter) refs(in *inbound) []ref {
+func (*agentAdapter) refs(in *inbound) []ref {
 	var p agentPayload
 	_ = json.Unmarshal(in.Payload, &p)
 	return []ref{
@@ -212,7 +220,7 @@ func (agentAdapter) refs(in *inbound) []ref {
 	}
 }
 
-func (a agentAdapter) apply(ctx context.Context, in *inbound, resolved map[string]int64) error {
+func (a *agentAdapter) apply(ctx context.Context, in *inbound, resolved map[string]int64) error {
 	var p agentPayload
 	if err := json.Unmarshal(in.Payload, &p); err != nil {
 		return err
@@ -246,7 +254,7 @@ func (a agentAdapter) apply(ctx context.Context, in *inbound, resolved map[strin
 //   - 否则调 avatar.GetAvatar 取一次；取不到（没装配 / 网络失败 / 超时）就留空，
 //     退回 AgentAvatar 的 initials 占位字母头像，不阻塞这一行落地，也不在这次
 //     apply 里反复重试——下一次这份哈希再出现时才会再试一次。
-func (a agentAdapter) resolveAvatarDataURL(ctx context.Context, syncID, existing, hash string) string {
+func (a *agentAdapter) resolveAvatarDataURL(ctx context.Context, syncID, existing, hash string) string {
 	if hash == "" {
 		return ""
 	}
@@ -265,7 +273,7 @@ func (a agentAdapter) resolveAvatarDataURL(ctx context.Context, syncID, existing
 	return content
 }
 
-func (agentAdapter) remove(ctx context.Context, in *inbound) error {
+func (*agentAdapter) remove(ctx context.Context, in *inbound) error {
 	id, err := syncstate_repo.SyncState().FindLocalID(ctx, syncwire.KindAgent, in.SyncID)
 	if err != nil || id == 0 {
 		return err
@@ -275,12 +283,12 @@ func (agentAdapter) remove(ctx context.Context, in *inbound) error {
 
 // dependents Agent 的执行目标列表跟着 Agent 的写入路径变化（agent_repo 在同一个
 // 事务里落两张表），因此 Agent 一有改动就把它当前的目标行一并入队。
-func (agentAdapter) dependents(ctx context.Context, syncID string) ([]relatedRow, error) {
+func (*agentAdapter) dependents(ctx context.Context, syncID string) ([]relatedRow, error) {
 	return agentExecTargetRows(ctx, syncID)
 }
 
 // children 删 Agent 时它的成员关系与执行目标列表项一并落墓碑（R6）。
-func (agentAdapter) children(ctx context.Context, syncID string) ([]relatedRow, error) {
+func (*agentAdapter) children(ctx context.Context, syncID string) ([]relatedRow, error) {
 	out, err := agentExecTargetRows(ctx, syncID)
 	if err != nil {
 		return nil, err
@@ -399,7 +407,6 @@ func (agentBackendAdapter) load(ctx context.Context, syncID string) (*outbound, 
 	}
 	return &outbound{
 		SyncID:              row.SyncID,
-		BaseVersion:         row.SyncVersion,
 		UpdatedAt:           row.Updatetime,
 		AgentredFingerprint: fingerprint,
 		Payload:             payload,
@@ -515,10 +522,9 @@ func (agentExecTargetAdapter) load(ctx context.Context, syncID string) (*outboun
 		return nil, err
 	}
 	return &outbound{
-		SyncID:      row.SyncID,
-		BaseVersion: row.SyncVersion,
-		UpdatedAt:   row.SyncUpdatedAt,
-		Payload:     payload,
+		SyncID:    row.SyncID,
+		UpdatedAt: row.SyncUpdatedAt,
+		Payload:   payload,
 	}, nil
 }
 

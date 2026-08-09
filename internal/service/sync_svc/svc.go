@@ -157,6 +157,8 @@ func (s *service) Start(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(PollInterval)
 		defer ticker.Stop()
+		// 两条链路各退各的（R7/R16）：下行不通不该连带把本机路径上报也拖慢，反之亦然。
+		var syncOff, reportOff backoff
 		for {
 			select {
 			case <-stop:
@@ -164,16 +166,62 @@ func (s *service) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := s.SyncOnce(ctx); err != nil {
-					logger.Ctx(ctx).Debug("sync_svc.Start: poll failed", zap.Error(err))
+				if syncOff.due() {
+					if err := s.SyncOnce(ctx); err != nil {
+						syncOff.fail()
+						logger.Ctx(ctx).Debug("sync_svc.Start: poll failed, backing off",
+							zap.Int("failStreak", syncOff.streak), zap.Error(err))
+					} else {
+						syncOff.succeed()
+					}
 				}
-				if err := s.reportLocalPathsOnce(ctx); err != nil {
-					logger.Ctx(ctx).Debug("sync_svc.Start: local path report failed", zap.Error(err))
+				if reportOff.due() {
+					if err := s.reportLocalPathsOnce(ctx); err != nil {
+						reportOff.fail()
+						logger.Ctx(ctx).Debug("sync_svc.Start: local path report failed, backing off",
+							zap.Int("failStreak", reportOff.streak), zap.Error(err))
+					} else {
+						reportOff.succeed()
+					}
 				}
 			}
 		}
 	}()
 }
+
+// maxBackoffTicks 是退让的上限，按轮询周期计：30s × 60 = 30 分钟。有上限是必须的
+// ——退到「永不重试」等于把 R7 的「联网后补齐」变成「联网后也不补」。
+const maxBackoffTicks = 60
+
+// backoff 落实「同步失败按退避重试」（R7、R16）。轮询的**周期不变**，退让体现在
+// 「失败后跳过几个周期」上：连续失败一次跳 1 个、两次跳 2 个、三次跳 4 个……封顶
+// 30 分钟，任何一次成功立即复位。
+//
+// 编辑当场触发的那一次上行（R3）不看它：用户刚做的改动该立刻试一次，退让只约束
+// 后台轮询。
+type backoff struct {
+	// streak 连续失败次数。
+	streak int
+	// pending 还要跳过几个周期。
+	pending int
+}
+
+// due 报告这一个周期该不该跑，并消耗掉一次退让额度。
+func (b *backoff) due() bool {
+	if b.pending > 0 {
+		b.pending--
+		return false
+	}
+	return true
+}
+
+func (b *backoff) fail() {
+	b.streak++
+	skip := 1 << min(b.streak-1, 30)
+	b.pending = min(skip, maxBackoffTicks)
+}
+
+func (b *backoff) succeed() { b.streak, b.pending = 0, 0 }
 
 func (s *service) Stop() {
 	s.mu.Lock()
@@ -193,6 +241,10 @@ func (s *service) SyncOnce(ctx context.Context) error {
 	accountID, deviceID, ok := s.account(ctx)
 	if !ok || s.getTransport() == nil {
 		return nil
+	}
+	if err := s.claimUnowned(ctx, accountID); err != nil {
+		s.setLastErr(err)
+		return err
 	}
 	if err := s.flush(ctx, accountID, deviceID); err != nil {
 		s.setLastErr(err)

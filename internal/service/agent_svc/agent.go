@@ -127,9 +127,9 @@ func (s *agentSvc) Update(ctx context.Context, req *UpdateAgentRequest) (*Update
 	existing.Description = strings.TrimSpace(req.Description)
 	existing.AvatarColor = strings.TrimSpace(req.AvatarColor)
 	existing.AvatarIcon = strings.TrimSpace(req.AvatarIcon)
-	// AgentBackendID/SkillsJSON 是 Agent 行上的历史派生字段（=targets[0]，其它只读
-	// 代码路径仍在读，见 department_svc.toAgentExecTargetItems 的调用点注释）；写口
-	// 只信 ExecTargets，这里只是把派生值保持同步，不重复做校验。
+	// AgentBackendID/SkillsJSON 是 Agent 行上的保留列（= targets[0] 的镜像，删列前的
+	// 回滚窗口用；组织架构的读口已经改从执行目标行取技能，R15e）；写口只信
+	// ExecTargets，这里只是把镜像保持同步，不重复做校验。
 	existing.AgentBackendID = targets[0].AgentBackendID
 	existing.SkillsJSON = targets[0].SkillsJSON
 	existing.SetPrompt(req.Prompt)
@@ -475,19 +475,15 @@ func skillsFromDTO(items []department_svc.AgentSkillDTO) []agent_entity.AgentSki
 	return out
 }
 
-// encodeSkills / decodeSkills 技能授权的存放位置已下沉到 AgentExecTarget（R15e），
-// GetSkills/SetSkills 也随字段一起搬了过去；agent_svc 仍然只经手 Agent 结构体上的
-// SkillsJSON 原始载荷（写给仓储层，由 agent_repo 转落到那唯一一档的执行目标行,
-// 见 agent_repo.primaryTargetList），这里借一个临时的执行目标值对象复用同一份
-// 编解码逻辑，不重复实现。
+// encodeSkills 技能授权的存放位置已下沉到 AgentExecTarget（R15e），GetSkills /
+// SetSkills 也随字段一起搬了过去；agent_svc 只在**写**的方向上还经手 Agent 结构体
+// 上的 SkillsJSON 原始载荷（交给仓储层，由 agent_repo 转落到那唯一一档的执行目标
+// 行，见 agent_repo.primaryTargetList），这里借一个临时的执行目标值对象复用同一份
+// 编码逻辑，不重复实现。**读**的方向一律走执行目标行（primaryTargetSkills）。
 func encodeSkills(items []agent_entity.AgentSkillItem) string {
 	t := agent_entity.AgentExecTarget{}
 	t.SetSkills(items)
 	return t.SkillsJSON
-}
-
-func decodeSkills(raw string) []agent_entity.AgentSkillItem {
-	return (&agent_entity.AgentExecTarget{SkillsJSON: raw}).GetSkills()
 }
 
 func toolsFromDTO(items []department_svc.AgentToolDTO) []agent_entity.AgentToolItem {
@@ -498,14 +494,26 @@ func toolsFromDTO(items []department_svc.AgentToolDTO) []agent_entity.AgentToolI
 	return out
 }
 
+// primaryTargetSkills 取 ①（sort_order 最小的那一档）的技能授权（R15e、决策 33）。
+//
+// 与 department_svc 列表页那个同名函数是同一条规则、两种入参形态：AgentItem 的
+// Skills 与 AgentBackendID 是同一个视图的两半，都只看 ①；多档的逐档授权在详情页
+// 一档一块地呈现，这里不做跨档并集。列表为空时为空。
+func primaryTargetSkills(targets []*agent_entity.AgentExecTarget) []department_svc.AgentSkillDTO {
+	out := []department_svc.AgentSkillDTO{}
+	if len(targets) == 0 || targets[0] == nil {
+		return out
+	}
+	for _, s := range targets[0].GetSkills() {
+		out = append(out, department_svc.AgentSkillDTO{ID: s.ID, Enabled: s.Enabled})
+	}
+	return out
+}
+
 // toItem 把 Agent 行 + 它当前的执行目标列表打平成前端 DTO。targets 由调用方给出
 // （通常是刚写完之后的 execTargetSnapshot 结果），避免这里重复查询。
 func toItem(a *agent_entity.Agent, targets []*agent_entity.AgentExecTarget) *AgentItem {
-	rawSkills := decodeSkills(a.SkillsJSON)
-	skills := make([]department_svc.AgentSkillDTO, 0, len(rawSkills))
-	for _, s := range rawSkills {
-		skills = append(skills, department_svc.AgentSkillDTO{ID: s.ID, Enabled: s.Enabled})
-	}
+	skills := primaryTargetSkills(targets)
 	rawTools := a.GetTools()
 	tools := make([]department_svc.AgentToolDTO, 0, len(rawTools))
 	for _, t := range rawTools {
@@ -556,9 +564,9 @@ func toAgentExecTargetItems(rows []*agent_entity.AgentExecTarget) []department_s
 // execTargetSnapshot 取某个 Agent 当前的执行目标行；同步未装配时一次库都不查
 // ——单机构建与单元测试里这个查询一次都不该发生。
 func execTargetSnapshot(ctx context.Context, agentID int64) []*agent_entity.AgentExecTarget {
-	if !sync_svc.Active() {
-		return nil
-	}
+	// 刻意**不**按 sync_svc.Active() 短路：这份快照除了喂同步的墓碑级联，还是
+	// AgentItem 里 Skills 的真相来源（R15e）——未登录时短路掉会让写完之后回给前端
+	// 的那份 DTO 一个技能都没有。
 	rows, err := agent_repo.AgentExecTarget().ListByAgent(ctx, agentID)
 	if err != nil {
 		logger.Ctx(ctx).Warn("agent_svc.execTargetSnapshot: read exec targets failed",

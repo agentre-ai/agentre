@@ -152,13 +152,24 @@ func resolvedID(resolved map[string]int64, r ref) int64 {
 	return resolved[r.key()]
 }
 
+// syncKinds 是同步组的七个对象类型，按「被引用者在前」排列——认领（R12a）与任何
+// 需要遍历全部类型的地方都按它走，父行因此先入队、先落地（R2a 的暂缓少绕一圈）。
+var syncKinds = []string{
+	syncwire.KindProject,
+	syncwire.KindDepartment,
+	syncwire.KindAgent,
+	syncwire.KindAgentBackend,
+	syncwire.KindAgentExecTarget,
+	syncwire.KindProjectAgent,
+	syncwire.KindProjectLocation,
+}
+
 // kindKnown 报告某个对象类型是否属于同步组。
 func kindKnown(kind string) bool {
-	switch kind {
-	case syncwire.KindProject, syncwire.KindDepartment, syncwire.KindAgent,
-		syncwire.KindAgentBackend, syncwire.KindAgentExecTarget,
-		syncwire.KindProjectAgent, syncwire.KindProjectLocation:
-		return true
+	for _, k := range syncKinds {
+		if k == kind {
+			return true
+		}
 	}
 	return false
 }

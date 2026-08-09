@@ -38,6 +38,12 @@ func setupSvc(t *testing.T) (
 	agent_repo.RegisterAgent(agentMock)
 	department_repo.RegisterDepartment(deptMock)
 	agent_backend_repo.RegisterAgentBackend(backendMock)
+	// 执行目标行是 AgentItem 里 Skills / AgentBackendID 的真相来源（R15e）：写完
+	// Agent 之后一律重读一次，因此每个用例都可能问到它。默认答空列表，需要断言的
+	// 用例自己覆写。
+	targetMock := mock_agent_repo.NewMockAgentExecTargetRepo(ctrl)
+	targetMock.EXPECT().ListByAgent(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+	agent_repo.RegisterAgentExecTarget(targetMock)
 	return context.Background(), agentMock, deptMock, backendMock, &agentSvc{now: func() int64 { return 1700000000 }}
 }
 
@@ -241,6 +247,39 @@ func TestUpdateAgent(t *testing.T) {
 			}
 		})
 	})
+}
+
+// TestUpdateAgent_SkillsComeFromExecTargets R15e：「`agents.skills_json` 不再被
+// 读取」。写完之后回给前端的那份 AgentItem 里，技能授权必须来自执行目标行（档 ①），
+// 不是 Agent 行上那份已经停止维护的旧列。
+func TestUpdateAgent_SkillsComeFromExecTargets(t *testing.T) {
+	ctx, agentMock, _, backendMock, svc := setupSvc(t)
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	agentMock.EXPECT().Find(gomock.Any(), int64(42)).Return(&agent_entity.Agent{
+		ID: 42, Name: "Eva", Status: consts.ACTIVE, AvatarColor: "agent-2",
+		DepartmentID: 2, AgentBackendID: 5, PromptJSON: "[]",
+		SkillsJSON: `[{"id":"stale@row","enabled":true}]`,
+	}, nil)
+	backendMock.EXPECT().Find(gomock.Any(), int64(5)).Return(activeBackend(5), nil).AnyTimes()
+	agentMock.EXPECT().UpdateWithTargets(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
+
+	targetMock := mock_agent_repo.NewMockAgentExecTargetRepo(ctrl)
+	targetMock.EXPECT().ListByAgent(gomock.Any(), int64(42)).Return([]*agent_entity.AgentExecTarget{
+		{ID: 1, AgentID: 42, AgentBackendID: 5, SortOrder: 0,
+			SkillsJSON: `[{"id":"fresh@target","enabled":true}]`},
+	}, nil).AnyTimes()
+	agent_repo.RegisterAgentExecTarget(targetMock)
+
+	resp, err := svc.Update(ctx, &UpdateAgentRequest{
+		ID: 42, Name: "Eva", AvatarColor: "agent-2",
+		ExecTargets: []ExecTargetInputDTO{{AgentBackendID: 5}},
+	})
+	assert.NoError(t, err)
+	if assert.Len(t, resp.Item.Skills, 1) {
+		assert.Equal(t, "fresh@target", resp.Item.Skills[0].ID)
+	}
 }
 
 func TestMoveAgent(t *testing.T) {

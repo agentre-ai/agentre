@@ -1173,8 +1173,10 @@ function ProjectCard({
                     : isSub
                       ? "font-mono text-2xs font-semibold uppercase tracking-wider text-muted-foreground"
                       : "text-[15px] font-semibold",
-                  // R10：全部未配置时逐行角标撤掉，名字也不必变灰——见 allMissing 注释。
-                  project.localPathMissing && !allMissing
+                  // R10：全部未配置时逐行角标撤掉，改由名字变灰 + 树顶那一条整体
+                  // 说明来承担；只有一部分未配置时反过来——角标已经说清楚了，
+                  // 名字不再变灰。见 allMissing 注释。
+                  project.localPathMissing && allMissing
                     ? "text-muted-foreground"
                     : "",
                 )}

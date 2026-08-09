@@ -9,8 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
-	"github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/project_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/project_location_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/syncmeta_entity"
@@ -92,14 +90,9 @@ func TestProjectSvcMerge_GivenAccountSideAndLocalOnlySide_ThenKeepsAccountIdenti
 		return nil
 	})
 
-	// 五类引用改挂。
-	m.session.EXPECT().ListByProject(ctx, int64(1)).Return([]*chat_entity.Session{
-		{ID: 501, AgentID: 9, ProjectID: 1},
-	}, nil)
-	m.session.EXPECT().Update(ctx, gomock.Any()).DoAndReturn(func(_ interface{}, s *chat_entity.Session) error {
-		assert.Equal(t, int64(2), s.ProjectID)
-		return nil
-	})
+	// 五类引用改挂。会话 / issue / 路径记录按 project_id 整批改挂（软删行与子 agent
+	// 委派会话在列表查询里看不见，逐行改挂会把它们留在原地，见 merge_dangling_test.go）。
+	m.session.EXPECT().ReassignProject(ctx, int64(1), int64(2)).Return(nil)
 
 	m.pa.EXPECT().ListByProject(ctx, int64(2)).Return(nil, nil)
 	m.pa.EXPECT().ListByProject(ctx, int64(1)).Return([]*project_entity.ProjectAgent{
@@ -109,16 +102,12 @@ func TestProjectSvcMerge_GivenAccountSideAndLocalOnlySide_ThenKeepsAccountIdenti
 	m.pa.EXPECT().Remove(ctx, int64(1), int64(30)).Return(nil)
 
 	m.project.EXPECT().ListByParent(ctx, int64(1)).Return(nil, nil)
+	m.project.EXPECT().ReassignParent(ctx, int64(1), int64(2)).Return(nil)
 
-	m.issue.EXPECT().List(ctx, issue_repo.ListFilter{ProjectID: 1}).Return([]*issue_entity.Issue{
-		{ID: 900, ProjectID: 1, Title: "bug"},
-	}, nil)
-	m.issue.EXPECT().Update(ctx, gomock.Any()).DoAndReturn(func(_ interface{}, i *issue_entity.Issue) error {
-		assert.Equal(t, int64(2), i.ProjectID)
-		return nil
-	})
+	m.issue.EXPECT().ReassignProject(ctx, int64(1), int64(2)).Return(nil)
 
 	m.location.EXPECT().ListByProject(ctx, int64(1)).Return(nil, nil)
+	m.location.EXPECT().ReassignProject(ctx, int64(1), int64(2)).Return(nil)
 
 	expectCleanDelete(ctx, m, 1, source)
 
@@ -139,12 +128,14 @@ func TestProjectSvcMerge_GivenNeitherClaimed_ThenEarlierCreatedWins(t *testing.T
 		assert.Equal(t, int64(5), p.ID, "两边都未认领时应沿用先创建的那个")
 		return nil
 	})
-	m.session.EXPECT().ListByProject(ctx, int64(6)).Return(nil, nil)
+	m.session.EXPECT().ReassignProject(ctx, int64(6), int64(5)).Return(nil)
 	m.pa.EXPECT().ListByProject(ctx, int64(5)).Return(nil, nil)
 	m.pa.EXPECT().ListByProject(ctx, int64(6)).Return(nil, nil)
 	m.project.EXPECT().ListByParent(ctx, int64(6)).Return(nil, nil)
-	m.issue.EXPECT().List(ctx, issue_repo.ListFilter{ProjectID: 6}).Return(nil, nil)
+	m.project.EXPECT().ReassignParent(ctx, int64(6), int64(5)).Return(nil)
+	m.issue.EXPECT().ReassignProject(ctx, int64(6), int64(5)).Return(nil)
 	m.location.EXPECT().ListByProject(ctx, int64(6)).Return(nil, nil)
+	m.location.EXPECT().ReassignProject(ctx, int64(6), int64(5)).Return(nil)
 	expectCleanDelete(ctx, m, 6, newer)
 
 	// 入参顺序是 source=6(较新)/target=5(较早)——用户选中谁在前不影响赢家判定。
@@ -161,20 +152,24 @@ func TestProjectSvcMerge_GivenLocationsCollideOnSameFingerprint_ThenLoserLocatio
 	m.project.EXPECT().Find(ctx, int64(20)).Return(keep, nil)
 	m.project.EXPECT().Find(ctx, int64(21)).Return(drop, nil)
 	m.project.EXPECT().Update(ctx, gomock.Any()).Return(nil)
-	m.session.EXPECT().ListByProject(ctx, int64(21)).Return(nil, nil)
+	m.session.EXPECT().ReassignProject(ctx, int64(21), int64(20)).Return(nil)
 	m.pa.EXPECT().ListByProject(ctx, int64(20)).Return(nil, nil)
 	m.pa.EXPECT().ListByProject(ctx, int64(21)).Return(nil, nil)
 	m.project.EXPECT().ListByParent(ctx, int64(21)).Return(nil, nil)
-	m.issue.EXPECT().List(ctx, issue_repo.ListFilter{ProjectID: 21}).Return(nil, nil)
+	m.project.EXPECT().ReassignParent(ctx, int64(21), int64(20)).Return(nil)
+	m.issue.EXPECT().ReassignProject(ctx, int64(21), int64(20)).Return(nil)
 
 	// drop(21) 与 keep(20) 都对同一台 agentred(指纹 "fp-1") 有一行——不能两行并存,
-	// 必须择一(此处保留 keep 已有的那行), drop 的那行被删除而不是改挂。
+	// 必须择一(此处保留 keep 已有的那行), drop 的那行被删除而不是改挂。落败那行按
+	// R5 记录的断言在 merge_dangling_test.go；这里的行未认领(SyncAccountID=0),
+	// 按 R12 不写同步侧任何一行。
 	m.location.EXPECT().ListByProject(ctx, int64(21)).Return([]*project_location_entity.ProjectLocation{
 		{ID: 71, ProjectID: 21, DaemonFingerprint: "fp-1", Path: "/loser"},
 	}, nil)
 	m.location.EXPECT().FindByProjectAndFingerprint(ctx, int64(20), "fp-1").Return(
 		&project_location_entity.ProjectLocation{ID: 70, ProjectID: 20, DaemonFingerprint: "fp-1", Path: "/winner"}, nil)
 	m.location.EXPECT().Delete(ctx, int64(71)).Return(nil)
+	m.location.EXPECT().ReassignProject(ctx, int64(21), int64(20)).Return(nil)
 
 	expectCleanDelete(ctx, m, 21, drop)
 
@@ -195,12 +190,14 @@ func TestProjectSvcMerge_GivenKeepIsChildOfDrop_ThenReparentedToDropsOwnParent(t
 		assert.Equal(t, int64(99), p.ParentID, "keep 不能继续指向即将消失的 drop")
 		return nil
 	})
-	m.session.EXPECT().ListByProject(ctx, int64(31)).Return(nil, nil)
+	m.session.EXPECT().ReassignProject(ctx, int64(31), int64(30)).Return(nil)
 	m.pa.EXPECT().ListByProject(ctx, int64(30)).Return(nil, nil)
 	m.pa.EXPECT().ListByProject(ctx, int64(31)).Return(nil, nil)
 	m.project.EXPECT().ListByParent(ctx, int64(31)).Return(nil, nil)
-	m.issue.EXPECT().List(ctx, issue_repo.ListFilter{ProjectID: 31}).Return(nil, nil)
+	m.project.EXPECT().ReassignParent(ctx, int64(31), int64(30)).Return(nil)
+	m.issue.EXPECT().ReassignProject(ctx, int64(31), int64(30)).Return(nil)
 	m.location.EXPECT().ListByProject(ctx, int64(31)).Return(nil, nil)
+	m.location.EXPECT().ReassignProject(ctx, int64(31), int64(30)).Return(nil)
 	expectCleanDelete(ctx, m, 31, drop)
 
 	got, err := svc.Merge(ctx, &project_svc.MergeProjectsRequest{SourceID: 30, TargetID: 31})

@@ -129,6 +129,20 @@ func (mr *MockProjectLocationRepoMockRecorder) ListByProject(ctx, projectID any)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByProject", reflect.TypeOf((*MockProjectLocationRepo)(nil).ListByProject), ctx, projectID)
 }
 
+// ReassignProject mocks base method.
+func (m *MockProjectLocationRepo) ReassignProject(ctx context.Context, fromProjectID, toProjectID int64) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReassignProject", ctx, fromProjectID, toProjectID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ReassignProject indicates an expected call of ReassignProject.
+func (mr *MockProjectLocationRepoMockRecorder) ReassignProject(ctx, fromProjectID, toProjectID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReassignProject", reflect.TypeOf((*MockProjectLocationRepo)(nil).ReassignProject), ctx, fromProjectID, toProjectID)
+}
+
 // Update mocks base method.
 func (m *MockProjectLocationRepo) Update(ctx context.Context, p *project_location_entity.ProjectLocation) error {
 	m.ctrl.T.Helper()

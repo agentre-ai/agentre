@@ -3,7 +3,6 @@ package chat_svc
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -48,27 +47,46 @@ type ExecTargetAvailabilityView struct {
 	Available      bool        `json:"available"`
 	Reason         BlockReason `json:"reason"`
 	Hint           string      `json:"hint"`
+	// ProjectPath 是「这一档所在的机器上，这个项目的路径」——R15a 的改选浮层逐档
+	// 展示它（路径回答「换过去在哪个目录干活」，比机器名更有信息量）。会话不绑项目
+	// （projectID<=0）或那台机器上没配这个项目时为空串，界面据此不渲染这一行。
+	ProjectPath string `json:"projectPath"`
 }
 
 // ExecTargetNoneAvailableError 在一个 Agent 的执行目标列表非空、但逐档判定全部不可用时
 // 由 PickExecTarget 返回。Reasons 按列表顺序给出每一档的原因，供调用方结构化消费；
-// Error() 把同一份信息渲染成文本，是 Wails 边界唯一透给前端的通道（只过 Error() 字符串）。
+// text 是同一份信息渲染成的文本，是 Wails 边界唯一透给前端的通道（只过 Error() 字符串）。
+//
+// 整段文本在构造时就渲染好：Error() 没有 ctx，而表头 / 行格式 / 机器名 / 逐档
+// 原因全是用户可见文案，必须按调用方 ctx 的语言查 internal/pkg/code 的语言包。
 type ExecTargetNoneAvailableError struct {
 	httpErr *httputils.Error
+	text    string
 	Reasons []ExecTargetUnavailable
 }
 
-func (e *ExecTargetNoneAvailableError) Error() string {
-	lines := make([]string, 0, len(e.Reasons)+1)
-	lines = append(lines, e.httpErr.Msg)
-	for i, r := range e.Reasons {
-		label := "本机"
+func (e *ExecTargetNoneAvailableError) Error() string { return e.text }
+
+// newExecTargetNoneAvailableError 把表头与逐档原因渲染成 Wails 边界要的那一段文本。
+func newExecTargetNoneAvailableError(ctx context.Context, reasons []ExecTargetUnavailable) *ExecTargetNoneAvailableError {
+	lines := make([]string, 0, len(reasons)+1)
+	lines = append(lines, i18n.T(ctx, code.ChatAgentNoAvailableExecTarget))
+	for i, r := range reasons {
+		label := i18n.T(ctx, code.ChatExecTargetDeviceLocal)
 		if r.DeviceID != "" {
-			label = "设备 " + r.DeviceID
+			label = i18n.T(ctx, code.ChatExecTargetDeviceRemote, r.DeviceID)
 		}
-		lines = append(lines, fmt.Sprintf("%d. backend #%d（%s）：%s", i+1, r.AgentBackendID, label, r.Hint))
+		lines = append(lines, i18n.T(ctx, code.ChatExecTargetLineFormat, i+1, r.AgentBackendID, label, r.Hint))
 	}
-	return strings.Join(lines, "\n")
+	return &ExecTargetNoneAvailableError{
+		httpErr: &httputils.Error{
+			Status: http.StatusBadRequest,
+			Code:   code.ChatAgentNoAvailableExecTarget,
+			Msg:    lines[0],
+		},
+		text:    strings.Join(lines, "\n"),
+		Reasons: reasons,
+	}
 }
 
 func (e *ExecTargetNoneAvailableError) As(target any) bool {
@@ -113,14 +131,7 @@ func (s *chatSvc) PickExecTarget(ctx context.Context, agentID int64, projectID i
 			Hint:           hint,
 		})
 	}
-	return nil, &ExecTargetNoneAvailableError{
-		httpErr: &httputils.Error{
-			Status: http.StatusBadRequest,
-			Code:   code.ChatAgentNoAvailableExecTarget,
-			Msg:    i18n.T(ctx, code.ChatAgentNoAvailableExecTarget),
-		},
-		Reasons: unavailable,
-	}
+	return nil, newExecTargetNoneAvailableError(ctx, unavailable)
 }
 
 // ListExecTargetAvailability 逐档判定一个 Agent 的执行目标列表可用性，供组织架构页
@@ -145,11 +156,23 @@ func (s *chatSvc) ListExecTargetAvailability(ctx context.Context, agentID int64,
 		if err != nil {
 			return nil, err
 		}
+		// 路径与可用性分开取：evalExecTargetAvailability 一旦在前面某一步（未配对 /
+		// 离线 / 供应商类）判出不可用就提前返回，根本走不到路径那一步——而改选浮层
+		// 恰恰要把不可用那几档的路径也显示出来（用户据此判断「等它上线值不值」）。
+		projectPath := ""
+		if projectID > 0 && be != nil {
+			p, _, perr := s.execTargetProjectPath(ctx, be, projectID)
+			if perr != nil {
+				return nil, perr
+			}
+			projectPath = p
+		}
 		out = append(out, ExecTargetAvailabilityView{
 			AgentBackendID: target.AgentBackendID,
 			Available:      reason == "",
 			Reason:         reason,
 			Hint:           hint,
+			ProjectPath:    projectPath,
 		})
 	}
 	return out, nil
@@ -170,7 +193,7 @@ func (s *chatSvc) evalExecTargetAvailability(
 	ctx context.Context, be *agent_backend_entity.AgentBackend, projectID int64,
 ) (BlockReason, string, error) {
 	if be == nil {
-		return BlockReasonNoBackend, "该执行目标引用的后端已不存在", nil
+		return BlockReasonNoBackend, i18n.T(ctx, code.ChatExecTargetHintBackendGone), nil
 	}
 	if be.IsRemote() {
 		reason, hint, err := s.evalRemoteDeviceAvailability(ctx, be)
@@ -187,7 +210,7 @@ func (s *chatSvc) evalExecTargetAvailability(
 		return "", "", operationFailedWithCause(ctx, err, zap.Int64("agentBackendId", be.ID))
 	}
 	gatewayRunning := s.gateway != nil && s.gateway.Status().State == "running"
-	if chattable, reason, hint := blockReasonForBackend(be, prov, gatewayRunning); !chattable {
+	if chattable, reason, hint := blockReasonForBackend(ctx, be, prov, gatewayRunning); !chattable {
 		return reason, hint, nil
 	}
 
@@ -209,45 +232,71 @@ func (s *chatSvc) evalExecTargetAvailability(
 func (s *chatSvc) evalRemoteDeviceAvailability(ctx context.Context, be *agent_backend_entity.AgentBackend) (BlockReason, string, error) {
 	deviceID, ok := be.DeviceIDInt()
 	if !ok {
-		return BlockReasonExecTargetUnpaired, "本机未配对这台 agentred", nil
+		return BlockReasonExecTargetUnpaired, i18n.T(ctx, code.ChatExecTargetHintUnpaired), nil
 	}
 	rds := remote_device_svc.Default()
 	if rds == nil {
-		return BlockReasonExecTargetUnpaired, "本机未配对这台 agentred", nil
+		return BlockReasonExecTargetUnpaired, i18n.T(ctx, code.ChatExecTargetHintUnpaired), nil
 	}
 	dv, derr := rds.Get(ctx, deviceID)
 	if derr != nil || dv == nil {
 		// derr 不是本函数的错误返回值要透出的失败——它只说明这台设备在本机配对表里
 		// 查不到（未配对本身就是这一档的正常状态之一，R2b），与 ListAgents 里
 		// deviceViews 的取法一致：错误一律折叠成「未配对」，不当异常中断挑选。
-		return BlockReasonExecTargetUnpaired, "本机未配对这台 agentred", nil //nolint:nilerr // 见上方注释
+		return BlockReasonExecTargetUnpaired, i18n.T(ctx, code.ChatExecTargetHintUnpaired), nil //nolint:nilerr // 见上方注释
 	}
 	if !dv.Online {
-		return BlockReasonExecTargetOffline, "这台 agentred 当前离线", nil
+		return BlockReasonExecTargetOffline, i18n.T(ctx, code.ChatExecTargetHintOffline), nil
 	}
 	return "", "", nil
 }
 
-// evalExecTargetProjectPath 见 evalExecTargetAvailability 步骤 4。
+// evalExecTargetProjectPath 见 evalExecTargetAvailability 步骤 4。判据是
+// execTargetProjectPath 的 configured —— 「配没配」与「配的是哪个目录」是同一次
+// 查询的两个投影，不写两份取法。
 func (s *chatSvc) evalExecTargetProjectPath(ctx context.Context, be *agent_backend_entity.AgentBackend, projectID int64) (BlockReason, string, error) {
+	_, configured, err := s.execTargetProjectPath(ctx, be, projectID)
+	if err != nil {
+		return "", "", err
+	}
+	if configured {
+		return "", "", nil
+	}
+	if be.IsLocal() {
+		return BlockReasonExecTargetProjectPathMissing, i18n.T(ctx, code.ChatExecTargetHintLocalPathMissing), nil
+	}
+	return BlockReasonExecTargetProjectPathMissing, i18n.T(ctx, code.ChatExecTargetHintRemotePathMissing), nil
+}
+
+// execTargetProjectPath 取「这一档所在的机器上，这个项目的路径」：本机档看
+// projects.path（判据是 LocalPathMissing 状态位，不是 Path 是否为空，见
+// project_entity 注释），agentred 档看 project_locations 里该 device_id 那一行。
+// configured 报告「那台机器上配没配」，与 path 是否为空刻意分开——判据在状态位/
+// 行的存在性上，路径值只是展示用。
+func (s *chatSvc) execTargetProjectPath(
+	ctx context.Context, be *agent_backend_entity.AgentBackend, projectID int64,
+) (string, bool, error) {
 	if be.IsLocal() {
 		p, err := project_repo.Project().Find(ctx, projectID)
 		if err != nil {
-			return "", "", operationFailedWithCause(ctx, err, zap.Int64("projectId", projectID))
+			return "", false, operationFailedWithCause(ctx, err, zap.Int64("projectId", projectID))
 		}
 		if p == nil || p.LocalPathMissing {
-			return BlockReasonExecTargetProjectPathMissing, "本机没有配置这个项目的路径", nil
+			return "", false, nil
 		}
-		return "", "", nil
+		return p.Path, true, nil
 	}
-	_, err := project_location_repo.ProjectLocation().FindByProjectAndDevice(ctx, projectID, be.DeviceID)
+	loc, err := project_location_repo.ProjectLocation().FindByProjectAndDevice(ctx, projectID, be.DeviceID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return BlockReasonExecTargetProjectPathMissing, "这台机器上没有配置这个项目的路径", nil
+			return "", false, nil
 		}
-		return "", "", operationFailedWithCause(ctx, err, zap.Int64("projectId", projectID))
+		return "", false, operationFailedWithCause(ctx, err, zap.Int64("projectId", projectID))
 	}
-	return "", "", nil
+	if loc == nil {
+		return "", false, nil
+	}
+	return loc.Path, true, nil
 }
 
 // blockReasonForBackend 是「一个 backend 自身是否可对话」的单一判定点，ListAgents（Agent
@@ -257,7 +306,10 @@ func (s *chatSvc) evalExecTargetProjectPath(ctx context.Context, be *agent_backe
 //
 // 空 LLMProviderKey（CLI 走自身 login 态）在 ClaudeCode/Codex/PiAgent 分支第一条就短路
 // 判可用，不做任何可达性预探测——这是既有行为（迁移前的 chat.go:391），必须原样保留。
+// hint 是用户可见正文（ListAgents 的 ChattableHint / PickExecTarget 的逐档说明），
+// 因此走 internal/pkg/code 的语言包而不是就地写死 —— ctx 只为这个而来。
 func blockReasonForBackend(
+	ctx context.Context,
 	be *agent_backend_entity.AgentBackend, prov *llm_provider_entity.LLMProvider, gatewayRunning bool,
 ) (chattable bool, reason BlockReason, hint string) {
 	switch agent_backend_entity.BackendType(be.Type) {
@@ -267,10 +319,10 @@ func blockReasonForBackend(
 			return true, "", ""
 		case prov == nil:
 			// 内置后端没绑 / 找不到绑定的供应商。
-			return false, BlockReasonBackendRequiresProvider, "请先在设置 → LLM 供应商激活该 Agent 后端关联的供应商"
+			return false, BlockReasonBackendRequiresProvider, i18n.T(ctx, code.ChatBackendHintActivateProvider)
 		default:
 			// 后端绑的供应商存在但未激活/缺 Key。
-			return false, BlockReasonProviderInactive, "请先在设置 → LLM 供应商激活该 Agent 后端关联的供应商"
+			return false, BlockReasonProviderInactive, i18n.T(ctx, code.ChatBackendHintActivateProvider)
 		}
 	case agent_backend_entity.TypeClaudeCode, agent_backend_entity.TypeCodex, agent_backend_entity.TypePiAgent:
 		if be.LLMProviderKey == "" {
@@ -278,33 +330,33 @@ func blockReasonForBackend(
 			return true, "", ""
 		}
 		if prov == nil {
-			return false, BlockReasonBackendRequiresProvider, "请先在设置 → LLM 供应商激活该 Agent 后端关联的供应商"
+			return false, BlockReasonBackendRequiresProvider, i18n.T(ctx, code.ChatBackendHintActivateProvider)
 		}
 		if !prov.IsActive() {
-			return false, BlockReasonProviderInactive, "请先在设置 → LLM 供应商激活该 Agent 后端关联的供应商"
+			return false, BlockReasonProviderInactive, i18n.T(ctx, code.ChatBackendHintActivateProvider)
 		}
 		if kind := be.Kind(); kind == nil || !kind.ProviderTypeMatch(llm_provider_entity.ProviderType(prov.Type)) {
 			// 与 resolveAgentBackend 保持一致：激活但类型不匹配的 provider
 			// 仍不能启动该 CLI backend，不能继续误报为 gateway 缺失。
-			return false, BlockReasonBackendRequiresProvider, "请先在设置 → LLM 供应商选择与该 Agent 后端匹配的类型"
+			return false, BlockReasonBackendRequiresProvider, i18n.T(ctx, code.ChatBackendHintProviderTypeMismatch)
 		}
 		if remoteProviderKnownMissing(be) {
-			return false, BlockReasonRemoteProviderMissing, "远端 agentred 未配置该供应商，请前往「远端设备」页在对应设备上添加并填写 API Key"
+			return false, BlockReasonRemoteProviderMissing, i18n.T(ctx, code.ChatBackendHintRemoteProviderMissing)
 		}
 		if be.IsRemote() {
 			return true, "", ""
 		}
 		if !gatewayRunning {
-			return false, BlockReasonGatewayNotRunning, "本地网关未启动，CLI 后端暂不可用"
+			return false, BlockReasonGatewayNotRunning, i18n.T(ctx, code.ChatBackendHintGatewayNotRunning)
 		}
 		return true, "", ""
 	case agent_backend_entity.TypeOpenClaw:
 		if be.IsRemote() {
-			return false, BlockReasonRemoteOpenClawUnavailable, "远端 OpenClaw 暂不可用：agentred 尚无安全的 secret enrollment/reference"
+			return false, BlockReasonRemoteOpenClawUnavailable, i18n.T(ctx, code.ChatBackendHintRemoteOpenClaw)
 		}
 		return true, "", ""
 	default:
-		return false, BlockReasonUnknownBackend, "未知 Agent 后端类型"
+		return false, BlockReasonUnknownBackend, i18n.T(ctx, code.ChatBackendHintUnknownType)
 	}
 }
 

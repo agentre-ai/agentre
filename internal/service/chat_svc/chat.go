@@ -385,13 +385,13 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 			}
 			gatewayRunning := s.gateway != nil && s.gateway.Status().State == "running"
 			item.Chattable, item.BlockReason, item.ChattableHint =
-				blockReasonForBackend(be, providers[be.LLMProviderKey], gatewayRunning)
+				blockReasonForBackend(ctx, be, providers[be.LLMProviderKey], gatewayRunning)
 		} else if a.IsSystem() {
 			item.BlockReason = BlockReasonNoBackend
-			item.ChattableHint = "CEO 助手还没配置后端，请在组织架构页选择一个 Agent 后端"
+			item.ChattableHint = i18n.T(ctx, code.ChatSystemAgentNoBackendHint)
 		} else {
 			item.BlockReason = BlockReasonNoBackend
-			item.ChattableHint = "该 Agent 还没配置后端，请在组织架构页选择一个 Agent 后端"
+			item.ChattableHint = i18n.T(ctx, code.ChatAgentNoBackendHint)
 		}
 
 		sessions, err := chat_repo.Session().ListByAgentIncludingGroups(ctx, a.ID, 5)

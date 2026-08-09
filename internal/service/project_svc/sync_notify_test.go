@@ -188,6 +188,9 @@ func (emptySyncState) FindVersion(context.Context, string, string) (int64, bool,
 	return 0, false, false, nil
 }
 func (emptySyncState) FindRow(context.Context, string, string, any) (bool, error) { return false, nil }
+func (emptySyncState) ClaimUnowned(context.Context, string, int64) ([]syncstate_repo.ClaimedRow, error) {
+	return nil, nil
+}
 func (emptySyncState) SaveMeta(context.Context, string, string, syncmeta_entity.SyncMeta) error {
 	return nil
 }

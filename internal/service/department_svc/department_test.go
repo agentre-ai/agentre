@@ -275,6 +275,54 @@ func TestLoad_ExecTargets(t *testing.T) {
 				assert.Empty(t, resp.Agents[0].ExecTargets[1].Skills)
 			}
 		})
+
+		// 守卫（R15e）：agents.skills_json 不再被读取。Agent 行上那份遗留授权可能早已
+		// 与执行目标行不一致（同步落地走 UpdateRow / UpsertFromSync，只改执行目标行），
+		// AgentItem.Skills 必须取 ①——与同一个 DTO 上的 AgentBackendID/Backend 同源。
+		convey.Convey("Agent 行的 skills_json 已过期 → AgentItem.Skills 取 ①", func() {
+			deptMock.EXPECT().List(gomock.Any()).Return(nil, nil)
+			agentMock.EXPECT().List(gomock.Any()).Return([]*agent_entity.Agent{
+				{
+					ID: 10, Name: "Eva", Status: 1, PromptJSON: "[]", ToolsJSON: "[]",
+					SkillsJSON: `[{"id":"stale@row","enabled":true}]`,
+				},
+			}, nil)
+			backendMock.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{}, nil)
+			providerMock.EXPECT().List(gomock.Any()).Return(nil, nil)
+			execTargetMock.EXPECT().ListByAgents(gomock.Any(), []int64{10}).Return(
+				map[int64][]*agent_entity.AgentExecTarget{
+					10: {
+						{ID: 1, AgentID: 10, AgentBackendID: 51, SortOrder: 0, SkillsJSON: `[{"id":"fresh@target","enabled":true}]`},
+						{ID: 2, AgentID: 10, AgentBackendID: 52, SortOrder: 1, SkillsJSON: `[{"id":"other@target","enabled":true}]`},
+					},
+				}, nil)
+
+			resp, err := svc.Load(ctx, &LoadOrgRequest{})
+			assert.NoError(t, err)
+			if assert.Len(t, resp.Agents, 1) && assert.Len(t, resp.Agents[0].Skills, 1) {
+				assert.Equal(t, "fresh@target", resp.Agents[0].Skills[0].ID)
+			}
+		})
+
+		// 执行目标列表为空 → Skills 为空，而不是回落到 Agent 行的遗留列。
+		convey.Convey("没有执行目标行 → AgentItem.Skills 为空", func() {
+			deptMock.EXPECT().List(gomock.Any()).Return(nil, nil)
+			agentMock.EXPECT().List(gomock.Any()).Return([]*agent_entity.Agent{
+				{
+					ID: 11, Name: "Solo", Status: 1, PromptJSON: "[]", ToolsJSON: "[]",
+					SkillsJSON: `[{"id":"stale@row","enabled":true}]`,
+				},
+			}, nil)
+			backendMock.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{}, nil)
+			providerMock.EXPECT().List(gomock.Any()).Return(nil, nil)
+			execTargetMock.EXPECT().ListByAgents(gomock.Any(), []int64{11}).Return(nil, nil)
+
+			resp, err := svc.Load(ctx, &LoadOrgRequest{})
+			assert.NoError(t, err)
+			if assert.Len(t, resp.Agents, 1) {
+				assert.Empty(t, resp.Agents[0].Skills)
+			}
+		})
 	})
 }
 

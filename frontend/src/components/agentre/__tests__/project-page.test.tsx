@@ -1405,7 +1405,7 @@ describe("ProjectsPage local path missing (R10/R11a)", () => {
     localStorage.clear();
   });
 
-  it("Given some projects missing and some configured, Then only the missing row gets the badge (not every row)", async () => {
+  it("Given some projects missing and some configured, Then only the missing row gets the badge and no name is greyed", async () => {
     appMocks.ProjectListTree.mockResolvedValue([
       {
         project: {
@@ -1434,7 +1434,7 @@ describe("ProjectsPage local path missing (R10/R11a)", () => {
     ]);
     renderProjectsPage();
 
-    await screen.findByText("agentre-hub");
+    const missingName = await screen.findByText("agentre-hub");
     const badges = await screen.findAllByTestId(
       "project-local-path-missing-badge",
     );
@@ -1442,9 +1442,15 @@ describe("ProjectsPage local path missing (R10/R11a)", () => {
     expect(
       screen.queryByText("projects.localPath.allMissingTitle"),
     ).not.toBeInTheDocument();
+    // R10：只有一部分未配置时，行尾角标已经说清楚了，名字不再变灰——
+    // 两处一起挂等于把同一件事说两遍。
+    expect(missingName.className).not.toContain("text-muted-foreground");
+    expect(screen.getByText("agentre").className).not.toContain(
+      "text-muted-foreground",
+    );
   });
 
-  it("Given every project missing, Then per-row badges are suppressed and the top banner explains it instead", async () => {
+  it("Given every project missing, Then per-row badges are suppressed and the top banner plus greyed names explain it instead", async () => {
     appMocks.ProjectListTree.mockResolvedValue([
       {
         project: {
@@ -1479,6 +1485,13 @@ describe("ProjectsPage local path missing (R10/R11a)", () => {
     expect(
       screen.queryByTestId("project-local-path-missing-badge"),
     ).not.toBeInTheDocument();
+    // R10：全部未配置时逐行角标撤掉，改成名字变灰 + 树顶那一条整体说明。
+    expect(screen.getByText("agentre").className).toContain(
+      "text-muted-foreground",
+    );
+    expect(screen.getByText("agentre-hub").className).toContain(
+      "text-muted-foreground",
+    );
   });
 
   it("Given the project menu on an unconfigured project, When '指定路径…' is picked and a directory is chosen, Then ProjectSetLocalPath is called and the tree reloads", async () => {

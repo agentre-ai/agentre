@@ -100,11 +100,12 @@ type RestoreOutcome struct {
 }
 
 // outbound 是本地一行翻成的上行内容。
+//
+// **没有基版本**：R4a 的基版本是「本端**编辑时**见到的那一版」，由出站队列在入队时
+// 记下（决策 27）。从行上现读一遍会拿到「此刻」的版本——编辑与出队之间落了一次他端
+// 下行时那正好等于当前版本，冲突就判不出来了。
 type outbound struct {
-	SyncID string
-	// BaseVersion 是本端最后一次见到的同步版本号（R4a）；本端新建、server 从未
-	// 见过的行为 0。
-	BaseVersion         int64
+	SyncID              string
 	UpdatedAt           int64
 	ProjectSyncID       string
 	AgentredFingerprint string

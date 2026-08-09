@@ -253,11 +253,9 @@ func insertExecTargets(tx *gorm.DB, agentID int64, targets []*agent_entity.Agent
 			SortOrder:      i,
 			SkillsJSON:     t.SkillsJSON,
 		}
-		// 同步标识在行创建时就地生成（R1/R12a）。注意：Replace 是整表
-		// delete-then-reinsert（见本文件 replaceExecTargets 的注释），因此每次
-		// 替换都会给幸存下来的档重新生成一个新标识——执行目标行的跨机身份稳定
-		// 依赖这套写法先改成按档 diff 更新，属于后续任务（真正的上行/下行落地）
-		// 要解决的问题，本任务只保证列存在且新建行不为空。
+		// 同步标识在行创建时就地生成（R1/R12a）。只有真正新增的档才走到这里：
+		// Replace 按差异更新，活下来的档保持原行、原标识（见 replaceExecTargets），
+		// 所以这里生成的标识就是这一档终身的身份。
 		row.EnsureSyncID()
 		rows = append(rows, row)
 	}
@@ -265,12 +263,10 @@ func insertExecTargets(tx *gorm.DB, agentID int64, targets []*agent_entity.Agent
 }
 
 // primaryTargetList 把「Agent 当前的那一个 backend + 它这一档的技能授权」表达成
-// 执行目标列表：0 = 空列表。
+// 执行目标列表：0 = 空列表。转换本身住在实体层，导入侧的老 bundle 回落共用同一份
+// （R15f）。
 func primaryTargetList(backendID int64, skillsJSON string) []*agent_entity.AgentExecTarget {
-	if backendID <= 0 {
-		return nil
-	}
-	return []*agent_entity.AgentExecTarget{{AgentBackendID: backendID, SkillsJSON: skillsJSON}}
+	return agent_entity.PrimaryExecTargets(backendID, skillsJSON)
 }
 
 // hydrateOne 补齐单个 Agent 的派生值；补不齐就不交出这个 Agent —— 交出去的话

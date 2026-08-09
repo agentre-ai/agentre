@@ -14,6 +14,7 @@ import (
 	"fmt"
 
 	"github.com/cago-frame/cago/database/db"
+	"github.com/cago-frame/cago/pkg/consts"
 	"gorm.io/gorm"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/syncmeta_entity"
@@ -38,6 +39,17 @@ type SyncStateRepo interface {
 	FindRow(ctx context.Context, kind, syncID string, dest any) (bool, error)
 	// SaveMeta 按同步标识写回六列同步元数据，不碰任何业务列。
 	SaveMeta(ctx context.Context, kind, syncID string, meta syncmeta_entity.SyncMeta) error
+	// ClaimUnowned 把本机**尚未属于任何账号**的存活行归入 accountID（R12a），返回
+	// 被收进来的那些行供上行入队。没有同步标识的历史行（迁移前就存在、此后一次
+	// 都没被 Create/Update 触达过）在这里就地补一个——标识本该在行创建时生成，
+	// 它们只是早于本轮。已经属于别的账号的行一行不动（R13a）。
+	ClaimUnowned(ctx context.Context, kind string, accountID int64) ([]ClaimedRow, error)
+}
+
+// ClaimedRow 是一次认领里被收进当前账号的一行（R12a）。
+type ClaimedRow struct {
+	SyncID  string
+	Version int64
 }
 
 var defaultSyncState SyncStateRepo
@@ -154,6 +166,60 @@ func (r *syncStateRepo) SaveMeta(ctx context.Context, kind, syncID string, meta 
 			"sync_origin":     meta.SyncOrigin,
 			"sync_deleted_at": meta.SyncDeletedAt,
 		}).Error
+}
+
+// hasStatusColumn 报告某张账号级表有没有 status 软删列。成员关系与执行目标是硬删，
+// 没有这一列——认领时的「存活」判据因此按表分两种。
+func hasStatusColumn(kind string) bool {
+	switch kind {
+	case syncwire.KindProjectAgent, syncwire.KindAgentExecTarget:
+		return false
+	default:
+		return true
+	}
+}
+
+func (r *syncStateRepo) ClaimUnowned(ctx context.Context, kind string, accountID int64) ([]ClaimedRow, error) {
+	table, err := tableOf(kind)
+	if err != nil {
+		return nil, err
+	}
+	if accountID == 0 {
+		return nil, nil
+	}
+
+	// 只认领**存活**的行：本机已经软删的行不该被当成一次新建推上账号（R6）。
+	// rowid 是 SQLite 给每张普通表的隐式主键，成员关系那张联合主键表也有——用它
+	// 逐行补标识，七张表一套 SQL。
+	query := db.Ctx(ctx).Table(table).
+		Where("sync_account_id = 0 AND sync_deleted_at = 0")
+	if hasStatusColumn(kind) {
+		query = query.Where("status = ?", consts.ACTIVE)
+	}
+	var rows []struct {
+		Rowid       int64  `gorm:"column:rowid"`
+		SyncID      string `gorm:"column:sync_id"`
+		SyncVersion int64  `gorm:"column:sync_version"`
+	}
+	if err := query.Select("rowid", "sync_id", "sync_version").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	out := make([]ClaimedRow, 0, len(rows))
+	for _, row := range rows {
+		syncID := row.SyncID
+		updates := map[string]any{"sync_account_id": accountID}
+		if syncID == "" {
+			syncID = syncmeta_entity.NewSyncID()
+			updates["sync_id"] = syncID
+		}
+		if err := db.Ctx(ctx).Table(table).
+			Where("rowid = ?", row.Rowid).Updates(updates).Error; err != nil {
+			return nil, err
+		}
+		out = append(out, ClaimedRow{SyncID: syncID, Version: row.SyncVersion})
+	}
+	return out, nil
 }
 
 // isNoRows 兼容 database/sql 的 sql.ErrNoRows —— Row().Scan 不经过 GORM 的错误翻译。

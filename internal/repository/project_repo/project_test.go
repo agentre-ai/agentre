@@ -187,3 +187,19 @@ func TestProjectReorderSiblings(t *testing.T) {
 	require.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+// TestProjectReassignParent R11a：合并时子项目的 parent_id 整批改挂。WHERE 里
+// **只能有 parent_id**——软删的子项目 ListByParent 看不见，它的 parent_id 却照样
+// 指着已消失的那个项目，合并后不允许留下任何这样的引用。`$` 锚住结尾：谁再往
+// WHERE 里加一个 status 判据，这条就会红。
+func TestProjectReassignParent(t *testing.T) {
+	ctx, mock, repo := setupProjectRepo(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `projects` SET `parent_id`=\\?,`updatetime`=\\? WHERE parent_id = \\?$").
+		WithArgs(int64(9), sqlmock.AnyArg(), int64(4)).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.ReassignParent(ctx, 4, 9))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

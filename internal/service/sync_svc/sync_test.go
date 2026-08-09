@@ -117,10 +117,17 @@ type fakeAdapter struct {
 	loadFn  func(syncID string) (*outbound, error)
 	deps    []relatedRow
 	kids    []relatedRow
+	// naturalKey 模拟「账号内自然键上现在站着哪个同步标识」（R4b），键是
+	// 「项目同步标识|指纹」。
+	naturalKey map[string]string
 }
 
 func newFakeAdapter(name string) *fakeAdapter {
-	return &fakeAdapter{name: name, rows: map[string]string{}}
+	return &fakeAdapter{name: name, rows: map[string]string{}, naturalKey: map[string]string{}}
+}
+
+func (f *fakeAdapter) syncIDAtNaturalKey(_ context.Context, in *inbound) (string, error) {
+	return f.naturalKey[in.ProjectSyncID+"|"+in.AgentredFingerprint], nil
 }
 
 func (f *fakeAdapter) kind() string { return f.name }
@@ -134,7 +141,7 @@ func (f *fakeAdapter) load(_ context.Context, syncID string) (*outbound, error) 
 		return nil, nil
 	}
 	payload, _ := json.Marshal(map[string]any{"name": name})
-	return &outbound{SyncID: syncID, BaseVersion: 0, UpdatedAt: 1, Payload: payload}, nil
+	return &outbound{SyncID: syncID, UpdatedAt: 1, Payload: payload}, nil
 }
 
 func (f *fakeAdapter) refs(*inbound) []ref { return []ref{f.needRef} }
@@ -511,6 +518,130 @@ func TestGCDeferred_GivenExpiredRow_DiscardsWithLostChange(t *testing.T) {
 	assert.Equal(t, syncqueue_entity.ReasonDiscarded, h.lost.rows[0].Reason)
 }
 
+// TestPull_GivenNaturalKeyMergeLoss_RecordsOverwritten R4b/R5：server 按自然键把两端
+// 各自建的路径记录合并成一行，**落败的那份**要进「没能同步的改动」。落败那一份的
+// 主人是另一台桌面端——它只收得到一份墓碑，server 的 MergedSyncID 只回给推上来的
+// 那一端。判据是墓碑落地之后，同一个自然键上站着的是**另一个同步标识**的活行。
+func TestPull_GivenNaturalKeyMergeLoss_RecordsOverwritten(t *testing.T) {
+	h := newHarness(t, true)
+	loc := newFakeAdapter(syncwire.KindProjectLocation)
+	loc.rows["loc-mine"] = "/srv/mine"
+	loc.loadFn = func(syncID string) (*outbound, error) {
+		return &outbound{
+			SyncID: syncID, ProjectSyncID: "proj-1", AgentredFingerprint: "fp-builder",
+			Payload: []byte(`{"path":"/srv/mine"}`),
+		}, nil
+	}
+	h.svc.adapters[loc.kind()] = loc
+	h.state.meta["project_location:loc-mine"] = syncmeta_entity.SyncMeta{
+		SyncID: "loc-mine", SyncVersion: 3,
+	}
+	loc.naturalKey["proj-1|fp-builder"] = "loc-winner"
+
+	// server 一次合并发两条：先墓碑（较小版本），再胜者。
+	h.transport.pages = []*syncwire.PullPage{{
+		Items: []syncwire.PullItem{
+			{Kind: syncwire.KindProjectLocation, SyncID: "loc-mine", Version: 10,
+				ProjectSyncID: "proj-1", AgentredFingerprint: "fp-builder", Deleted: true},
+			{Kind: syncwire.KindProjectLocation, SyncID: "loc-winner", Version: 11,
+				ProjectSyncID: "proj-1", AgentredFingerprint: "fp-builder",
+				Payload: []byte(`{"path":"/srv/theirs"}`)},
+		},
+		NextCursor: 11,
+	}}
+
+	require.NoError(t, h.svc.SyncOnce(context.Background()))
+
+	assert.NotContains(t, loc.rows, "loc-mine", "落败那一行照常落墓碑（R6）")
+	require.Len(t, h.lost.rows, 1)
+	assert.Equal(t, syncqueue_entity.ReasonOverwritten, h.lost.rows[0].Reason)
+	assert.Equal(t, "loc-mine", h.lost.rows[0].EntitySyncID)
+	assert.JSONEq(t, `{"path":"/srv/mine"}`, h.lost.rows[0].PayloadJSON)
+	assert.Equal(t, "fp-builder", h.lost.rows[0].AgentredFingerprint)
+}
+
+// TestPull_GivenPlainTombstone_RecordsNothing 反面守卫：一次普通的远端删除不是
+// 合并落败，不该往列表里塞东西——「列表为空是常态」。
+func TestPull_GivenPlainTombstone_RecordsNothing(t *testing.T) {
+	h := newHarness(t, true)
+	loc := newFakeAdapter(syncwire.KindProjectLocation)
+	loc.rows["loc-mine"] = "/srv/mine"
+	loc.loadFn = func(syncID string) (*outbound, error) {
+		return &outbound{
+			SyncID: syncID, ProjectSyncID: "proj-1", AgentredFingerprint: "fp-builder",
+			Payload: []byte(`{"path":"/srv/mine"}`),
+		}, nil
+	}
+	h.svc.adapters[loc.kind()] = loc
+	h.state.meta["project_location:loc-mine"] = syncmeta_entity.SyncMeta{
+		SyncID: "loc-mine", SyncVersion: 3,
+	}
+	h.transport.pages = []*syncwire.PullPage{{
+		Items: []syncwire.PullItem{{
+			Kind: syncwire.KindProjectLocation, SyncID: "loc-mine", Version: 10,
+			ProjectSyncID: "proj-1", AgentredFingerprint: "fp-builder", Deleted: true,
+		}},
+		NextCursor: 10,
+	}}
+
+	require.NoError(t, h.svc.SyncOnce(context.Background()))
+
+	assert.NotContains(t, loc.rows, "loc-mine")
+	assert.Empty(t, h.lost.rows, "自然键上没有别人站着，就只是一次普通删除")
+}
+
+// TestGCLostChanges_DropsRowsPastTheWindow R5/决策 5：「没能同步的改动」本地留存
+// **30 天**。此前只有入站暂缓队列会到期回收，这份列表只增不减，30 天那个承诺在
+// 界面上就是一句空话。
+func TestGCLostChanges_DropsRowsPastTheWindow(t *testing.T) {
+	h := newHarness(t, true)
+	h.lost.rows = []*syncqueue_entity.LostChange{
+		{ID: 1, SyncAccountID: 7, EntityType: "project", EntitySyncID: "p-fresh",
+			Reason: syncqueue_entity.ReasonOverwritten, Createtime: h.nowMs},
+		{ID: 2, SyncAccountID: 7, EntityType: "project", EntitySyncID: "p-stale",
+			Reason:     syncqueue_entity.ReasonOverwritten,
+			Createtime: h.nowMs - TombstoneWindow.Milliseconds() - 1},
+	}
+	h.transport.pages = []*syncwire.PullPage{{NextCursor: 1}}
+
+	require.NoError(t, h.svc.SyncOnce(context.Background()))
+
+	require.Len(t, h.lost.rows, 1)
+	assert.Equal(t, "p-fresh", h.lost.rows[0].EntitySyncID, "未到期的照常留着")
+}
+
+// TestGCDeferred_GivenExpiredRow_KeepsBarePayloadAndNaturalKey R2a/R5：丢弃一条暂缓
+// 行时，进列表的是**载荷正文**本身，不是暂缓队列存的那层信封——列表要「可展开查看
+// 内容并恢复」，恢复走的又是 adapter.apply，喂信封给它只会解出一个空对象。路径记录
+// 的自然键（项目同步标识 + 指纹）同样要留住，否则恢复时解析不出它属于谁（R5a）。
+func TestGCDeferred_GivenExpiredRow_KeepsBarePayloadAndNaturalKey(t *testing.T) {
+	h := newHarness(t, true)
+	h.adapter.needRef = ref{Kind: "project", SyncID: "parent-1"}
+	h.transport.pages = []*syncwire.PullPage{{
+		Items: []syncwire.PullItem{{
+			Kind: "project", SyncID: "loc-1", Version: 5,
+			ProjectSyncID: "proj-9", AgentredFingerprint: "fp-abc",
+			Payload: []byte(`{"path":"/srv/work"}`),
+		}},
+		NextCursor: 5,
+	}}
+	ctx := context.Background()
+	require.NoError(t, h.svc.SyncOnce(ctx))
+	require.Len(t, h.inbound.rows, 1)
+
+	h.nowMs += TombstoneWindow.Milliseconds() + 1
+	h.transport.pages = []*syncwire.PullPage{{NextCursor: 5}}
+	require.NoError(t, h.svc.SyncOnce(ctx))
+
+	require.Len(t, h.lost.rows, 1)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal([]byte(h.lost.rows[0].PayloadJSON), &body))
+	assert.Equal(t, "/srv/work", body["path"], "存的是载荷正文，不是 inbound 信封")
+	assert.NotContains(t, body, "sync_id", "信封字段不该混进正文")
+	assert.Equal(t, "proj-9", h.lost.rows[0].ProjectSyncID)
+	assert.Equal(t, "fp-abc", h.lost.rows[0].AgentredFingerprint)
+}
+
 // ── ② 30 秒轮询下行 ────────────────────────────────────────────────────────
 
 // TestPull_AdvancesCursorAcrossRuns R3：下行按游标增量，游标持久化——下一轮从上次
@@ -535,6 +666,36 @@ func TestPull_AdvancesCursorAcrossRuns(t *testing.T) {
 }
 
 // TestPollIntervalIsThirtySeconds R3：下行按 30 秒周期轮询。
+// TestBackoff_GrowsOnFailureAndResetsOnSuccess R7/R16：「同步失败**按退避重试**」。
+// 轮询周期本身不变，退让体现在「失败后跳过几个周期」上——server 长时间不可达时
+// 不该每 30 秒原样再撞一次，而设置里那条文案早就写着退避。
+func TestBackoff_GrowsOnFailureAndResetsOnSuccess(t *testing.T) {
+	var b backoff
+	assert.True(t, b.due(), "没失败过就照常跑")
+
+	b.fail()
+	assert.False(t, b.due(), "第一次失败：跳过一个周期")
+	assert.True(t, b.due())
+
+	b.fail()
+	assert.False(t, b.due())
+	assert.False(t, b.due(), "第二次连续失败：退让窗口翻倍")
+	assert.True(t, b.due())
+
+	b.succeed()
+	assert.True(t, b.due(), "成功即复位")
+
+	for i := 0; i < 20; i++ {
+		b.fail()
+	}
+	skipped := 0
+	for !b.due() {
+		skipped++
+		require.Less(t, skipped, maxBackoffTicks+2, "退让有上限，不会退到永不重试")
+	}
+	assert.LessOrEqual(t, skipped, maxBackoffTicks)
+}
+
 func TestPollIntervalIsThirtySeconds(t *testing.T) {
 	assert.Equal(t, 30*time.Second, PollInterval)
 }
@@ -617,6 +778,56 @@ func TestFlush_GivenConflict_RecordsOverwrittenChange(t *testing.T) {
 	assert.Equal(t, int64(11), h.lost.rows[0].BaseVersion)
 	assert.Equal(t, "5", h.lost.rows[0].OriginDevice)
 	assert.Equal(t, int64(12), h.state.meta["project:p-1"].SyncVersion, "本次上行照常生效")
+}
+
+// TestSyncOnce_GivenRowsFromBeforeLogin_ClaimsThemAndUploadsOnce R12a：登录前已有的
+// 行（还不属于任何账号）在登录后归入当前账号，并带着自己那个同步标识正常上行。
+// 不做这一步的话，一个先用后登录的用户要挨个去碰每一行才能把工作区带上云。
+func TestSyncOnce_GivenRowsFromBeforeLogin_ClaimsThemAndUploadsOnce(t *testing.T) {
+	h := newHarness(t, true)
+	h.adapter.rows["p-old"] = "登录前建的项目"
+	h.state.unowned["project"] = []syncstate_repo.ClaimedRow{{SyncID: "p-old"}}
+	ctx := context.Background()
+
+	require.NoError(t, h.svc.SyncOnce(ctx))
+
+	require.Len(t, h.transport.pushed, 1)
+	require.Len(t, h.transport.pushed[0], 1)
+	assert.Equal(t, "p-old", h.transport.pushed[0][0].SyncID)
+	assert.Equal(t, int64(0), h.transport.pushed[0][0].BaseVersion, "server 没见过它，按新建走（R4a）")
+	assert.Equal(t, int64(7), h.state.claimedBy["project:p-old"], "行归入当前账号")
+
+	// 第二轮：已经归属了，不再重复认领、也不再重复上行。
+	require.NoError(t, h.svc.SyncOnce(ctx))
+	assert.Len(t, h.transport.pushed, 1)
+	assert.Empty(t, h.outbound.rows)
+}
+
+// TestFlush_GivenDownlinkBetweenEditAndPush_CarriesEditTimeBaseVersion R4a/决策 27：
+// 上行带的基版本是「本端**编辑时**见到的那一版」——入队时记下的那个，而不是推送时
+// 重新读一遍行上的版本。编辑与出队之间落了一次他端下行时，后者恰好等于当前版本，
+// server 判不出冲突，R5 的「被覆盖」永不写——那正是决策 27 要兜住的场景。
+func TestFlush_GivenDownlinkBetweenEditAndPush_CarriesEditTimeBaseVersion(t *testing.T) {
+	h := newHarness(t, true)
+	h.svc.transport = nil // 先只入队，不推送
+	h.svc.NotifyLocalChange(context.Background(), LocalChange{
+		Kind: "project", Op: OpUpdate, Meta: syncmeta_entity.SyncMeta{SyncID: "p-1", SyncVersion: 5},
+	})
+	require.Len(t, h.outbound.rows, 1)
+	require.Equal(t, int64(5), h.outbound.rows[0].BaseVersion)
+
+	// 他端的一次更新在这中间落地：行上的 SyncVersion 已经被推到了 server 分配的 9。
+	h.state.meta["project:p-1"] = syncmeta_entity.SyncMeta{SyncID: "p-1", SyncVersion: 9}
+	h.adapter.loadFn = func(syncID string) (*outbound, error) {
+		return &outbound{SyncID: syncID, UpdatedAt: 2, Payload: []byte(`{"name":"Mine"}`)}, nil
+	}
+	h.svc.transport = h.transport
+
+	require.NoError(t, h.svc.SyncOnce(context.Background()))
+
+	require.Len(t, h.transport.pushed, 1)
+	assert.Equal(t, int64(5), h.transport.pushed[0][0].BaseVersion,
+		"带的是编辑时那一版，server 才判得出这次编辑被他端覆盖过")
 }
 
 // TestRestoreLostChange_GivenTombstonedTarget_RefusesAndOffersRecreate R5a：恢复的

@@ -16,7 +16,9 @@ import {
   ListAgentExecTargetAvailability,
 } from "../../../wailsjs/go/app/App";
 import type { agent_backend_svc } from "../../../wailsjs/go/models";
+import { EventsOn } from "../../../wailsjs/runtime/runtime";
 
+import { DeviceTag } from "./device-tag";
 import { navigateToTarget } from "./not-chattable";
 
 // ── 数据：把 R15 的可用性判定(ListAgentExecTargetAvailability)与全量后端列表
@@ -34,7 +36,15 @@ export type ExecTargetCandidate = {
   available: boolean;
   reason: string;
   hint: string;
+  // projectPath: 这一档所在的机器上、这个项目的路径(本机档取 projects.path，
+  // agentred 档取 project_locations 里那一行)。会话不绑项目或那台机器上没配时
+  // 为空串——选机器时真正要判断的是"换过去在哪个目录干活"，比机器名更有信息量。
+  projectPath: string;
 };
+
+// REMOTE_DEVICE_STATE_EVENT 是 remote_device_watcher_svc 的在线态推送通道
+// (Go 侧 remote_device_watcher_svc.EventName)，use-remote-devices 订的是同一条。
+const REMOTE_DEVICE_STATE_EVENT = "remote.device.state";
 
 export function useExecTargetCandidates(agentId: number, projectId: number) {
   const [candidates, setCandidates] = React.useState<ExecTargetCandidate[]>([]);
@@ -66,6 +76,7 @@ export function useExecTargetCandidates(agentId: number, projectId: number) {
             available: a.available,
             reason: a.reason,
             hint: a.hint,
+            projectPath: a.projectPath,
           };
         }),
       );
@@ -81,6 +92,17 @@ export function useExecTargetCandidates(agentId: number, projectId: number) {
 
   React.useEffect(() => {
     void reload();
+  }, [reload]);
+
+  // 选中结果在起轮前是活的(R15a)：空会话态期间可用性变了就重新算，否则用户看着
+  // "将在 X 上运行"按下回车、实际跑到了别处。信号取既有的 remote.device.state
+  // 推送(agentred 上下线正是可用性判据里唯一会自己翻转的那一项)，不新造轮询；
+  // 这个 hook 只在空会话态那一行里挂载，订阅随它一起卸载。
+  React.useEffect(() => {
+    const off = EventsOn(REMOTE_DEVICE_STATE_EVENT, () => {
+      void reload();
+    });
+    return () => off?.();
   }, [reload]);
 
   return { candidates, loading, reload };
@@ -195,16 +217,14 @@ export function NewSessionExecTargetLine(props: NewSessionExecTargetLineProps) {
           {t("chatPanel.execTarget.willRunPrefix")}
         </span>
       )}
-      <span
-        className={cn(
-          "inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-2xs font-medium",
-          dropped
-            ? "bg-status-running-bg text-status-running"
-            : "bg-primary-soft text-primary",
-        )}
-      >
-        {candidateLabel(effective, t)}
-      </span>
+      {/* "会话跑在哪台机器"复用既有的 DeviceTag，不引入新组件：deviceId === "" 那
+          一支本来就渲染"本机"。掉档的加重由整行底色 + 措辞 + 原因承担，chip 的配色
+          仍按机器归属走，与命令面板/聊天头/成员页保持同一套视觉。 */}
+      <DeviceTag
+        deviceId={effective.deviceId}
+        deviceName={effective.deviceName || effective.deviceId}
+        online={effective.online}
+      />
       <span className="text-2xs text-muted-foreground">
         {t("chatPanel.execTarget.willRunSuffix")}
       </span>
@@ -288,6 +308,18 @@ function ExecTargetReselectPopover(props: {
             <span className="text-xs font-semibold">
               {candidateLabel(c, t)}
             </span>
+            {/* 那台机器上这个项目的路径：序号解释"为什么默认是它"，路径回答
+                "换过去在哪个目录干活"。没绑项目/那台机器上没配路径时整行不出现，
+                不留一行空的。 */}
+            {c.projectPath ? (
+              <span
+                data-testid="exec-target-project-path"
+                title={c.projectPath}
+                className="truncate font-mono text-2xs text-subtle-foreground"
+              >
+                {c.projectPath}
+              </span>
+            ) : null}
             {!c.available && (
               <span className="font-mono text-2xs text-muted-foreground">
                 {reasonLabel(c.reason, t)}

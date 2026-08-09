@@ -99,11 +99,7 @@ func (s *service) RestoreLostChange(ctx context.Context, id int64) (*RestoreOutc
 		return &RestoreOutcome{TargetDeleted: true}, nil
 	}
 
-	in := &inbound{
-		Kind:    row.EntityType,
-		SyncID:  row.EntitySyncID,
-		Payload: json.RawMessage(row.PayloadJSON),
-	}
+	in := inboundOfLostChange(row, row.EntitySyncID)
 	if err := s.applyLocally(ctx, ad, in); err != nil {
 		return nil, err
 	}
@@ -149,11 +145,7 @@ func (s *service) RecreateFromLostChange(ctx context.Context, id int64) error {
 	if ad == nil {
 		return ErrLostChangeNotFound
 	}
-	in := &inbound{
-		Kind:    row.EntityType,
-		SyncID:  syncmeta_entity.NewSyncID(),
-		Payload: json.RawMessage(row.PayloadJSON),
-	}
+	in := inboundOfLostChange(row, syncmeta_entity.NewSyncID())
 	if err := s.applyLocally(ctx, ad, in); err != nil {
 		return err
 	}
@@ -175,6 +167,19 @@ func (s *service) DiscardLostChange(ctx context.Context, id int64) error {
 		return err
 	}
 	return syncqueue_repo.LostChange().Delete(ctx, row.ID)
+}
+
+// inboundOfLostChange 把一条留存记录翻回落地用的下行项。**自然键必须一起带上**
+// （R5a）：路径记录靠 (项目同步标识, agentred 指纹) 才解析得出归属，远端 backend
+// 靠指纹才不会被当成本机的——这两项不在正文里，是上行项的顶层字段（决策 26）。
+func inboundOfLostChange(row *syncqueue_entity.LostChange, syncID string) *inbound {
+	return &inbound{
+		Kind:                row.EntityType,
+		SyncID:              syncID,
+		ProjectSyncID:       row.ProjectSyncID,
+		AgentredFingerprint: row.AgentredFingerprint,
+		Payload:             json.RawMessage(row.PayloadJSON),
+	}
 }
 
 // applyLocally 把一份留存的正文落成本地行。引用目标缺失时明确失败——恢复是一次

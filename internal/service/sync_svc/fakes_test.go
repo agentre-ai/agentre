@@ -6,6 +6,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/app_setting_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/syncmeta_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/syncqueue_entity"
+	"github.com/agentre-ai/agentre/internal/repository/syncstate_repo"
 )
 
 // 队列与同步元数据这几个仓储在本包的测试里是**有状态的存储**：引擎的行为（折叠、
@@ -118,10 +119,31 @@ func (f *fakeLostChange) Delete(_ context.Context, id int64) error {
 type fakeSyncState struct {
 	meta map[string]syncmeta_entity.SyncMeta
 	ids  map[string]int64
+	// unowned 按对象类型放「还没归属任何账号」的行（R12a），认领一次即清空；
+	// claimedBy 记下它们被收进了哪个账号，供断言。
+	unowned   map[string][]syncstate_repo.ClaimedRow
+	claimedBy map[string]int64
 }
 
 func newFakeSyncState() *fakeSyncState {
-	return &fakeSyncState{meta: map[string]syncmeta_entity.SyncMeta{}, ids: map[string]int64{}}
+	return &fakeSyncState{
+		meta:      map[string]syncmeta_entity.SyncMeta{},
+		ids:       map[string]int64{},
+		unowned:   map[string][]syncstate_repo.ClaimedRow{},
+		claimedBy: map[string]int64{},
+	}
+}
+
+func (f *fakeSyncState) ClaimUnowned(_ context.Context, kind string, accountID int64) ([]syncstate_repo.ClaimedRow, error) {
+	rows := f.unowned[kind]
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	delete(f.unowned, kind)
+	for _, row := range rows {
+		f.claimedBy[kind+":"+row.SyncID] = accountID
+	}
+	return rows, nil
 }
 
 func (f *fakeSyncState) key(kind, syncID string) string { return kind + ":" + syncID }

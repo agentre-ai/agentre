@@ -33,6 +33,7 @@ func (s *service) pullFrom(ctx context.Context, accountID, cursor int64) error {
 	if transport == nil {
 		return nil
 	}
+	var losses []*mergeLoss
 	for page := 0; page < maxPullPages; page++ {
 		p, err := transport.SyncPull(ctx, cursor, pullLimit)
 		if err != nil {
@@ -40,8 +41,15 @@ func (s *service) pullFrom(ctx context.Context, accountID, cursor int64) error {
 		}
 		for i := range p.Items {
 			in := inboundOf(p.Items[i])
+			loss, err := s.captureMergeLoss(ctx, in)
+			if err != nil {
+				return err
+			}
 			if err := s.applyInbound(ctx, accountID, in); err != nil {
 				return err
+			}
+			if loss != nil {
+				losses = append(losses, loss)
 			}
 		}
 		cursor = p.NextCursor
@@ -57,7 +65,115 @@ func (s *service) pullFrom(ctx context.Context, accountID, cursor int64) error {
 	if err := s.replayDeferred(ctx, accountID); err != nil {
 		return err
 	}
-	return s.gcDeferred(ctx, accountID)
+	if err := s.recordMergeLosses(ctx, accountID, losses); err != nil {
+		return err
+	}
+	if err := s.gcDeferred(ctx, accountID); err != nil {
+		return err
+	}
+	return s.gcLostChanges(ctx, accountID)
+}
+
+// naturalKeyed 是「账号内除同步标识之外还有一个自然键」的对象类型——今天只有
+// 路径记录（项目同步标识, agentred 指纹）（决策 26）。R4b 的合并落败判定要问它：
+// 这个自然键上现在站着的是哪一个同步标识。
+type naturalKeyed interface {
+	syncIDAtNaturalKey(ctx context.Context, in *inbound) (string, error)
+}
+
+// mergeLoss 是一条**可能**因自然键合并而被删掉的路径记录（R4b）。
+type mergeLoss struct {
+	kind          string
+	syncID        string
+	projectSyncID string
+	fingerprint   string
+	payload       json.RawMessage
+}
+
+// captureMergeLoss 在墓碑落地**之前**留住这一行的正文与自然键。
+//
+// 落败那一份的主人是另一台桌面端：server 只把 MergedSyncID 回给推上来的那一端，
+// 它这边收到的仅仅是一份墓碑，和一次普通的远端删除长得一模一样。要分辨只能等
+// 胜者也落地——所以这里只做「留证」，判定推迟到整轮下行结束（recordMergeLosses）。
+func (s *service) captureMergeLoss(ctx context.Context, in *inbound) (*mergeLoss, error) {
+	if !in.Deleted {
+		return nil, nil
+	}
+	ad, ok := s.adapters[in.Kind].(naturalKeyed)
+	if !ok || ad == nil {
+		return nil, nil
+	}
+	out, err := s.adapters[in.Kind].load(ctx, in.SyncID)
+	if err != nil || out == nil {
+		return nil, err
+	}
+	return &mergeLoss{
+		kind: in.Kind, syncID: in.SyncID,
+		projectSyncID: out.ProjectSyncID, fingerprint: out.AgentredFingerprint,
+		payload: out.Payload,
+	}, nil
+}
+
+// recordMergeLosses 落实 R4b 在**落败方**这一端的那一半：整轮下行结束后，如果那个
+// 自然键上站着的已经是**另一个**同步标识的活行，本端刚被删掉的这一份就是被合并
+// 掉的，按 R5 记一条「被覆盖」。
+//
+// 判定放在整轮之后而不是逐条：server 一次合并写两行——墓碑拿较小版本、胜者拿较大
+// 版本，胜者可能落在下一页。自然键上没有别人站着就只是一次普通的远端删除，什么都
+// 不记（「列表为空是常态」）。
+func (s *service) recordMergeLosses(ctx context.Context, accountID int64, losses []*mergeLoss) error {
+	for _, loss := range losses {
+		ad, ok := s.adapters[loss.kind].(naturalKeyed)
+		if !ok {
+			continue
+		}
+		holder, err := ad.syncIDAtNaturalKey(ctx, &inbound{
+			Kind: loss.kind, ProjectSyncID: loss.projectSyncID, AgentredFingerprint: loss.fingerprint,
+		})
+		if err != nil {
+			return err
+		}
+		if holder == "" || holder == loss.syncID {
+			continue
+		}
+		logger.Ctx(ctx).Info("sync_svc.recordMergeLosses: row lost the natural key merge",
+			zap.String("kind", loss.kind), zap.String("syncId", loss.syncID),
+			zap.String("keptSyncId", holder))
+		if err := s.recordLostChange(ctx, accountID, &syncqueue_entity.LostChange{
+			EntityType:          loss.kind,
+			EntitySyncID:        loss.syncID,
+			Reason:              syncqueue_entity.ReasonOverwritten,
+			PayloadJSON:         string(loss.payload),
+			ProjectSyncID:       loss.projectSyncID,
+			AgentredFingerprint: loss.fingerprint,
+			OccurredAt:          s.now(),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// gcLostChanges 「没能同步的改动」保留 30 天（R5、决策 5），到期回收。与暂缓行的
+// 回收同一个窗口、同一个节奏——两者都是 30 天承诺的一半，缺哪一半那句承诺都不成立。
+func (s *service) gcLostChanges(ctx context.Context, accountID int64) error {
+	rows, err := syncqueue_repo.LostChange().ListByAccount(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	cutoff := s.now() - TombstoneWindow.Milliseconds()
+	for _, row := range rows {
+		if row.Createtime > cutoff {
+			continue
+		}
+		if err := syncqueue_repo.LostChange().Delete(ctx, row.ID); err != nil {
+			return err
+		}
+		logger.Ctx(ctx).Info("sync_svc.gcLostChanges: lost change expired",
+			zap.String("kind", row.EntityType), zap.String("syncId", row.EntitySyncID),
+			zap.String("reason", row.Reason))
+	}
+	return nil
 }
 
 // applyInbound 落地一条下行项。
@@ -234,13 +350,24 @@ func (s *service) gcDeferred(ctx context.Context, accountID int64) error {
 		if row.ReceivedAt > cutoff {
 			continue
 		}
-		if err := s.recordLostChange(ctx, accountID, &syncqueue_entity.LostChange{
+		lost := &syncqueue_entity.LostChange{
 			EntityType:   row.EntityType,
 			EntitySyncID: row.EntitySyncID,
 			Reason:       syncqueue_entity.ReasonDiscarded,
-			PayloadJSON:  row.PayloadJSON,
 			OccurredAt:   s.now(),
-		}); err != nil {
+		}
+		// 入站队列存的是整个 inbound 信封；列表要展示与恢复的是**正文**，恢复走的
+		// 又是 adapter.apply——把信封喂给它只会解出一个空对象。这里拆一次信封，
+		// 顺带留住不在正文里的那两项自然键（R5a）。
+		var env inbound
+		if err := json.Unmarshal([]byte(row.PayloadJSON), &env); err == nil {
+			lost.PayloadJSON = string(env.Payload)
+			lost.ProjectSyncID, lost.AgentredFingerprint = env.ProjectSyncID, env.AgentredFingerprint
+			lost.BaseVersion = env.Version
+		} else {
+			lost.PayloadJSON = row.PayloadJSON
+		}
+		if err := s.recordLostChange(ctx, accountID, lost); err != nil {
 			return err
 		}
 		if err := syncqueue_repo.InboundQueue().Delete(ctx, row.ID); err != nil {

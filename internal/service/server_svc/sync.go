@@ -19,14 +19,17 @@ import (
 // 载荷内容一律不进日志：里面有项目路径、prompt 与 EnvJSON。
 
 type syncPushReqItem struct {
-	Kind                string          `json:"kind"`
-	SyncID              string          `json:"sync_id"`
-	BaseVersion         int64           `json:"base_version"`
-	UpdatedAt           int64           `json:"updated_at"`
-	Deleted             bool            `json:"deleted"`
-	AgentredFingerprint string          `json:"agentred_fingerprint"`
-	ProjectSyncID       string          `json:"project_sync_id"`
-	Payload             json.RawMessage `json:"payload"`
+	Kind                string `json:"kind"`
+	SyncID              string `json:"sync_id"`
+	BaseVersion         int64  `json:"base_version"`
+	UpdatedAt           int64  `json:"updated_at"`
+	Deleted             bool   `json:"deleted"`
+	AgentredFingerprint string `json:"agentred_fingerprint"`
+	ProjectSyncID       string `json:"project_sync_id"`
+	// Payload 必须 omitempty：墓碑不带正文（buildPushItem 的 delete 分支），而
+	// json.RawMessage 的零值编码出来是 JSON null——null 不是对象，server 的
+	// ValidatePayload 会整批拒（30501），一次删除就把出站队列永久堵死（R6/R7）。
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 type syncPushReq struct {

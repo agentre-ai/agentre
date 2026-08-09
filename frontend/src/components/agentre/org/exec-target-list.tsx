@@ -1,4 +1,19 @@
 import * as React from "react";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DraggableAttributes,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
 import { ChevronDown, ChevronUp, GripVertical, Plus, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -124,6 +139,43 @@ export function ExecTargetList(props: Props) {
   const usedIds = new Set(props.targets.map((t) => t.agentBackendId));
   const single = props.targets.length === 1;
 
+  // 拖拽与「上移/下移」按钮、拖拽柄上的 ↑/↓ 全部收敛到同一个 move()（内部是
+  // exec-target-reorder 的 moveItem），排序语义只有一份。
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
+
+  const handleDragEnd = (e: DragEndEvent) => {
+    if (!e.over || e.active.id === e.over.id) return;
+    const idOf = (raw: string | number) =>
+      props.targets.findIndex((t) => String(t.agentBackendId) === String(raw));
+    const from = idOf(e.active.id);
+    const to = idOf(e.over.id);
+    if (from < 0 || to < 0) return;
+    move(from, to);
+  };
+
+  const rowPropsFor = (target: ExecTargetRow, index: number): RowProps => ({
+    index,
+    total: props.targets.length,
+    backend: backendById.get(target.agentBackendId),
+    status: byBackendId.get(target.agentBackendId),
+    // R20：只有一项时「当前生效」徽标不出现——一档时它零信息量，
+    // 与序号/拖拽柄/排序说明同批隐去。
+    isFirstAvailable: !single && index === firstAvailableIndex,
+    onMoveUp: index > 0 ? () => move(index, index - 1) : undefined,
+    onMoveDown:
+      index < props.targets.length - 1
+        ? () => move(index, index + 1)
+        : undefined,
+    onRemove: !single ? () => removeAt(index) : undefined,
+    replaceBackends: single ? props.backends : undefined,
+    onReplacePick: single ? replaceSole : undefined,
+  });
+
   return (
     <div className="flex flex-col gap-2.5">
       <div className="flex items-center gap-2">
@@ -190,31 +242,28 @@ export function ExecTargetList(props: Props) {
         </div>
       ) : (
         <div className="flex flex-col overflow-hidden rounded-md border border-border bg-input-bg">
-          {props.targets.map((target, index) => {
-            const b = backendById.get(target.agentBackendId);
-            const status = byBackendId.get(target.agentBackendId);
-            return (
-              <ExecTargetRowView
-                key={target.agentBackendId}
-                index={index}
-                total={props.targets.length}
-                backend={b}
-                status={status}
-                // R20：只有一项时不显示「当前生效」徽标——一档时它零信息量，
-                // 与序号/拖拽柄/排序说明同批隐去。
-                isFirstAvailable={!single && index === firstAvailableIndex}
-                onMoveUp={index > 0 ? () => move(index, index - 1) : undefined}
-                onMoveDown={
-                  index < props.targets.length - 1
-                    ? () => move(index, index + 1)
-                    : undefined
-                }
-                onRemove={!single ? () => removeAt(index) : undefined}
-                replaceBackends={single ? props.backends : undefined}
-                onReplacePick={single ? replaceSole : undefined}
-              />
-            );
-          })}
+          {single ? (
+            // R20：单档退化成今天的样子——不进 DndContext，也就没有拖拽柄。
+            <ExecTargetRowView
+              key={props.targets[0].agentBackendId}
+              {...rowPropsFor(props.targets[0], 0)}
+            />
+          ) : (
+            <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+              <SortableContext
+                items={props.targets.map((t) => String(t.agentBackendId))}
+                strategy={verticalListSortingStrategy}
+              >
+                {props.targets.map((target, index) => (
+                  <SortableExecTargetRow
+                    key={target.agentBackendId}
+                    id={String(target.agentBackendId)}
+                    row={rowPropsFor(target, index)}
+                  />
+                ))}
+              </SortableContext>
+            </DndContext>
+          )}
         </div>
       )}
 
@@ -251,10 +300,55 @@ export function ExecTargetList(props: Props) {
         </div>
       )}
 
-      <p role="status" className="sr-only">
+      {/* 本列表自己的播报（按钮 / 拖拽柄方向键都走它）。DndContext 另有一个它自己
+          的 role="status" 活动区用于拖拽过程，两者并存，靠 testid 区分。 */}
+      <p role="status" data-testid="exec-target-announcer" className="sr-only">
         {announcement}
       </p>
     </div>
+  );
+}
+
+// DragBinding 是 useSortable 交给行视图的那一小撮东西：整行的 ref/位移样式，
+// 以及只挂在拖拽柄上的 attributes/listeners（拖拽柄是唯一的激活器，避免整行
+// 都变成拖拽热区把里面的按钮吞掉）。
+type DragBinding = {
+  setNodeRef: (node: HTMLElement | null) => void;
+  setActivatorNodeRef: (node: HTMLElement | null) => void;
+  attributes: DraggableAttributes;
+  listeners: React.DOMAttributes<HTMLElement>;
+  style: React.CSSProperties;
+  isDragging: boolean;
+};
+
+function SortableExecTargetRow(props: { id: string; row: RowProps }) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: props.id });
+  return (
+    <ExecTargetRowView
+      {...props.row}
+      drag={{
+        setNodeRef,
+        setActivatorNodeRef,
+        attributes,
+        listeners: listeners ?? {},
+        style: {
+          transform: transform
+            ? `translate3d(0, ${transform.y}px, 0)`
+            : undefined,
+          transition,
+          opacity: isDragging ? 0.5 : undefined,
+        },
+        isDragging,
+      }}
+    />
   );
 }
 
@@ -271,12 +365,27 @@ type RowProps = {
   // 唯一那一档(而不是追加)。只在 total===1 时给出。
   replaceBackends?: agent_backend_svc.BackendItem[];
   onReplacePick?: (backendId: number) => void;
+  drag?: DragBinding;
 };
 
 function ExecTargetRowView(props: RowProps) {
   const { t } = useTranslation();
   const [replaceOpen, setReplaceOpen] = React.useState(false);
   const single = props.total === 1;
+  const drag = props.drag;
+
+  // R15 的键盘等价物：拖拽柄聚焦后直接按 ↑/↓ 就移动这一行，不必先按空格「提起」。
+  // 空格提起后的方向键仍走 dnd-kit 的 KeyboardSensor（listeners 里的那份），两条
+  // 路径最终都落到同一个 moveItem 上。
+  const onHandleKeyDown = (e: React.KeyboardEvent<HTMLElement>) => {
+    if (!drag?.isDragging && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      e.preventDefault();
+      if (e.key === "ArrowUp") props.onMoveUp?.();
+      else props.onMoveDown?.();
+      return;
+    }
+    drag?.listeners?.onKeyDown?.(e);
+  };
   const b = props.backend;
   const local = machineLabel(b, t("org.agent.execTargets.localMachine"));
   const sub = b
@@ -285,19 +394,26 @@ function ExecTargetRowView(props: RowProps) {
 
   return (
     <div
+      ref={drag?.setNodeRef}
+      style={drag?.style}
       className={cn(
-        "flex items-start gap-2 border-border px-2.5 py-2",
+        "flex items-start gap-2 border-border bg-input-bg px-2.5 py-2",
         props.index < props.total - 1 && "border-b",
       )}
       data-testid={`exec-target-row-${props.index}`}
     >
       {!single && (
-        <span
-          className="select-none pt-0.5 text-sm text-subtle-foreground"
-          aria-hidden="true"
+        <button
+          type="button"
+          ref={drag?.setActivatorNodeRef}
+          aria-label={t("org.agent.execTargets.dragHandle")}
+          {...(drag?.attributes ?? {})}
+          {...(drag?.listeners ?? {})}
+          onKeyDown={onHandleKeyDown}
+          className="mt-0.5 shrink-0 cursor-grab touch-none select-none rounded-sm text-subtle-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
         >
-          <GripVertical className="size-3.5" />
-        </span>
+          <GripVertical className="size-3.5" aria-hidden="true" />
+        </button>
       )}
       {!single && (
         <span className="mt-px inline-flex size-5 shrink-0 items-center justify-center rounded-sm bg-secondary font-mono text-2xs text-muted-foreground">

@@ -6,10 +6,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/project_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/project_location_entity"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 )
 
 // ── R15 / 任务 12：组织架构页需要「每一档」的可用性，不只是最终派发到哪一档 ──
@@ -70,6 +74,97 @@ func TestListExecTargetAvailability_GivenFirstAvailable_ThenStillEvaluatesTheRes
 		assert.True(t, statuses[0].Available)
 		assert.Equal(t, chat_svc.BlockReason(""), statuses[0].Reason)
 		assert.True(t, statuses[1].Available)
+	}
+}
+
+// TestListExecTargetAvailability_GivenProjectBound_ThenCarriesEachMachineProjectPath
+// 锁住 R15a 改选浮层要展示的那一项：每一档都带「那台机器上这个项目的路径」——路径
+// 回答的是「换过去在哪个目录干活」，比机器名更有信息量。本机档取 projects.path，
+// agentred 档取 project_locations 里该指纹那一行。
+func TestListExecTargetAvailability_GivenProjectBound_ThenCarriesEachMachineProjectPath(t *testing.T) {
+	ctx, m, svc := setupPickExecTargetTest(t)
+	m.execTarget.EXPECT().ListByAgent(ctx, int64(41)).Return([]*agent_entity.AgentExecTarget{
+		{ID: 21, AgentID: 41, AgentBackendID: 81, SortOrder: 0},
+		{ID: 22, AgentID: 41, AgentBackendID: 82, SortOrder: 1},
+	}, nil)
+	m.backend.EXPECT().Find(ctx, int64(81)).Return(&agent_backend_entity.AgentBackend{
+		ID: 81, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "",
+	}, nil)
+	m.backend.EXPECT().Find(ctx, int64(82)).Return(&agent_backend_entity.AgentBackend{
+		ID: 82, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "", DeviceID: "13",
+	}, nil)
+	m.project.EXPECT().Find(ctx, int64(900)).
+		Return(&project_entity.Project{ID: 900, Path: "/Users/me/code/app"}, nil).MinTimes(1)
+	m.remoteDevice.EXPECT().Get(ctx, int64(13)).
+		Return(&remote_device_svc.DeviceView{ID: 13, Online: true}, nil).MinTimes(1)
+	m.projectLocation.EXPECT().FindByProjectAndDevice(ctx, int64(900), "13").
+		Return(&project_location_entity.ProjectLocation{Path: "/srv/app"}, nil).MinTimes(1)
+
+	statuses, err := svc.ListExecTargetAvailability(ctx, 41, 900)
+	require.NoError(t, err)
+	if assert.Len(t, statuses, 2) {
+		assert.True(t, statuses[0].Available)
+		assert.Equal(t, "/Users/me/code/app", statuses[0].ProjectPath)
+		assert.True(t, statuses[1].Available)
+		assert.Equal(t, "/srv/app", statuses[1].ProjectPath)
+	}
+}
+
+// TestListExecTargetAvailability_GivenUnavailableTarget_ThenStillCarriesProjectPath
+// 边界：一档因为别的原因（这里是离线）不可用时，路径照样配着——改选浮层仍要把它
+// 显示出来（用户据此判断「等它上线值不值」）。可用性判定在离线那一步就提前返回，
+// 因此路径必须独立取，不能顺带。
+func TestListExecTargetAvailability_GivenUnavailableTarget_ThenStillCarriesProjectPath(t *testing.T) {
+	ctx, m, svc := setupPickExecTargetTest(t)
+	m.execTarget.EXPECT().ListByAgent(ctx, int64(42)).Return([]*agent_entity.AgentExecTarget{
+		{ID: 23, AgentID: 42, AgentBackendID: 83, SortOrder: 0},
+	}, nil)
+	m.backend.EXPECT().Find(ctx, int64(83)).Return(&agent_backend_entity.AgentBackend{
+		ID: 83, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "", DeviceID: "14",
+	}, nil)
+	m.remoteDevice.EXPECT().Get(ctx, int64(14)).
+		Return(&remote_device_svc.DeviceView{ID: 14, Online: false}, nil).MinTimes(1)
+	m.projectLocation.EXPECT().FindByProjectAndDevice(ctx, int64(901), "14").
+		Return(&project_location_entity.ProjectLocation{Path: "/srv/offline-app"}, nil).MinTimes(1)
+
+	statuses, err := svc.ListExecTargetAvailability(ctx, 42, 901)
+	require.NoError(t, err)
+	if assert.Len(t, statuses, 1) {
+		assert.False(t, statuses[0].Available)
+		assert.Equal(t, chat_svc.BlockReasonExecTargetOffline, statuses[0].Reason)
+		assert.Equal(t, "/srv/offline-app", statuses[0].ProjectPath)
+	}
+}
+
+// TestListExecTargetAvailability_GivenNoPathOnThatMachine_ThenProjectPathIsEmpty
+// 那台机器上没配这个项目的路径时给空串（浮层据此不渲染这一行，而不是渲染一行空的）；
+// 不绑项目的会话（projectID<=0）同理不做这项查询。
+func TestListExecTargetAvailability_GivenNoPathOnThatMachine_ThenProjectPathIsEmpty(t *testing.T) {
+	ctx, m, svc := setupPickExecTargetTest(t)
+	m.execTarget.EXPECT().ListByAgent(ctx, int64(43)).Return([]*agent_entity.AgentExecTarget{
+		{ID: 24, AgentID: 43, AgentBackendID: 84, SortOrder: 0},
+		{ID: 25, AgentID: 43, AgentBackendID: 85, SortOrder: 1},
+	}, nil)
+	m.backend.EXPECT().Find(ctx, int64(84)).Return(&agent_backend_entity.AgentBackend{
+		ID: 84, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "",
+	}, nil)
+	m.backend.EXPECT().Find(ctx, int64(85)).Return(&agent_backend_entity.AgentBackend{
+		ID: 85, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "", DeviceID: "15",
+	}, nil)
+	m.project.EXPECT().Find(ctx, int64(902)).
+		Return(&project_entity.Project{ID: 902, LocalPathMissing: true}, nil).MinTimes(1)
+	m.remoteDevice.EXPECT().Get(ctx, int64(15)).
+		Return(&remote_device_svc.DeviceView{ID: 15, Online: true}, nil).MinTimes(1)
+	m.projectLocation.EXPECT().FindByProjectAndDevice(ctx, int64(902), "15").
+		Return(nil, gorm.ErrRecordNotFound).MinTimes(1)
+
+	statuses, err := svc.ListExecTargetAvailability(ctx, 43, 902)
+	require.NoError(t, err)
+	if assert.Len(t, statuses, 2) {
+		assert.Equal(t, chat_svc.BlockReasonExecTargetProjectPathMissing, statuses[0].Reason)
+		assert.Empty(t, statuses[0].ProjectPath)
+		assert.Equal(t, chat_svc.BlockReasonExecTargetProjectPathMissing, statuses[1].Reason)
+		assert.Empty(t, statuses[1].ProjectPath)
 	}
 }
 

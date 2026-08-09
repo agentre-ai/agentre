@@ -2064,6 +2064,7 @@
         "remove": "Remove",
         "moveUp": "Move target up",
         "moveDown": "Move target down",
+        "dragHandle": "Reorder target (drag, or press the up / down arrow keys)",
         "moved": "Moved to position {{position}} of {{total}}.",
         "currentlyActive": "Currently active",
         "online": "Online",

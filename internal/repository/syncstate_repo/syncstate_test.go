@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/cago-frame/cago/pkg/utils/testutils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -96,5 +97,56 @@ func TestSaveMeta(t *testing.T) {
 		SyncID: "loc-1", SyncAccountID: 7, SyncVersion: 12, SyncUpdatedAt: 1700, SyncOrigin: "3",
 	})
 	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestClaimUnowned R12a：登录前已有的行归入当前账号；没有同步标识的历史行就地补
+// 一个。只认领**存活**的行——本机已经软删的行不该被当成一次新建推上账号（R6）。
+func TestClaimUnowned(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	repo := NewSyncState()
+	mock.ExpectQuery("SELECT rowid,sync_id,sync_version FROM `projects` WHERE \\(sync_account_id = 0 AND sync_deleted_at = 0\\) AND status = \\?").
+		WithArgs(consts.ACTIVE).
+		WillReturnRows(sqlmock.NewRows([]string{"rowid", "sync_id", "sync_version"}).
+			AddRow(int64(1), "p-known", int64(4)).
+			AddRow(int64(2), "", int64(0)))
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `projects` SET `sync_account_id`=\\? WHERE rowid = \\?").
+		WithArgs(int64(7), int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `projects` SET `sync_account_id`=\\?,`sync_id`=\\? WHERE rowid = \\?").
+		WithArgs(int64(7), sqlmock.AnyArg(), int64(2)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	rows, err := repo.ClaimUnowned(ctx, syncwire.KindProject, 7)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, "p-known", rows[0].SyncID)
+	assert.Equal(t, int64(4), rows[0].Version, "基版本沿用行上那一个")
+	assert.NotEmpty(t, rows[1].SyncID, "历史行就地补一个标识")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestClaimUnowned_GivenTableWithoutStatus_SkipsStatusFilter 成员关系与执行目标是
+// 硬删，没有 status 列——认领时不能把一个不存在的列拼进 SQL。
+func TestClaimUnowned_GivenTableWithoutStatus_SkipsStatusFilter(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	repo := NewSyncState()
+	mock.ExpectQuery("SELECT rowid,sync_id,sync_version FROM `project_agents` WHERE sync_account_id = 0 AND sync_deleted_at = 0").
+		WillReturnRows(sqlmock.NewRows([]string{"rowid", "sync_id", "sync_version"}))
+
+	rows, err := repo.ClaimUnowned(ctx, syncwire.KindProjectAgent, 7)
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestClaimUnowned_GivenLoggedOut_DoesNothing R12：未登录时一行都不碰。
+func TestClaimUnowned_GivenLoggedOut_DoesNothing(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	rows, err := NewSyncState().ClaimUnowned(ctx, syncwire.KindProject, 0)
+	require.NoError(t, err)
+	assert.Empty(t, rows)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

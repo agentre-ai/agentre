@@ -60,6 +60,36 @@ func TestSyncPush(t *testing.T) {
 		So(first["payload"].(map[string]any)["name"], ShouldEqual, "Alpha")
 	})
 
+	Convey("墓碑上行不带 payload 字段，而不是发一个 JSON null（R6）", t, func() {
+		// server 的 ValidatePayload 只把「空」当合法（墓碑不带正文），JSON null 解出来
+		// 不是对象、会整批 30501 —— 一次删除就能把这台桌面端的出站队列永久堵死。
+		var raw []byte
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"results":[
+				{"sync_id":"p-1","kind":"project","version":13,"status":"accepted"}
+			]}}`))
+		}))
+		defer srv.Close()
+
+		svc, mRepo, _ := setupServerSvc(t, srv.URL)
+		mRepo.EXPECT().Get(gomock.Any()).Return(loggedInState(srv.URL), nil)
+
+		_, err := svc.SyncPush(context.Background(), []syncwire.PushItem{{
+			Kind: "project", SyncID: "p-1", BaseVersion: 8, UpdatedAt: 1700, Deleted: true,
+		}})
+		So(err, ShouldBeNil)
+
+		var body map[string]any
+		So(json.Unmarshal(raw, &body), ShouldBeNil)
+		first := body["items"].([]any)[0].(map[string]any)
+		So(first["deleted"], ShouldBeTrue)
+		_, hasPayload := first["payload"]
+		So(hasPayload, ShouldBeFalse)
+		So(string(raw), ShouldNotContainSubstring, `"payload":null`)
+	})
+
 	Convey("超窗口设备的上行翻成 ErrResyncRequired（R6a）", t, func() {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")

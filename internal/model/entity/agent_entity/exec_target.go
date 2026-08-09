@@ -26,6 +26,17 @@ type AgentExecTarget struct {
 
 func (*AgentExecTarget) TableName() string { return "agent_exec_targets" }
 
+// PrimaryExecTargets 把「一个 backend + 它那一份技能授权」这个 R15 之前的单档形状
+// 转成执行目标列表：backend 为 0（没绑）时是空列表，否则是单元素列表（下标即
+// sort_order，因此是 0）。迁移、仓储的单档写入路径与老 bundle 的导入回落共用这一
+// 份转换（R15f），它们必须逐字节一致。
+func PrimaryExecTargets(backendID int64, skillsJSON string) []*AgentExecTarget {
+	if backendID <= 0 {
+		return nil
+	}
+	return []*AgentExecTarget{{AgentBackendID: backendID, SkillsJSON: skillsJSON}}
+}
+
 func (t *AgentExecTarget) GetSkills() []AgentSkillItem {
 	out := []AgentSkillItem{}
 	if t == nil || t.SkillsJSON == "" {

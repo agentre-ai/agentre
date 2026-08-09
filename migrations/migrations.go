@@ -38,5 +38,6 @@ func migrationList() []*gormigrate.Migration {
 		migration202608080015(), // chat_sessions.exec_agent_backend_id（会话钉住的执行目标档）
 		migration202608080016(), // 账号级七张表加同步元数据（sync_id 部分唯一索引等六列）
 		migration202608080017(), // 新建 sync_lost_changes / sync_outbound_queue / sync_inbound_queue
+		migration202608080018(), // sync_lost_changes 补自然键两列（恢复路径记录 / 远端 backend）
 	}
 }

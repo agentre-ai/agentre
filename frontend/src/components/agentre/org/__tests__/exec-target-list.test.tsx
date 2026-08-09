@@ -97,6 +97,8 @@ describe("ExecTargetList", () => {
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
     // R20：只有一项时「当前生效」徽标也不出现——只有一档时说它是废话。
     expect(screen.queryByText("Currently active")).toBeNull();
+    // R20：拖拽柄同批隐去——一档没有可排的对象，留个柄等于假的可供性。
+    expect(screen.queryByLabelText(/Reorder target/)).toBeNull();
   });
 
   it("multiple targets: renders sequence badges and per-row move buttons", async () => {
@@ -299,7 +301,105 @@ describe("ExecTargetList", () => {
       { agentBackendId: 51 },
     ]);
     await waitFor(() =>
-      expect(screen.getByRole("status")).not.toHaveTextContent(""),
+      expect(screen.getByTestId("exec-target-announcer")).not.toHaveTextContent(
+        "",
+      ),
     );
+  });
+
+  // R15：「拖拽排序必须有键盘等价物（聚焦后 ↑/↓）」。dnd-kit 的 PointerSensor 对
+  // 合成鼠标事件无反应，键盘是 e2e 里唯一能自动化的路径，所以拖拽柄自己必须可聚焦
+  // 并直接响应方向键，而不是只能先按空格「提起」。
+  it("Given a multi-target list, When the first row's drag handle is focused and ArrowDown is pressed, Then the row moves down", async () => {
+    availabilityStub([
+      { agentBackendId: 51, available: true },
+      { agentBackendId: 52, available: true },
+    ]);
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <ExecTargetList
+        agentId={7}
+        agentName="开发"
+        targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
+        backends={[localBackend(), remoteBackend()]}
+        onChange={onChange}
+      />,
+    );
+    await screen.findByText("Local machine");
+    const handles = screen.getAllByRole("button", { name: /Reorder target/ });
+    expect(handles).toHaveLength(2);
+    handles[0].focus();
+    await user.keyboard("{ArrowDown}");
+    expect(onChange).toHaveBeenCalledWith([
+      { agentBackendId: 52 },
+      { agentBackendId: 51 },
+    ]);
+    await waitFor(() =>
+      expect(screen.getByTestId("exec-target-announcer")).not.toHaveTextContent(
+        "",
+      ),
+    );
+  });
+
+  it("Given a multi-target list, When the second row's drag handle is focused and ArrowUp is pressed, Then it produces the same order the Move-up button does", async () => {
+    availabilityStub([
+      { agentBackendId: 51, available: true },
+      { agentBackendId: 52, available: true },
+    ]);
+    const user = userEvent.setup();
+    const viaKeyboard = vi.fn();
+    const { unmount } = render(
+      <ExecTargetList
+        agentId={7}
+        agentName="开发"
+        targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
+        backends={[localBackend(), remoteBackend()]}
+        onChange={viaKeyboard}
+      />,
+    );
+    await screen.findByText("Local machine");
+    screen.getAllByRole("button", { name: /Reorder target/ })[1].focus();
+    await user.keyboard("{ArrowUp}");
+    expect(viaKeyboard).toHaveBeenCalledTimes(1);
+    unmount();
+
+    const viaButton = vi.fn();
+    render(
+      <ExecTargetList
+        agentId={7}
+        agentName="开发"
+        targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
+        backends={[localBackend(), remoteBackend()]}
+        onChange={viaButton}
+      />,
+    );
+    await screen.findByText("Local machine");
+    await user.click(
+      screen.getAllByRole("button", { name: /Move target up/ })[1],
+    );
+    expect(viaButton.mock.calls[0][0]).toEqual(viaKeyboard.mock.calls[0][0]);
+  });
+
+  it("Given the topmost drag handle, When ArrowUp is pressed, Then nothing moves", async () => {
+    availabilityStub([
+      { agentBackendId: 51, available: true },
+      { agentBackendId: 52, available: true },
+    ]);
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <ExecTargetList
+        agentId={7}
+        agentName="开发"
+        targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
+        backends={[localBackend(), remoteBackend()]}
+        onChange={onChange}
+      />,
+    );
+    await screen.findByText("Local machine");
+    screen.getAllByRole("button", { name: /Reorder target/ })[0].focus();
+    await user.keyboard("{ArrowUp}");
+    expect(onChange).not.toHaveBeenCalled();
   });
 });

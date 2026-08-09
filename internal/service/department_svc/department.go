@@ -159,6 +159,7 @@ func (s *departmentSvc) Load(ctx context.Context, _ *LoadOrgRequest) (*LoadOrgRe
 		))
 	}
 	for _, a := range agents {
+		execTargets := toAgentExecTargetItems(execTargetsByAgent[a.ID])
 		item := &AgentItem{
 			ID:             a.ID,
 			Name:           a.Name,
@@ -172,11 +173,10 @@ func (s *departmentSvc) Load(ctx context.Context, _ *LoadOrgRequest) (*LoadOrgRe
 			ParentAgentID:  a.ParentAgentID,
 			SortOrder:      a.SortOrder,
 			Prompt:         a.GetPrompt(),
-			// 技能授权已下沉到 AgentExecTarget（R15e），Agent 行的 SkillsJSON 只是
-			// 遗留写入载荷；这里借一个临时的执行目标值对象复用同一份解码逻辑，
-			// 不引入新的仓储依赖（department_svc 不消费 agent_repo.AgentExecTarget()）。
-			Skills:      toAgentSkillDTO((&agent_entity.AgentExecTarget{SkillsJSON: a.SkillsJSON}).GetSkills()),
-			ExecTargets: toAgentExecTargetItems(execTargetsByAgent[a.ID]),
+			// 技能授权已下沉到执行目标行（R15e / 决策 33），agents.skills_json 不再被
+			// 读取；Skills 是执行目标列表的历史兼容视图（= ①），见 primaryTargetSkills。
+			Skills:      primaryTargetSkills(execTargets),
+			ExecTargets: execTargets,
 			Tools:       toAgentToolDTO(a.GetTools()),
 			Createtime:  a.Createtime,
 			Updatetime:  a.Updatetime,
@@ -208,6 +208,17 @@ func toAgentExecTargetItems(rows []*agent_entity.AgentExecTarget) []AgentExecTar
 		})
 	}
 	return out
+}
+
+// primaryTargetSkills 取 ①（sort_order 最小的那一档）的技能授权。AgentItem.Skills
+// 与 AgentItem.AgentBackendID 是同一个视图的两半——列表页那一行的「后端」列已经只
+// 展示 ①（AgentBackendID 由 agent_repo 的 hydrate 取自 ①），技能列跟着它走；多档的
+// 逐档授权在详情页一档一块地呈现，这里不做跨档并集（决策 33）。列表为空时为空。
+func primaryTargetSkills(targets []AgentExecTargetItem) []AgentSkillDTO {
+	if len(targets) == 0 {
+		return []AgentSkillDTO{}
+	}
+	return targets[0].Skills
 }
 
 func toAgentSkillDTO(items []agent_entity.AgentSkillItem) []AgentSkillDTO {
