@@ -73,9 +73,8 @@ export function OrgChartPage() {
   const location = useLocation();
 
   React.useEffect(() => {
-    const selection = (
-      location.state as { orgSelection?: OrgSelection } | null
-    )?.orgSelection;
+    const selection = (location.state as { orgSelection?: OrgSelection } | null)
+      ?.orgSelection;
     if (selection?.kind && selection.id > 0) {
       view.setSelected(selection);
     }
