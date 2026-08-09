@@ -31,14 +31,28 @@ const writeContentByteCap = 64 * 1024
 //     Done 经 SubagentStateBlock 维护,前端 AgentSpawnCard 读 toolBlock.subagent
 //     overlay)
 //
+// subagent 文本过滤:ParentToolUseID 非空的帧来自 Task/Agent 子会话。工具事件
+// (ToolCall / ToolResult)有 ParentToolCallID 字段承载这层归属,由下游渲染成派遣卡
+// 里的嵌套块;而 agentruntime.TextDelta / ThinkingDelta 结构上不承载 parent,一旦
+// emit 就与主 agent 自己的文本无法区分,会被 handlers.TextDeltaHandler 累进主会话
+// 正文并推上前端气泡(sess-2667:后台 subagent 在主轮结束后继续吐旁白,英文句子被
+// 贴进已收尾的中文消息末尾,且因 subagentChildBlocks 只收嵌套工具块而不落库,
+// 刷新即消失)。子代理旁白按产品决策丢弃,故在这唯一的生产点就不 emit —— remote
+// 侧 daemon 内跑的是同一个 translator,一并修好,不需要额外的 wire 字段。
+//
 // usage / stopErr 与旧 translator 同步:EventDone 时填 usage;EventError 时填
 // stopErr。
 func translate(ev claudecode.Event) (events []agentruntime.Event, usage *provider.Usage, stopErr error) {
 	switch ev.Kind {
 	case claudecode.EventTextDelta:
-		events = append(events, agentruntime.TextDelta{Text: ev.Text})
+		// 子代理内部帧的旁白丢弃,不进主会话正文 —— 见下方 subagent 文本过滤说明。
+		if ev.ParentToolUseID == "" {
+			events = append(events, agentruntime.TextDelta{Text: ev.Text})
+		}
 	case claudecode.EventThinkingDelta:
-		events = append(events, agentruntime.ThinkingDelta{Text: ev.Text})
+		if ev.ParentToolUseID == "" {
+			events = append(events, agentruntime.ThinkingDelta{Text: ev.Text})
+		}
 	case claudecode.EventPreToolUse:
 		// AskUserQuestion 走独立的 control_request 路径 emit UserAskRequest,
 		// PreToolUse 这条会被前端再渲染成通用 ToolInvocationCard 重复一遍。

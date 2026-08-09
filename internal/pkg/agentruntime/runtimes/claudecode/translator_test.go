@@ -31,6 +31,51 @@ func TestTranslate_TextThinkingDelta(t *testing.T) {
 	})
 }
 
+// TestTranslate_SubagentTextNotEmitted 回归:子代理内部帧的文本 / 思考不得进入主
+// 会话正文流。
+//
+// 现场(sess-2667):后台 subagent 在主轮 turn done 之后继续跑,CLI 吐出
+//
+//	{"type":"assistant","parent_tool_use_id":"toolu_01RCP…",
+//	 "message":{"content":[{"type":"text","text":"Now let's run this test to confirm RED."}]}}
+//
+// pkg/claudecode 已如实带上 ParentToolUseID,但本 translator 只取 Text 就丢了 parent,
+// 下游 handlers.TextDeltaHandler 无从分辨 → acc.AddText + emit{kind:"chunk"},
+// 子代理旁白被贴进发起消息的气泡正文(且不落库,刷新即消失)。
+//
+// agentruntime.TextDelta / ThinkingDelta 结构上不承载 parent(与 ToolCall /
+// ToolResult 不同),而产品决策是「子代理旁白直接丢弃」—— 因此在 translator 这个
+// 唯一的生产点就不 emit,remote 侧(daemon 内跑同一 translator)自动一并修好。
+func TestTranslate_SubagentTextNotEmitted(t *testing.T) {
+	Convey("子代理内部帧(ParentToolUseID 非空)的文本不入主流", t, func() {
+		out, _, _ := translate(claudecode.Event{
+			Kind:            claudecode.EventTextDelta,
+			Text:            "Now let's run this test to confirm RED.",
+			ParentToolUseID: "toolu_01RCP6GtowoRhZXFKBwzjRDA",
+		})
+		So(out, ShouldBeNil)
+	})
+
+	Convey("子代理内部帧的思考同样不入主流", t, func() {
+		out, _, _ := translate(claudecode.Event{
+			Kind:            claudecode.EventThinkingDelta,
+			Text:            "subagent inner reasoning",
+			ParentToolUseID: "toolu_01RCP6GtowoRhZXFKBwzjRDA",
+		})
+		So(out, ShouldBeNil)
+	})
+
+	Convey("主 agent 自己的文本 / 思考不受影响", t, func() {
+		out, _, _ := translate(claudecode.Event{Kind: claudecode.EventTextDelta, Text: "main"})
+		So(len(out), ShouldEqual, 1)
+		So(out[0].(agentruntime.TextDelta).Text, ShouldEqual, "main")
+
+		out, _, _ = translate(claudecode.Event{Kind: claudecode.EventThinkingDelta, Text: "main think"})
+		So(len(out), ShouldEqual, 1)
+		So(out[0].(agentruntime.ThinkingDelta).Text, ShouldEqual, "main think")
+	})
+}
+
 // TestTranslate_AskUserQuestionFiltered AskUserQuestion 的 PreToolUse / PostToolUse
 // 都过滤,wire 上仅经过 control_request 路径 emit UserAskRequest/Resolved。
 // Part 0 §1.1 把这一规则归到 spec;Plan A 在新 subpackage 仍守住。
