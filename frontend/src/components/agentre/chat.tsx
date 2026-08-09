@@ -351,6 +351,13 @@ const QUOTA_FILL_TONE: Record<QuotaLevel, string> = {
   warn: "bg-status-waiting",
   danger: "bg-status-error",
 };
+// 上下文计量器的文字色:正常态用 primary-text(它是底栏里唯一常驻的定量信息,
+// 该被看见),告警两档与配额一致。
+const CONTEXT_METER_TONE: Record<QuotaLevel, string> = {
+  ok: "text-primary-text",
+  warn: "text-status-waiting",
+  danger: "text-status-error",
+};
 
 const QUOTA_HOVER_OPEN_DELAY_MS = 200;
 const QUOTA_HOVER_CLOSE_DELAY_MS = 100;
@@ -601,21 +608,15 @@ function ContextMeter({ used, max }: { used: number; max: number }) {
   const safeUsed = Math.max(0, used);
   const ratio = max > 0 ? Math.min(1, safeUsed / max) : 0;
   const pct = Math.round(ratio * 100);
-  // 阈值色：>90% 触红，>75% 触黄，其余 primary。沿用 status-* / primary token，
-  // 暗色模式下走 @theme 的 mapping，不用手 toggle。
-  const warn = ratio >= 0.9 ? "error" : ratio >= 0.75 ? "warning" : "ok";
-  const tone =
-    warn === "error"
-      ? "text-status-error"
-      : warn === "warning"
-        ? "text-status-waiting"
-        : "text-primary-text";
-  const fill =
-    warn === "error"
-      ? "bg-status-error"
-      : warn === "warning"
-        ? "bg-status-waiting"
-        : "bg-primary";
+  // 阈值与配额共用 quotaLevel(≥90 危险 / ≥75 警告),别在这里再写一份 —— 同一个文件
+  // 里两套 90/75 常量迟早会改漏一处。传 ratio*100 而不是取整后的 pct,保持既有边界
+  // 行为不变(ratio 0.895 仍算 warning,不因四舍五入跳成 danger)。
+  const level = quotaLevel(ratio * 100);
+  // 调色板仍是上下文自己的:它的"正常"态是 primary 着色(这个数字是主角),
+  // 而底栏配额的"正常"态要退到背景里 —— 与 QUOTA_METER_TONE / QUOTA_PANEL_TONE
+  // 同源不同表。
+  const tone = CONTEXT_METER_TONE[level];
+  const fill = QUOTA_FILL_TONE[level];
   return (
     <div
       className="flex min-w-0 items-center gap-2 overflow-hidden font-mono text-meta whitespace-nowrap text-muted-foreground"
