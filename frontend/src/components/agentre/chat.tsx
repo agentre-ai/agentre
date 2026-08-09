@@ -399,7 +399,9 @@ function QuotaMeter({
         <button
           type="button"
           className={cn(
-            "flex shrink-0 cursor-default items-center gap-1.5 rounded-sm border border-transparent px-1 py-0.5",
+            // min-w-0 + 截断:计量器是底栏唯一的让位者(规格决策 11)。断点估窄时
+            // 多出来的宽度只吃掉这里,绝不把发送按钮顶出可视区。
+            "flex min-w-0 cursor-default items-center gap-1.5 overflow-hidden rounded-sm border border-transparent px-1 py-0.5 whitespace-nowrap",
             "font-mono text-meta tabular-nums transition-colors motion-reduce:transition-none",
             "hover:border-border hover:bg-accent",
             "focus-visible:border-border focus-visible:bg-accent focus-visible:outline-none",
@@ -416,7 +418,7 @@ function QuotaMeter({
             {/* 窄档隐藏 5h/7d 前缀,只留两个百分比;语义由 aria-label 与面板保留。 */}
             <span
               data-quota-prefix="5h"
-              className="@max-[480px]/composer:hidden"
+              className="@max-[800px]/composer:hidden"
             >
               5h{" "}
             </span>
@@ -426,7 +428,7 @@ function QuotaMeter({
           <span className={sevenTone}>
             <span
               data-quota-prefix="7d"
-              className="@max-[480px]/composer:hidden"
+              className="@max-[800px]/composer:hidden"
             >
               7d{" "}
             </span>
@@ -616,12 +618,12 @@ function ContextMeter({ used, max }: { used: number; max: number }) {
         : "bg-primary";
   return (
     <div
-      className="flex shrink-0 items-center gap-2 font-mono text-meta text-muted-foreground"
+      className="flex min-w-0 items-center gap-2 overflow-hidden font-mono text-meta whitespace-nowrap text-muted-foreground"
       aria-label={t("chat.context.aria", { max, used: safeUsed })}
     >
       <Gauge className="size-2.5 shrink-0" aria-hidden="true" />
       {/* 中档起隐藏文字标签:图标 + 数字已足够辨识, 标签是最先该让位的冗余。 */}
-      <span className="font-sans @max-[640px]/composer:hidden">
+      <span className="font-sans @max-[1000px]/composer:hidden">
         {t("chat.context.label")}
       </span>
       <span className="inline-flex items-center gap-0.5 tabular-nums">
@@ -632,7 +634,8 @@ function ContextMeter({ used, max }: { used: number; max: number }) {
         <span>{formatTokens(max)}</span>
       </span>
       <span
-        className="h-1 w-24 shrink-0 overflow-hidden rounded-sm bg-border @max-[480px]/composer:w-10"
+        // 窄档整条隐藏:它与紧邻的百分比表达同一个量,是行内最贵的冗余装饰。
+        className="h-1 w-24 shrink-0 overflow-hidden rounded-sm bg-border @max-[800px]/composer:hidden"
         role="progressbar"
         aria-valuemin={0}
         aria-valuemax={max}
@@ -1055,7 +1058,7 @@ function ChatComposer({
               </>
             ) : null}
             {/* 快捷键提示是一次性教学文案,空间不足时第一个让位。 */}
-            <span className="shrink-0 font-mono text-meta leading-none whitespace-nowrap text-subtle-foreground @max-[640px]/composer:hidden">
+            <span className="shrink-0 font-mono text-meta leading-none whitespace-nowrap text-subtle-foreground @max-[1000px]/composer:hidden">
               {editing
                 ? t("chat.composer.shortcuts.edit")
                 : t("chat.composer.shortcuts.send")}
