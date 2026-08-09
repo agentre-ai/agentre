@@ -640,7 +640,10 @@
       "noCwd": "This session has no working directory",
       "readFailed": "Failed to read the directory",
       "retry": "Retry",
-      "treeAria": "Working directory files"
+      "treeAria": "Working directory files",
+      "subtreeChanges": "{{count}} changed files",
+      "subtreeChanges_one": "{{count}} changed file",
+      "subtreeChanges_other": "{{count}} changed files"
     },
     "search": {
       "placeholder": "Search files by name…",

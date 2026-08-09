@@ -640,7 +640,10 @@
       "noCwd": "这个会话没有工作目录",
       "readFailed": "读取目录失败",
       "retry": "重试",
-      "treeAria": "工作目录文件"
+      "treeAria": "工作目录文件",
+      "subtreeChanges": "{{count}} 个文件有变动",
+      "subtreeChanges_one": "{{count}} 个文件有变动",
+      "subtreeChanges_other": "{{count}} 个文件有变动"
     },
     "search": {
       "placeholder": "按文件名搜索…",

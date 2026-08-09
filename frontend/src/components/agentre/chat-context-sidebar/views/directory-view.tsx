@@ -337,11 +337,21 @@ export function DirectoryView({
           title={label}
           expanded={isOpen}
           onToggle={() => toggleDir(relPath)}
-          ariaLabel={
+          // 子树变动数的文字标签只能落在行的可访问名里：行的主按钮有显式
+          // aria-label，放进按钮内部的 sr-only 文本会被 accname 计算整个盖掉。
+          // 着色 + 裸数字因此不会成为唯一的信息载体（spec「键盘与无障碍」）。
+          ariaLabel={[
             isOpen
               ? t("chatContext.files.collapseFolder", { name: label })
-              : t("chatContext.files.expandFolder", { name: label })
-          }
+              : t("chatContext.files.expandFolder", { name: label }),
+            subtreeCount > 0
+              ? t("chatContext.directory.subtreeChanges", {
+                  count: subtreeCount,
+                })
+              : null,
+          ]
+            .filter((part) => part !== null)
+            .join(", ")}
           lead={
             <>
               {frontierLevel?.status === "loading" ? (
@@ -365,9 +375,11 @@ export function DirectoryView({
               // 数量为零时不显示（served requirement）；非零时用与「modified」
               // 同一份状态色，代表「这棵子树里有变动」，不区分具体是哪几类状态
               // 的混合（子树可能同时含多种状态，见 mockup H2：单个数字用一种
-              // 状态色，不是 +N/−N 角标，也不逐类拆分）。
+              // 状态色，不是 +N/−N 角标，也不逐类拆分）。数字对读屏隐藏，文字
+              // 标签在行的 ariaLabel 里（与 Git 状态字母同一套无障碍约定）。
               <span
                 data-testid="dir-subtree-count"
+                aria-hidden="true"
                 className={cn(
                   "shrink-0 font-mono text-[10px] font-medium tabular-nums",
                   GIT_STATUS_META.modified.className,

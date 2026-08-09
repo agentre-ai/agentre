@@ -181,6 +181,31 @@ describe("目录模式的 git 状态叠加：目录行子树计数", () => {
     ).toBeNull();
   });
 
+  it("hides the bare count from screen readers and puts it in the row's accessible label instead", async () => {
+    listDirMock.mockResolvedValue(
+      listing([entry("internal", true), entry("assets", true)]),
+    );
+    renderPanelWithChanges([
+      change({ path: "internal/a.go" }),
+      change({ path: "internal/b.go" }),
+    ]);
+
+    // 着色 + 裸数字不单独承载信息（spec「键盘与无障碍」）：数字对读屏隐藏，
+    // 子树变动数另有文字标签，且必须落在**行本身**的可访问名里 —— 行的主按钮
+    // 有显式 aria-label，任何 sr-only 文本放进按钮内部都不会被读出来。
+    await screen.findByRole("button", { name: /expand internal/i });
+    expect(
+      within(dirRow("internal")).getByTestId("dir-subtree-count"),
+    ).toHaveAttribute("aria-hidden", "true");
+    expect(
+      screen.getByRole("button", { name: "Expand internal, 2 changed files" }),
+    ).toBeInTheDocument();
+    // 子树没有变动的目录行不带这一段。
+    expect(
+      screen.getByRole("button", { name: "Expand assets" }),
+    ).toBeInTheDocument();
+  });
+
   it("counts the whole compacted chain's subtree from its frontier segment", async () => {
     listDirMock.mockImplementation((_id: number, relPath: string) => {
       if (relPath === "")
@@ -197,13 +222,14 @@ describe("目录模式的 git 状态叠加：目录行子树计数", () => {
     ]);
 
     const foldedStart = await screen.findByRole("button", {
-      name: "Expand internal",
+      name: "Expand internal, 2 changed files",
     });
     await userEvent.click(foldedStart);
     await screen.findByText("chat.go");
 
+    // 压缩行的可访问名同样带整条链的子树变动数。
     const foldedRow = screen.getByRole("button", {
-      name: "Collapse internal/service",
+      name: "Collapse internal/service, 2 changed files",
     });
     expect(
       within(foldedRow).getByTestId("dir-subtree-count"),
