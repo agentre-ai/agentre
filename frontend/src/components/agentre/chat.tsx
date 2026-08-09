@@ -392,12 +392,23 @@ function QuotaMeter({
         >
           <Timer className="size-2.5 shrink-0" aria-hidden="true" />
           <span className={fiveTone}>
-            <span data-quota-prefix="5h">5h </span>
+            {/* 窄档隐藏 5h/7d 前缀,只留两个百分比;语义由 aria-label 与面板保留。 */}
+            <span
+              data-quota-prefix="5h"
+              className="@max-[480px]/composer:hidden"
+            >
+              5h{" "}
+            </span>
             {showNumbers && fiveH !== null ? `${fiveH}%` : "—%"}
           </span>
           <span className="text-subtle-foreground">·</span>
           <span className={sevenTone}>
-            <span data-quota-prefix="7d">7d </span>
+            <span
+              data-quota-prefix="7d"
+              className="@max-[480px]/composer:hidden"
+            >
+              7d{" "}
+            </span>
             {showNumbers && sevenD !== null ? `${sevenD}%` : "—%"}
           </span>
         </button>
@@ -582,11 +593,14 @@ function ContextMeter({ used, max }: { used: number; max: number }) {
         : "bg-primary";
   return (
     <div
-      className="flex items-center gap-2 font-mono text-meta text-muted-foreground"
+      className="flex shrink-0 items-center gap-2 font-mono text-meta text-muted-foreground"
       aria-label={t("chat.context.aria", { max, used: safeUsed })}
     >
-      <Gauge className="size-2.5" aria-hidden="true" />
-      <span className="font-sans">{t("chat.context.label")}</span>
+      <Gauge className="size-2.5 shrink-0" aria-hidden="true" />
+      {/* 中档起隐藏文字标签:图标 + 数字已足够辨识, 标签是最先该让位的冗余。 */}
+      <span className="font-sans @max-[640px]/composer:hidden">
+        {t("chat.context.label")}
+      </span>
       <span className="inline-flex items-center gap-0.5 tabular-nums">
         <span className="font-medium text-foreground">
           {formatTokens(safeUsed)}
@@ -595,7 +609,7 @@ function ContextMeter({ used, max }: { used: number; max: number }) {
         <span>{formatTokens(max)}</span>
       </span>
       <span
-        className="h-1 w-24 overflow-hidden rounded-sm bg-border"
+        className="h-1 w-24 shrink-0 overflow-hidden rounded-sm bg-border @max-[480px]/composer:w-10"
         role="progressbar"
         aria-valuemin={0}
         aria-valuemax={max}
@@ -855,7 +869,9 @@ function ChatComposer({
     <form
       ref={dropRef}
       className={cn(
-        "relative w-full border-t border-border bg-background px-7 py-3.5",
+        // @container/composer:底栏按 composer 自身宽度分档降级 —— chat panel 的实际
+        // 宽度取决于侧栏 / 右侧面板开合,视口宽度读不到它。
+        "@container/composer relative w-full border-t border-border bg-background px-7 py-3.5",
         className,
       )}
       onSubmit={handleFormSubmit}
@@ -987,7 +1003,9 @@ function ChatComposer({
               {imageError}
             </div>
           ) : null}
-          <div className="flex items-center gap-2">
+          {/* 底栏恒为单行:子项一律 shrink-0,靠 @container 分档隐藏来适配窄宽,
+              绝不允许内部文字折行把行高顶高(见 docs/specs 的 Hard invariant 1)。 */}
+          <div className="flex flex-nowrap items-center gap-2">
             {!editing && supportsImageInput ? (
               <>
                 <input
@@ -1013,13 +1031,14 @@ function ChatComposer({
                 </Button>
               </>
             ) : null}
-            <span className="font-mono text-meta leading-none text-subtle-foreground">
+            {/* 快捷键提示是一次性教学文案,空间不足时第一个让位。 */}
+            <span className="shrink-0 font-mono text-meta leading-none whitespace-nowrap text-subtle-foreground @max-[640px]/composer:hidden">
               {editing
                 ? t("chat.composer.shortcuts.edit")
                 : t("chat.composer.shortcuts.send")}
             </span>
             {!editing && (permissionModeSlot || modelSlot) ? (
-              <div className="flex items-center gap-1">
+              <div className="flex shrink-0 items-center gap-1">
                 {permissionModeSlot}
                 {modelSlot}
               </div>
