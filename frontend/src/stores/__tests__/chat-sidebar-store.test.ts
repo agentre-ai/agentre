@@ -457,6 +457,28 @@ describe("chat-sidebar-store", () => {
       expect(paths(7)).toHaveLength(8);
     });
 
+    it("does not resurrect a clobbered tab at the cap by evicting the tab the double click just promoted", () => {
+      // 7 个固定标签 + 1 个临时标签，正好占满上限。这是 sidebar-row 双击手势的
+      // 真实序列：第一次 click 把临时标签 t.md 原地换成 f9.md，dblclick 把 f9.md
+      // 转常驻，随后才补回被吞掉的 t.md。
+      for (let i = 1; i <= 7; i++) {
+        store().openPreviewInNewTab(7, `f${i}.md`, "directory");
+        store().togglePreviewTabPin(7, `f${i}.md`);
+      }
+      store().openPreview(7, "t.md", "directory");
+      const clobbered = store().openPreview(7, "f9.md", "directory");
+      expect(clobbered?.path).toBe("t.md");
+      store().openPreviewInNewTab(7, "f9.md", "directory");
+
+      store().restoreClobberedPreviewTab(7, clobbered!);
+
+      // 补回是尽力而为：没位置就不补，绝不能把用户刚双击出来的那个标签顶掉——
+      // 顶掉它还会让 activePath 指向一个不存在的标签，整个预览面板就此消失。
+      expect(paths(7)).toContain("f9.md");
+      expect(activePath(7)).toBe("f9.md");
+      expect(selectActivePreviewTab(store(), 7)).not.toBeNull();
+    });
+
     it("refuses to open a ninth tab when all eight are pinned and says so", () => {
       for (let i = 1; i <= 8; i++) {
         store().openPreviewInNewTab(7, `f${i}.md`, "directory");

@@ -733,6 +733,48 @@ describe("FilesPanel directory search", () => {
     expect(resultPaths()).toEqual(["src/abc.ts"]);
   });
 
+  it("(c2) a response that lands after the query is cleared cannot resurrect the result list", async () => {
+    let resolveFirst: ((v: unknown) => void) | null = null;
+    searchMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveFirst = resolve;
+        }),
+    );
+    renderPanel({});
+    await switchTo(/directory/i);
+    await userEvent.click(searchToggle());
+
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+    const input = searchInput();
+    fireEvent.change(input, { target: { value: "ab" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(searchMock).toHaveBeenCalledTimes(1);
+
+    // 请求还在途时把输入清空：面板回到「输入以搜索」的引导态。
+    fireEvent.change(input, { target: { value: "" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(screen.queryAllByTestId("search-row")).toHaveLength(0);
+
+    // 那次已经作废的请求回来了：不能把结果列表与命中计数再摆回空查询之上。
+    await act(async () => {
+      resolveFirst!({
+        hits: [{ path: "src/ab.ts", isDir: false }],
+        truncated: false,
+      });
+    });
+    expect(screen.queryAllByTestId("search-row")).toHaveLength(0);
+    expect(screen.queryByTestId("search-hit-count")).toBeNull();
+  });
+
   it("(d) renders results as flat rows (basename + head-truncated directory suffix, highlighted match) sharing the row and menu with other modes", async () => {
     searchMock.mockResolvedValue({
       hits: [

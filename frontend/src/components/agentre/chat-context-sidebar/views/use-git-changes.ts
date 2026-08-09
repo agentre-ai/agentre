@@ -108,9 +108,12 @@ export function useGitChanges({
   }, [sessionId, cwd]);
 
   React.useEffect(() => {
-    if (!active || cwd === "") return;
+    // 代际先于 return 自增：换到一个没有工作目录的会话、或切走到不取数的模式
+    // 时，此前在途的响应同样必须作废——否则它回来时代际仍然相等，会把上一个仓库
+    // 的变动清单（连同模式控件的角标数字与目录模式的状态叠加）写到新会话上。
     changesGenRef.current += 1;
     const gen = changesGenRef.current;
+    if (!active || cwd === "") return;
     setState({ status: "loading" });
     WorkspaceFsGitChanges(sessionId, effectiveScope, requestedBaseRef).then(
       (view) => {
@@ -141,9 +144,10 @@ export function useGitChanges({
   // 分支清单只喂基线下拉，所以只在本分支档取；它失败不影响变动列表本身，沿用
   // 「单条 git 子命令失败只让对应字段留空」的容错约定。
   React.useEffect(() => {
-    if (!enabled || cwd === "" || scope !== "branch") return;
+    // 同上：代际先于 return 自增，切走 / 换会话后回来的旧分支清单不得再落盘。
     branchesGenRef.current += 1;
     const gen = branchesGenRef.current;
+    if (!enabled || cwd === "" || scope !== "branch") return;
     WorkspaceFsGitBranches(sessionId).then(
       (view) => {
         if (branchesGenRef.current === gen) setBranches(view);

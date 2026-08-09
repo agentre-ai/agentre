@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -144,6 +144,22 @@ describe("FilePreviewPanel", () => {
     expect(
       within(panel).getByRole("button", { name: "Close preview" }),
     ).toBeInTheDocument();
+  });
+
+  it("still shows the directory prefix for a backslash-separated relPath", async () => {
+    // Windows 会话的 relPath 用 "\" 分隔（previewable.ts 的 toRelPath 按 cwd 的
+    // 分隔符切）。文件名与目录前缀必须认同一套分隔符，否则 header 里「这个文件在
+    // 哪」那一栏会无声消失。
+    readFileMock.mockResolvedValue(textView("# Hi"));
+    openPreview("docs\\guide.md", 7, "directory");
+
+    renderPanel();
+
+    const panel = await screen.findByRole("complementary", {
+      name: "File preview",
+    });
+    expect(within(panel).getByText("guide.md")).toBeInTheDocument();
+    expect(within(panel).getByText("docs\\")).toBeInTheDocument();
   });
 
   it("renders markdown in render mode by default (GFM MarkdownText)", async () => {
@@ -432,6 +448,41 @@ describe("FilePreviewPanel", () => {
       segment: null,
       sourceMode: "directory",
     });
+  });
+
+  it("does not remount the body when an abandoned HEAD read lands after switching to a tab that does not diff", async () => {
+    // 从 Git 模式打开代码文件会去读它在 HEAD 的版本;还没回来就切到一个不做对比
+    // 的 markdown 标签时,那次读取已经被放弃。它回来若还能把 gitState 从 idle 翻
+    // 成 loaded,正文容器的 key 就变了 —— 用户正看着的 markdown 会被整个重挂载
+    // (滚动位置丢失、淡入重播),而且是在切过去好几秒之后。
+    readFileMock.mockImplementation((_id: number, path: string) =>
+      Promise.resolve(textView(path === "README.md" ? "MD BODY" : "go source")),
+    );
+    let resolveHead: ((v: unknown) => void) | null = null;
+    gitFileContentMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveHead = resolve;
+        }),
+    );
+    useChatSidebarStore.getState().openPreviewInNewTab(7, "main.go", "git");
+    renderPanel();
+    await waitFor(() => expect(gitFileContentMock).toHaveBeenCalledTimes(1));
+
+    // HEAD 还没回来就切到 markdown 标签：那次读取就此被放弃。
+    await act(async () => {
+      useChatSidebarStore
+        .getState()
+        .openPreviewInNewTab(7, "README.md", "directory");
+    });
+    const before = await screen.findByText("MD BODY");
+    expect(resolveHead).not.toBeNull();
+
+    await act(async () => {
+      resolveHead!({ content: "old", notARepo: false, hasHead: true });
+    });
+
+    expect(screen.getByText("MD BODY")).toBe(before);
   });
 
   it("switching files re-reads the new file and keeps the segment in the same mode", async () => {

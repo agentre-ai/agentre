@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"os/exec"
 	"runtime"
 	"testing"
 
@@ -163,6 +164,62 @@ func TestRevealPath_dispatchesPlatformCommand(t *testing.T) {
 			err := a.RevealPath("/tmp/../etc/file.go")
 			So(err, ShouldNotBeNil)
 			So(called, ShouldBeFalse)
+		})
+	})
+}
+
+// TestRunRevealPlatform_PerGOOS 覆盖本机 GOOS 之外的两条分支：它们各自有一个
+// 「命令报错不等于操作失败」的降级，只在 windows / linux 上才走得到。
+func TestRunRevealPlatform_PerGOOS(t *testing.T) {
+	Convey("Given a stubbed exec runner", t, func() {
+		type call struct {
+			name string
+			args []string
+		}
+		var calls []call
+		origRun := runOpenCmd
+		defer func() { runOpenCmd = origRun }()
+		stub := func(err func(name string) error) {
+			runOpenCmd = func(name string, args ...string) error {
+				calls = append(calls, call{name, args})
+				return err(name)
+			}
+		}
+
+		Convey("when explorer exits non-zero on windows, then reveal still succeeds", func() {
+			// explorer.exe 成功时也几乎恒以非零码退出，把它当失败会让每一次成功
+			// 的「在文件管理器中显示」都弹一条错误提示。
+			stub(func(string) error { return &exec.ExitError{} })
+			So(runRevealPlatform("windows", `C:\Users\x\foo.go`), ShouldBeNil)
+			So(calls, ShouldHaveLength, 1)
+			So(calls[0].name, ShouldEqual, "explorer")
+		})
+
+		Convey("when explorer itself cannot be launched on windows, then error propagates", func() {
+			stub(func(string) error { return exec.ErrNotFound })
+			So(runRevealPlatform("windows", `C:\Users\x\foo.go`), ShouldNotBeNil)
+		})
+
+		Convey("when nautilus is missing on linux, then fall back to opening the parent dir", func() {
+			// nautilus 只有 GNOME 装；KDE / XFCE 等桌面上根本不存在，此时打开所在
+			// 目录（选不中文件）也比只弹一条错误强。
+			stub(func(name string) error {
+				if name == "nautilus" {
+					return exec.ErrNotFound
+				}
+				return nil
+			})
+			So(runRevealPlatform("linux", "/home/x/proj/foo.go"), ShouldBeNil)
+			So(calls, ShouldHaveLength, 2)
+			So(calls[1].name, ShouldEqual, "xdg-open")
+			So(calls[1].args, ShouldResemble, []string{"/home/x/proj"})
+		})
+
+		Convey("when nautilus succeeds on linux, then no fallback is run", func() {
+			stub(func(string) error { return nil })
+			So(runRevealPlatform("linux", "/home/x/proj/foo.go"), ShouldBeNil)
+			So(calls, ShouldHaveLength, 1)
+			So(calls[0].name, ShouldEqual, "nautilus")
 		})
 	})
 }

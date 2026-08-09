@@ -153,13 +153,11 @@ export function SidebarRow({
   const openFile = useOpenFile(cwd);
   const revealFile = useRevealFile(cwd);
 
-  // clobberedTempRef 记下这一行最近一次单击原地替换掉的临时标签（openPreview 的
-  // 返回值），只为了双击手势自我修复：真实鼠标双击在派发 dblclick 前会先各打一次
-  // click。第一次 click 把当时的临时标签原地替换成这一行；第二次 click 因为这一行
-  // 此时已经开着，走的是「已打开，重新激活」分支——onPreview 据此不会用它的 null
-  // 覆盖第一次 click 记下的值（PreviewClickOutcome.alreadyOpen 就是这个判定）。
-  // dblclick 触发时用它把被替换掉的那个标签补回来，不然双击结束后就只剩双击的这一
-  // 行，而不是「原临时标签 + 双击的行转常驻」两个标签。
+  // clobberedTempRef 记下**本次手势的第一次 click** 原地替换掉的临时标签
+  // （openPreview 的返回值），只为了双击手势自我修复：真实鼠标双击在派发 dblclick
+  // 前会先各打一次 click，第一次 click 把当时的临时标签原地替换成这一行；dblclick
+  // 触发时用这个槽位把它补回来，不然双击结束后就只剩双击的这一行，而不是「原临时
+  // 标签 + 双击的行转常驻」两个标签。
   const clobberedTempRef = React.useRef<FilePreviewTab | null>(null);
 
   // 可预览性与「路径 → 会话级 relPath」的判定只有 previewable.ts 一处；null 表示
@@ -172,6 +170,21 @@ export function SidebarRow({
 
   const interactive = kind === "dir" || previewPath !== null;
   const active = previewPath !== null && previewPath === activePreviewPath;
+
+  // openPreviewFromRow 打开预览，并按「这是手势里的第几次 click」维护
+  // clobberedTempRef。clickCount 取 MouseEvent.detail —— 浏览器按系统双击间隔判定
+  // 的连击序号，也是这里唯一能把「双击的第二次 click」与「一次全新的单击」区分开
+  // 的东西：这两种情形在 store 看来都是「这一行已经开着」、都没替换掉任何标签。
+  //   - 连击序号 ≥2（双击的第二次 click）：不动槽位，否则第一次 click 记下的标签
+  //     就丢了，双击结束后补不回来。
+  //   - 其余（第一次 click，以及菜单 / Enter 这类没有连击序号的入口）：无条件覆盖
+  //     槽位。上一次手势替换掉的标签必须在这里被清掉，否则「先单击开出临时标签、
+  //     之后再双击同一行转常驻」会把它当成刚被这次双击吞掉的标签复活出来。
+  const openPreviewFromRow = (clickCount: number) => {
+    if (previewPath === null) return;
+    const clobbered = openPreview(sessionId, previewPath, sourceMode);
+    if (clickCount < 2) clobberedTempRef.current = clobbered;
+  };
 
   const copy = React.useCallback(
     (text: string) => {
@@ -188,14 +201,8 @@ export function SidebarRow({
     name,
     expanded,
     onToggle: () => onToggle?.(),
-    onPreview: () => {
-      if (previewPath === null) return;
-      const outcome = openPreview(sessionId, previewPath, sourceMode);
-      // alreadyOpen=true 是双击手势里第二次 click 的情形：这一行已经因为第一次
-      // click 开着了，这次没有原地替换任何东西，不能拿它的 null 覆盖第一次 click
-      // 记下的值（见 clobberedTempRef 声明处的注释）。
-      if (!outcome.alreadyOpen) clobberedTempRef.current = outcome.replaced;
-    },
+    // 菜单项 / Enter 没有连击序号，一律按「一次全新的单击」处理。
+    onPreview: () => openPreviewFromRow(1),
     onPreviewInNewTab: () => {
       if (previewPath !== null) {
         openPreviewInNewTab(sessionId, previewPath, sourceMode);
@@ -277,9 +284,12 @@ export function SidebarRow({
           tabIndex={-1}
           aria-label={ariaLabel}
           className={bodyClassName}
-          onClick={() =>
-            kind === "dir" ? model.onToggle() : model.onPreview()
-          }
+          onClick={(event) => {
+            if (kind === "dir") model.onToggle();
+            // event.detail 是这次 click 在手势里的连击序号，双击的第二次 click 靠
+            // 它被识别出来（见 openPreviewFromRow）。
+            else openPreviewFromRow(event.detail);
+          }}
           // 双击 = 转常驻标签，与预览标签条的双击语义一致；目录行没有第二种打开
           // 方式，双击就是连续两次展开收起，交给 onClick 自然处理。真实鼠标双击
           // 在派发这个事件前已经跑过两次 onClick 了（见 clobberedTempRef 声明处

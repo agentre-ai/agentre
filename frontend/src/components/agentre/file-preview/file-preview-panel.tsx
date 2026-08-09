@@ -139,9 +139,10 @@ export function FilePreviewPanel({ sessionId }: Props) {
   const [gitPath, setGitPath] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    if (!path) return;
+    // 代际先于 return 自增:标签全关掉时此前在途的读取同样要作废。
     readGenRef.current += 1;
     const gen = readGenRef.current;
+    if (!path) return;
     setReadPath(path);
     setReadState({ status: "loading" });
     WorkspaceFsReadFile(sessionId, path).then(
@@ -157,12 +158,16 @@ export function FilePreviewPanel({ sessionId }: Props) {
   }, [sessionId, path, doneTick, reloadKey]);
 
   React.useEffect(() => {
+    // 代际先于 return 自增:切到一个不做对比的标签(markdown / 图片 / 目录模式打
+    // 开的代码文件)时,此前在途的 HEAD 读取必须作废。否则它回来时代际仍然相等,
+    // gitState 会从 idle 翻成 loaded——contentKey 带着 gitState.status,正文容器
+    // 因此被重挂载,用户已经滚到一半的 markdown 被拽回顶部并重播淡入。
+    gitGenRef.current += 1;
+    const gen = gitGenRef.current;
     if (!showDiff || !path) {
       setGitState({ status: "idle" });
       return;
     }
-    gitGenRef.current += 1;
-    const gen = gitGenRef.current;
     setGitPath(path);
     setGitState({ status: "loading" });
     WorkspaceFsGitFileContent(sessionId, path).then(

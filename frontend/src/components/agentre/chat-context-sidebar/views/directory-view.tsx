@@ -315,10 +315,11 @@ export function DirectoryView({
     // 段，子项都只比这一行多缩进一级（spec「其子项缩进只增加一级」）。
     const frontierPath = chain.cursor;
     const frontierLevel = levels[frontierPath];
-    // 压缩链的子树统计对链尾（frontierPath）算一次即可代表整条链：链的中间段
-    // 按定义恰好只有一个子目录、不含文件，链下的全部变动必然落在链尾子树里
-    // （countSubtreeChanges 的实现注释有完整推导）。
-    const subtreeCount = countSubtreeChanges(gitChangePaths, frontierPath);
+    // 压缩链的子树统计按**链首**（relPath）算，不是链尾：「中间段只有一个子目
+    // 录、不含文件」只对磁盘上还在的条目成立，listDir 看不到已删除的文件而 git
+    // 照报。被链吸收掉的那几段里的变动在整棵树上没有任何一行，这个数字是它们
+    // 唯一的出口；按链尾算会让同一行的数字在链变长的那一刻悄悄变小。
+    const subtreeCount = countSubtreeChanges(gitChangePaths, relPath);
     return (
       <div key={relPath} className="flex flex-col">
         <SidebarRow

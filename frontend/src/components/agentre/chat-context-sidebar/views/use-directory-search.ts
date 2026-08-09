@@ -85,6 +85,11 @@ export function useDirectorySearch(
   }, [active]);
 
   React.useEffect(() => {
+    // 代际先于任何一条 return 自增：放弃取数的那几条路径（关掉过滤态、清空查询
+    // 串、换会话）同样必须让此前在途的响应作废，否则它回来时代际仍然相等，会把
+    // 一份属于旧查询的结果摆到空查询 / 已关闭的过滤态上。
+    genRef.current += 1;
+    const gen = genRef.current;
     if (!active) return;
     const trimmed = query.trim();
     if (trimmed === "") {
@@ -92,8 +97,6 @@ export function useDirectorySearch(
       setState(IDLE);
       return;
     }
-    genRef.current += 1;
-    const gen = genRef.current;
     // 立即显形加载态，即使真正的请求要等防抖计时器：敲键时始终看到「正在
     // 搜索」，而不是上一次查询词残留的结果或空态。
     setState({ status: "loading" });

@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -235,6 +235,39 @@ describe("目录模式的 git 状态叠加：目录行子树计数", () => {
       within(foldedRow).getByTestId("dir-subtree-count"),
     ).toHaveTextContent("2");
   });
+
+  it("still counts a change that sits in a segment the chain swallowed (a deleted file leaves no row of its own)", async () => {
+    // 链压缩的前提「中间段只有一个子目录、不含文件」只对**磁盘上还在**的条目成
+    // 立：listDir 看不到已删除的文件，git 却照报。此时 internal/ 被吸进链里，
+    // internal/legacy.go 在整棵树上没有任何一行，压缩行的数字是它唯一的出口。
+    listDirMock.mockImplementation((_id: number, relPath: string) => {
+      if (relPath === "")
+        return Promise.resolve(listing([entry("internal", true)]));
+      if (relPath === "internal")
+        return Promise.resolve(listing([entry("service", true)]));
+      if (relPath === "internal/service")
+        return Promise.resolve(listing([entry("chat.go")]));
+      throw new Error(`unexpected relPath ${relPath}`);
+    });
+    renderPanelWithChanges([
+      change({ path: "internal/service/chat.go" }),
+      change({ path: "internal/legacy.go", status: "deleted" }),
+    ]);
+
+    const foldedStart = await screen.findByRole("button", {
+      name: "Expand internal, 2 changed files",
+    });
+    await userEvent.click(foldedStart);
+    await screen.findByText("chat.go");
+
+    // 链一旦长到 internal/service，数字也不能从 2 悄悄掉到 1。
+    const folded = screen.getByRole("button", {
+      name: "Collapse internal/service, 2 changed files",
+    });
+    expect(within(folded).getByTestId("dir-subtree-count")).toHaveTextContent(
+      "2",
+    );
+  });
 });
 
 describe("目录模式的 git 状态叠加：无叠加降级", () => {
@@ -261,6 +294,47 @@ describe("目录模式的 git 状态叠加：取数与去重（ChatContextSideba
     expect(gitChangesMock).toHaveBeenCalledWith(7, "uncommitted", "");
     await waitFor(() =>
       expect(screen.getByText("turn.go")).toHaveClass("text-status-waiting"),
+    );
+  });
+
+  it("drops an in-flight overlay response when the session switches to one without a working directory", async () => {
+    // 换到一个没有工作目录的会话时不再取数，但上一个仓库那次请求还在途：它回来
+    // 若还能落盘，Git tab 的角标就会在新会话上显示旧仓库的变动数。
+    listDirMock.mockResolvedValue(listing([entry("turn.go")]));
+    let resolveChanges: ((v: unknown) => void) | null = null;
+    gitChangesMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveChanges = resolve;
+        }),
+    );
+    const { rerender } = renderSidebar();
+    await waitFor(() => expect(gitChangesMock).toHaveBeenCalledTimes(1));
+
+    rerender(
+      <ChatContextSidebar
+        sessionId={7}
+        messages={[]}
+        activeMessageId={null}
+        onJumpToMessage={() => {}}
+        cwd=""
+        remote={false}
+      />,
+    );
+    const gitTab = screen.getByRole("tab", { name: /^Git/ });
+    expect(gitTab).not.toHaveTextContent("3");
+
+    await act(async () => {
+      resolveChanges!(
+        changesView([
+          change({ path: "a.go" }),
+          change({ path: "b.go" }),
+          change({ path: "c.go" }),
+        ]),
+      );
+    });
+    expect(screen.getByRole("tab", { name: /^Git/ })).not.toHaveTextContent(
+      "3",
     );
   });
 

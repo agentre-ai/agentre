@@ -241,6 +241,24 @@ describe("行的统一点击语义", () => {
       entry?.tabs.find((tab) => tab.path === "assets/logo.png"),
     ).toMatchObject({ isPreview: false });
   });
+
+  it("先单击开出临时标签、之后再双击同一行转常驻：被那次单击替换掉的标签不复活", async () => {
+    renderChanges({});
+    const user = setupUser();
+
+    // 单击 chat.go 开出临时标签，再单击 README.md 把它原地替换掉——chat.go 是
+    // 用户这一次单独的手势主动换走的，理应就此消失。
+    await user.click(screen.getByRole("button", { name: /chat\.go/ }));
+    await user.click(screen.getByRole("button", { name: /README\.md/ }));
+
+    // 之后（可能过了很久）再双击 README.md 把它转常驻。这次双击的两次 click 都
+    // 落在"已经开着的行"上、没有替换掉任何东西，所以没有需要补回的标签。
+    await user.dblClick(screen.getByRole("button", { name: /README\.md/ }));
+
+    const entry = useChatSidebarStore.getState().previewTabsBySession[1];
+    expect(entry?.tabs.map((tab) => tab.path)).toEqual(["README.md"]);
+    expect(entry?.tabs[0]).toMatchObject({ isPreview: false });
+  });
 });
 
 describe("不可预览的行", () => {

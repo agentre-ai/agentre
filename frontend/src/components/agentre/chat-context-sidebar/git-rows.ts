@@ -86,10 +86,10 @@ export function gitStatusLabel(t: TFunction, status: string): string {
  * dirRelPath 自身——一个目录不会是它自己的变动行）。dirRelPath === "" 代表
  * 会话工作目录本身（目录模式的树根），此时子树就是整份变动清单。
  *
- * 压缩链的子树统计与未压缩时完全一致，不需要特殊处理：collapseDirChain 的定义
- * 保证链的中间段恰好只有一个子目录、不含文件，链下的全部变动因此必然落在链尾
- * （调用方传入的 frontier 路径）子树里——对链尾调用一次本函数即得到整条链的
- * 统计。
+ * 压缩链的行要传**链首**：collapseDirChain 判「中间段只有一个子目录、不含文件」
+ * 用的是 listDir 的结果，也就是磁盘上还在的条目，而 git 会报已删除的文件——被链
+ * 吸收掉的那几段里因此可能有变动，它们在整棵树上没有任何一行。按链首统计既覆盖
+ * 得到它们，在中间段确实干净时也与按链尾统计等值。
  */
 export function countSubtreeChanges(
   paths: readonly string[],
