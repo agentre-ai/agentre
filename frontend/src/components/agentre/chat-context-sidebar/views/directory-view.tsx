@@ -1,28 +1,17 @@
-import {
-  ChevronDown,
-  ChevronRight,
-  ExternalLink,
-  Eye,
-  FileCode,
-  Folder,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, Folder } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { WorkspaceFsListDir } from "@/../wailsjs/go/app/App";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { cn } from "@/lib/utils";
-import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
 import { useSessionStatus } from "@/stores/session-status-store";
 
 import type { workspace_fs_svc } from "@/../wailsjs/go/models";
 
-import { resolvePreviewRelPath } from "../previewable";
-
 import { errorText, PanelNotice, PanelSkeleton } from "./panel-feedback";
+import { FileTypeIcon, SidebarRow } from "./sidebar-row";
 import { indentStyle } from "./tree-indent";
-import { useOpenFile } from "./use-open-file";
 
 type Entry = workspace_fs_svc.EntryView;
 
@@ -134,14 +123,6 @@ export function DirectoryView({ sessionId, cwd, remote, showIgnored }: Props) {
     }
   };
 
-  const canOpen = cwd !== "" && !remote;
-  const openFile = useOpenFile(cwd);
-  // 当前活动预览标签的 relPath(按会话);与某文件行预览按钮同路径时高亮它。
-  const previewPath = useChatSidebarStore(
-    (s) => s.previewTabsBySession[sessionId]?.activePath,
-  );
-  const openPreview = useChatSidebarStore((s) => s.openPreview);
-
   if (cwd === "") {
     return <PanelNotice text={t("chatContext.directory.noCwd")} />;
   }
@@ -167,90 +148,77 @@ export function DirectoryView({ sessionId, cwd, remote, showIgnored }: Props) {
     );
   }
 
-  const renderFile = (entry: Entry, relPath: string, depth: number) => {
-    const previewRelPath = resolvePreviewRelPath(relPath, cwd);
-    return (
-      <div
-        key={relPath}
-        data-testid="directory-row"
-        data-name={entry.name}
-        data-git-ignored={entry.gitIgnored ? "true" : undefined}
-        className={cn("flex items-center", entry.gitIgnored && "opacity-50")}
-        style={indentStyle(depth)}
-      >
-        <div className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-2.5 text-xs text-muted-foreground">
+  const renderFile = (entry: Entry, relPath: string, depth: number) => (
+    <SidebarRow
+      key={relPath}
+      sessionId={sessionId}
+      cwd={cwd}
+      remote={remote}
+      sourceMode="directory"
+      kind="file"
+      path={relPath}
+      name={entry.name}
+      depth={depth}
+      title={relPath}
+      lead={
+        <>
           {/* 与目录 chevron 等宽的槽位，让同级目录名 / 文件名对齐。 */}
           <span className="size-3.5 shrink-0" aria-hidden="true" />
-          <FileCode className="size-3.5 shrink-0" aria-hidden="true" />
-          <span className="min-w-0 flex-1 truncate font-mono" title={relPath}>
-            {entry.name}
-          </span>
-        </div>
-        {previewRelPath !== null ? (
-          <button
-            type="button"
-            aria-label={t("chatContext.filePreview.open")}
-            title={t("chatContext.filePreview.open")}
-            onClick={() => openPreview(sessionId, previewRelPath, "directory")}
-            className={cn(
-              "ml-1 shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground",
-              previewPath === previewRelPath && "text-primary",
-            )}
-          >
-            <Eye className="size-3" aria-hidden="true" />
-          </button>
-        ) : null}
-        {canOpen ? (
-          <button
-            type="button"
-            aria-label={t("chatContext.files.openFile")}
-            title={t("chatContext.files.openFile")}
-            onClick={() => openFile(relPath)}
-            className="ml-1 shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground"
-          >
-            <ExternalLink className="size-3" aria-hidden="true" />
-          </button>
-        ) : null}
-      </div>
-    );
-  };
+          <FileTypeIcon path={relPath} />
+        </>
+      }
+      testId="directory-row"
+      className={entry.gitIgnored ? "opacity-50" : undefined}
+      rowData={{ "data-git-ignored": entry.gitIgnored ? "true" : undefined }}
+    />
+  );
 
   const renderDir = (entry: Entry, relPath: string, depth: number) => {
     const isOpen = expanded.has(relPath);
     const child = levels[relPath];
     return (
       <div key={relPath} className="flex flex-col">
-        <button
-          type="button"
-          onClick={() => toggleDir(relPath)}
-          aria-expanded={isOpen}
-          aria-label={
+        <SidebarRow
+          sessionId={sessionId}
+          cwd={cwd}
+          remote={remote}
+          sourceMode="directory"
+          kind="dir"
+          path={relPath}
+          name={entry.name}
+          depth={depth}
+          title={relPath}
+          expanded={isOpen}
+          onToggle={() => toggleDir(relPath)}
+          ariaLabel={
             isOpen
               ? t("chatContext.files.collapseFolder", { name: entry.name })
               : t("chatContext.files.expandFolder", { name: entry.name })
           }
-          data-testid="directory-row"
-          data-name={entry.name}
-          data-git-ignored={entry.gitIgnored ? "true" : undefined}
-          className={cn(
-            "flex items-center gap-1.5 rounded-md py-1.5 pr-2.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/50",
-            entry.gitIgnored && "opacity-50",
-          )}
-          style={indentStyle(depth)}
-        >
-          {child?.status === "loading" ? (
-            <Spinner
-              className="size-3.5 shrink-0"
-              aria-label={t("chatContext.directory.loading")}
-            />
-          ) : isOpen ? (
-            <ChevronDown className="size-3.5 shrink-0" aria-hidden="true" />
-          ) : (
-            <ChevronRight className="size-3.5 shrink-0" aria-hidden="true" />
-          )}
-          <Folder className="size-3.5 shrink-0" aria-hidden="true" />
-          <span className="flex-1 truncate font-mono">{entry.name}</span>
-        </button>
+          lead={
+            <>
+              {child?.status === "loading" ? (
+                <Spinner
+                  className="size-3.5 shrink-0"
+                  aria-label={t("chatContext.directory.loading")}
+                />
+              ) : isOpen ? (
+                <ChevronDown className="size-3.5 shrink-0" aria-hidden="true" />
+              ) : (
+                <ChevronRight
+                  className="size-3.5 shrink-0"
+                  aria-hidden="true"
+                />
+              )}
+              <Folder className="size-3.5 shrink-0" aria-hidden="true" />
+            </>
+          }
+          testId="directory-row"
+          className={entry.gitIgnored ? "opacity-50" : undefined}
+          rowData={{
+            "data-git-ignored": entry.gitIgnored ? "true" : undefined,
+          }}
+        />
         {isOpen ? (
           <div className="flex flex-col">{renderLevel(relPath, depth + 1)}</div>
         ) : null}

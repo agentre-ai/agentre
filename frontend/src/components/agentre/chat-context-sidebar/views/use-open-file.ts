@@ -2,7 +2,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
-import { OpenPath } from "@/../wailsjs/go/app/App";
+import { OpenPath, RevealPath } from "@/../wailsjs/go/app/App";
 import { classifyLink } from "@/lib/link-classify";
 
 /**
@@ -30,11 +30,34 @@ export function useOpenFile(cwd: string): (path: string) => void {
       OpenPath(openTarget(path, cwd)).catch((err: unknown) => {
         toast.error(
           t("chatContext.files.openFailed", {
-            error: err instanceof Error ? err.message : String(err),
+            error: errorMessage(err),
           }),
         );
       });
     },
     [cwd, t],
   );
+}
+
+/**
+ * useRevealFile 返回「在系统文件管理器中显示这条路径」的回调，路径解析与失败
+ * 提示都与 useOpenFile 同源；两者都只在本地会话被调用（远端会话下菜单项整项
+ * 不渲染，spec「右键菜单」）。
+ */
+export function useRevealFile(cwd: string): (path: string) => void {
+  const { t } = useTranslation();
+  return React.useCallback(
+    (path: string) => {
+      RevealPath(openTarget(path, cwd)).catch((err: unknown) => {
+        toast.error(
+          t("chatContext.row.revealFailed", { error: errorMessage(err) }),
+        );
+      });
+    },
+    [cwd, t],
+  );
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

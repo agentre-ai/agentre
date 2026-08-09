@@ -29,6 +29,7 @@ const gitMocks = vi.hoisted(() => ({
 }));
 vi.mock("@/../wailsjs/go/app/App", () => ({
   OpenPath: (p: string) => openPathMock(p),
+  RevealPath: vi.fn(),
   WorkspaceFsListDir: (sessionId: number, relPath: string, ignored: boolean) =>
     listDirMock(sessionId, relPath, ignored),
   WorkspaceFsGitChanges: gitMocks.changes,
@@ -121,12 +122,19 @@ describe("FilesPanel mode switcher", () => {
     expect(listDirMock).not.toHaveBeenCalled();
   });
 
-  it("keeps the changes tree rendering and jumping to lastTurn", async () => {
+  it("keeps the changes tree rendering, with row clicks opening the preview", async () => {
     const onJump = vi.fn();
     renderPanel({ onJumpToTurn: onJump });
 
     await userEvent.click(screen.getByRole("button", { name: /chat\.go/ }));
-    expect(onJump).toHaveBeenCalledWith(3);
+    expect(
+      selectActivePreviewTab(useChatSidebarStore.getState(), 7),
+    ).toMatchObject({
+      path: "internal/service/chat_svc/chat.go",
+      sourceMode: "changes",
+    });
+    // 跳到对应轮次降级成了菜单项，整行点击不再跳转（spec 决策 5）。
+    expect(onJump).not.toHaveBeenCalled();
   });
 
   it("persists the selected mode in the sidebar store and restores the changes tree on return", async () => {
@@ -417,7 +425,8 @@ describe("FilesPanel directory mode", () => {
     expect(listDirMock).toHaveBeenCalledTimes(4);
   });
 
-  it("opens a file with the cwd-joined path, and only for local sessions", async () => {
+  it("opens a file with the cwd-joined path from the row menu, only for local sessions", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
     listDirMock.mockImplementation((_id: number, relPath: string) =>
       Promise.resolve(
         relPath === ""
@@ -427,24 +436,43 @@ describe("FilesPanel directory mode", () => {
     );
     renderPanel({});
 
-    await userEvent.click(
+    await user.click(
       await screen.findByRole("button", { name: /expand internal/i }),
     );
-    await userEvent.click(
-      await screen.findByRole("button", { name: /open file/i }),
+    await user.click(
+      within(row("chat.go")).getByRole("button", { name: /more actions/i }),
+    );
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Open with default app",
+      }),
     );
     expect(openPathMock).toHaveBeenCalledWith(`${CWD}/internal/chat.go`);
   });
 
-  it("hides the open button for a remote session", async () => {
+  it("drops the local-only menu items for a remote session", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
     listDirMock.mockResolvedValue(listing([entry("main.go")]));
     renderPanel({ remote: true });
 
     await screen.findByText("main.go");
-    expect(screen.queryByRole("button", { name: /open file/i })).toBeNull();
+    await user.click(
+      within(row("main.go")).getByRole("button", { name: /more actions/i }),
+    );
+    const menu = await screen.findByRole("menu");
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((el) => el.textContent),
+    ).toEqual([
+      "Preview",
+      "Preview in a new tab",
+      "Copy relative path",
+      "Copy file name",
+    ]);
   });
 
-  it("shows a preview button on previewable file rows and opens the selection by relPath", async () => {
+  it("previews a previewable file row on click, by relPath", async () => {
     listDirMock.mockImplementation((_id: number, relPath: string) =>
       Promise.resolve(
         relPath === ""
@@ -457,16 +485,13 @@ describe("FilesPanel directory mode", () => {
     await userEvent.click(
       await screen.findByRole("button", { name: /expand internal/i }),
     );
-    // 目录行与不可预览文件行没有预览按钮;代码与图片行有。
+    // 不可预览的文件行不是按钮，单击没有反应。
     expect(
-      within(row("internal")).queryByRole("button", { name: /preview/i }),
-    ).toBeNull();
-    expect(
-      within(row("doc.pdf")).queryByRole("button", { name: /preview/i }),
+      within(row("doc.pdf")).queryByRole("button", { name: /doc\.pdf/ }),
     ).toBeNull();
 
     await userEvent.click(
-      within(row("chat.go")).getByRole("button", { name: /preview/i }),
+      within(row("chat.go")).getByRole("button", { name: /chat\.go/ }),
     );
     expect(
       selectActivePreviewTab(useChatSidebarStore.getState(), 7),
@@ -478,7 +503,7 @@ describe("FilesPanel directory mode", () => {
     expect(openPathMock).not.toHaveBeenCalled();
 
     await userEvent.click(
-      within(row("logo.png")).getByRole("button", { name: /preview/i }),
+      within(row("logo.png")).getByRole("button", { name: /logo\.png/ }),
     );
     expect(
       selectActivePreviewTab(useChatSidebarStore.getState(), 7),
@@ -489,14 +514,16 @@ describe("FilesPanel directory mode", () => {
     });
   });
 
-  it("still shows preview buttons for a remote directory session", async () => {
+  it("still previews on click for a remote directory session", async () => {
     listDirMock.mockResolvedValue(listing([entry("main.go"), entry("a.zip")]));
     renderPanel({ remote: true });
 
     await screen.findByText("main.go");
-    expect(screen.queryByRole("button", { name: /open file/i })).toBeNull();
+    await userEvent.click(
+      within(row("main.go")).getByRole("button", { name: /main\.go/ }),
+    );
     expect(
-      screen.getByRole("button", { name: /preview/i }),
-    ).toBeInTheDocument();
+      selectActivePreviewTab(useChatSidebarStore.getState(), 7),
+    ).toMatchObject({ path: "main.go", sourceMode: "directory" });
   });
 });

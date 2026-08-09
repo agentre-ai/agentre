@@ -15,6 +15,7 @@ const gitChangesMock = vi.fn();
 const gitBranchesMock = vi.fn();
 vi.mock("@/../wailsjs/go/app/App", () => ({
   OpenPath: (p: string) => openPathMock(p),
+  RevealPath: vi.fn(),
   WorkspaceFsListDir: (sessionId: number, relPath: string, ignored: boolean) =>
     listDirMock(sessionId, relPath, ignored),
   WorkspaceFsGitChanges: (sessionId: number, scope: string, baseRef: string) =>
@@ -272,20 +273,7 @@ describe("Git tab · 未提交档", () => {
     ).toBeInTheDocument();
   });
 
-  it("opens a file on row click for a local session and stays inert for a remote one", async () => {
-    gitChangesMock.mockResolvedValue(changesView([{ path: "internal/a.go" }]));
-    const { unmount } = renderSidebar({});
-
-    await userEvent.click(await screen.findByRole("button", { name: /a\.go/ }));
-    expect(openPathMock).toHaveBeenCalledWith(`${CWD}/internal/a.go`);
-
-    unmount();
-    renderSidebar({ remote: true });
-    await screen.findByText("a.go");
-    expect(screen.queryByRole("button", { name: /a\.go/ })).toBeNull();
-  });
-
-  it("shows a preview button beside the row and opens the selection by path", async () => {
+  it("opens the preview on row click instead of the system default app", async () => {
     gitChangesMock.mockResolvedValue(
       changesView([
         { path: "internal/a.go", status: "modified" },
@@ -296,9 +284,7 @@ describe("Git tab · 未提交档", () => {
     await screen.findByText("a.go");
 
     await userEvent.click(
-      within(gitRow("internal/a.go")).getByRole("button", {
-        name: /preview/i,
-      }),
+      within(gitRow("internal/a.go")).getByRole("button", { name: /a\.go/ }),
     );
     expect(
       selectActivePreviewTab(useChatSidebarStore.getState(), 7),
@@ -307,29 +293,28 @@ describe("Git tab · 未提交档", () => {
       segment: null,
       sourceMode: "git",
     });
-    // 行点击仍是打开,预览按钮点击不打开文件。
     expect(openPathMock).not.toHaveBeenCalled();
-    // 不可预览文件行不出预览按钮。
+
+    // 不可预览的文件行不是按钮，单击没有反应。
     expect(
-      within(gitRow("asset.zip")).queryByRole("button", {
-        name: /preview/i,
-      }),
+      within(gitRow("asset.zip")).queryByRole("button", { name: /asset\.zip/ }),
     ).toBeNull();
   });
 
-  it("still shows a preview button for a remote git session", async () => {
+  it("still previews on row click for a remote git session", async () => {
     gitChangesMock.mockResolvedValue(
       changesView([{ path: "internal/a.go", status: "modified" }]),
     );
     renderSidebar({ remote: true });
     await screen.findByText("a.go");
 
-    // 远端整行不可点(无 open 按钮),但预览按钮仍在。
-    const rowEl = gitRow("internal/a.go");
-    expect(within(rowEl).queryByRole("button", { name: /a\.go/ })).toBeNull();
+    await userEvent.click(
+      within(gitRow("internal/a.go")).getByRole("button", { name: /a\.go/ }),
+    );
     expect(
-      within(rowEl).getByRole("button", { name: /preview/i }),
-    ).toBeInTheDocument();
+      selectActivePreviewTab(useChatSidebarStore.getState(), 7),
+    ).toMatchObject({ path: "internal/a.go", sourceMode: "git" });
+    expect(openPathMock).not.toHaveBeenCalled();
   });
 });
 

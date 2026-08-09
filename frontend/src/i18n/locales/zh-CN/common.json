@@ -617,7 +617,6 @@
     "files": {
       "empty": "本会话还没有改过任何文件",
       "label": "文件",
-      "openFile": "打开文件",
       "openFailed": "打开文件失败：{{error}}",
       "expandFolder": "展开 {{name}}",
       "collapseFolder": "收起 {{name}}",
@@ -669,7 +668,6 @@
     },
     "filePreview": {
       "panelAria": "文件预览",
-      "open": "预览",
       "close": "关闭预览",
       "tabsAria": "预览标签",
       "tabLimit": "预览标签已满（最多 {{limit}} 个），请先关闭一个",
@@ -698,6 +696,20 @@
       "empty": "本会话还没有消息",
       "label": "大纲",
       "turn": "第 {{turn}} 轮"
+    },
+    "row": {
+      "menu": "更多操作",
+      "preview": "预览",
+      "previewInNewTab": "在新标签页预览",
+      "jumpToTurn": "跳到对应轮次",
+      "openWith": "用默认应用打开",
+      "reveal": "在文件管理器中显示",
+      "revealFailed": "在文件管理器中显示失败：{{error}}",
+      "copyRelPath": "复制相对路径",
+      "copyAbsPath": "复制绝对路径",
+      "copyFileName": "复制文件名",
+      "expand": "展开",
+      "collapse": "收起"
     },
     "sidebar": "对话上下文"
   },

@@ -116,22 +116,31 @@ const ABS_POSIX = /^\//;
 const ABS_WINDOWS = /^[A-Za-z]:[\\/]/;
 
 /**
- * 把文件面板一条路径解析成可交给后端 ReadFile/GitFileContent 的会话级 relPath。
- * 返回 null 表示该文件不出预览按钮（扩展名不在 allowlist，绝对路径越出 cwd，或
- * 会话根本没有 cwd）。相对路径（目录 / Git 模式）原样通过。
+ * 把文件面板一条路径换算成相对会话 cwd 的路径。返回 null 表示换算不出来（会话
+ * 没有 cwd，或绝对路径落在 cwd 之外）。相对路径（目录 / Git 模式）原样通过。
  */
-export function resolvePreviewRelPath(
-  path: string,
-  cwd: string,
-): string | null {
-  if (previewKind(path) === null) return null;
-  // 无 cwd(自由会话 / 远端未配路径)时后端必然回 WorkspaceFsNoCwd,预览按钮
-  // 随行消失(spec「预览面板与入口」)——目录 / Git 模式本就不渲染行,这里覆盖
-  // 「变动」模式里消息派生出的相对路径行。
+export function toRelPath(path: string, cwd: string): string | null {
   if (cwd === "") return null;
   if (!ABS_POSIX.test(path) && !ABS_WINDOWS.test(path)) return path;
   const sep = cwd.includes("\\") ? "\\" : "/";
   const prefix = cwd.endsWith("/") || cwd.endsWith("\\") ? cwd : `${cwd}${sep}`;
   if (path === cwd || !path.startsWith(prefix)) return null;
   return path.slice(prefix.length);
+}
+
+/**
+ * 把文件面板一条路径解析成可交给后端 ReadFile/GitFileContent 的会话级 relPath。
+ * 返回 null 表示该文件不可预览（扩展名不在 allowlist，绝对路径越出 cwd，或会话
+ * 根本没有 cwd）——这样的行不响应单击，菜单里也不出预览两项。
+ *
+ * 无 cwd(自由会话 / 远端未配路径)时后端必然回 WorkspaceFsNoCwd，预览随行消失
+ * （spec「预览面板与入口」）——目录 / Git 模式本就不渲染行，这里覆盖「变动」
+ * 模式里消息派生出的相对路径行。
+ */
+export function resolvePreviewRelPath(
+  path: string,
+  cwd: string,
+): string | null {
+  if (previewKind(path) === null) return null;
+  return toRelPath(path, cwd);
 }

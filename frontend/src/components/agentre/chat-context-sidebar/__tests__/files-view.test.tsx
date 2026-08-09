@@ -10,8 +10,10 @@ const sonnerMocks = vi.hoisted(() => ({
 vi.mock("sonner", () => sonnerMocks);
 
 const openPathMock = vi.fn();
+const revealPathMock = vi.fn();
 vi.mock("@/../wailsjs/go/app/App", () => ({
   OpenPath: (p: string) => openPathMock(p),
+  RevealPath: (p: string) => revealPathMock(p),
 }));
 
 import {
@@ -46,9 +48,25 @@ const files: FileEntry[] = [
 
 const CWD = "/Users/me/proj";
 
+/** 「用默认应用打开」现在只在行的 ⋯ 菜单里（行内不再有常驻图标按钮）。 */
+async function openWithDefaultApp(name: string) {
+  const user = userEvent.setup({ pointerEventsCheck: 0 });
+  const row = screen
+    .getAllByTestId("changes-row")
+    .find((el) => el.getAttribute("data-name") === name);
+  if (!row) throw new Error(`no changes row named ${name}`);
+  await user.click(within(row).getByRole("button", { name: /more actions/i }));
+  const menu = await screen.findByRole("menu");
+  await user.click(
+    within(menu).getByRole("menuitem", { name: "Open with default app" }),
+  );
+}
+
 beforeEach(() => {
   openPathMock.mockReset();
   openPathMock.mockResolvedValue(undefined);
+  revealPathMock.mockReset();
+  revealPathMock.mockResolvedValue(undefined);
   sonnerMocks.toast.error.mockReset();
   localStorage.clear();
   useChatSidebarStore.setState({ previewTabsBySession: {} });
@@ -235,21 +253,6 @@ describe("FilesView", () => {
     ).toBeInTheDocument();
   });
 
-  it("file row click still jumps to lastTurn", async () => {
-    const onJump = vi.fn();
-    render(
-      <FilesView
-        sessionId={1}
-        files={files}
-        cwd={CWD}
-        remote={false}
-        onJumpToTurn={onJump}
-      />,
-    );
-    await userEvent.click(screen.getByRole("button", { name: /chat\.go/ }));
-    expect(onJump).toHaveBeenCalledWith(3);
-  });
-
   it("renders +N in text-status-running and −N in text-destructive badges", () => {
     render(
       <FilesView
@@ -283,28 +286,6 @@ describe("FilesView", () => {
     expect(within(readme).queryByText(/[+\u2212]\d/)).not.toBeInTheDocument();
   });
 
-  it("renders open button and calls OpenPath(cwd + path), without jumping", async () => {
-    const onJump = vi.fn();
-    render(
-      <FilesView
-        sessionId={1}
-        files={files}
-        cwd={CWD}
-        remote={false}
-        onJumpToTurn={onJump}
-      />,
-    );
-    const chatGoRow = screen.getByRole("button", { name: /chat\.go/ });
-    const openBtn = within(chatGoRow.parentElement!).getByRole("button", {
-      name: /Open file/i,
-    });
-    await userEvent.click(openBtn);
-    expect(openPathMock).toHaveBeenCalledWith(
-      "/Users/me/proj/internal/service/chat_svc/chat.go",
-    );
-    expect(onJump).not.toHaveBeenCalled();
-  });
-
   it("opens an absolute tool path directly instead of prefixing cwd", async () => {
     const absoluteFiles: FileEntry[] = [
       {
@@ -324,46 +305,29 @@ describe("FilesView", () => {
       />,
     );
 
-    const chatGoRow = screen.getByRole("button", { name: /chat\.go/ });
-    await userEvent.click(
-      within(chatGoRow.parentElement!).getByRole("button", {
-        name: /Open file/i,
-      }),
-    );
+    await openWithDefaultApp("chat.go");
 
     expect(openPathMock).toHaveBeenCalledWith(
       "/Users/me/proj/internal/service/chat_svc/chat.go",
     );
   });
 
-  it("hides open buttons when remote is true", () => {
+  it("joins the cwd for a relative tool path", async () => {
     render(
       <FilesView
         sessionId={1}
         files={files}
         cwd={CWD}
-        remote={true}
-        onJumpToTurn={() => {}}
-      />,
-    );
-    expect(
-      screen.queryByRole("button", { name: /Open file/i }),
-    ).not.toBeInTheDocument();
-  });
-
-  it("hides open buttons when cwd is empty", () => {
-    render(
-      <FilesView
-        sessionId={1}
-        files={files}
-        cwd=""
         remote={false}
         onJumpToTurn={() => {}}
       />,
     );
-    expect(
-      screen.queryByRole("button", { name: /Open file/i }),
-    ).not.toBeInTheDocument();
+
+    await openWithDefaultApp("chat.go");
+
+    expect(openPathMock).toHaveBeenCalledWith(
+      "/Users/me/proj/internal/service/chat_svc/chat.go",
+    );
   });
 
   it("toasts openFailed with the error when OpenPath rejects", async () => {
@@ -377,11 +341,7 @@ describe("FilesView", () => {
         onJumpToTurn={() => {}}
       />,
     );
-    const chatGoRow = screen.getByRole("button", { name: /chat\.go/ });
-    const openBtn = within(chatGoRow.parentElement!).getByRole("button", {
-      name: /Open file/i,
-    });
-    await userEvent.click(openBtn);
+    await openWithDefaultApp("chat.go");
     await vi.waitFor(() => {
       expect(sonnerMocks.toast.error).toHaveBeenCalledWith(
         "Failed to open file: boom",
@@ -405,15 +365,11 @@ describe("FilesView", () => {
   });
 });
 
-describe("FilesView preview button", () => {
-  const previewBtn = (rowName: RegExp) => {
-    const row = screen.getByRole("button", { name: rowName });
-    return within(row.parentElement!).queryByRole("button", {
-      name: /preview/i,
-    });
-  };
+describe("FilesView 单击预览", () => {
+  const clickRow = (rowName: RegExp) =>
+    userEvent.click(screen.getByRole("button", { name: rowName }));
 
-  it("renders a preview button for markdown / code / image files", () => {
+  it("markdown / 代码 / 图片行单击都开出预览标签", async () => {
     render(
       <FilesView
         sessionId={1}
@@ -426,12 +382,19 @@ describe("FilesView preview button", () => {
         onJumpToTurn={() => {}}
       />,
     );
-    expect(previewBtn(/chat\.go/)).not.toBeNull();
-    expect(previewBtn(/README\.md/)).not.toBeNull();
-    expect(previewBtn(/logo\.png/)).not.toBeNull();
+    for (const [rowName, path] of [
+      [/chat\.go/, "internal/service/chat_svc/chat.go"],
+      [/README\.md/, "README.md"],
+      [/logo\.png/, "assets/logo.png"],
+    ] as const) {
+      await clickRow(rowName);
+      expect(
+        selectActivePreviewTab(useChatSidebarStore.getState(), 1),
+      ).toMatchObject({ path, sourceMode: "changes" });
+    }
   });
 
-  it("does not render a preview button for non-previewable file types", () => {
+  it("不可预览的文件行不是按钮，单击没有任何反应", async () => {
     render(
       <FilesView
         sessionId={1}
@@ -444,30 +407,11 @@ describe("FilesView preview button", () => {
         onJumpToTurn={() => {}}
       />,
     );
-    expect(screen.queryByRole("button", { name: /preview/i })).toBeNull();
-  });
-
-  it("opens the panel with the relative path and does not jump on click", async () => {
-    const onJump = vi.fn();
-    render(
-      <FilesView
-        sessionId={1}
-        files={files}
-        cwd={CWD}
-        remote={false}
-        onJumpToTurn={onJump}
-      />,
-    );
-    await userEvent.click(previewBtn(/README\.md/)!);
-
+    expect(screen.queryByRole("button", { name: /archive\.zip/ })).toBeNull();
+    await userEvent.click(screen.getByText("doc.pdf"));
     expect(
       selectActivePreviewTab(useChatSidebarStore.getState(), 1),
-    ).toMatchObject({
-      path: "README.md",
-      segment: null,
-      sourceMode: "changes",
-    });
-    expect(onJump).not.toHaveBeenCalled();
+    ).toBeNull();
   });
 
   it("strips the cwd prefix for an absolute path inside the cwd", async () => {
@@ -487,10 +431,7 @@ describe("FilesView preview button", () => {
         onJumpToTurn={() => {}}
       />,
     );
-    const row = screen.getByRole("button", { name: /chat\.go/ });
-    await userEvent.click(
-      within(row.parentElement!).getByRole("button", { name: /preview/i }),
-    );
+    await clickRow(/chat\.go/);
 
     expect(
       selectActivePreviewTab(useChatSidebarStore.getState(), 1),
@@ -501,7 +442,7 @@ describe("FilesView preview button", () => {
     });
   });
 
-  it("hides the preview button for an absolute path outside the cwd", () => {
+  it("绝对路径落在 cwd 之外的行不可点", () => {
     render(
       <FilesView
         sessionId={1}
@@ -518,10 +459,24 @@ describe("FilesView preview button", () => {
         onJumpToTurn={() => {}}
       />,
     );
-    expect(screen.queryByRole("button", { name: /preview/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /secret\.go/ })).toBeNull();
   });
 
-  it("still shows the preview button for remote sessions (unlike open)", () => {
+  it("会话没有工作目录时所有文件行都不可点", () => {
+    render(
+      <FilesView
+        sessionId={1}
+        files={files}
+        cwd=""
+        remote={false}
+        onJumpToTurn={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /chat\.go/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /README\.md/ })).toBeNull();
+  });
+
+  it("远端会话的行照样可以单击预览（内容经 RPC 读取）", async () => {
     render(
       <FilesView
         sessionId={1}
@@ -531,23 +486,9 @@ describe("FilesView preview button", () => {
         onJumpToTurn={() => {}}
       />,
     );
-    expect(screen.queryByRole("button", { name: /open file/i })).toBeNull();
-    // 三行都是可预览文件 → 三个预览按钮(远端也出,内容经 RPC 读取)。
-    expect(screen.getAllByRole("button", { name: /preview/i }).length).toBe(3);
-  });
-
-  it("highlights the currently previewed file's button", () => {
-    useChatSidebarStore.getState().openPreview(1, "README.md", "changes");
-    render(
-      <FilesView
-        sessionId={1}
-        files={files}
-        cwd={CWD}
-        remote={false}
-        onJumpToTurn={() => {}}
-      />,
-    );
-    expect(previewBtn(/README\.md/)!.className).toContain("text-primary");
-    expect(previewBtn(/chat\.go/)!.className).not.toContain("text-primary");
+    await clickRow(/README\.md/);
+    expect(
+      selectActivePreviewTab(useChatSidebarStore.getState(), 1),
+    ).toMatchObject({ path: "README.md", sourceMode: "changes" });
   });
 });

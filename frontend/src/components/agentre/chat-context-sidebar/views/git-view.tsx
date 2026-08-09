@@ -1,19 +1,16 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
-import { Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
 
 import type { TFunction } from "i18next";
 
 import { deriveGitRows, type GitRow } from "../git-rows";
-import { resolvePreviewRelPath } from "../previewable";
 
 import { PanelNotice, PanelSkeleton } from "./panel-feedback";
+import { SidebarRow } from "./sidebar-row";
 import type { GitChangesState, GitScope } from "./use-git-changes";
-import { useOpenFile } from "./use-open-file";
 
 type Props = {
   /** 会话 id：预览选中按会话存储。 */
@@ -59,7 +56,7 @@ function statusLabel(t: TFunction, status: string): string {
  * GitView 是「文件」页的「Git」模式内容区：当前档的变动文件扁平列表。
  *
  * 取数、两档与基线都在 useGitChanges 里，这里只负责把状态渲染成行与各种空态。
- * 行点击与「变动」模式一致：本地会话用系统默认应用打开，远端会话不提供打开。
+ * 行的交互与另外两个模式完全一致（SidebarRow）：单击可预览文件 = 开预览标签。
  */
 export function GitView({
   sessionId,
@@ -71,13 +68,6 @@ export function GitView({
   onRetry,
 }: Props) {
   const { t } = useTranslation();
-  const openFile = useOpenFile(cwd);
-  const canOpen = cwd !== "" && !remote;
-  // 当前活动预览标签的 relPath(按会话);与某行预览按钮同路径时高亮它。
-  const previewPath = useChatSidebarStore(
-    (s) => s.previewTabsBySession[sessionId]?.activePath,
-  );
-  const openPreview = useChatSidebarStore((s) => s.openPreview);
 
   const changes = state.status === "loaded" ? state.view.changes : null;
   const rows = React.useMemo(() => deriveGitRows(changes), [changes]);
@@ -138,22 +128,15 @@ export function GitView({
 
   return (
     <div className="flex flex-col gap-0.5 px-2 py-2.5">
-      {rows.map((row) => {
-        const previewRelPath = resolvePreviewRelPath(row.path, cwd);
-        return (
-          <Row
-            key={row.path}
-            row={row}
-            onOpen={canOpen ? () => openFile(row.path) : null}
-            previewActive={previewPath === previewRelPath}
-            onPreview={
-              previewRelPath !== null
-                ? () => openPreview(sessionId, previewRelPath, "git")
-                : null
-            }
-          />
-        );
-      })}
+      {rows.map((row) => (
+        <Row
+          key={row.path}
+          row={row}
+          sessionId={sessionId}
+          cwd={cwd}
+          remote={remote}
+        />
+      ))}
       {state.view.truncated ? (
         <div className="py-1.5 pr-2.5 pl-2 text-[11px] text-muted-foreground">
           {t("chatContext.git.truncated", { limit: rows.length })}
@@ -165,81 +148,63 @@ export function GitView({
 
 function Row({
   row,
-  onOpen,
-  previewActive,
-  onPreview,
+  sessionId,
+  cwd,
+  remote,
 }: {
   row: GitRow;
-  onOpen: (() => void) | null;
-  previewActive: boolean;
-  onPreview: (() => void) | null;
+  sessionId: number;
+  cwd: string;
+  remote: boolean;
 }) {
   const { t } = useTranslation();
   const meta = STATUS_META[row.status] ?? STATUS_META.modified;
-  const body = (
-    <>
-      <span
-        data-status-letter
-        aria-hidden="true"
-        className={cn(
-          "w-3 shrink-0 text-center font-mono text-[10px] font-bold",
-          meta.className,
-        )}
-      >
-        {meta.letter}
-      </span>
-      <span className="sr-only">{statusLabel(t, row.status)}</span>
-      {/*
-        窄栏下先挤掉的是目录后缀：它的 shrink 权重大到会先缩到没有，文件名因此
-        实际上永不被截断（决策 11）；只有 basename 自己就超宽时才轮到它省略。
-      */}
-      <span className="min-w-0 shrink truncate font-mono">{row.name}</span>
-      {/* 目录后缀从头截断（rtl 让省略号落在开头），根目录下的文件此处为空。 */}
-      <span
-        dir="rtl"
-        className="min-w-0 flex-1 shrink-[9999] truncate text-left font-mono text-[10px] opacity-55"
-      >
-        {row.dir}
-      </span>
-      <DiffBadge row={row} />
-    </>
-  );
-  const className =
-    "flex min-w-0 flex-1 items-center gap-1.5 rounded-md py-1.5 pr-2.5 pl-2 text-left text-xs text-muted-foreground";
   return (
-    <div
-      data-testid="git-row"
-      data-path={row.path}
-      data-status={row.status}
+    <SidebarRow
+      sessionId={sessionId}
+      cwd={cwd}
+      remote={remote}
+      sourceMode="git"
+      kind="file"
+      path={row.path}
+      name={row.name}
+      depth={0}
       title={row.oldPath ? `${row.oldPath} → ${row.path}` : row.path}
-      className="flex items-center"
-    >
-      {onOpen ? (
-        <button
-          type="button"
-          onClick={onOpen}
-          className={cn(className, "transition-colors hover:bg-muted/50")}
-        >
-          {body}
-        </button>
-      ) : (
-        <div className={className}>{body}</div>
-      )}
-      {onPreview ? (
-        <button
-          type="button"
-          aria-label={t("chatContext.filePreview.open")}
-          title={t("chatContext.filePreview.open")}
-          onClick={onPreview}
-          className={cn(
-            "ml-1 shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground",
-            previewActive && "text-primary",
-          )}
-        >
-          <Eye className="size-3" aria-hidden="true" />
-        </button>
-      ) : null}
-    </div>
+      // Git 页的扁平行沿用既有形态：状态字母占住图标列，没有展开箭头槽位。
+      lead={
+        <>
+          <span
+            data-status-letter
+            aria-hidden="true"
+            className={cn(
+              "w-3 shrink-0 text-center font-mono text-[10px] font-bold",
+              meta.className,
+            )}
+          >
+            {meta.letter}
+          </span>
+          <span className="sr-only">{statusLabel(t, row.status)}</span>
+        </>
+      }
+      trailing={
+        <>
+          {/*
+            窄栏下先挤掉的是目录后缀：它的 shrink 权重大到会先缩到没有，文件名
+            因此实际上永不被截断（决策 11）；只有 basename 自己就超宽时才轮到它
+            省略。目录后缀从头截断（rtl 让省略号落在开头），根目录下的文件为空。
+          */}
+          <span
+            dir="rtl"
+            className="min-w-0 flex-1 shrink-[9999] truncate text-left font-mono text-[10px] opacity-55"
+          >
+            {row.dir}
+          </span>
+          <DiffBadge row={row} />
+        </>
+      }
+      testId="git-row"
+      rowData={{ "data-path": row.path, "data-status": row.status }}
+    />
   );
 }
 

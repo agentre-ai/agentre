@@ -617,7 +617,6 @@
     "files": {
       "empty": "No files have been changed in this session",
       "label": "Files",
-      "openFile": "Open file",
       "openFailed": "Failed to open file: {{error}}",
       "expandFolder": "Expand {{name}}",
       "collapseFolder": "Collapse {{name}}",
@@ -669,7 +668,6 @@
     },
     "filePreview": {
       "panelAria": "File preview",
-      "open": "Preview",
       "close": "Close preview",
       "tabsAria": "Preview tabs",
       "tabLimit": "Preview tabs are full (max {{limit}}). Close one first.",
@@ -698,6 +696,20 @@
       "empty": "No messages in this session",
       "label": "Outline",
       "turn": "Turn {{turn}}"
+    },
+    "row": {
+      "menu": "More actions",
+      "preview": "Preview",
+      "previewInNewTab": "Preview in a new tab",
+      "jumpToTurn": "Jump to turn",
+      "openWith": "Open with default app",
+      "reveal": "Show in file manager",
+      "revealFailed": "Failed to show in file manager: {{error}}",
+      "copyRelPath": "Copy relative path",
+      "copyAbsPath": "Copy absolute path",
+      "copyFileName": "Copy file name",
+      "expand": "Expand",
+      "collapse": "Collapse"
     },
     "sidebar": "Chat context"
   },
