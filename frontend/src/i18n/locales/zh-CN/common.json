@@ -622,29 +622,49 @@
     "files": {
       "empty": "本会话还没有改过任何文件",
       "label": "文件",
-      "openFile": "打开文件",
       "openFailed": "打开文件失败：{{error}}",
       "expandFolder": "展开 {{name}}",
       "collapseFolder": "收起 {{name}}",
+      "treeAria": "本会话改动的文件",
       "modes": {
         "label": "视图模式",
         "changes": "变动",
-        "directory": "目录",
-        "git": "Git"
+        "directory": "目录"
       }
     },
     "directory": {
       "showIgnored": "显示忽略项",
       "showIgnoredOn": "隐藏被忽略的文件",
       "showIgnoredOff": "显示被忽略的文件",
+      "search": "搜索",
+      "searchOn": "关闭搜索",
+      "searchOff": "搜索文件",
       "loading": "正在读取目录…",
       "empty": "这个目录是空的",
       "truncated": "只显示了前 {{limit}} 项",
       "noCwd": "这个会话没有工作目录",
       "readFailed": "读取目录失败",
-      "retry": "重试"
+      "retry": "重试",
+      "treeAria": "工作目录文件",
+      "subtreeChanges": "{{count}} 个文件有变动",
+      "subtreeChanges_one": "{{count}} 个文件有变动",
+      "subtreeChanges_other": "{{count}} 个文件有变动"
+    },
+    "search": {
+      "placeholder": "按文件名搜索…",
+      "hitCount": "{{count}} 个结果",
+      "clear": "清除搜索",
+      "hint": "输入以按文件名搜索",
+      "empty": "没有匹配“{{query}}”的文件",
+      "emptyHint": "默认不搜索被忽略的文件",
+      "truncatedEmptyHint": "搜索没走完就停了，这不是完整结果",
+      "truncated": "只显示了前 {{limit}} 个结果",
+      "loading": "正在搜索…",
+      "readFailed": "搜索失败",
+      "resultsAria": "搜索结果"
     },
     "git": {
+      "label": "Git",
       "scope": {
         "label": "对比范围",
         "uncommitted": "未提交",
@@ -664,6 +684,7 @@
       "readFailed": "读取 git 变动失败",
       "retry": "重试",
       "truncated": "只显示了前 {{limit}} 个变动文件",
+      "listAria": "Git 变动文件",
       "status": {
         "modified": "已修改",
         "added": "新增",
@@ -674,8 +695,10 @@
     },
     "filePreview": {
       "panelAria": "文件预览",
-      "open": "预览",
       "close": "关闭预览",
+      "tabsAria": "预览标签",
+      "tabLimit": "预览标签已满（最多 {{limit}} 个），请先关闭一个",
+      "closeAll": "全部关闭",
       "loading": "正在读取文件…",
       "readFailed": "读取文件失败",
       "retry": "重试",
@@ -701,6 +724,20 @@
       "empty": "本会话还没有消息",
       "label": "大纲",
       "turn": "第 {{turn}} 轮"
+    },
+    "row": {
+      "menu": "更多操作",
+      "preview": "预览",
+      "previewInNewTab": "在新标签页预览",
+      "jumpToTurn": "跳到对应轮次",
+      "openWith": "用默认应用打开",
+      "reveal": "在文件管理器中显示",
+      "revealFailed": "在文件管理器中显示失败：{{error}}",
+      "copyRelPath": "复制相对路径",
+      "copyAbsPath": "复制绝对路径",
+      "copyFileName": "复制文件名",
+      "expand": "展开",
+      "collapse": "收起"
     },
     "sidebar": "对话上下文"
   },

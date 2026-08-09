@@ -1,13 +1,7 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
-import {
-  FileCode,
-  FileImage,
-  FileText,
-  X,
-  type LucideIcon,
-} from "lucide-react";
+import { X } from "lucide-react";
 
 import {
   WorkspaceFsGitFileContent,
@@ -17,6 +11,7 @@ import type { workspace_fs_svc } from "@/../wailsjs/go/models";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
+  selectActivePreviewTab,
   useChatSidebarStore,
   type FilePreviewSegment,
 } from "@/stores/chat-sidebar-store";
@@ -34,7 +29,14 @@ import { ResizableSidebar } from "../resizable-sidebar";
 
 import { CodePreview } from "./code-view";
 import { DiffPreview } from "./diff-view";
+import {
+  basename,
+  dirname,
+  PREVIEW_KIND_ICON,
+  previewIconKind,
+} from "./file-meta";
 import { MarkdownSourceView } from "./markdown-source-view";
+import { PreviewTabStrip } from "./preview-tab-strip";
 
 type ReadState =
   | { status: "loading" }
@@ -51,53 +53,44 @@ type Props = {
   sessionId: number;
 };
 
-function basename(path: string): string {
-  const parts = path.split(/[\\/]/);
-  return parts[parts.length - 1] ?? path;
+/**
+ * targetKey 是一次取数的目标身份：**哪个会话的哪个文件**。
+ *
+ * 必须带上 sessionId 而不只是 path——面板不随会话切换重挂载（chat-panel 把
+ * sessionId 当普通 prop 传，没有 key），两个会话恰好都开着同一个 relPath 时，只看
+ * path 的「结果已就位」闸门在切换的那一帧读起来是成立的，于是上一个工作目录的同名
+ * 文件正文会真的被提交出去一帧。
+ */
+function targetKey(sessionId: number, path: string): string {
+  return `${sessionId}\n${path}`;
 }
-
-function dirname(path: string): string {
-  const i = path.lastIndexOf("/");
-  return i > 0 ? path.slice(0, i + 1) : "";
-}
-
-const KIND_ICON: Record<PreviewKind, LucideIcon> = {
-  markdown: FileText,
-  code: FileCode,
-  image: FileImage,
-};
 
 /**
  * FilePreviewPanel 是会话「文件」面板的最右一栏预览面板（spec「状态与布局」）：
- * 仅在选中了可预览文件时渲染，可拖拽调宽（ResizableSidebar edge="left"，独立
- * persistenceKey）。markdown 三档（渲染/文本/双栏）；代码/文本无分段控件，首视图
- * 由入口模式决定（目录→内容、Git/变动→与 HEAD 对比，spec 决策 9）；图片无档。
- * 读取走 WorkspaceFsReadFile / WorkspaceFsGitFileContent（会话级 relPath，本机 /
- * 远端同一绑定）；本会话轮次结束（doneTick）按 sourceMode 自动重读刷新。
+ * 仅在该会话开着预览标签时渲染，可拖拽调宽（ResizableSidebar edge="left"，独立
+ * persistenceKey）。标签条（≥ 2 个标签才出现）回答「打开了哪些」，header 回答
+ * 「当前这个是什么、怎么看」：markdown 三档（渲染/文本/双栏）；代码/文本无分段
+ * 控件，首视图由入口模式决定（目录→内容、Git/变动→与 HEAD 对比，spec 决策 9）；
+ * 图片无档。读取走 WorkspaceFsReadFile / WorkspaceFsGitFileContent（会话级
+ * relPath，本机 / 远端同一绑定）；本会话轮次结束（doneTick）按 sourceMode 自动
+ * 重读刷新。标签表按会话持久化，切换会话就是换一整张表（spec「多标签预览」）。
  */
 export function FilePreviewPanel({ sessionId }: Props) {
   const { t } = useTranslation();
-  const path = useChatSidebarStore((s) => s.previewBySession[sessionId]?.path);
-  const storedSegment = useChatSidebarStore(
-    (s) => s.previewBySession[sessionId]?.segment ?? null,
+  const activeTab = useChatSidebarStore((s) =>
+    selectActivePreviewTab(s, sessionId),
   );
-  const sourceMode = useChatSidebarStore(
-    (s) => s.previewBySession[sessionId]?.sourceMode,
+  const tabCount = useChatSidebarStore(
+    (s) => s.previewTabsBySession[sessionId]?.tabs.length ?? 0,
   );
+  const path = activeTab?.path;
+  const storedSegment = activeTab?.segment ?? null;
+  const sourceMode = activeTab?.sourceMode;
   const setPreviewSegment = useChatSidebarStore((s) => s.setPreviewSegment);
-  const clearPreview = useChatSidebarStore((s) => s.clearPreview);
+  const closePreviewTab = useChatSidebarStore((s) => s.closePreviewTab);
 
-  // 切换会话：关闭面板、清空上一个会话的选中、档位回默认（spec 决策 12）。
-  const prevSessionRef = React.useRef(sessionId);
-  React.useEffect(() => {
-    const prev = prevSessionRef.current;
-    if (prev !== sessionId) {
-      clearPreview(prev);
-      prevSessionRef.current = sessionId;
-    }
-  }, [sessionId, clearPreview]);
-
-  // 关闭按钮的滑出动画：先本地置 closing 播放 200ms 出场，再清空选中卸载面板。
+  // 关闭按钮关的是当前活动标签：还有别的标签时就地切过去，关掉最后一个才播 200ms
+  // 出场动画把整个面板收起来。
   const [closing, setClosing] = React.useState(false);
   const closeTimerRef = React.useRef<number | null>(null);
   React.useEffect(
@@ -109,21 +102,22 @@ export function FilePreviewPanel({ sessionId }: Props) {
   );
   const handleClose = React.useCallback(() => {
     if (closing) return;
-    // 记下关闭那一刻的选中,出场动画(200ms)期间用户可能已打开另一个文件
-    // (openPreview):只有选中仍是关闭那一刻的文件才真正清空,否则旧 timer 会把
-    // 用户的新选择一起清掉(面板白关、新文件白选)。
-    const selectedPath =
-      useChatSidebarStore.getState().previewBySession[sessionId]?.path;
+    const closedPath = path;
+    if (closedPath === undefined) return;
+    if (tabCount > 1) {
+      closePreviewTab(sessionId, closedPath);
+      return;
+    }
     setClosing(true);
     closeTimerRef.current = window.setTimeout(() => {
-      const current =
-        useChatSidebarStore.getState().previewBySession[sessionId]?.path;
-      if (current === selectedPath) clearPreview(sessionId);
+      // 出场动画期间用户可能已打开另一个文件（临时标签被原地替换）：按路径关闭，
+      // 那一刻的文件已经不在标签里就是 no-op，用户的新选择不会被旧 timer 清掉。
+      closePreviewTab(sessionId, closedPath);
       setClosing(false);
     }, 200);
-  }, [closing, clearPreview, sessionId]);
+  }, [closing, closePreviewTab, path, sessionId, tabCount]);
 
-  // 档位是面板状态:切文件保留,关面板 / 切会话回默认。markdown 的档位才是存储的
+  // 档位是标签自身的状态,切换标签时各自保留。markdown 的档位才是存储的
   // segment(render/text/split);代码 / 文本没有分段控件,首视图由入口模式决定
   // (showDiff)。这里把存储的档位按文件类型钳到合法集合。
   const kind: PreviewKind | null = path ? previewKind(path) : null;
@@ -149,18 +143,21 @@ export function FilePreviewPanel({ sessionId }: Props) {
   const [reloadKey, setReloadKey] = React.useState(0);
   const readGenRef = React.useRef(0);
   const gitGenRef = React.useRef(0);
-  // readPath/gitPath 记录当前 readState/gitState 对应的是哪个文件的结果。切换文件
-  // 后、effect 把状态重置成 loading 之前的那一帧,readState/gitState 还是旧文件
-  // 的内容——若不加这道「结果必须匹配当前 path」的闸门,那一帧会把旧文件正文渲染
-  // 在新文件名之下(一帧错内容,spec 决策 12 的切文件场景)。
-  const [readPath, setReadPath] = React.useState<string | null>(null);
-  const [gitPath, setGitPath] = React.useState<string | null>(null);
+  // readTarget/gitTarget 记录当前 readState/gitState 对应的是**哪个会话的哪个
+  // 文件**的结果。切换之后、effect 把状态重置成 loading 之前的那一帧,
+  // readState/gitState 还是上一个目标的内容——若不加这道「结果必须匹配当前目标」
+  // 的闸门,那一帧会把旧正文渲染在新标题之下(一帧错内容,spec 决策 12 的切文件
+  // 场景)。目标的身份见 targetKey——它是会话 + 文件,不只是文件。
+  const target = path === undefined ? null : targetKey(sessionId, path);
+  const [readTarget, setReadTarget] = React.useState<string | null>(null);
+  const [gitTarget, setGitTarget] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    if (!path) return;
+    // 代际先于 return 自增:标签全关掉时此前在途的读取同样要作废。
     readGenRef.current += 1;
     const gen = readGenRef.current;
-    setReadPath(path);
+    if (!path) return;
+    setReadTarget(targetKey(sessionId, path));
     setReadState({ status: "loading" });
     WorkspaceFsReadFile(sessionId, path).then(
       (view) => {
@@ -175,13 +172,17 @@ export function FilePreviewPanel({ sessionId }: Props) {
   }, [sessionId, path, doneTick, reloadKey]);
 
   React.useEffect(() => {
+    // 代际先于 return 自增:切到一个不做对比的标签(markdown / 图片 / 目录模式打
+    // 开的代码文件)时,此前在途的 HEAD 读取必须作废。否则它回来时代际仍然相等,
+    // gitState 会从 idle 翻成 loaded——contentKey 带着 gitState.status,正文容器
+    // 因此被重挂载,用户已经滚到一半的 markdown 被拽回顶部并重播淡入。
+    gitGenRef.current += 1;
+    const gen = gitGenRef.current;
     if (!showDiff || !path) {
       setGitState({ status: "idle" });
       return;
     }
-    gitGenRef.current += 1;
-    const gen = gitGenRef.current;
-    setGitPath(path);
+    setGitTarget(targetKey(sessionId, path));
     setGitState({ status: "loading" });
     WorkspaceFsGitFileContent(sessionId, path).then(
       (view) => {
@@ -198,7 +199,7 @@ export function FilePreviewPanel({ sessionId }: Props) {
   if (!path) return null;
 
   const dir = dirname(path);
-  const Icon = KIND_ICON[kind ?? "code"];
+  const Icon = PREVIEW_KIND_ICON[previewIconKind(path)];
   // 只有 markdown 有分段控件（渲染/文本/双栏）；代码 / 文本与图片都没有（首视图
   // 由入口模式决定，spec 决策 9）。
   const segments =
@@ -211,8 +212,8 @@ export function FilePreviewPanel({ sessionId }: Props) {
   const segmentLabel = (seg: FilePreviewSegment): string =>
     t(SEGMENT_LABEL_KEY[seg]);
 
-  const readSettled = readPath === path;
-  const gitSettled = gitPath === path;
+  const readSettled = readTarget === target;
+  const gitSettled = gitTarget === target;
   const isLoading =
     readState.status === "loading" ||
     !readSettled ||
@@ -237,81 +238,97 @@ export function FilePreviewPanel({ sessionId }: Props) {
           : "animate-in slide-in-from-right-6 duration-200 ease-out motion-reduce:animate-none",
       )}
     >
-      <header
-        className="flex h-10 shrink-0 items-center gap-1.5 border-b border-border pl-3 pr-2"
-        data-testid="file-preview-header"
+      {/*
+        Esc 关闭当前活动标签（served requirement「键盘与无障碍」）。挂在包住整
+        个面板内容的这一层上：标签条、header、正文里的任何位置按 Esc 都算数。
+        `contents` 让这个包装层不参与布局，面板仍是 ResizableSidebar 的直接
+        flex 列（ResizableSidebar 自己不转发键盘事件）。
+      */}
+      <div
+        className="contents"
+        onKeyDown={(event) => {
+          if (event.key !== "Escape" || event.defaultPrevented) return;
+          event.preventDefault();
+          handleClose();
+        }}
       >
-        <Icon
-          className="size-4 shrink-0 text-muted-foreground"
-          aria-hidden="true"
-        />
-        <span
-          className="shrink truncate font-mono text-xs font-semibold"
-          title={path}
+        <PreviewTabStrip sessionId={sessionId} />
+        <header
+          className="flex h-10 shrink-0 items-center gap-1.5 border-b border-border pl-3 pr-2"
+          data-testid="file-preview-header"
         >
-          {basename(path)}
-        </span>
-        {dir !== "" ? (
+          <Icon
+            className="size-4 shrink-0 text-muted-foreground"
+            aria-hidden="true"
+          />
           <span
-            className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground"
-            title={dir}
+            className="shrink truncate font-mono text-xs font-semibold"
+            title={path}
           >
-            {dir}
+            {basename(path)}
           </span>
-        ) : null}
-        {segments.length > 1 && effectiveSegment !== null ? (
-          <div
-            role="group"
-            aria-label={t("chatContext.filePreview.segmentGroup")}
-            className="flex shrink-0 items-center rounded-md border border-border p-0.5"
+          {dir !== "" ? (
+            <span
+              className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground"
+              title={dir}
+            >
+              {dir}
+            </span>
+          ) : null}
+          {segments.length > 1 && effectiveSegment !== null ? (
+            <div
+              role="group"
+              aria-label={t("chatContext.filePreview.segmentGroup")}
+              className="flex shrink-0 items-center rounded-md border border-border p-0.5"
+            >
+              {segments.map((seg) => (
+                <button
+                  key={seg}
+                  type="button"
+                  aria-pressed={effectiveSegment === seg}
+                  onClick={() => setPreviewSegment(sessionId, seg)}
+                  className={cn(
+                    "rounded px-1.5 py-0.5 text-[10px] transition-colors duration-150",
+                    effectiveSegment === seg
+                      ? "bg-accent font-semibold text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {segmentLabel(seg)}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <button
+            type="button"
+            aria-label={t("chatContext.filePreview.close")}
+            title={t("chatContext.filePreview.close")}
+            onClick={handleClose}
+            className="ml-0.5 shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground"
           >
-            {segments.map((seg) => (
-              <button
-                key={seg}
-                type="button"
-                aria-pressed={effectiveSegment === seg}
-                onClick={() => setPreviewSegment(sessionId, seg)}
-                className={cn(
-                  "rounded px-1.5 py-0.5 text-[10px] transition-colors duration-150",
-                  effectiveSegment === seg
-                    ? "bg-accent font-semibold text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {segmentLabel(seg)}
-              </button>
-            ))}
-          </div>
-        ) : null}
-        <button
-          type="button"
-          aria-label={t("chatContext.filePreview.close")}
-          title={t("chatContext.filePreview.close")}
-          onClick={handleClose}
-          className="ml-0.5 shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <X className="size-4" aria-hidden="true" />
-        </button>
-      </header>
-      <div className="flex min-h-0 flex-1 flex-col">
-        {isLoading ? (
-          <PanelSkeleton label={t("chatContext.filePreview.loading")} />
-        ) : (
-          <div
-            key={contentKey}
-            className="flex min-h-0 flex-1 flex-col animate-in fade-in duration-150 motion-reduce:animate-none"
-          >
-            <PanelBody
-              kind={kind}
-              segment={effectiveSegment}
-              showDiff={showDiff}
-              readState={readState}
-              gitState={gitState}
-              path={path}
-              onRetry={() => setReloadKey((k) => k + 1)}
-            />
-          </div>
-        )}
+            <X className="size-4" aria-hidden="true" />
+          </button>
+        </header>
+        <div className="flex min-h-0 flex-1 flex-col">
+          {isLoading ? (
+            <PanelSkeleton label={t("chatContext.filePreview.loading")} />
+          ) : (
+            <div
+              key={contentKey}
+              className="flex min-h-0 flex-1 flex-col animate-in fade-in duration-150 motion-reduce:animate-none"
+            >
+              <PanelBody
+                kind={kind}
+                segment={effectiveSegment}
+                showDiff={showDiff}
+                readState={readState}
+                gitState={gitState}
+                path={path}
+                onRetry={() => setReloadKey((k) => k + 1)}
+              />
+            </div>
+          )}
+        </div>
       </div>
     </ResizableSidebar>
   );

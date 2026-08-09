@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -15,6 +15,7 @@ const gitChangesMock = vi.fn();
 const gitBranchesMock = vi.fn();
 vi.mock("@/../wailsjs/go/app/App", () => ({
   OpenPath: (p: string) => openPathMock(p),
+  RevealPath: vi.fn(),
   WorkspaceFsListDir: (sessionId: number, relPath: string, ignored: boolean) =>
     listDirMock(sessionId, relPath, ignored),
   WorkspaceFsGitChanges: (sessionId: number, scope: string, baseRef: string) =>
@@ -25,26 +26,17 @@ vi.mock("@/../wailsjs/go/app/App", () => ({
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
+import type { FileEntry } from "../derive";
+import { ChatContextSidebar } from "../index";
 import { FilesPanel } from "../views/files-panel";
 
-import type { FileEntry } from "../derive";
+import type { workspace_fs_svc } from "@/../wailsjs/go/models";
 
 const CWD = "/Users/me/proj";
 
-const files: FileEntry[] = [
-  { path: "internal/service/chat_svc/chat.go", plus: 5, minus: 2, lastTurn: 3 },
-];
+type Change = workspace_fs_svc.ChangeView;
 
-type ChangeSeed = {
-  path: string;
-  status?: string;
-  added?: number;
-  deleted?: number;
-  binary?: boolean;
-  oldPath?: string;
-};
-
-function change(seed: ChangeSeed) {
+function change(seed: Partial<Change> & { path: string }): Change {
   return {
     oldPath: "",
     status: "modified",
@@ -52,66 +44,64 @@ function change(seed: ChangeSeed) {
     deleted: 0,
     binary: false,
     ...seed,
-  };
+  } as Change;
 }
 
 function changesView(
-  seeds: ChangeSeed[],
-  extra: { notARepo?: boolean; baseRef?: string; truncated?: boolean } = {},
+  seeds: Change[],
+  extra: { notARepo?: boolean; baseRef?: string } = {},
 ) {
   return {
     notARepo: false,
     baseRef: "",
     truncated: false,
     ...extra,
-    changes: seeds.map(change),
+    changes: seeds,
   };
 }
 
-function branchesView(
-  names: string[],
-  extra: { notARepo?: boolean; defaultBaseline?: string } = {},
-) {
-  return {
-    notARepo: false,
-    currentBranch: "feat/session-files",
-    defaultBaseline: "origin/main",
-    ...extra,
-    branches: names.map((name) => ({
-      name,
-      remote: name.startsWith("origin/"),
-    })),
-  };
+function entry(name: string, isDir = false) {
+  return { name, isDir, size: 12, mtime: 0, symlink: false, gitIgnored: false };
 }
 
-function setupUser() {
-  // Radix DropdownMenu 在 happy-dom 里要关掉 pointerEvents 检查。
-  return userEvent.setup({ pointerEventsCheck: 0 });
+function listing(entries: ReturnType<typeof entry>[], truncated = false) {
+  return { path: CWD, entries, truncated };
 }
 
-function renderPanel(props: Partial<React.ComponentProps<typeof FilesPanel>>) {
+const files: FileEntry[] = [];
+
+function dirRow(name: string): HTMLElement {
+  const found = screen
+    .getAllByTestId("directory-row")
+    .find((el) => el.getAttribute("data-name") === name);
+  if (!found) throw new Error(`no directory row named ${name}`);
+  return found;
+}
+
+function renderPanelWithChanges(gitChanges: Change[] | null) {
   return render(
     <FilesPanel
       sessionId={7}
       files={files}
       cwd={CWD}
       remote={false}
+      gitChanges={gitChanges}
       onJumpToTurn={() => {}}
-      {...props}
     />,
   );
 }
 
-function gitRow(path: string): HTMLElement {
-  const found = screen
-    .getAllByTestId("git-row")
-    .find((el) => el.getAttribute("data-path") === path);
-  if (!found) throw new Error(`no git row for ${path}`);
-  return found;
-}
-
-async function switchScope(name: RegExp) {
-  await userEvent.click(screen.getByRole("tab", { name }));
+function renderSidebar() {
+  return render(
+    <ChatContextSidebar
+      sessionId={7}
+      messages={[]}
+      activeMessageId={null}
+      onJumpToMessage={() => {}}
+      cwd={CWD}
+      remote={false}
+    />,
+  );
 }
 
 beforeEach(() => {
@@ -119,412 +109,301 @@ beforeEach(() => {
   useChatSidebarStore.setState({
     open: true,
     activeTab: "files",
-    filesMode: "git",
+    filesMode: "directory",
     showIgnored: false,
     gitBaselineBySession: {},
-    previewBySession: {},
+    previewTabsBySession: {},
   });
   useSessionStatusStore.getState().__reset();
   openPathMock.mockReset();
   openPathMock.mockResolvedValue(undefined);
   listDirMock.mockReset();
-  listDirMock.mockResolvedValue({ path: CWD, entries: [], truncated: false });
+  listDirMock.mockResolvedValue(listing([]));
   gitChangesMock.mockReset();
   gitChangesMock.mockResolvedValue(changesView([]));
   gitBranchesMock.mockReset();
-  gitBranchesMock.mockResolvedValue(branchesView(["main"]));
+  gitBranchesMock.mockResolvedValue({
+    notARepo: false,
+    currentBranch: "",
+    defaultBaseline: "",
+    branches: [],
+  });
   sonnerMocks.toast.error.mockReset();
 });
 
-describe("FilesPanel git mode · 未提交档", () => {
-  it("asks for the uncommitted scope on entering git mode and renders flat rows", async () => {
-    gitChangesMock.mockResolvedValue(
-      changesView([
-        {
-          path: "internal/service/chat_svc/turn.go",
-          status: "modified",
-          added: 42,
-          deleted: 7,
-        },
-        { path: "go.mod", status: "modified", added: 2 },
-      ]),
+describe("目录模式的 git 状态叠加：文件行", () => {
+  it("colours a changed file's name and shows a screen-reader-hidden letter with a text label; an unchanged file stays plain", async () => {
+    listDirMock.mockResolvedValue(listing([entry("turn.go"), entry("cwd.go")]));
+    renderPanelWithChanges([change({ path: "turn.go", status: "modified" })]);
+
+    const changedName = await screen.findByText("turn.go");
+    expect(changedName).toHaveClass("text-status-waiting");
+    const letter = dirRow("turn.go").querySelector("[data-status-letter]");
+    expect(letter).toHaveTextContent("M");
+    expect(letter).toHaveAttribute("aria-hidden", "true");
+    expect(within(dirRow("turn.go")).getByText("Modified")).toHaveClass(
+      "sr-only",
     );
-    renderPanel({});
+
+    const unchangedName = screen.getByText("cwd.go");
+    expect(unchangedName).not.toHaveClass("text-status-waiting");
+    expect(dirRow("cwd.go").querySelector("[data-status-letter]")).toBeNull();
+  });
+
+  it("does not show a +N/-N diff badge in directory mode, even for a changed file with diff counts", async () => {
+    listDirMock.mockResolvedValue(listing([entry("turn.go")]));
+    renderPanelWithChanges([
+      change({ path: "turn.go", status: "modified", added: 42, deleted: 7 }),
+    ]);
 
     await screen.findByText("turn.go");
-    expect(gitChangesMock).toHaveBeenCalledWith(7, "uncommitted", "");
+    expect(screen.queryByText("+42")).toBeNull();
+    expect(screen.queryByText(/−7/)).toBeNull();
+  });
+});
 
-    // 扁平：basename 主显 + 灰色目录后缀（根目录下的文件后缀为空）。
-    const turn = gitRow("internal/service/chat_svc/turn.go");
-    expect(within(turn).getByText("turn.go")).toBeInTheDocument();
+describe("目录模式的 git 状态叠加：目录行子树计数", () => {
+  it("shows the subtree change count in the status colour, hidden when the subtree has no changes", async () => {
+    listDirMock.mockResolvedValue(
+      listing([entry("internal", true), entry("assets", true)]),
+    );
+    renderPanelWithChanges([
+      change({ path: "internal/a.go" }),
+      change({ path: "internal/b.go" }),
+    ]);
+
+    await screen.findByRole("button", { name: /expand internal/i });
+    const count = within(dirRow("internal")).getByTestId("dir-subtree-count");
+    expect(count).toHaveTextContent("2");
+    expect(count).toHaveClass("text-status-waiting");
     expect(
-      within(turn).getByText("internal/service/chat_svc"),
-    ).toBeInTheDocument();
-    expect(within(turn).getByText("+42")).toBeInTheDocument();
-    expect(within(turn).getByText("−7")).toBeInTheDocument();
-
-    const goMod = gitRow("go.mod");
-    expect(within(goMod).queryByText("/")).toBeNull();
-    expect(within(goMod).queryByText("−0")).toBeNull();
-  });
-
-  it("gives every status a readable label and hides the letter from screen readers", async () => {
-    gitChangesMock.mockResolvedValue(
-      changesView([
-        { path: "a/m.go", status: "modified" },
-        { path: "b/a.go", status: "added" },
-        { path: "c/d.go", status: "deleted" },
-        { path: "d/r.go", status: "renamed", oldPath: "d/old.go" },
-        { path: "e/u.go", status: "untracked" },
-      ]),
-    );
-    renderPanel({});
-
-    await screen.findByText("m.go");
-    for (const [path, label] of [
-      ["a/m.go", "Modified"],
-      ["b/a.go", "Added"],
-      ["c/d.go", "Deleted"],
-      ["d/r.go", "Renamed"],
-      ["e/u.go", "Untracked"],
-    ]) {
-      expect(within(gitRow(path)).getByText(label)).toHaveClass("sr-only");
-    }
-    expect(
-      gitRow("a/m.go").querySelector("[data-status-letter]"),
-    ).toHaveTextContent("M");
-    expect(
-      gitRow("a/m.go").querySelector("[data-status-letter]"),
-    ).toHaveAttribute("aria-hidden", "true");
-  });
-
-  it("shows the changed-file count on the Git segment", async () => {
-    gitChangesMock.mockResolvedValue(
-      changesView([{ path: "a.go" }, { path: "b.go" }]),
-    );
-    renderPanel({});
-
-    await waitFor(() =>
-      expect(screen.getByRole("tab", { name: /^git/i })).toHaveTextContent(
-        "Git2",
-      ),
-    );
-  });
-
-  it("drops the previous session's count when the session changes behind another mode", async () => {
-    gitChangesMock.mockResolvedValue(
-      changesView([{ path: "a.go" }, { path: "b.go" }]),
-    );
-    const { rerender } = renderPanel({});
-
-    const gitTab = () => screen.getByRole("tab", { name: /^git/i });
-    await waitFor(() => expect(gitTab().textContent).toBe("Git2"));
-
-    await userEvent.click(screen.getByRole("tab", { name: /^changes/i }));
-    rerender(
-      <FilesPanel
-        sessionId={8}
-        files={files}
-        cwd={CWD}
-        remote={false}
-        onJumpToTurn={() => {}}
-      />,
-    );
-
-    await waitFor(() => expect(gitTab().textContent).toBe("Git"));
-  });
-
-  it("makes no git call at all while the 变动 mode is selected", async () => {
-    useChatSidebarStore.setState({ filesMode: "changes" });
-    renderPanel({});
-
-    await screen.findByRole("button", { name: /chat\.go/ });
-    expect(gitChangesMock).not.toHaveBeenCalled();
-    expect(gitBranchesMock).not.toHaveBeenCalled();
-  });
-
-  it("notes truncation with the actual number of listed files", async () => {
-    gitChangesMock.mockResolvedValue(
-      changesView([{ path: "a.go" }, { path: "b.go" }], { truncated: true }),
-    );
-    renderPanel({});
-
-    expect(
-      await screen.findByText(/showing the first 2 changed files/i),
-    ).toBeInTheDocument();
-  });
-
-  it("opens a file on row click for a local session and stays inert for a remote one", async () => {
-    gitChangesMock.mockResolvedValue(changesView([{ path: "internal/a.go" }]));
-    const { unmount } = renderPanel({});
-
-    await userEvent.click(await screen.findByRole("button", { name: /a\.go/ }));
-    expect(openPathMock).toHaveBeenCalledWith(`${CWD}/internal/a.go`);
-
-    unmount();
-    renderPanel({ remote: true });
-    await screen.findByText("a.go");
-    expect(screen.queryByRole("button", { name: /a\.go/ })).toBeNull();
-  });
-
-  it("shows a preview button beside the row and opens the selection by path", async () => {
-    gitChangesMock.mockResolvedValue(
-      changesView([
-        { path: "internal/a.go", status: "modified" },
-        { path: "asset.zip", status: "added" },
-      ]),
-    );
-    renderPanel({});
-    await screen.findByText("a.go");
-
-    await userEvent.click(
-      within(gitRow("internal/a.go")).getByRole("button", {
-        name: /preview/i,
-      }),
-    );
-    expect(useChatSidebarStore.getState().previewBySession[7]).toEqual({
-      path: "internal/a.go",
-      segment: null,
-      sourceMode: "git",
-    });
-    // 行点击仍是打开,预览按钮点击不打开文件。
-    expect(openPathMock).not.toHaveBeenCalled();
-    // 不可预览文件行不出预览按钮。
-    expect(
-      within(gitRow("asset.zip")).queryByRole("button", {
-        name: /preview/i,
-      }),
+      within(dirRow("assets")).queryByTestId("dir-subtree-count"),
     ).toBeNull();
   });
 
-  it("still shows a preview button for a remote git session", async () => {
-    gitChangesMock.mockResolvedValue(
-      changesView([{ path: "internal/a.go", status: "modified" }]),
+  it("hides the bare count from screen readers and puts it in the row's accessible label instead", async () => {
+    listDirMock.mockResolvedValue(
+      listing([entry("internal", true), entry("assets", true)]),
     );
-    renderPanel({ remote: true });
-    await screen.findByText("a.go");
+    renderPanelWithChanges([
+      change({ path: "internal/a.go" }),
+      change({ path: "internal/b.go" }),
+    ]);
 
-    // 远端整行不可点(无 open 按钮),但预览按钮仍在。
-    const rowEl = gitRow("internal/a.go");
-    expect(within(rowEl).queryByRole("button", { name: /a\.go/ })).toBeNull();
+    // 着色 + 裸数字不单独承载信息（spec「键盘与无障碍」）：数字对读屏隐藏，
+    // 子树变动数另有文字标签，且必须落在**行本身**的可访问名里 —— 行的主按钮
+    // 有显式 aria-label，任何 sr-only 文本放进按钮内部都不会被读出来。
+    await screen.findByRole("button", { name: /expand internal/i });
     expect(
-      within(rowEl).getByRole("button", { name: /preview/i }),
+      within(dirRow("internal")).getByTestId("dir-subtree-count"),
+    ).toHaveAttribute("aria-hidden", "true");
+    expect(
+      screen.getByRole("button", { name: "Expand internal, 2 changed files" }),
     ).toBeInTheDocument();
+    // 子树没有变动的目录行不带这一段。
+    expect(
+      screen.getByRole("button", { name: "Expand assets" }),
+    ).toBeInTheDocument();
+  });
+
+  it("counts the whole compacted chain's subtree from its frontier segment", async () => {
+    listDirMock.mockImplementation((_id: number, relPath: string) => {
+      if (relPath === "")
+        return Promise.resolve(listing([entry("internal", true)]));
+      if (relPath === "internal")
+        return Promise.resolve(listing([entry("service", true)]));
+      if (relPath === "internal/service")
+        return Promise.resolve(listing([entry("chat.go")]));
+      throw new Error(`unexpected relPath ${relPath}`);
+    });
+    renderPanelWithChanges([
+      change({ path: "internal/service/chat.go" }),
+      change({ path: "internal/service/other.go" }),
+    ]);
+
+    const foldedStart = await screen.findByRole("button", {
+      name: "Expand internal, 2 changed files",
+    });
+    await userEvent.click(foldedStart);
+    await screen.findByText("chat.go");
+
+    // 压缩行的可访问名同样带整条链的子树变动数。
+    const foldedRow = screen.getByRole("button", {
+      name: "Collapse internal/service, 2 changed files",
+    });
+    expect(
+      within(foldedRow).getByTestId("dir-subtree-count"),
+    ).toHaveTextContent("2");
+  });
+
+  it("still counts a change that sits in a segment the chain swallowed (a deleted file leaves no row of its own)", async () => {
+    // 链压缩的前提「中间段只有一个子目录、不含文件」只对**磁盘上还在**的条目成
+    // 立：listDir 看不到已删除的文件，git 却照报。此时 internal/ 被吸进链里，
+    // internal/legacy.go 在整棵树上没有任何一行，压缩行的数字是它唯一的出口。
+    listDirMock.mockImplementation((_id: number, relPath: string) => {
+      if (relPath === "")
+        return Promise.resolve(listing([entry("internal", true)]));
+      if (relPath === "internal")
+        return Promise.resolve(listing([entry("service", true)]));
+      if (relPath === "internal/service")
+        return Promise.resolve(listing([entry("chat.go")]));
+      throw new Error(`unexpected relPath ${relPath}`);
+    });
+    renderPanelWithChanges([
+      change({ path: "internal/service/chat.go" }),
+      change({ path: "internal/legacy.go", status: "deleted" }),
+    ]);
+
+    const foldedStart = await screen.findByRole("button", {
+      name: "Expand internal, 2 changed files",
+    });
+    await userEvent.click(foldedStart);
+    await screen.findByText("chat.go");
+
+    // 链一旦长到 internal/service，数字也不能从 2 悄悄掉到 1。
+    const folded = screen.getByRole("button", {
+      name: "Collapse internal/service, 2 changed files",
+    });
+    expect(within(folded).getByTestId("dir-subtree-count")).toHaveTextContent(
+      "2",
+    );
   });
 });
 
-describe("FilesPanel git mode · 本分支档与基线", () => {
-  it("switches to the branch scope and shows the effective baseline in the context bar", async () => {
+describe("目录模式的 git 状态叠加：无叠加降级", () => {
+  it("renders the tree without any overlay when there is no change list (component-level default)", async () => {
+    listDirMock.mockResolvedValue(listing([entry("turn.go")]));
+    renderPanelWithChanges(null);
+
+    await screen.findByText("turn.go");
+    expect(screen.queryByTestId("dir-subtree-count")).toBeNull();
+    expect(dirRow("turn.go").querySelector("[data-status-letter]")).toBeNull();
+  });
+});
+
+describe("目录模式的 git 状态叠加：取数与去重（ChatContextSidebar 全链路）", () => {
+  it("fetches the uncommitted scope once for the directory overlay and colours the matching row", async () => {
+    listDirMock.mockResolvedValue(listing([entry("turn.go")]));
+    gitChangesMock.mockResolvedValue(
+      changesView([change({ path: "turn.go" })]),
+    );
+    renderSidebar();
+
+    await screen.findByText("turn.go");
+    await waitFor(() => expect(gitChangesMock).toHaveBeenCalledTimes(1));
+    expect(gitChangesMock).toHaveBeenCalledWith(7, "uncommitted", "");
+    await waitFor(() =>
+      expect(screen.getByText("turn.go")).toHaveClass("text-status-waiting"),
+    );
+  });
+
+  it("drops an in-flight overlay response when the session switches to one without a working directory", async () => {
+    // 换到一个没有工作目录的会话时不再取数，但上一个仓库那次请求还在途：它回来
+    // 若还能落盘，Git tab 的角标就会在新会话上显示旧仓库的变动数。
+    listDirMock.mockResolvedValue(listing([entry("turn.go")]));
+    let resolveChanges: ((v: unknown) => void) | null = null;
+    gitChangesMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveChanges = resolve;
+        }),
+    );
+    const { rerender } = renderSidebar();
+    await waitFor(() => expect(gitChangesMock).toHaveBeenCalledTimes(1));
+
+    rerender(
+      <ChatContextSidebar
+        sessionId={7}
+        messages={[]}
+        activeMessageId={null}
+        onJumpToMessage={() => {}}
+        cwd=""
+        remote={false}
+      />,
+    );
+    const gitTab = screen.getByRole("tab", { name: /^Git/ });
+    expect(gitTab).not.toHaveTextContent("3");
+
+    await act(async () => {
+      resolveChanges!(
+        changesView([
+          change({ path: "a.go" }),
+          change({ path: "b.go" }),
+          change({ path: "c.go" }),
+        ]),
+      );
+    });
+    expect(screen.getByRole("tab", { name: /^Git/ })).not.toHaveTextContent(
+      "3",
+    );
+  });
+
+  it("does not fetch again when the Git tab is opened afterwards, at the same scope", async () => {
+    listDirMock.mockResolvedValue(listing([entry("turn.go")]));
+    gitChangesMock.mockResolvedValue(
+      changesView([change({ path: "turn.go" })]),
+    );
+    renderSidebar();
+
+    await screen.findByText("turn.go");
+    await waitFor(() => expect(gitChangesMock).toHaveBeenCalledTimes(1));
+
+    await userEvent.click(screen.getByRole("tab", { name: /^git/i }));
+    await screen.findByText("turn.go");
+    expect(gitChangesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the directory tree without overlay when the git read fails", async () => {
+    listDirMock.mockResolvedValue(listing([entry("turn.go")]));
+    gitChangesMock.mockRejectedValue(new Error("boom"));
+    renderSidebar();
+
+    const row = await screen.findByText("turn.go");
+    await waitFor(() => expect(gitChangesMock).toHaveBeenCalled());
+    expect(row).not.toHaveClass("text-status-waiting");
+    expect(dirRow("turn.go").querySelector("[data-status-letter]")).toBeNull();
+  });
+
+  it("renders the directory tree without overlay when the working directory is not a git repository", async () => {
+    listDirMock.mockResolvedValue(listing([entry("turn.go")]));
+    gitChangesMock.mockResolvedValue(changesView([], { notARepo: true }));
+    renderSidebar();
+
+    const row = await screen.findByText("turn.go");
+    await waitFor(() => expect(gitChangesMock).toHaveBeenCalled());
+    expect(row).not.toHaveClass("text-status-waiting");
+  });
+
+  it("keeps the directory overlay on the uncommitted scope even after the Git page was switched to the branch scope", async () => {
+    listDirMock.mockResolvedValue(listing([entry("turn.go")]));
     gitChangesMock.mockImplementation((_id: number, scope: string) =>
       Promise.resolve(
         scope === "branch"
-          ? changesView([{ path: "internal/a.go", added: 210 }], {
+          ? changesView([change({ path: "unrelated.go" })], {
               baseRef: "origin/main",
             })
-          : changesView([]),
+          : changesView([change({ path: "turn.go" })]),
       ),
     );
-    renderPanel({});
+    renderSidebar();
 
-    await switchScope(/this branch/i);
-
+    // 先在 Git 页切到本分支档。
+    await userEvent.click(screen.getByRole("tab", { name: /^git/i }));
+    await userEvent.click(screen.getByRole("tab", { name: /this branch/i }));
     await waitFor(() =>
       expect(gitChangesMock).toHaveBeenCalledWith(7, "branch", ""),
     );
-    const baseline = await screen.findByRole("button", {
-      name: "Compare against: origin/main",
-    });
-    expect(baseline).toHaveTextContent("origin/main");
-    expect(gitBranchesMock).toHaveBeenCalledWith(7);
-  });
 
-  it("picks a baseline from the branch dropdown, persists it per session and refetches", async () => {
-    const user = setupUser();
-    gitBranchesMock.mockResolvedValue(
-      branchesView(["origin/main", "main", "develop/wyz"]),
-    );
-    gitChangesMock.mockImplementation(
-      (_id: number, scope: string, baseRef: string) =>
-        Promise.resolve(
-          changesView([], {
-            baseRef: scope === "branch" ? baseRef || "origin/main" : "",
-          }),
-        ),
-    );
-    renderPanel({});
-
-    await switchScope(/this branch/i);
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Compare against: origin/main",
-      }),
-    );
-    await user.click(
-      await screen.findByRole("menuitemradio", { name: "develop/wyz" }),
-    );
+    // 回到「文件」页：filesMode 已在 beforeEach 里是 directory，目录模式的
+    // 叠加必须仍是「未提交」数据，不受刚才在 Git 页选中的档位影响（served
+    // requirement：与 Git 页「未提交」档同一份数据）。
+    await userEvent.click(screen.getByRole("tab", { name: /^files/i }));
 
     await waitFor(() =>
-      expect(gitChangesMock).toHaveBeenCalledWith(7, "branch", "develop/wyz"),
-    );
-    expect(useChatSidebarStore.getState().gitBaselineBySession[7]).toBe(
-      "develop/wyz",
-    );
-  });
-
-  it("drops a persisted baseline that no longer exists and falls back to the inferred default", async () => {
-    useChatSidebarStore.setState({
-      gitBaselineBySession: { 7: "gone/branch" },
-    });
-    gitChangesMock.mockImplementation(
-      (_id: number, _scope: string, _baseRef: string) =>
-        // 后端在基线失效时回落到推断值，返回的 baseRef 与请求的不同。
-        Promise.resolve(changesView([], { baseRef: "origin/main" })),
-    );
-    renderPanel({});
-
-    await switchScope(/this branch/i);
-
-    await waitFor(() =>
-      expect(gitChangesMock).toHaveBeenCalledWith(7, "branch", "gone/branch"),
+      expect(gitChangesMock).toHaveBeenLastCalledWith(7, "uncommitted", ""),
     );
     await waitFor(() =>
-      expect(
-        useChatSidebarStore.getState().gitBaselineBySession[7],
-      ).toBeUndefined(),
+      expect(screen.getByText("turn.go")).toHaveClass("text-status-waiting"),
     );
-    await waitFor(() =>
-      expect(gitChangesMock).toHaveBeenCalledWith(7, "branch", ""),
-    );
-  });
-
-  it("keeps each session's baseline apart", async () => {
-    const user = setupUser();
-    gitBranchesMock.mockResolvedValue(branchesView(["origin/main", "main"]));
-    gitChangesMock.mockImplementation(
-      (_id: number, scope: string, baseRef: string) =>
-        Promise.resolve(
-          changesView([], {
-            baseRef: scope === "branch" ? baseRef || "origin/main" : "",
-          }),
-        ),
-    );
-    renderPanel({});
-
-    await switchScope(/this branch/i);
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Compare against: origin/main",
-      }),
-    );
-    await user.click(
-      await screen.findByRole("menuitemradio", { name: "main" }),
-    );
-
-    await waitFor(() =>
-      expect(useChatSidebarStore.getState().gitBaselineBySession[7]).toBe(
-        "main",
-      ),
-    );
-    expect(
-      useChatSidebarStore.getState().gitBaselineBySession[8],
-    ).toBeUndefined();
-  });
-
-  it("shows the no-baseline empty state with a pick-a-baseline button", async () => {
-    gitChangesMock.mockResolvedValue(changesView([], { baseRef: "" }));
-    gitBranchesMock.mockResolvedValue(
-      branchesView(["feat/x"], { defaultBaseline: "" }),
-    );
-    renderPanel({});
-
-    await switchScope(/this branch/i);
-
-    expect(
-      await screen.findByText(/can't infer a default branch/i),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /pick a baseline/i }),
-    ).toBeInTheDocument();
-  });
-
-  it("uses a different clean-state copy for each scope", async () => {
-    gitChangesMock.mockImplementation((_id: number, scope: string) =>
-      Promise.resolve(
-        changesView([], { baseRef: scope === "branch" ? "origin/main" : "" }),
-      ),
-    );
-    renderPanel({});
-
-    expect(
-      await screen.findByText(/working tree is clean/i),
-    ).toBeInTheDocument();
-
-    await switchScope(/this branch/i);
-    expect(
-      await screen.findByText(/no changes compared with origin\/main/i),
-    ).toBeInTheDocument();
-  });
-});
-
-describe("FilesPanel git mode · 空态、错误与自动重拉", () => {
-  it("shows the not-a-repo state with the guidance and hides the scope switch", async () => {
-    gitChangesMock.mockResolvedValue(changesView([], { notARepo: true }));
-    renderPanel({});
-
-    expect(
-      await screen.findByText(/not a git repository/i),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/switch to changes/i)).toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: /uncommitted/i })).toBeNull();
-  });
-
-  it("shows the no-working-directory state without calling the backend", async () => {
-    renderPanel({ cwd: "" });
-
-    expect(
-      await screen.findByText(/this session has no working directory/i),
-    ).toBeInTheDocument();
-    expect(gitChangesMock).not.toHaveBeenCalled();
-  });
-
-  it("surfaces the backend failure verbatim with a retry that refetches", async () => {
-    gitChangesMock.mockRejectedValueOnce(
-      new Error("Remote agentred is too old; please upgrade to use this view"),
-    );
-    gitChangesMock.mockResolvedValue(changesView([{ path: "a.go" }]));
-    renderPanel({});
-
-    expect(
-      await screen.findByText(
-        "Remote agentred is too old; please upgrade to use this view",
-      ),
-    ).toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("button", { name: /retry/i }));
-    expect(await screen.findByText("a.go")).toBeInTheDocument();
-    expect(gitChangesMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("falls back to a generic failure when the rejection carries no message", async () => {
-    gitChangesMock.mockRejectedValue("");
-    renderPanel({});
-
-    expect(
-      await screen.findByText(/failed to read git changes/i),
-    ).toBeInTheDocument();
-  });
-
-  it("refetches when the current session's turn ends", async () => {
-    renderPanel({});
-
-    await waitFor(() => expect(gitChangesMock).toHaveBeenCalledTimes(1));
-
-    useSessionStatusStore.getState().bumpDone(7, { kind: "done" });
-    await waitFor(() => expect(gitChangesMock).toHaveBeenCalledTimes(2));
-
-    // 别的会话结束不该惊动本面板。
-    useSessionStatusStore.getState().bumpDone(9, { kind: "done" });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(gitChangesMock).toHaveBeenCalledTimes(2);
   });
 });

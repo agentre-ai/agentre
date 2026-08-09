@@ -10,11 +10,16 @@ const sonnerMocks = vi.hoisted(() => ({
 vi.mock("sonner", () => sonnerMocks);
 
 const openPathMock = vi.fn();
+const revealPathMock = vi.fn();
 vi.mock("@/../wailsjs/go/app/App", () => ({
   OpenPath: (p: string) => openPathMock(p),
+  RevealPath: (p: string) => revealPathMock(p),
 }));
 
-import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
+import {
+  selectActivePreviewTab,
+  useChatSidebarStore,
+} from "@/stores/chat-sidebar-store";
 
 import { FilesView } from "../views/files-view";
 
@@ -43,12 +48,35 @@ const files: FileEntry[] = [
 
 const CWD = "/Users/me/proj";
 
+/** 行内按钮 → 它所在的那一行（treeitem 才是带 aria-expanded 的那个元素）。 */
+function rowOf(el: HTMLElement): HTMLElement {
+  const found = el.closest<HTMLElement>('[role="treeitem"]');
+  if (!found) throw new Error("button is not inside a treeitem");
+  return found;
+}
+
+/** 「用默认应用打开」现在只在行的 ⋯ 菜单里（行内不再有常驻图标按钮）。 */
+async function openWithDefaultApp(name: string) {
+  const user = userEvent.setup({ pointerEventsCheck: 0 });
+  const row = screen
+    .getAllByTestId("changes-row")
+    .find((el) => el.getAttribute("data-name") === name);
+  if (!row) throw new Error(`no changes row named ${name}`);
+  await user.click(within(row).getByRole("button", { name: /more actions/i }));
+  const menu = await screen.findByRole("menu");
+  await user.click(
+    within(menu).getByRole("menuitem", { name: "Open with default app" }),
+  );
+}
+
 beforeEach(() => {
   openPathMock.mockReset();
   openPathMock.mockResolvedValue(undefined);
+  revealPathMock.mockReset();
+  revealPathMock.mockResolvedValue(undefined);
   sonnerMocks.toast.error.mockReset();
   localStorage.clear();
-  useChatSidebarStore.setState({ previewBySession: {} });
+  useChatSidebarStore.setState({ previewTabsBySession: {} });
 });
 
 describe("FilesView", () => {
@@ -103,7 +131,9 @@ describe("FilesView", () => {
     expect(icon!.nextElementSibling?.textContent).toBe("chat.go");
   });
 
-  it("renders a Windows path as folders with its basename on the file row", () => {
+  it("renders a Windows path as one collapsed chain row down to its basename directory", () => {
+    // src 只有一个子目录 components、components 直接包含文件 file.tsx——两段
+    // 折成一行「src/components」，而不是各占一行。
     const windowsFiles: FileEntry[] = [
       {
         path: "src\\components\\file.tsx",
@@ -123,11 +153,12 @@ describe("FilesView", () => {
     );
 
     expect(
-      screen.getByRole("button", { name: "Collapse src" }),
+      screen.getByRole("button", { name: "Collapse src/components" }),
     ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Collapse src" })).toBeNull();
     expect(
-      screen.getByRole("button", { name: "Collapse components" }),
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: "Collapse components" }),
+    ).toBeNull();
     expect(screen.getByText("file.tsx")).toBeInTheDocument();
   });
 
@@ -143,8 +174,9 @@ describe("FilesView", () => {
     );
     // 目录按钮必须显式 text-left：app 存在把 button 文字居中的全局规则，
     // 文件行按钮原本就带 text-left 绕开；目录按钮漏掉会导致文件夹名与图标拉开大间隔。
-    for (const name of ["internal", "frontend"]) {
-      const btn = screen.getByRole("button", { name: `Collapse ${name}` });
+    // internal/frontend 各自的链已折叠成一行，用正则匹配折叠后的完整标签。
+    for (const name of [/^Collapse internal/, /^Collapse frontend/]) {
+      const btn = screen.getByRole("button", { name });
       expect(btn.className).toContain("text-left");
     }
   });
@@ -159,20 +191,20 @@ describe("FilesView", () => {
         onJumpToTurn={() => {}}
       />,
     );
-    const internalRow = screen.getByRole("button", { name: /internal/ });
-    expect(internalRow).toHaveAttribute("aria-expanded", "true");
+    const internalToggle = screen.getByRole("button", { name: /internal/ });
+    expect(rowOf(internalToggle)).toHaveAttribute("aria-expanded", "true");
     expect(
       screen.getByRole("button", { name: /chat\.go/ }),
     ).toBeInTheDocument();
 
-    await userEvent.click(internalRow);
-    expect(internalRow).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(internalToggle);
+    expect(rowOf(internalToggle)).toHaveAttribute("aria-expanded", "false");
     expect(
       screen.queryByRole("button", { name: /chat\.go/ }),
     ).not.toBeInTheDocument();
 
-    await userEvent.click(internalRow);
-    expect(internalRow).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(internalToggle);
+    expect(rowOf(internalToggle)).toHaveAttribute("aria-expanded", "true");
     expect(
       screen.getByRole("button", { name: /chat\.go/ }),
     ).toBeInTheDocument();
@@ -232,21 +264,6 @@ describe("FilesView", () => {
     ).toBeInTheDocument();
   });
 
-  it("file row click still jumps to lastTurn", async () => {
-    const onJump = vi.fn();
-    render(
-      <FilesView
-        sessionId={1}
-        files={files}
-        cwd={CWD}
-        remote={false}
-        onJumpToTurn={onJump}
-      />,
-    );
-    await userEvent.click(screen.getByRole("button", { name: /chat\.go/ }));
-    expect(onJump).toHaveBeenCalledWith(3);
-  });
-
   it("renders +N in text-status-running and −N in text-destructive badges", () => {
     render(
       <FilesView
@@ -280,28 +297,6 @@ describe("FilesView", () => {
     expect(within(readme).queryByText(/[+\u2212]\d/)).not.toBeInTheDocument();
   });
 
-  it("renders open button and calls OpenPath(cwd + path), without jumping", async () => {
-    const onJump = vi.fn();
-    render(
-      <FilesView
-        sessionId={1}
-        files={files}
-        cwd={CWD}
-        remote={false}
-        onJumpToTurn={onJump}
-      />,
-    );
-    const chatGoRow = screen.getByRole("button", { name: /chat\.go/ });
-    const openBtn = within(chatGoRow.parentElement!).getByRole("button", {
-      name: /Open file/i,
-    });
-    await userEvent.click(openBtn);
-    expect(openPathMock).toHaveBeenCalledWith(
-      "/Users/me/proj/internal/service/chat_svc/chat.go",
-    );
-    expect(onJump).not.toHaveBeenCalled();
-  });
-
   it("opens an absolute tool path directly instead of prefixing cwd", async () => {
     const absoluteFiles: FileEntry[] = [
       {
@@ -321,46 +316,29 @@ describe("FilesView", () => {
       />,
     );
 
-    const chatGoRow = screen.getByRole("button", { name: /chat\.go/ });
-    await userEvent.click(
-      within(chatGoRow.parentElement!).getByRole("button", {
-        name: /Open file/i,
-      }),
-    );
+    await openWithDefaultApp("chat.go");
 
     expect(openPathMock).toHaveBeenCalledWith(
       "/Users/me/proj/internal/service/chat_svc/chat.go",
     );
   });
 
-  it("hides open buttons when remote is true", () => {
+  it("joins the cwd for a relative tool path", async () => {
     render(
       <FilesView
         sessionId={1}
         files={files}
         cwd={CWD}
-        remote={true}
-        onJumpToTurn={() => {}}
-      />,
-    );
-    expect(
-      screen.queryByRole("button", { name: /Open file/i }),
-    ).not.toBeInTheDocument();
-  });
-
-  it("hides open buttons when cwd is empty", () => {
-    render(
-      <FilesView
-        sessionId={1}
-        files={files}
-        cwd=""
         remote={false}
         onJumpToTurn={() => {}}
       />,
     );
-    expect(
-      screen.queryByRole("button", { name: /Open file/i }),
-    ).not.toBeInTheDocument();
+
+    await openWithDefaultApp("chat.go");
+
+    expect(openPathMock).toHaveBeenCalledWith(
+      "/Users/me/proj/internal/service/chat_svc/chat.go",
+    );
   });
 
   it("toasts openFailed with the error when OpenPath rejects", async () => {
@@ -374,11 +352,7 @@ describe("FilesView", () => {
         onJumpToTurn={() => {}}
       />,
     );
-    const chatGoRow = screen.getByRole("button", { name: /chat\.go/ });
-    const openBtn = within(chatGoRow.parentElement!).getByRole("button", {
-      name: /Open file/i,
-    });
-    await userEvent.click(openBtn);
+    await openWithDefaultApp("chat.go");
     await vi.waitFor(() => {
       expect(sonnerMocks.toast.error).toHaveBeenCalledWith(
         "Failed to open file: boom",
@@ -402,15 +376,163 @@ describe("FilesView", () => {
   });
 });
 
-describe("FilesView preview button", () => {
-  const previewBtn = (rowName: RegExp) => {
-    const row = screen.getByRole("button", { name: rowName });
-    return within(row.parentElement!).queryByRole("button", {
-      name: /preview/i,
-    });
-  };
+describe("FilesView 链压缩", () => {
+  function chainRow(): HTMLElement {
+    const found = screen
+      .getAllByTestId("changes-row")
+      .find((el) => el.getAttribute("data-name") === "chat_svc");
+    if (!found) throw new Error("no folded internal/service/chat_svc row");
+    return found;
+  }
 
-  it("renders a preview button for markdown / code / image files", () => {
+  it("folds a single-subdirectory, file-free chain into one row, dimming every prefix segment but the last", () => {
+    render(
+      <FilesView
+        sessionId={1}
+        files={files}
+        cwd={CWD}
+        remote={false}
+        onJumpToTurn={() => {}}
+      />,
+    );
+
+    // internal 与 service 各自单独一行的旧形态不再存在；三段折成一行。
+    expect(
+      screen.queryByRole("button", { name: "Collapse internal" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Collapse service" }),
+    ).toBeNull();
+    const row = chainRow();
+    expect(
+      within(row).getByRole("button", {
+        name: "Collapse internal/service/chat_svc",
+      }),
+    ).toBeInTheDocument();
+
+    // 前缀（除末段外）降低不透明度，末段本身不带这个类——身份一眼可辨。
+    expect(within(row).getByTestId("chain-prefix")).toHaveTextContent(
+      "internal/service/",
+    );
+    expect(within(row).getByTestId("chain-prefix").className).toContain(
+      "opacity-55",
+    );
+    const nameCell = within(row).getByTestId("chain-name");
+    expect(nameCell).toHaveTextContent("internal/service/chat_svc");
+    // 末段紧跟在 dimmed 前缀 span 后面，作为一段不带额外透明度类的纯文本。
+    expect(nameCell.lastChild?.textContent).toBe("chat_svc");
+  });
+
+  it("does not fold a directory that directly contains a file", () => {
+    render(
+      <FilesView
+        sessionId={1}
+        files={[
+          { path: "a/b/c.go", plus: 0, minus: 0, lastTurn: 1 },
+          { path: "a/direct.go", plus: 0, minus: 0, lastTurn: 1 },
+        ]}
+        cwd={CWD}
+        remote={false}
+        onJumpToTurn={() => {}}
+      />,
+    );
+
+    // a 直接包含 direct.go，链在 a 处即终止；b 是 a 的单独子行。
+    expect(
+      screen.getByRole("button", { name: "Collapse a" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Collapse b" }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not fold a directory with multiple subdirectories", () => {
+    render(
+      <FilesView
+        sessionId={1}
+        files={[
+          { path: "a/b/x.go", plus: 0, minus: 0, lastTurn: 1 },
+          { path: "a/c/y.go", plus: 0, minus: 0, lastTurn: 1 },
+        ]}
+        cwd={CWD}
+        remote={false}
+        onJumpToTurn={() => {}}
+      />,
+    );
+
+    // a 有两个子目录，链在 a 处即终止；b、c 各自独立一行。
+    expect(
+      screen.getByRole("button", { name: "Collapse a" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Collapse b" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Collapse c" }),
+    ).toBeInTheDocument();
+  });
+
+  it("expands/collapses the folded row as one unit; its children indent exactly one level deeper", async () => {
+    render(
+      <FilesView
+        sessionId={1}
+        files={files}
+        cwd={CWD}
+        remote={false}
+        onJumpToTurn={() => {}}
+      />,
+    );
+
+    const row = chainRow();
+    // 折叠行本身在树的第 0 层（internal 是根级链），子项 chat.go 只多缩进一
+    // 级，无论链吸收了几段（internal/service/chat_svc 三段仍是 +1 级）。
+    expect(row.style.paddingLeft).toBe("8px");
+    const chatGoRow = screen
+      .getAllByTestId("changes-row")
+      .find((el) => el.getAttribute("data-name") === "chat.go")!;
+    expect(chatGoRow.style.paddingLeft).toBe("22px");
+
+    const toggle = within(row).getByRole("button", {
+      name: "Collapse internal/service/chat_svc",
+    });
+    await userEvent.click(toggle);
+    expect(rowOf(toggle)).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.queryByRole("button", { name: /chat\.go/ }),
+    ).not.toBeInTheDocument();
+
+    await userEvent.click(toggle);
+    expect(rowOf(toggle)).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByRole("button", { name: /chat\.go/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("marks the folded chain label to truncate from the head, keeping the last segment", () => {
+    render(
+      <FilesView
+        sessionId={1}
+        files={files}
+        cwd={CWD}
+        remote={false}
+        onJumpToTurn={() => {}}
+      />,
+    );
+
+    // dir="rtl" + text-left 是本仓「从头截断」的既有实现方式（与 Git 页目录
+    // 后缀一致）：省略号落在开头，末段（身份）留在可见的一端。
+    const nameCell = within(chainRow()).getByTestId("chain-name");
+    expect(nameCell).toHaveAttribute("dir", "rtl");
+    expect(nameCell.className).toContain("text-left");
+    expect(nameCell.className).toContain("truncate");
+  });
+});
+
+describe("FilesView 单击预览", () => {
+  const clickRow = (rowName: RegExp) =>
+    userEvent.click(screen.getByRole("button", { name: rowName }));
+
+  it("markdown / 代码 / 图片行单击都开出预览标签", async () => {
     render(
       <FilesView
         sessionId={1}
@@ -423,12 +545,19 @@ describe("FilesView preview button", () => {
         onJumpToTurn={() => {}}
       />,
     );
-    expect(previewBtn(/chat\.go/)).not.toBeNull();
-    expect(previewBtn(/README\.md/)).not.toBeNull();
-    expect(previewBtn(/logo\.png/)).not.toBeNull();
+    for (const [rowName, path] of [
+      [/chat\.go/, "internal/service/chat_svc/chat.go"],
+      [/README\.md/, "README.md"],
+      [/logo\.png/, "assets/logo.png"],
+    ] as const) {
+      await clickRow(rowName);
+      expect(
+        selectActivePreviewTab(useChatSidebarStore.getState(), 1),
+      ).toMatchObject({ path, sourceMode: "changes" });
+    }
   });
 
-  it("does not render a preview button for non-previewable file types", () => {
+  it("不可预览的文件行不是按钮，单击没有任何反应", async () => {
     render(
       <FilesView
         sessionId={1}
@@ -441,28 +570,11 @@ describe("FilesView preview button", () => {
         onJumpToTurn={() => {}}
       />,
     );
-    expect(screen.queryByRole("button", { name: /preview/i })).toBeNull();
-  });
-
-  it("opens the panel with the relative path and does not jump on click", async () => {
-    const onJump = vi.fn();
-    render(
-      <FilesView
-        sessionId={1}
-        files={files}
-        cwd={CWD}
-        remote={false}
-        onJumpToTurn={onJump}
-      />,
-    );
-    await userEvent.click(previewBtn(/README\.md/)!);
-
-    expect(useChatSidebarStore.getState().previewBySession[1]).toEqual({
-      path: "README.md",
-      segment: null,
-      sourceMode: "changes",
-    });
-    expect(onJump).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /archive\.zip/ })).toBeNull();
+    await userEvent.click(screen.getByText("doc.pdf"));
+    expect(
+      selectActivePreviewTab(useChatSidebarStore.getState(), 1),
+    ).toBeNull();
   });
 
   it("strips the cwd prefix for an absolute path inside the cwd", async () => {
@@ -482,19 +594,18 @@ describe("FilesView preview button", () => {
         onJumpToTurn={() => {}}
       />,
     );
-    const row = screen.getByRole("button", { name: /chat\.go/ });
-    await userEvent.click(
-      within(row.parentElement!).getByRole("button", { name: /preview/i }),
-    );
+    await clickRow(/chat\.go/);
 
-    expect(useChatSidebarStore.getState().previewBySession[1]).toEqual({
+    expect(
+      selectActivePreviewTab(useChatSidebarStore.getState(), 1),
+    ).toMatchObject({
       path: "internal/service/chat_svc/chat.go",
       segment: null,
       sourceMode: "changes",
     });
   });
 
-  it("hides the preview button for an absolute path outside the cwd", () => {
+  it("绝对路径落在 cwd 之外的行不可点", () => {
     render(
       <FilesView
         sessionId={1}
@@ -511,10 +622,24 @@ describe("FilesView preview button", () => {
         onJumpToTurn={() => {}}
       />,
     );
-    expect(screen.queryByRole("button", { name: /preview/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /secret\.go/ })).toBeNull();
   });
 
-  it("still shows the preview button for remote sessions (unlike open)", () => {
+  it("会话没有工作目录时所有文件行都不可点", () => {
+    render(
+      <FilesView
+        sessionId={1}
+        files={files}
+        cwd=""
+        remote={false}
+        onJumpToTurn={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /chat\.go/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /README\.md/ })).toBeNull();
+  });
+
+  it("远端会话的行照样可以单击预览（内容经 RPC 读取）", async () => {
     render(
       <FilesView
         sessionId={1}
@@ -524,23 +649,9 @@ describe("FilesView preview button", () => {
         onJumpToTurn={() => {}}
       />,
     );
-    expect(screen.queryByRole("button", { name: /open file/i })).toBeNull();
-    // 三行都是可预览文件 → 三个预览按钮(远端也出,内容经 RPC 读取)。
-    expect(screen.getAllByRole("button", { name: /preview/i }).length).toBe(3);
-  });
-
-  it("highlights the currently previewed file's button", () => {
-    useChatSidebarStore.getState().openPreview(1, "README.md", "changes");
-    render(
-      <FilesView
-        sessionId={1}
-        files={files}
-        cwd={CWD}
-        remote={false}
-        onJumpToTurn={() => {}}
-      />,
-    );
-    expect(previewBtn(/README\.md/)!.className).toContain("text-primary");
-    expect(previewBtn(/chat\.go/)!.className).not.toContain("text-primary");
+    await clickRow(/README\.md/);
+    expect(
+      selectActivePreviewTab(useChatSidebarStore.getState(), 1),
+    ).toMatchObject({ path: "README.md", sourceMode: "changes" });
   });
 });

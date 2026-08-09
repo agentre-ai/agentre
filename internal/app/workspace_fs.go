@@ -40,3 +40,16 @@ func (a *App) WorkspaceFsReadFile(sessionID int64, relPath string) (*workspace_f
 func (a *App) WorkspaceFsGitFileContent(sessionID int64, relPath string) (*workspace_fs_svc.GitFileContentView, error) {
 	return workspace_fs_svc.Default().GitFileContent(a.ctx, sessionID, relPath)
 }
+
+// WorkspaceFsSearchFiles 从会话工作目录递归搜索 basename 含 query 子串(不区分
+// 大小写)的文件与目录。
+//   - includeIgnored 取自「显示忽略项」开关:false 时被 git 忽略的目录整棵剪枝、
+//     被忽略的文件不计入;".git" 恒不进入
+//   - 返回的 truncated=true 表示结果不完整(命中上限或目录数预算),前端需在列表
+//     末尾出说明
+//
+// 本地与远端(agentred)会话都走这一个方法;旧 agentred 不认识该方法时,服务层
+// 把 -32601 翻成「远端 agentred 版本过旧」而不是通用调用失败。
+func (a *App) WorkspaceFsSearchFiles(sessionID int64, query string, includeIgnored bool) (*workspace_fs_svc.SearchFilesView, error) {
+	return workspace_fs_svc.Default().SearchFiles(a.ctx, sessionID, query, includeIgnored)
+}

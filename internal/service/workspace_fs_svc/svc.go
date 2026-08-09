@@ -19,8 +19,11 @@ package workspace_fs_svc
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/cago-frame/cago/pkg/i18n"
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
 
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/pkg/jsonrpc"
@@ -37,6 +40,11 @@ import (
 // agent_repo / agent_backend_repo 去跨域读别人的表,单测也只需要注入一个闭包
 // 而不必连 DB。注入模式与 chat_svc.RegisterCwdResolver 一致(设计决策 3)。
 type SessionWorkspaceResolver func(ctx context.Context, sessionID int64) (deviceID int64, cwd string, err error)
+
+// searchTimeout 是一次递归搜索(含远端一跳)的上限。用户每次输入防抖后都会打一
+// 发,超过这个时长就不再是"搜索"而是挂起了:到点即失败,前端出错误态 + 重试,
+// 而不是回一份看着完整的部分结果。
+const searchTimeout = 10 * time.Second
 
 var resolveWorkspaceFn SessionWorkspaceResolver
 
@@ -59,6 +67,11 @@ type WorkspaceFsSvc interface {
 	// GitFileContent 取同一文件在 git HEAD 的版本(对比档左列);未跟踪/不在
 	// HEAD → 空基线(HasHead=false),非 git 仓库 → NotARepo,均不报错。
 	GitFileContent(ctx context.Context, sessionID int64, relPath string) (*GitFileContentView, error)
+	// SearchFiles 从会话工作目录递归搜索 basename 含 query 子串(不区分大小写)
+	// 的文件与目录。includeIgnored 取自前端「显示忽略项」开关:false 时被 git
+	// 忽略的目录整棵剪枝、被忽略的文件不计入。结果不完整(命中上限 / 目录数
+	// 预算)时 Truncated=true。
+	SearchFiles(ctx context.Context, sessionID int64, query string, includeIgnored bool) (*SearchFilesView, error)
 }
 
 // ── views ───────────────────────────────────────────────────────────────────
@@ -124,6 +137,21 @@ type GitFileContentView struct {
 	Content  string `json:"content"`
 	NotARepo bool   `json:"notARepo,omitempty"`
 	HasHead  bool   `json:"hasHead,omitempty"` // false 表示空基线(未跟踪/不在 HEAD)
+}
+
+// SearchHitView 是一条搜索命中:path 相对会话工作目录、"/" 分隔;isDir 让前端
+// 选行的图标与菜单(目录同样参与 basename 匹配)。
+type SearchHitView struct {
+	Path  string `json:"path"`
+	IsDir bool   `json:"isDir"`
+}
+
+// SearchFilesView 是 SearchFiles 的返回值。Truncated 表示结果**不完整**(命中数
+// 触及上限,或遍历触及目录数预算),前端据此在列表末尾出说明——搜索不会静默
+// 返回不完整结果。
+type SearchFilesView struct {
+	Hits      []SearchHitView `json:"hits"`
+	Truncated bool            `json:"truncated"`
 }
 
 // ── impl ────────────────────────────────────────────────────────────────────
@@ -283,6 +311,56 @@ func (s *workspaceFsImpl) GitFileContent(ctx context.Context, sessionID int64, r
 	return &GitFileContentView{
 		Content: resp.Content, NotARepo: resp.NotARepo, HasHead: resp.HasHead,
 	}, nil
+}
+
+// SearchFiles 按 deviceID 路由:本机直接调叶子包 workspacefs.SearchFiles(递归
+// 遍历,.git 恒不进入、被忽略目录整棵剪枝);远端经租约调 workspacefs.searchFiles
+// RPC —— 那是 daemon 上的同一份叶子实现,两端的匹配与剪枝规则不会分叉。
+//
+// 整跳套一层 searchTimeout:递归遍历是本方法族里唯一时长随仓库规模走的调用,
+// 前端每次输入防抖后都会打一发,不能让它无限期挂着占住租约。叶子包另有目录数
+// 预算兜底,两者共同保证遍历必然终止。
+func (s *workspaceFsImpl) SearchFiles(ctx context.Context, sessionID int64, query string, includeIgnored bool) (*SearchFilesView, error) {
+	deviceID, cwd, err := s.workspace(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, searchTimeout)
+	defer cancel()
+
+	view := &SearchFilesView{Hits: []SearchHitView{}}
+	if deviceID == 0 {
+		res, lerr := workspacefs.SearchFiles(ctx, cwd, query, includeIgnored,
+			workspacefs.DefaultMaxSearchHits, workspacefs.DefaultMaxSearchDirs)
+		if lerr != nil {
+			return nil, mapLocalErr(ctx, lerr)
+		}
+		view.Truncated = res.Truncated
+		for _, hit := range res.Hits {
+			view.Hits = append(view.Hits, SearchHitView{Path: hit.Path, IsDir: hit.IsDir})
+		}
+	} else {
+		var resp wire.SearchFilesResp
+		req := wire.SearchFilesReq{Root: cwd, Query: query, IncludeIgnored: includeIgnored}
+		if cerr := s.call(ctx, deviceID, wire.MethodSearchFiles, req, &resp); cerr != nil {
+			return nil, cerr
+		}
+		view.Truncated = resp.Truncated
+		for _, hit := range resp.Hits {
+			view.Hits = append(view.Hits, SearchHitView{Path: hit.Path, IsDir: hit.IsDir})
+		}
+	}
+
+	if view.Truncated {
+		// 截断是可见的降级:命中上限或目录数预算被打满。查询串本身不入日志
+		// (用户输入),只记它的长度。
+		logger.Ctx(ctx).Warn("workspace_fs_svc.SearchFiles: result truncated",
+			zap.Int64("sessionID", sessionID), zap.Int64("deviceID", deviceID),
+			zap.Int("queryLen", len(query)), zap.Int("hitCount", len(view.Hits)),
+			zap.Bool("includeIgnored", includeIgnored))
+	}
+	return view, nil
 }
 
 // gitBranches 是 GitBranches 与「本分支」档基线解析共用的取数步骤。

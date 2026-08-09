@@ -436,6 +436,14 @@ func TestIntegration_UnauthGuard(t *testing.T) {
 	rpcErr = nil
 	require.True(t, errors.As(err, &rpcErr), "error must be *rpc.Error")
 	assert.Equal(t, -32001, rpcErr.Code)
+
+	// searchFiles 同属 workspacefs.* 方法族:递归遍历比单目录列举更值钱,未鉴权
+	// 同样必须在业务逻辑之前被挡掉。
+	err = c.Call(callCtx, workspacefswire.MethodSearchFiles, workspacefswire.SearchFilesReq{}, &workspacefswire.SearchFilesResp{})
+	require.Error(t, err, "workspacefs.searchFiles must be rejected without auth")
+	rpcErr = nil
+	require.True(t, errors.As(err, &rpcErr), "error must be *rpc.Error")
+	assert.Equal(t, -32001, rpcErr.Code)
 }
 
 // TestIntegration_WorkspaceFsListDir_EndToEnd 验证 workspacefs.listDir 在鉴权
@@ -491,6 +499,33 @@ func TestIntegration_WorkspaceFsReadFile_EndToEnd(t *testing.T) {
 	assert.Equal(t, "hello world", resp.Content)
 	assert.False(t, resp.Binary)
 	assert.False(t, resp.TooLarge)
+}
+
+// TestIntegration_WorkspaceFsSearchFiles_EndToEnd 验证 workspacefs.searchFiles
+// 在鉴权后能端到端跑通一跳:配对拿 deviceToken,用它在 daemon 真实文件系统上的
+// 一个临时目录里递归搜索,断言拿到真实命中(含嵌套一层的那个)而不是错误。
+// 未鉴权已由 TestIntegration_UnauthGuard 覆盖,这里只覆盖“鉴权后可用”这一半。
+func TestIntegration_WorkspaceFsSearchFiles_EndToEnd(t *testing.T) {
+	dir, err := os.MkdirTemp("", "ard-wsfs")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	rig := bootRigInDir(t, dir)
+
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "src"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "src", "Target.go"), []byte("x"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "other.txt"), []byte("x"), 0o644))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var resp workspacefswire.SearchFilesResp
+	require.NoError(t, rig.cli.Call(ctx, workspacefswire.MethodSearchFiles,
+		workspacefswire.SearchFilesReq{Root: root, Query: "target"}, &resp))
+	assert.False(t, resp.Truncated)
+	require.Len(t, resp.Hits, 1)
+	assert.Equal(t, "src/Target.go", resp.Hits[0].Path)
+	assert.False(t, resp.Hits[0].IsDir)
 }
 
 // pacedBackendRunner emits events one at a time with a small inter-event gap so
