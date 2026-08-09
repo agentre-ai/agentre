@@ -13,10 +13,69 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
 	"github.com/agentre-ai/agentre/pkg/claudecode"
 )
+
+// TestRun_ModelChangeEvictsAndRespawns 锁住 claudecode 的模型 evict 语义:--model 是
+// 启动期 flag(WithModel 绑定在 Client 创建时),CLI 子进程又会被 LRU 缓存跨轮复用 ——
+// effectiveModel(provider.Model → backend.DefaultModel)变化必须 evict + 重 spawn,
+// 否则下一轮复用旧模型进程,新模型不生效(镜像 codex runtime 的 modelChanged 先例)。
+// #26 会话级 override 已移除,模型变化只看 provider.Model / backend.DefaultModel。
+func TestRun_ModelChangeEvictsAndRespawns(t *testing.T) {
+	Convey("Given 一个带 usage 的假 claude 子进程", t, func() {
+		var spawnCount int32
+		restore := SetSessionFactoryForTest(func(ccLaunchSpec) (ccSessionHandle, error) {
+			atomic.AddInt32(&spawnCount, 1)
+			return &fakeCCHandle{
+				id: "fake-sid",
+				// usage 非空避免 Run 的 0-frame 兜底把 session evict 掉。
+				stream: &eventCCStream{events: []claudecode.Event{
+					{Kind: claudecode.EventUsage, Usage: provider.Usage{PromptTokens: 1}},
+					{Kind: claudecode.EventDone},
+				}},
+			}, nil
+		})
+		defer restore()
+
+		r := New()
+		ctx := context.Background()
+		backend := &agent_backend_entity.AgentBackend{
+			Type: string(agent_backend_entity.TypeClaudeCode),
+		}
+		run := func(providerModel string) {
+			events, _, err := r.Run(ctx, agentruntime.RunRequest{
+				Backend:   backend,
+				SessionID: 77,
+				Cwd:       t.TempDir(),
+				UserText:  "hi",
+				Provider:  &llm_provider_entity.LLMProvider{Model: providerModel},
+			})
+			So(err, ShouldBeNil)
+			for range events { //nolint:revive // drain
+			}
+		}
+
+		Convey("When 首轮 provider.Model=A, Then spawn 恰好 1 次", func() {
+			run("claude-haiku-4-5")
+			So(atomic.LoadInt32(&spawnCount), ShouldEqual, 1)
+		})
+
+		Convey("When 同模型再来一轮, Then 复用不重 spawn", func() {
+			run("claude-haiku-4-5")
+			run("claude-haiku-4-5")
+			So(atomic.LoadInt32(&spawnCount), ShouldEqual, 1)
+		})
+
+		Convey("When provider.Model 变化为 B, Then evict + 重 spawn", func() {
+			run("claude-haiku-4-5")
+			run("claude-opus-4-8")
+			So(atomic.LoadInt32(&spawnCount), ShouldEqual, 2)
+		})
+	})
+}
 
 // TestClaudeCodeCapabilities 钉死 claudecode runtime 的能力矩阵 + permission
 // mode 元数据。这些值与 chat_svc / 前端 UI gating 的硬编码 switch 一一对应,

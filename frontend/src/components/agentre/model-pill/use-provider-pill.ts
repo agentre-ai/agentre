@@ -93,8 +93,12 @@ export function useProviderPill({
   const [loading, setLoading] = React.useState(selectable);
   const [error, setError] = React.useState<string | null>(null);
 
+  // backendTypeRef 让在途的 ListLLMProviders 响应按「解析时刻的当前 backend」过滤，
+  // 避免 agent 快速切换时旧请求晚到、把上一后端的兼容集合短暂画进弹层。
+  const backendTypeRef = React.useRef(backendType);
+
   const fetchProviders = React.useCallback(async () => {
-    if (!isProviderSelectableBackend(backendType)) {
+    if (!isProviderSelectableBackend(backendTypeRef.current)) {
       setProviders([]);
       setLoading(false);
       setError(null);
@@ -106,7 +110,7 @@ export function useProviderPill({
       const resp = await ListLLMProviders();
       const all = resp.items ?? [];
       setProviders(
-        all.filter((p) => isProviderCompatible(backendType, p.type)),
+        all.filter((p) => isProviderCompatible(backendTypeRef.current, p.type)),
       );
     } catch {
       setProviders([]);
@@ -114,14 +118,15 @@ export function useProviderPill({
     } finally {
       setLoading(false);
     }
-  }, [backendType]);
+  }, []);
 
   React.useEffect(() => {
+    backendTypeRef.current = backendType;
     // backend 切换（agent 切换）时重置瞬态选择并重拉列表。
     setProviderKeyState("");
     setError(null);
     void fetchProviders();
-  }, [fetchProviders]);
+  }, [backendType, fetchProviders]);
 
   const setProviderKey = React.useCallback((key: string) => {
     setProviderKeyState(key);
