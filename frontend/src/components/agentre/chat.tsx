@@ -11,6 +11,7 @@ import {
   Pencil,
   SendHorizontal,
   SquareTerminal,
+  Timer,
   TriangleAlert,
   Wrench,
   X,
@@ -18,6 +19,11 @@ import {
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
@@ -313,13 +319,35 @@ export function formatResetIn(value: unknown, nowMs?: number): string {
   return `${days}d${hours}h`;
 }
 
+// quotaTone 把单个窗口的占用百分比映射成阈值色。每个窗口各自取色 —— 5h 告急
+// 不该把 7d 一起染红,否则用户看不出该等 3 小时还是等 4 天。
+function quotaTone(percent: number | null): string {
+  if (percent === null) return "text-muted-foreground";
+  if (percent >= 90) return "text-status-error";
+  if (percent >= 75) return "text-status-waiting";
+  return "text-muted-foreground";
+}
+
+// quotaFillTone 是 quotaTone 的进度条对应色(面板里用)。
+function quotaFillTone(percent: number): string {
+  if (percent >= 90) return "bg-status-error";
+  if (percent >= 75) return "bg-status-waiting";
+  return "bg-primary";
+}
+
+const QUOTA_HOVER_OPEN_DELAY_MS = 200;
+const QUOTA_HOVER_CLOSE_DELAY_MS = 100;
+
 // QuotaMeter 展示 Claude Code 订阅的 5h / 7d 配额。数据由 chat-panel 通过 useCCUsage
 // 拉取并传入(per-device, 不在这里订阅 store, 保证 Composer 可被纯 props 测试)。
 //
 // 渲染策略(与 cc_usage_svc.UsageState.reason 对齐):
 //   - undefined / 空 reason / "no_credentials" → 整块不渲染(API key 用户、未首探)
-//   - "ok" / "rate_limited"+stale / "network"+stale → 5h X% · 7d Y%(stale 不可见标记,只在 tooltip 文案里提示)
+//   - "ok" / "rate_limited"+stale / "network"+stale → 5h X% · 7d Y%(stale 不可见标记,只在面板脚注里提示)
 //   - "auth_expired" / "device_offline" / "network"无stale → 灰态占位 "5h —%"
+//
+// 详情(重置倒计时 / Sonnet / Opus 拆分 / 异常态)在 HoverCard 面板里,不再用原生
+// title —— 原生 title 不可键盘触达、不可着色、多行渲染跨平台不一致。
 function QuotaMeter({
   data,
   deviceLabel,
@@ -335,86 +363,201 @@ function QuotaMeter({
   const fiveH = data.data ? Math.round(data.data.fiveHourPercent) : null;
   const sevenD = data.data ? Math.round(data.data.weeklyPercent) : null;
 
-  // 阈值色:超 90% 红, 超 75% 黄, 其余正常。两个窗口取较高的那个驱动颜色。
-  const peak =
-    fiveH !== null && sevenD !== null ? Math.max(fiveH, sevenD) : (fiveH ?? 0);
-  const tone =
-    peak >= 90
-      ? "text-status-error"
-      : peak >= 75
-        ? "text-status-waiting"
-        : "text-muted-foreground";
-
   const offline =
     data.reason === "auth_expired" || data.reason === "device_offline";
+  // 灰态占位没有可信数值,整块压成 subtle;有数值时两个窗口各自取色。
+  const fiveTone = offline ? "text-subtle-foreground" : quotaTone(fiveH);
+  const sevenTone = offline ? "text-subtle-foreground" : quotaTone(sevenD);
 
   return (
-    <div
-      className={cn(
-        "flex items-center gap-1.5 font-mono text-meta tabular-nums",
-        offline ? "text-subtle-foreground" : tone,
-      )}
-      aria-label={t("chat.quota.aria", {
-        device: deviceLabel || "local",
-        five: fiveH ?? "—",
-        seven: sevenD ?? "—",
-      })}
-      title={describeQuotaTitle(data, deviceLabel, t)}
+    <HoverCard
+      openDelay={QUOTA_HOVER_OPEN_DELAY_MS}
+      closeDelay={QUOTA_HOVER_CLOSE_DELAY_MS}
     >
-      <Gauge className="size-2.5" aria-hidden="true" />
-      <span>5h {showNumbers && fiveH !== null ? `${fiveH}%` : "—%"}</span>
-      <span className="text-subtle-foreground">·</span>
-      <span>7d {showNumbers && sevenD !== null ? `${sevenD}%` : "—%"}</span>
+      <HoverCardTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "flex shrink-0 cursor-default items-center gap-1.5 rounded-sm border border-transparent px-1 py-0.5",
+            "font-mono text-meta tabular-nums transition-colors",
+            "hover:border-border hover:bg-accent",
+            "focus-visible:border-border focus-visible:bg-accent focus-visible:outline-none",
+            offline ? "text-subtle-foreground" : "text-muted-foreground",
+          )}
+          aria-label={t("chat.quota.aria", {
+            device: deviceLabel || "local",
+            five: fiveH ?? "—",
+            seven: sevenD ?? "—",
+          })}
+        >
+          <Timer className="size-2.5 shrink-0" aria-hidden="true" />
+          <span className={fiveTone}>
+            <span data-quota-prefix="5h">5h </span>
+            {showNumbers && fiveH !== null ? `${fiveH}%` : "—%"}
+          </span>
+          <span className="text-subtle-foreground">·</span>
+          <span className={sevenTone}>
+            <span data-quota-prefix="7d">7d </span>
+            {showNumbers && sevenD !== null ? `${sevenD}%` : "—%"}
+          </span>
+        </button>
+      </HoverCardTrigger>
+      <HoverCardContent align="end" className="w-[268px] p-0">
+        <QuotaPanel data={data} deviceLabel={deviceLabel} t={t} />
+      </HoverCardContent>
+    </HoverCard>
+  );
+}
+
+// quotaFootnote 给面板脚注挑文案。正常态说明"百分比是已用比例",异常态
+// (429 退避 / 网络错误 / OAuth 过期 / 设备离线)换成对应说明并着 waiting 色。
+function quotaFootnote(
+  reason: string,
+  device: string,
+  t: TFunction,
+): { text: string; warn: boolean } {
+  switch (reason) {
+    case "rate_limited":
+      return {
+        text: t("chat.quota.title.rateLimited", { device }),
+        warn: true,
+      };
+    case "network":
+      return { text: t("chat.quota.title.network", { device }), warn: true };
+    case "auth_expired":
+      return {
+        text: t("chat.quota.title.authExpired", { device }),
+        warn: true,
+      };
+    case "device_offline":
+      return {
+        text: t("chat.quota.title.deviceOffline", { device }),
+        warn: true,
+      };
+    default:
+      return { text: t("chat.quota.panel.usedNote"), warn: false };
+  }
+}
+
+// QuotaRow 是面板里的一行窗口:名称 + 重置倒计时 + 百分比 + 进度条。
+function QuotaRow({
+  label,
+  percent,
+  resetsAt,
+  t,
+}: {
+  label: string;
+  percent: number;
+  resetsAt?: unknown;
+  t: TFunction;
+}) {
+  const pct = Math.round(percent);
+  const remaining = formatResetIn(resetsAt);
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-baseline gap-1.5 text-2xs">
+        <span className="font-medium text-foreground">{label}</span>
+        {remaining ? (
+          <span className="font-mono text-subtle-foreground">
+            {t("chat.quota.resetRemaining", { time: remaining }).trim()}
+          </span>
+        ) : null}
+        <span
+          className={cn(
+            "ml-auto font-mono tabular-nums",
+            quotaTone(pct) === "text-muted-foreground"
+              ? "text-foreground"
+              : quotaTone(pct),
+          )}
+        >
+          {pct}%
+        </span>
+      </div>
+      <span className="h-1 overflow-hidden rounded-sm bg-border">
+        <span
+          className={cn("block h-1 rounded-sm", quotaFillTone(pct))}
+          style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
+        />
+      </span>
     </div>
   );
 }
 
-// describeQuotaTitle 给 HoverCard / native tooltip 提供"完整文案"。
-// 不引入 HoverCard 组件以避免 Composer 引入复杂 Popover 状态;native title
-// 已经够透露 reset 时间 + sonnet/opus 拆分这种次要信息。
-function describeQuotaTitle(
-  data: import("../../../wailsjs/go/models").cc_usage_svc.UsageState,
-  deviceLabel: string | undefined,
-  t: TFunction,
-): string {
-  const lines: string[] = [];
+// QuotaPanel 是 HoverCard 的内容:标题 + 设备名 + 两个主窗口 + 可选的
+// Sonnet / Opus 7 天分组 + 脚注。
+function QuotaPanel({
+  data,
+  deviceLabel,
+  t,
+}: {
+  data: import("../../../wailsjs/go/models").cc_usage_svc.UsageState;
+  deviceLabel?: string;
+  t: TFunction;
+}) {
   const device = deviceLabel || "local";
-  switch (data.reason) {
-    case "ok":
-      lines.push(t("chat.quota.title.ok", { device }));
-      break;
-    case "rate_limited":
-      lines.push(t("chat.quota.title.rateLimited", { device }));
-      break;
-    case "network":
-      lines.push(t("chat.quota.title.network", { device }));
-      break;
-    case "auth_expired":
-      lines.push(t("chat.quota.title.authExpired", { device }));
-      break;
-    case "device_offline":
-      lines.push(t("chat.quota.title.deviceOffline", { device }));
-      break;
-    default:
-      lines.push(t("chat.quota.title.ok", { device }));
-  }
-  if (data.data) {
-    const fiveIn = formatResetIn(data.data.fiveHourResetsAt);
-    const sevenIn = formatResetIn(data.data.weeklyResetsAt);
-    const five = fiveIn ? t("chat.quota.resetRemaining", { time: fiveIn }) : "";
-    const seven = sevenIn
-      ? t("chat.quota.resetRemaining", { time: sevenIn })
-      : "";
-    lines.push(`5h: ${Math.round(data.data.fiveHourPercent)}%${five}`);
-    lines.push(`7d: ${Math.round(data.data.weeklyPercent)}%${seven}`);
-    if (data.data.sonnetWeeklyPercent != null) {
-      lines.push(`  Sonnet 7d: ${Math.round(data.data.sonnetWeeklyPercent)}%`);
-    }
-    if (data.data.opusWeeklyPercent != null) {
-      lines.push(`  Opus 7d: ${Math.round(data.data.opusWeeklyPercent)}%`);
-    }
-  }
-  return lines.join("\n");
+  const d = data.data;
+  const foot = quotaFootnote(data.reason, device, t);
+  const sonnet = d?.sonnetWeeklyPercent;
+  const opus = d?.opusWeeklyPercent;
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 border-b border-border px-3 py-2">
+        <Timer className="size-3.5 shrink-0 text-foreground" />
+        <span className="text-xs font-semibold text-foreground">
+          {t("chat.quota.panel.title")}
+        </span>
+        <span className="ml-auto truncate font-mono text-2xs text-subtle-foreground">
+          {device}
+        </span>
+      </div>
+      {d ? (
+        <div className="flex flex-col gap-2.5 px-3 py-2.5">
+          <QuotaRow
+            label={t("chat.quota.panel.fiveHour")}
+            percent={d.fiveHourPercent}
+            resetsAt={d.fiveHourResetsAt}
+            t={t}
+          />
+          <QuotaRow
+            label={t("chat.quota.panel.weekly")}
+            percent={d.weeklyPercent}
+            resetsAt={d.weeklyResetsAt}
+            t={t}
+          />
+          {sonnet != null || opus != null ? (
+            <div className="flex flex-col gap-2 border-l-2 border-border pl-2.5">
+              {sonnet != null ? (
+                <QuotaRow
+                  label={t("chat.quota.panel.sonnetWeekly")}
+                  percent={sonnet}
+                  resetsAt={d.sonnetWeeklyResetsAt}
+                  t={t}
+                />
+              ) : null}
+              {opus != null ? (
+                <QuotaRow
+                  label={t("chat.quota.panel.opusWeekly")}
+                  percent={opus}
+                  resetsAt={d.opusWeeklyResetsAt}
+                  t={t}
+                />
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      <div
+        className={cn(
+          "border-t border-border px-3 py-1.5 text-2xs",
+          foot.warn
+            ? "bg-status-waiting-bg text-status-waiting"
+            : "bg-muted text-muted-foreground",
+        )}
+      >
+        {foot.text}
+      </div>
+    </div>
+  );
 }
 
 function ContextMeter({ used, max }: { used: number; max: number }) {

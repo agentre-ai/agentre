@@ -1587,8 +1587,10 @@ describe("ChatComposer quota meter", () => {
         }
       />,
     );
-    expect(screen.getByText(/5h 43%/)).toBeInTheDocument();
-    expect(screen.getByText(/7d 18%/)).toBeInTheDocument();
+    // 前缀与数值分处两个 span(供窄屏单独隐藏前缀), 故按整块文本断言。
+    const meter = screen.getByLabelText(/Claude.*quota/);
+    expect(meter).toHaveTextContent("5h 43%");
+    expect(meter).toHaveTextContent("7d 18%");
   });
 
   it("stale=true 时仍显示上次数字, 但不渲染可见的 stale 角标", () => {
@@ -1605,12 +1607,13 @@ describe("ChatComposer quota meter", () => {
         }
       />,
     );
-    expect(screen.getByText(/5h 30%/)).toBeInTheDocument();
-    expect(screen.getByText(/7d 10%/)).toBeInTheDocument();
+    const meter = screen.getByLabelText(/Claude.*quota/);
+    expect(meter).toHaveTextContent("5h 30%");
+    expect(meter).toHaveTextContent("7d 10%");
     expect(screen.queryByText(/stale/)).toBeNull();
   });
 
-  it("tooltip 展示 5h 重置还剩多少分钟", () => {
+  it("HoverCard 面板展示 5h 重置还剩多少分钟(取代原生 title)", () => {
     vi.useFakeTimers();
     vi.setSystemTime(resetNow);
     try {
@@ -1630,10 +1633,15 @@ describe("ChatComposer quota meter", () => {
           }
         />,
       );
-      expect(screen.getByLabelText(/Claude.*quota/)).toHaveAttribute(
-        "title",
-        expect.stringContaining("resets in 40m"),
-      );
+      const trigger = screen.getByLabelText(/Claude.*quota/);
+      // 触发区可聚焦, 聚焦即展开面板(键盘用户也能读到详情)。
+      expect(trigger).not.toHaveAttribute("title");
+      act(() => {
+        fireEvent.focusIn(trigger);
+        // Radix 的 open 走 openDelay 定时器, fake timers 下必须推进才会展开。
+        vi.advanceTimersByTime(500);
+      });
+      expect(screen.getByText(/resets in 40m/)).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
@@ -1646,7 +1654,7 @@ describe("ChatComposer quota meter", () => {
         quotaUsage={{ reason: "auth_expired", fetchedAtMs: 1 } as never}
       />,
     );
-    expect(screen.getByText(/5h —%/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Claude.*quota/)).toHaveTextContent("5h —%");
   });
 });
 
