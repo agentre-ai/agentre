@@ -44,6 +44,19 @@ func TestGuardPayload_RejectsCredentialsAndProviderRows(t *testing.T) {
 	assert.ErrorIs(t, syncwire.GuardPayload([]byte(`{"providers":[{"name":"p"}]}`)), syncwire.ErrPayloadCredential)
 }
 
+// TestGuardPayload_RejectsAvatarContent R16a 的守卫断言：同步载荷里只出现头像
+// 的内容哈希，正文（avatar_data_url）一律不得出现，不管值是 data URL 还是别的。
+func TestGuardPayload_RejectsAvatarContent(t *testing.T) {
+	for _, payload := range []string{
+		`{"name":"x","avatar_data_url":"data:image/png;base64,AAAA"}`,
+		`{"avatarDataUrl":"data:image/png;base64,AAAA"}`,
+	} {
+		assert.ErrorIs(t, syncwire.GuardPayload([]byte(payload)), syncwire.ErrPayloadAvatarContent, payload)
+	}
+	// avatar_hash 是允许的：它是内容哈希这个字符串引用，不是正文。
+	assert.NoError(t, syncwire.GuardPayload([]byte(`{"avatar_hash":"deadbeef"}`)))
+}
+
 // TestGuardPayload_RejectsNonObject 载荷必须是一个 JSON 对象。
 func TestGuardPayload_RejectsNonObject(t *testing.T) {
 	assert.ErrorIs(t, syncwire.GuardPayload([]byte(`[1,2]`)), syncwire.ErrPayloadNotObject)

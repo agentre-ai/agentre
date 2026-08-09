@@ -38,6 +38,10 @@ const maxPullPages = 200
 type Transport interface {
 	SyncPush(ctx context.Context, items []syncwire.PushItem) ([]syncwire.PushResult, error)
 	SyncPull(ctx context.Context, cursor int64, limit int) (*syncwire.PullPage, error)
+	// ReportLocalPaths 上报本机路径整份快照（R16）：与同步组无关的单向投影。
+	ReportLocalPaths(ctx context.Context, items []syncwire.LocalPathReportItem) error
+	// PutAvatar / GetAvatar 头像按内容哈希单独传（R16a），正文不进同步载荷。
+	avatarTransport
 }
 
 // LocalChange 是一次本地增删改的同步侧描述。域服务在改动**落库成功之后**交出它，

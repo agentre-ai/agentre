@@ -95,7 +95,7 @@ type service struct {
 // 但一行也不会发出去。
 func New(transport Transport) SyncSvc {
 	return &service{
-		adapters:   defaultAdapters(),
+		adapters:   defaultAdapters(transport),
 		now:        func() int64 { return time.Now().UnixMilli() },
 		background: func(f func()) { go f() },
 		transport:  transport,
@@ -137,7 +137,13 @@ func (s *service) account(ctx context.Context) (accountID, deviceID int64, ok bo
 	return row.ServerUserID, row.DeviceID, true
 }
 
-// Start 起 30 秒周期的轮询（R3）。轮询失败只记状态，不打断循环。
+// Start 起 30 秒周期的轮询（R3），同一个节奏也驱动本机路径的整份快照上报（R16）。
+// 轮询失败只记状态，不打断循环。
+//
+// reportLocalPathsOnce 刻意只挂在这个 ticker 上，绝不并进 SyncOnce：
+// NotifyLocalChange 会在账号级对象的编辑当场触发 SyncOnce（R3），如果上报也挂在
+// SyncOnce 里，编辑一个项目名字就会连带触发一次本机路径上报——这与 R16「本地编辑
+// 不即时触发上报，30 秒一轮」的刻意区分矛盾。
 func (s *service) Start(ctx context.Context) {
 	s.mu.Lock()
 	if s.stopCh != nil {
@@ -160,6 +166,9 @@ func (s *service) Start(ctx context.Context) {
 			case <-ticker.C:
 				if err := s.SyncOnce(ctx); err != nil {
 					logger.Ctx(ctx).Debug("sync_svc.Start: poll failed", zap.Error(err))
+				}
+				if err := s.reportLocalPathsOnce(ctx); err != nil {
+					logger.Ctx(ctx).Debug("sync_svc.Start: local path report failed", zap.Error(err))
 				}
 			}
 		}

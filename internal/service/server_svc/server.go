@@ -34,6 +34,12 @@ type ServerSvc interface {
 	SyncPush(ctx context.Context, items []syncwire.PushItem) ([]syncwire.PushResult, error)
 	// SyncPull 按版本游标增量下行；cursor = 0 拉全量快照。
 	SyncPull(ctx context.Context, cursor int64, limit int) (*syncwire.PullPage, error)
+	// ReportLocalPaths 上报本机路径整份快照（R16）。
+	ReportLocalPaths(ctx context.Context, items []syncwire.LocalPathReportItem) error
+	// PutAvatar 把本机持有的头像正文按内容哈希推给对端（R16a）。
+	PutAvatar(ctx context.Context, contentHash, contentType, content string) error
+	// GetAvatar 取一份尚未持有的头像正文（R16a）。
+	GetAvatar(ctx context.Context, contentHash string) (content, contentType string, err error)
 }
 
 var defaultSvc ServerSvc

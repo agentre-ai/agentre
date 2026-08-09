@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/agentre-ai/agentre/internal/pkg/syncwire"
@@ -146,6 +147,101 @@ func (s *service) SyncPull(ctx context.Context, cursor int64, limit int) (*syncw
 		return nil, err
 	}
 	return page, nil
+}
+
+// ---------- 上报组：本机路径 ----------
+
+type localPathReqItem struct {
+	ProjectSyncID string `json:"project_sync_id"`
+	Path          string `json:"path"`
+}
+
+type reportLocalPathsReq struct {
+	Items []localPathReqItem `json:"items"`
+}
+
+// ReportLocalPaths 把本机路径整份快照上报给 server（R16）；未登录不发任何请求
+// （R12）。路径本身不进日志，出错时只把 server 的错误原样透出，调用方据此重试。
+func (s *service) ReportLocalPaths(ctx context.Context, items []syncwire.LocalPathReportItem) error {
+	if err := s.requireLogin(ctx); err != nil {
+		return err
+	}
+	req := reportLocalPathsReq{Items: make([]localPathReqItem, 0, len(items))}
+	for _, it := range items {
+		req.Items = append(req.Items, localPathReqItem{ProjectSyncID: it.ProjectSyncID, Path: it.Path})
+	}
+	return s.withAuth(ctx, func(ctx context.Context) error {
+		var env envelope[struct{}]
+		_, doErr := s.getClient().do(ctx, http.MethodPost, "/v1/sync/local-paths", req, &env)
+		if doErr != nil {
+			return doErr
+		}
+		if env.Code != 0 {
+			return fmt.Errorf("server: report local paths rejected with code %d", env.Code)
+		}
+		return nil
+	})
+}
+
+// ---------- 头像 ----------
+
+type putAvatarReq struct {
+	ContentHash string `json:"content_hash"`
+	ContentType string `json:"content_type"`
+	Content     string `json:"content"`
+}
+
+// PutAvatar 把本机持有的头像正文按内容哈希推给对端（R16a）；server 端按哈希幂等
+// 落库，重复上传同一份内容不产生额外开销。
+func (s *service) PutAvatar(ctx context.Context, contentHash, contentType, content string) error {
+	if err := s.requireLogin(ctx); err != nil {
+		return err
+	}
+	return s.withAuth(ctx, func(ctx context.Context) error {
+		var env envelope[struct{}]
+		_, doErr := s.getClient().do(ctx, http.MethodPost, "/v1/sync/avatars",
+			putAvatarReq{ContentHash: contentHash, ContentType: contentType, Content: content}, &env)
+		if doErr != nil {
+			return doErr
+		}
+		if env.Code != 0 {
+			return fmt.Errorf("server: put avatar rejected with code %d", env.Code)
+		}
+		return nil
+	})
+}
+
+type getAvatarResp struct {
+	ContentHash string `json:"content_hash"`
+	ContentType string `json:"content_type"`
+	Content     string `json:"content"`
+}
+
+// GetAvatar 取一份尚未持有的头像正文（R16a）；取不到时把 server 的错误原样透出，
+// 调用方（agentAdapter）据此降级为占位字母头像，不重试到无限。
+func (s *service) GetAvatar(ctx context.Context, contentHash string) (string, string, error) {
+	if err := s.requireLogin(ctx); err != nil {
+		return "", "", err
+	}
+	var content, contentType string
+	err := s.withAuth(ctx, func(ctx context.Context) error {
+		var env envelope[getAvatarResp]
+		path := "/v1/sync/avatars?content_hash=" + url.QueryEscape(contentHash)
+		_, doErr := s.getClient().do(ctx, http.MethodGet, path, nil, &env)
+		if doErr != nil {
+			return doErr
+		}
+		if env.Code != 0 {
+			return fmt.Errorf("server: get avatar rejected with code %d", env.Code)
+		}
+		content = env.Data.Content
+		contentType = env.Data.ContentType
+		return nil
+	})
+	if err != nil {
+		return "", "", err
+	}
+	return content, contentType, nil
 }
 
 // requireLogin 未登录时挡在网络请求之前（R12：未登录不产生任何同步网络请求）。

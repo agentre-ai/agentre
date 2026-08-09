@@ -101,3 +101,11 @@ type PullPage struct {
 	NextCursor int64
 	HasMore    bool
 }
+
+// LocalPathReportItem 是上报组的一条：某个项目在这台设备上的真实本机路径（R16）。
+// 与同步组的七张表无关——本机路径不在桌面端之间流动（决策 6），只单向上报给
+// server，按设备分命名空间存放。
+type LocalPathReportItem struct {
+	ProjectSyncID string
+	Path          string
+}

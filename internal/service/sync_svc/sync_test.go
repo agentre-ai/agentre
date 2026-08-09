@@ -31,6 +31,24 @@ type fakeTransport struct {
 	pages    []*syncwire.PullPage
 	pulledAt []int64
 	pullErr  error
+
+	// 本机路径上报（R16）与头像（R16a）的替身状态。
+	localPathReports [][]syncwire.LocalPathReportItem
+	localPathErr     error
+	avatarsPut       []avatarPutCall
+	avatarsGet       map[string]avatarGetResult
+	avatarGetErr     error
+}
+
+type avatarPutCall struct {
+	Hash        string
+	ContentType string
+	Content     string
+}
+
+type avatarGetResult struct {
+	Content     string
+	ContentType string
 }
 
 func (f *fakeTransport) SyncPush(_ context.Context, items []syncwire.PushItem) ([]syncwire.PushResult, error) {
@@ -61,6 +79,31 @@ func (f *fakeTransport) SyncPull(_ context.Context, cursor int64, _ int) (*syncw
 	page := f.pages[0]
 	f.pages = f.pages[1:]
 	return page, nil
+}
+
+func (f *fakeTransport) ReportLocalPaths(_ context.Context, items []syncwire.LocalPathReportItem) error {
+	if f.localPathErr != nil {
+		return f.localPathErr
+	}
+	cp := make([]syncwire.LocalPathReportItem, len(items))
+	copy(cp, items)
+	f.localPathReports = append(f.localPathReports, cp)
+	return nil
+}
+
+func (f *fakeTransport) PutAvatar(_ context.Context, contentHash, contentType, content string) error {
+	f.avatarsPut = append(f.avatarsPut, avatarPutCall{Hash: contentHash, ContentType: contentType, Content: content})
+	return nil
+}
+
+func (f *fakeTransport) GetAvatar(_ context.Context, contentHash string) (string, string, error) {
+	if f.avatarGetErr != nil {
+		return "", "", f.avatarGetErr
+	}
+	if r, ok := f.avatarsGet[contentHash]; ok {
+		return r.Content, r.ContentType, nil
+	}
+	return "", "", errors.New("fakeTransport: avatar not found")
 }
 
 // fakeAdapter 是一种对象类型的替身：本地行存在内存里，引用按 needRef 声明。

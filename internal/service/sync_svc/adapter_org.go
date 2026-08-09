@@ -117,13 +117,15 @@ func (departmentAdapter) remove(ctx context.Context, in *inbound) error {
 
 // ── Agent ───────────────────────────────────────────────────────────────────
 
-// agentPayload 里没有 avatar_data_url：头像按内容哈希单独走一条路（R16a），正文
-// 一律不进同步载荷。也没有 skills_json —— 技能授权下沉到执行目标行（R15e）。
+// agentPayload 里只有 avatar_hash：头像按内容哈希单独走一条路（R16a），正文一律
+// 不进同步载荷（守卫见 syncwire.GuardPayload）。也没有 skills_json —— 技能授权
+// 下沉到执行目标行（R15e）。
 type agentPayload struct {
 	Name              string `json:"name"`
 	Description       string `json:"description"`
 	AvatarColor       string `json:"avatar_color"`
 	AvatarIcon        string `json:"avatar_icon"`
+	AvatarHash        string `json:"avatar_hash,omitempty"`
 	SystemBadge       string `json:"system_badge"`
 	DepartmentSyncID  string `json:"department_sync_id,omitempty"`
 	ParentAgentSyncID string `json:"parent_agent_sync_id,omitempty"`
@@ -133,11 +135,13 @@ type agentPayload struct {
 	Pinned            bool   `json:"pinned"`
 }
 
-type agentAdapter struct{}
+// agentAdapter 的 avatar 字段是头像内容存取的窄接口（R16a）；nil 时（单机模式、
+// 或测试直接构造 agentAdapter{}）优雅退化，见 avatarTransport 的文档。
+type agentAdapter struct{ avatar avatarTransport }
 
 func (agentAdapter) kind() string { return syncwire.KindAgent }
 
-func (agentAdapter) load(ctx context.Context, syncID string) (*outbound, error) {
+func (a agentAdapter) load(ctx context.Context, syncID string) (*outbound, error) {
 	row := &agent_entity.Agent{}
 	found, err := syncstate_repo.SyncState().FindRow(ctx, syncwire.KindAgent, syncID, row)
 	if err != nil || !found {
@@ -157,11 +161,16 @@ func (agentAdapter) load(ctx context.Context, syncID string) (*outbound, error) 
 	if err != nil {
 		return nil, err
 	}
+	hash := avatarHash(row.AvatarDataURL)
+	if hash != "" {
+		a.putAvatarBestEffort(ctx, syncID, hash, row.AvatarDataURL)
+	}
 	payload, err := json.Marshal(agentPayload{
 		Name:              row.Name,
 		Description:       row.Description,
 		AvatarColor:       row.AvatarColor,
 		AvatarIcon:        row.AvatarIcon,
+		AvatarHash:        hash,
 		SystemBadge:       row.SystemBadge,
 		DepartmentSyncID:  deptSyncID,
 		ParentAgentSyncID: parentSyncID,
@@ -181,6 +190,19 @@ func (agentAdapter) load(ctx context.Context, syncID string) (*outbound, error) 
 	}, nil
 }
 
+// putAvatarBestEffort 把本机持有的头像正文按内容哈希推给对端（server）。上传
+// 失败不影响 Agent 本身照常同步——load 仍然返回一份带 AvatarHash 的合法载荷，
+// 失败只记日志（R16a：头像取不到或传输失败时该 Agent 照常同步）。
+func (a agentAdapter) putAvatarBestEffort(ctx context.Context, syncID, hash, dataURL string) {
+	if a.avatar == nil {
+		return
+	}
+	if err := a.avatar.PutAvatar(ctx, hash, avatarContentType(dataURL), dataURL); err != nil {
+		logger.Ctx(ctx).Debug("sync_svc.agentAdapter: avatar upload failed, agent still syncs",
+			zap.String("syncId", syncID), zap.Error(err))
+	}
+}
+
 func (agentAdapter) refs(in *inbound) []ref {
 	var p agentPayload
 	_ = json.Unmarshal(in.Payload, &p)
@@ -190,7 +212,7 @@ func (agentAdapter) refs(in *inbound) []ref {
 	}
 }
 
-func (agentAdapter) apply(ctx context.Context, in *inbound, resolved map[string]int64) error {
+func (a agentAdapter) apply(ctx context.Context, in *inbound, resolved map[string]int64) error {
 	var p agentPayload
 	if err := json.Unmarshal(in.Payload, &p); err != nil {
 		return err
@@ -202,13 +224,13 @@ func (agentAdapter) apply(ctx context.Context, in *inbound, resolved map[string]
 	}
 	row.Name, row.Description = p.Name, p.Description
 	row.AvatarColor, row.AvatarIcon, row.SystemBadge = p.AvatarColor, p.AvatarIcon, p.SystemBadge
+	row.AvatarDataURL = a.resolveAvatarDataURL(ctx, in.SyncID, row.AvatarDataURL, p.AvatarHash)
 	row.DepartmentID = resolvedID(resolved, ref{Kind: syncwire.KindDepartment, SyncID: p.DepartmentSyncID})
 	row.ParentAgentID = resolvedID(resolved, ref{Kind: syncwire.KindAgent, SyncID: p.ParentAgentSyncID})
 	row.SortOrder, row.PromptJSON, row.ToolsJSON, row.Pinned = p.SortOrder, p.PromptJSON, p.ToolsJSON, p.Pinned
 	row.Status = consts.ACTIVE
 	if !found {
-		// 头像正文与技能授权都不在载荷里：前者随 R16a 的哈希单独到，后者住在
-		// 执行目标行上，各自作为独立的同步对象落地。
+		// 技能授权不在载荷里：它住在执行目标行上，作为独立的同步对象落地。
 		row.SyncID = in.SyncID
 		row.AgentBackendID = 0
 		return agent_repo.Agent().Create(ctx, row)
@@ -216,6 +238,31 @@ func (agentAdapter) apply(ctx context.Context, in *inbound, resolved map[string]
 	// UpdateRow 只写 Agent 这一行：执行目标是独立的同步对象，不能被 Agent 行的
 	// 派生字段重写掉（agent_repo.Update 会那么做）。
 	return agent_repo.Agent().UpdateRow(ctx, row)
+}
+
+// resolveAvatarDataURL 落实 R16a 的下行一侧：
+//   - 载荷没有哈希 → 没有自定义头像，清空。
+//   - 本机现有内容已经是这份哈希 → 已经持有，不重新取一次正文。
+//   - 否则调 avatar.GetAvatar 取一次；取不到（没装配 / 网络失败 / 超时）就留空，
+//     退回 AgentAvatar 的 initials 占位字母头像，不阻塞这一行落地，也不在这次
+//     apply 里反复重试——下一次这份哈希再出现时才会再试一次。
+func (a agentAdapter) resolveAvatarDataURL(ctx context.Context, syncID, existing, hash string) string {
+	if hash == "" {
+		return ""
+	}
+	if existing != "" && avatarHash(existing) == hash {
+		return existing
+	}
+	if a.avatar == nil {
+		return ""
+	}
+	content, _, err := a.avatar.GetAvatar(ctx, hash)
+	if err != nil || content == "" {
+		logger.Ctx(ctx).Debug("sync_svc.agentAdapter: avatar fetch failed, falling back to initials",
+			zap.String("syncId", syncID), zap.Error(err))
+		return ""
+	}
+	return content
 }
 
 func (agentAdapter) remove(ctx context.Context, in *inbound) error {

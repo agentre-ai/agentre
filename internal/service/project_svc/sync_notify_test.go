@@ -115,6 +115,18 @@ func (unreachableTransport) SyncPull(context.Context, int64, int) (*syncwire.Pul
 	return nil, errors.New("dial tcp: connection refused")
 }
 
+func (unreachableTransport) ReportLocalPaths(context.Context, []syncwire.LocalPathReportItem) error {
+	return errors.New("dial tcp: connection refused")
+}
+
+func (unreachableTransport) PutAvatar(context.Context, string, string, string) error {
+	return errors.New("dial tcp: connection refused")
+}
+
+func (unreachableTransport) GetAvatar(context.Context, string) (string, string, error) {
+	return "", "", errors.New("dial tcp: connection refused")
+}
+
 // ── 同步侧仓储替身 ─────────────────────────────────────────────────────────
 //
 // 「编辑当场上行」的推送在后台跑，与本测试的断言并发，因此这里用带锁的内存替身

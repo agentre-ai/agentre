@@ -60,12 +60,14 @@ type baseAdapter struct{}
 func (baseAdapter) dependents(context.Context, string) ([]relatedRow, error) { return nil, nil }
 func (baseAdapter) children(context.Context, string) ([]relatedRow, error)   { return nil, nil }
 
-// defaultAdapters 装配七张账号级表的适配器。
-func defaultAdapters() map[string]adapter {
+// defaultAdapters 装配七张账号级表的适配器。avatar 是头像内容存取的窄接口，只有
+// agentAdapter 用到（R16a）；单机模式下 New(nil) 传进来的是真正的 nil 接口，
+// agentAdapter 据此优雅退化成只带哈希、不取正文。
+func defaultAdapters(avatar avatarTransport) map[string]adapter {
 	list := []adapter{
 		&projectAdapter{},
 		&departmentAdapter{},
-		&agentAdapter{},
+		&agentAdapter{avatar: avatar},
 		&agentBackendAdapter{},
 		&agentExecTargetAdapter{},
 		&projectAgentAdapter{},
