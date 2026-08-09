@@ -84,6 +84,21 @@ func (mr *MockProjectLocationRepoMockRecorder) FindByProjectAndDevice(ctx, proje
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindByProjectAndDevice", reflect.TypeOf((*MockProjectLocationRepo)(nil).FindByProjectAndDevice), ctx, projectID, deviceID)
 }
 
+// FindByProjectAndFingerprint mocks base method.
+func (m *MockProjectLocationRepo) FindByProjectAndFingerprint(ctx context.Context, projectID int64, fingerprint string) (*project_location_entity.ProjectLocation, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FindByProjectAndFingerprint", ctx, projectID, fingerprint)
+	ret0, _ := ret[0].(*project_location_entity.ProjectLocation)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FindByProjectAndFingerprint indicates an expected call of FindByProjectAndFingerprint.
+func (mr *MockProjectLocationRepoMockRecorder) FindByProjectAndFingerprint(ctx, projectID, fingerprint any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindByProjectAndFingerprint", reflect.TypeOf((*MockProjectLocationRepo)(nil).FindByProjectAndFingerprint), ctx, projectID, fingerprint)
+}
+
 // Get mocks base method.
 func (m *MockProjectLocationRepo) Get(ctx context.Context, id int64) (*project_location_entity.ProjectLocation, error) {
 	m.ctrl.T.Helper()
@@ -112,6 +127,20 @@ func (m *MockProjectLocationRepo) ListByProject(ctx context.Context, projectID i
 func (mr *MockProjectLocationRepoMockRecorder) ListByProject(ctx, projectID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByProject", reflect.TypeOf((*MockProjectLocationRepo)(nil).ListByProject), ctx, projectID)
+}
+
+// UpdateDeviceID mocks base method.
+func (m *MockProjectLocationRepo) UpdateDeviceID(ctx context.Context, id int64, deviceID string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateDeviceID", ctx, id, deviceID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateDeviceID indicates an expected call of UpdateDeviceID.
+func (mr *MockProjectLocationRepoMockRecorder) UpdateDeviceID(ctx, id, deviceID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateDeviceID", reflect.TypeOf((*MockProjectLocationRepo)(nil).UpdateDeviceID), ctx, id, deviceID)
 }
 
 // UpdatePath mocks base method.
