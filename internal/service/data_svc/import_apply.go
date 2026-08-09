@@ -3,6 +3,7 @@ package data_svc
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strconv"
 
 	"github.com/cago-frame/cago/database/db"
@@ -574,6 +575,8 @@ func applyAgents(ctx context.Context, b BundleV1, actions map[string]ItemAction,
 		}
 
 		act := actions[actionKey(string(ScopeOrganization), a.ExportKey)]
+		var localID int64
+		applyExecTargets := false
 		switch act {
 		case ActionSkip:
 			counts["skipped"]++
@@ -602,6 +605,7 @@ func applyAgents(ctx context.Context, b BundleV1, actions map[string]ItemAction,
 			}
 			km.agents[a.ExportKey] = existing.ID
 			counts["overwrote"]++
+			localID, applyExecTargets = existing.ID, true
 		case ActionDuplicate:
 			row := &agent_entity.Agent{
 				Name:           a.Name,
@@ -634,6 +638,7 @@ func applyAgents(ctx context.Context, b BundleV1, actions map[string]ItemAction,
 			}
 			km.agents[a.ExportKey] = row.ID
 			counts["duplicated"]++
+			localID, applyExecTargets = row.ID, true
 		case ActionCreate:
 			if existing != nil {
 				// V1: preview can't detect agent conflict because dept resolution requires apply-time keymap.
@@ -663,11 +668,55 @@ func applyAgents(ctx context.Context, b BundleV1, actions map[string]ItemAction,
 			}
 			km.agents[a.ExportKey] = row.ID
 			counts["created"]++
+			localID, applyExecTargets = row.ID, true
 		default:
 			return i18n.NewError(ctx, code.DataImportInvalidAction)
 		}
+
+		// execTargets 数组存在时(哪怕显式为空)才显式落执行目标列表,覆盖掉上面
+		// Create/Update 内建从 AgentBackendID/SkillsJSON 派生出的单元素列表；数组
+		// 不存在(老 bundle)则什么都不做——Create/Update 那一步已经把
+		// agentBackendKey + skillsJSON 转成单元素列表了,这里不重复实现一遍
+		// 同一套转换(R15f)。
+		if applyExecTargets {
+			if targets := execTargetsFromBundle(a, km); targets != nil {
+				if err := agent_repo.AgentExecTarget().Replace(ctx, localID, targets); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	return nil
+}
+
+// execTargetsFromBundle 把 bundle 里的 execTargets 数组翻成待写入的执行目标行:
+// BackendKey 通过 keymap 解析成本地 backend id(与遗留 AgentBackendKey 现有的
+// 非强校验风格一致——解不出来退化成 0,不在这里报错)。返回 nil 表示 bundle 没带
+// 这个数组(老 bundle),调用方据此完全不碰 AgentExecTargetRepo,让
+// agent_repo.Create/Update 内建的单元素转换走 agentBackendKey + skillsJSON,与
+// 迁移共用同一份代码(R15f)。
+//
+// execTargets 数组一旦存在(哪怕是显式空数组),agentBackendKey / skillsJSON 这两个
+// 遗留字段就不再参与任何决策——它们在这个函数里根本不会被读到。
+func execTargetsFromBundle(a BundleAgent, km *keyMap) []*agent_entity.AgentExecTarget {
+	if a.ExecTargets == nil {
+		return nil
+	}
+	ordered := append([]BundleExecTarget(nil), a.ExecTargets...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].SortOrder < ordered[j].SortOrder })
+
+	out := make([]*agent_entity.AgentExecTarget, 0, len(ordered))
+	for _, et := range ordered {
+		backendID := int64(0)
+		if et.BackendKey != "" {
+			backendID = km.backends[et.BackendKey]
+		}
+		out = append(out, &agent_entity.AgentExecTarget{
+			AgentBackendID: backendID,
+			SkillsJSON:     et.SkillsJSON,
+		})
+	}
+	return out
 }
 
 // backfillOrg 第二遍:用 keymap 把 department.LeadAgentID 和 agent.ParentAgentID 填回去。

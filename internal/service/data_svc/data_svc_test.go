@@ -31,17 +31,18 @@ import (
 )
 
 type dataSvcMocks struct {
-	ctx       context.Context
-	providers *mock_llm_provider_repo.MockLLMProviderRepo
-	backends  *mock_agent_backend_repo.MockAgentBackendRepo
-	depts     *mock_department_repo.MockDepartmentRepo
-	agents    *mock_agent_repo.MockAgentRepo
-	devices   *mock_remote_device_repo.MockPairedAgentredRepo
-	dbMock    sqlmock.Sqlmock
-	svc       data_svc.DataSvc
+	ctx         context.Context
+	providers   *mock_llm_provider_repo.MockLLMProviderRepo
+	backends    *mock_agent_backend_repo.MockAgentBackendRepo
+	depts       *mock_department_repo.MockDepartmentRepo
+	agents      *mock_agent_repo.MockAgentRepo
+	execTargets *mock_agent_repo.MockAgentExecTargetRepo
+	devices     *mock_remote_device_repo.MockPairedAgentredRepo
+	dbMock      sqlmock.Sqlmock
+	svc         data_svc.DataSvc
 }
 
-// setupDataSvcTest 注入 5 个 mock repo + sqlmock,返回测试句柄。
+// setupDataSvcTest 注入 6 个 mock repo + sqlmock,返回测试句柄。
 func setupDataSvcTest(t *testing.T) *dataSvcMocks {
 	t.Helper()
 	ctrl := gomock.NewController(t)
@@ -51,18 +52,20 @@ func setupDataSvcTest(t *testing.T) *dataSvcMocks {
 	_ = db.Ctx(dbCtx) // 提示编译器 dbCtx 已挂上 db
 
 	m := &dataSvcMocks{
-		ctx:       dbCtx,
-		providers: mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl),
-		backends:  mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl),
-		depts:     mock_department_repo.NewMockDepartmentRepo(ctrl),
-		agents:    mock_agent_repo.NewMockAgentRepo(ctrl),
-		devices:   mock_remote_device_repo.NewMockPairedAgentredRepo(ctrl),
-		dbMock:    dbMock,
+		ctx:         dbCtx,
+		providers:   mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl),
+		backends:    mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl),
+		depts:       mock_department_repo.NewMockDepartmentRepo(ctrl),
+		agents:      mock_agent_repo.NewMockAgentRepo(ctrl),
+		execTargets: mock_agent_repo.NewMockAgentExecTargetRepo(ctrl),
+		devices:     mock_remote_device_repo.NewMockPairedAgentredRepo(ctrl),
+		dbMock:      dbMock,
 	}
 	llm_provider_repo.RegisterLLMProvider(m.providers)
 	agent_backend_repo.RegisterAgentBackend(m.backends)
 	department_repo.RegisterDepartment(m.depts)
 	agent_repo.RegisterAgent(m.agents)
+	agent_repo.RegisterAgentExecTarget(m.execTargets)
 	remote_device_repo.RegisterPairedAgentred(m.devices)
 
 	m.svc = data_svc.Default()
@@ -135,6 +138,16 @@ func TestExport_Organization_CrossRefsViaExportKey(t *testing.T) {
 	m.backends.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{
 		{ID: 30, Type: "claudecode", Name: "Local"},
 	}, nil)
+	m.execTargets.EXPECT().ListByAgents(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, agentIDs []int64) (map[int64][]*agent_entity.AgentExecTarget, error) {
+			out := make(map[int64][]*agent_entity.AgentExecTarget, len(agentIDs))
+			for _, id := range agentIDs {
+				out[id] = []*agent_entity.AgentExecTarget{
+					{AgentID: id, AgentBackendID: 30, SortOrder: 0, SkillsJSON: "[]"},
+				}
+			}
+			return out, nil
+		})
 
 	Convey("Organization scope 串好 exportKey 引用", t, func() {
 		res, err := m.svc.Export(m.ctx, &data_svc.ExportRequest{
@@ -1265,6 +1278,10 @@ func TestExport_BackendKey_SharedBetweenScopes(t *testing.T) {
 	m.agents.EXPECT().List(gomock.Any()).Return([]*agent_entity.Agent{
 		{ID: 20, Name: "Coder", DepartmentID: 10, AgentBackendID: 30},
 	}, nil)
+	m.execTargets.EXPECT().ListByAgents(gomock.Any(), gomock.Any()).Return(
+		map[int64][]*agent_entity.AgentExecTarget{
+			20: {{AgentID: 20, AgentBackendID: 30, SortOrder: 0, SkillsJSON: "[]"}},
+		}, nil)
 
 	Convey("同时请求 ScopeAgentBackends + ScopeOrganization 时 backend exportKey 保持一致", t, func() {
 		res, err := m.svc.Export(m.ctx, &data_svc.ExportRequest{
@@ -1287,4 +1304,307 @@ func TestExport_BackendKey_SharedBetweenScopes(t *testing.T) {
 		So(backendExportKey, ShouldNotBeEmpty)
 		So(agentBackendKey, ShouldEqual, backendExportKey) // line 220: key round-trip assertion
 	})
+}
+
+// TestExportImport_RoundTrip_PreservesExecTargetOrderAndPerTargetSkills 是 R15f
+// 的验收判据本身:"设备 A" 导出一个排了两档的 Agent(顺序与 backend 创建顺序刻意
+// 相反),把导出的 bundle 喂给一台全新的"设备 B",执行目标的顺序与每一档各自的
+// skills_json 必须逐字段保留——即便两台设备上 backend 的本地自增 ID 完全不同。
+func TestExportImport_RoundTrip_PreservesExecTargetOrderAndPerTargetSkills(t *testing.T) {
+	mA := setupDataSvcTest(t)
+	mA.depts.EXPECT().List(gomock.Any()).Return([]*department_entity.Department{}, nil)
+	mA.agents.EXPECT().List(gomock.Any()).Return([]*agent_entity.Agent{
+		{ID: 20, Name: "Lead", DepartmentID: 0, AgentBackendID: 31, SkillsJSON: "[]"},
+	}, nil)
+	mA.backends.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{
+		{ID: 30, Type: "claudecode", Name: "B1"},
+		{ID: 31, Type: "codex", Name: "B2"},
+	}, nil)
+	mA.execTargets.EXPECT().ListByAgents(gomock.Any(), gomock.Any()).Return(
+		map[int64][]*agent_entity.AgentExecTarget{
+			20: {
+				{AgentID: 20, AgentBackendID: 31, SortOrder: 0, SkillsJSON: `[{"id":"pkg-b2","enabled":true}]`},
+				{AgentID: 20, AgentBackendID: 30, SortOrder: 1, SkillsJSON: `[{"id":"pkg-b1","enabled":false}]`},
+			},
+		}, nil)
+
+	exportRes, err := mA.svc.Export(mA.ctx, &data_svc.ExportRequest{
+		Scopes: []string{string(data_svc.ScopeOrganization), string(data_svc.ScopeAgentBackends)},
+	})
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	var srcBundle data_svc.BundleV1
+	if err := json.Unmarshal(exportRes.JSON, &srcBundle); err != nil {
+		t.Fatalf("unmarshal exported bundle: %v", err)
+	}
+	if len(srcBundle.Items.Agents) != 1 {
+		t.Fatalf("expected 1 agent in bundle, got %d", len(srcBundle.Items.Agents))
+	}
+	srcTargets := srcBundle.Items.Agents[0].ExecTargets
+	if len(srcTargets) != 2 {
+		t.Fatalf("expected 2 exec targets in exported bundle, got %d (bundle 没带执行目标数组)", len(srcTargets))
+	}
+
+	// "设备 B":全新空库,backend 会拿到与设备 A 不同的本地 ID。
+	mB := setupDataSvcTest(t)
+	mB.providers.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
+	mB.devices.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
+	mB.backends.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{}, nil).Times(2)
+	mB.depts.EXPECT().List(gomock.Any()).Return([]*department_entity.Department{}, nil)
+
+	backendIDSeq := int64(100)
+	mB.backends.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
+		DoAndReturn(func(_ context.Context, bk *agent_backend_entity.AgentBackend) error {
+			backendIDSeq++
+			bk.ID = backendIDSeq
+			return nil
+		}).Times(2)
+
+	mB.agents.EXPECT().ListByDepartment(gomock.Any(), int64(0)).Return([]*agent_entity.Agent{}, nil)
+	mB.agents.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_entity.Agent{})).
+		DoAndReturn(func(_ context.Context, a *agent_entity.Agent) error {
+			a.ID = 500
+			return nil
+		})
+
+	var gotAgentID int64
+	var gotTargets []*agent_entity.AgentExecTarget
+	mB.execTargets.EXPECT().Replace(gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, agentID int64, targets []*agent_entity.AgentExecTarget) error {
+			gotAgentID = agentID
+			gotTargets = targets
+			return nil
+		})
+
+	mB.dbMock.ExpectBegin()
+	mB.dbMock.ExpectCommit()
+
+	raw, err := json.Marshal(srcBundle)
+	if err != nil {
+		t.Fatalf("marshal src bundle: %v", err)
+	}
+
+	applyRes, err := mB.svc.ApplyImport(mB.ctx, &data_svc.ApplyImportRequest{
+		Raw: raw, FallbackStrategy: data_svc.ActionCreate,
+	})
+	if err != nil {
+		t.Fatalf("apply import: %v", err)
+	}
+	if applyRes.Counts["created"] == 0 {
+		t.Fatalf("expected creations, got counts=%v", applyRes.Counts)
+	}
+
+	if gotAgentID != 500 {
+		t.Fatalf("expected exec targets replaced for agent 500, got %d", gotAgentID)
+	}
+	if len(gotTargets) != 2 {
+		t.Fatalf("expected 2 exec targets applied, got %d (往返丢了执行目标)", len(gotTargets))
+	}
+	// 下标即 sort_order:必须与导出时的顺序一致(先 B2 后 B1),每档的技能授权逐字段不变。
+	if gotTargets[0].SkillsJSON != `[{"id":"pkg-b2","enabled":true}]` {
+		t.Fatalf("target[0] skills mismatch: %s", gotTargets[0].SkillsJSON)
+	}
+	if gotTargets[1].SkillsJSON != `[{"id":"pkg-b1","enabled":false}]` {
+		t.Fatalf("target[1] skills mismatch: %s", gotTargets[1].SkillsJSON)
+	}
+	if gotTargets[0].AgentBackendID == gotTargets[1].AgentBackendID || gotTargets[0].AgentBackendID == 0 || gotTargets[1].AgentBackendID == 0 {
+		t.Fatalf("targets should resolve to two distinct non-zero local backend ids, got %d and %d",
+			gotTargets[0].AgentBackendID, gotTargets[1].AgentBackendID)
+	}
+}
+
+// TestApplyImport_Agent_LegacyBundleWithoutExecTargets_FallsBackToSingleElementList
+// 覆盖"老 bundle(不含执行目标数组)按 agentBackendKey + skillsJSON 落成单元素列表"
+// ——与迁移共用同一份转换(agent_repo.Create 内建的 primaryTargetList),这里不应该
+// 再调 AgentExecTargetRepo:m.execTargets 上没挂任何 EXPECT,严格 mock 若被调用会
+// 直接判这个测试失败。
+func TestApplyImport_Agent_LegacyBundleWithoutExecTargets_FallsBackToSingleElementList(t *testing.T) {
+	m := setupDataSvcTest(t)
+	m.providers.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
+	m.devices.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
+	m.backends.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{}, nil).Times(2)
+	m.depts.EXPECT().List(gomock.Any()).Return(nil, nil)
+
+	m.backends.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
+		DoAndReturn(func(_ context.Context, bk *agent_backend_entity.AgentBackend) error {
+			bk.ID = 30
+			return nil
+		})
+
+	m.agents.EXPECT().ListByDepartment(gomock.Any(), int64(0)).Return([]*agent_entity.Agent{}, nil)
+	m.agents.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_entity.Agent{})).
+		DoAndReturn(func(_ context.Context, a *agent_entity.Agent) error {
+			if a.AgentBackendID != 30 {
+				t.Errorf("expected AgentBackendID=30 derived from agentBackendKey, got %d", a.AgentBackendID)
+			}
+			if a.SkillsJSON != `[{"id":"legacy-pack","enabled":true}]` {
+				t.Errorf("expected legacy skillsJSON passed through, got %q", a.SkillsJSON)
+			}
+			a.ID = 40
+			return nil
+		})
+
+	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectCommit()
+
+	bundle := data_svc.BundleV1{
+		Format: data_svc.BundleFormat, Version: 1,
+		Scopes: []string{string(data_svc.ScopeOrganization)},
+		Items: data_svc.BundleItems{
+			AgentBackends: []data_svc.BundleAgentBackend{{ExportKey: "ab-1", Name: "B1"}},
+			Agents: []data_svc.BundleAgent{
+				// 注意:不设置 ExecTargets —— 序列化后 JSON 里没有 execTargets 这个 key,
+				// 模拟本条规则加入之前导出的老 bundle。
+				{ExportKey: "ag-1", Name: "Solo", AgentBackendKey: "ab-1", SkillsJSON: `[{"id":"legacy-pack","enabled":true}]`},
+			},
+		},
+	}
+	raw, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatalf("marshal bundle: %v", err)
+	}
+
+	res, err := m.svc.ApplyImport(m.ctx, &data_svc.ApplyImportRequest{Raw: raw, FallbackStrategy: data_svc.ActionCreate})
+	if err != nil {
+		t.Fatalf("apply import: %v", err)
+	}
+	if res.Counts["created"] != 2 {
+		t.Fatalf("expected 2 created rows (1 backend + 1 agent), got %v", res.Counts)
+	}
+}
+
+// TestApplyImport_Agent_LegacyBundleEmptyBackendKey_FallsBackToEmptyList 覆盖
+// "agentBackendKey 为空的 Agent 落成空列表,与迁移对 agent_backend_id = 0 的处理
+// 一致"。同样不该碰 AgentExecTargetRepo(没挂 EXPECT,被调用即失败)。
+func TestApplyImport_Agent_LegacyBundleEmptyBackendKey_FallsBackToEmptyList(t *testing.T) {
+	m := setupDataSvcTest(t)
+	m.providers.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
+	m.devices.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
+	m.backends.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{}, nil).Times(2)
+	m.depts.EXPECT().List(gomock.Any()).Return(nil, nil)
+
+	m.agents.EXPECT().ListByDepartment(gomock.Any(), int64(0)).Return([]*agent_entity.Agent{}, nil)
+	m.agents.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_entity.Agent{})).
+		DoAndReturn(func(_ context.Context, a *agent_entity.Agent) error {
+			if a.AgentBackendID != 0 {
+				t.Errorf("expected AgentBackendID=0 for empty agentBackendKey, got %d", a.AgentBackendID)
+			}
+			a.ID = 41
+			return nil
+		})
+
+	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectCommit()
+
+	bundle := data_svc.BundleV1{
+		Format: data_svc.BundleFormat, Version: 1,
+		Scopes: []string{string(data_svc.ScopeOrganization)},
+		Items: data_svc.BundleItems{
+			Agents: []data_svc.BundleAgent{
+				{ExportKey: "ag-1", Name: "Unassigned", AgentBackendKey: ""},
+			},
+		},
+	}
+	raw, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatalf("marshal bundle: %v", err)
+	}
+
+	res, err := m.svc.ApplyImport(m.ctx, &data_svc.ApplyImportRequest{Raw: raw, FallbackStrategy: data_svc.ActionCreate})
+	if err != nil {
+		t.Fatalf("apply import: %v", err)
+	}
+	if res.Counts["created"] != 1 {
+		t.Fatalf("expected 1 created row, got %v", res.Counts)
+	}
+}
+
+// TestApplyImport_Agent_ExecTargetsPresent_IgnoresLegacyBackendKeyAndSkillsJSON
+// 锁住"execTargets 数组存在时,agentBackendKey / skillsJSON 不再被导入侧读取"——
+// legacy 字段故意指向另一个 backend 与另一份技能,断言最终落库的执行目标只反映
+// execTargets 数组本身。
+func TestApplyImport_Agent_ExecTargetsPresent_IgnoresLegacyBackendKeyAndSkillsJSON(t *testing.T) {
+	m := setupDataSvcTest(t)
+	m.providers.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
+	m.devices.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
+	m.backends.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{}, nil).Times(2)
+	m.depts.EXPECT().List(gomock.Any()).Return(nil, nil)
+
+	backendIDSeq := int64(59)
+	mCreatedOrder := []string{}
+	m.backends.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
+		DoAndReturn(func(_ context.Context, bk *agent_backend_entity.AgentBackend) error {
+			backendIDSeq++
+			bk.ID = backendIDSeq
+			mCreatedOrder = append(mCreatedOrder, bk.Name)
+			return nil
+		}).Times(2)
+
+	m.agents.EXPECT().ListByDepartment(gomock.Any(), int64(0)).Return([]*agent_entity.Agent{}, nil)
+	m.agents.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_entity.Agent{})).
+		DoAndReturn(func(_ context.Context, a *agent_entity.Agent) error {
+			a.ID = 70
+			return nil
+		})
+
+	var gotTargets []*agent_entity.AgentExecTarget
+	m.execTargets.EXPECT().Replace(gomock.Any(), int64(70), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ int64, targets []*agent_entity.AgentExecTarget) error {
+			gotTargets = targets
+			return nil
+		})
+
+	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectCommit()
+
+	bundle := data_svc.BundleV1{
+		Format: data_svc.BundleFormat, Version: 1,
+		Scopes: []string{string(data_svc.ScopeOrganization), string(data_svc.ScopeAgentBackends)},
+		Items: data_svc.BundleItems{
+			AgentBackends: []data_svc.BundleAgentBackend{
+				{ExportKey: "ab-real", Name: "Real"},
+				{ExportKey: "ab-decoy", Name: "Decoy"},
+			},
+			Agents: []data_svc.BundleAgent{
+				{
+					ExportKey: "ag-1", Name: "Solo",
+					// 遗留字段故意指向 decoy backend 与一份假技能 —— 期望被忽略。
+					AgentBackendKey: "ab-decoy",
+					SkillsJSON:      `[{"id":"decoy-pack","enabled":true}]`,
+					ExecTargets: []data_svc.BundleExecTarget{
+						{BackendKey: "ab-real", SortOrder: 0, SkillsJSON: `[{"id":"real-pack","enabled":true}]`},
+					},
+				},
+			},
+		},
+	}
+	raw, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatalf("marshal bundle: %v", err)
+	}
+
+	res, err := m.svc.ApplyImport(m.ctx, &data_svc.ApplyImportRequest{Raw: raw, FallbackStrategy: data_svc.ActionCreate})
+	if err != nil {
+		t.Fatalf("apply import: %v", err)
+	}
+	if res.Counts["created"] != 3 {
+		t.Fatalf("expected 3 created rows (2 backends + 1 agent), got %v", res.Counts)
+	}
+	if len(gotTargets) != 1 {
+		t.Fatalf("expected 1 exec target, got %d", len(gotTargets))
+	}
+	if gotTargets[0].SkillsJSON != `[{"id":"real-pack","enabled":true}]` {
+		t.Fatalf("expected skillsJSON from execTargets (not the legacy skillsJSON field), got %q", gotTargets[0].SkillsJSON)
+	}
+	// "ab-real" 在 bundle 里排第一个,拿到的本地 backend id 必须是它,不是 decoy。
+	if mCreatedOrder[0] != "Real" {
+		t.Fatalf("test setup assumption broke: expected Real created first, order=%v", mCreatedOrder)
+	}
+	wantBackendID := int64(60) // 59 + 1,第一次 Create
+	if gotTargets[0].AgentBackendID != wantBackendID {
+		t.Fatalf("expected exec target backend id resolved from execTargets[].backendKey (ab-real=%d), got %d (legacy agentBackendKey 泄漏进来了)",
+			wantBackendID, gotTargets[0].AgentBackendID)
+	}
 }
