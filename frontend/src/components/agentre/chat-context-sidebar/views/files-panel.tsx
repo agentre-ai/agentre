@@ -1,4 +1,4 @@
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff, Search } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Toggle } from "@/components/ui/toggle";
@@ -11,6 +11,7 @@ import type { Change } from "../git-rows";
 
 import { DirectoryView } from "./directory-view";
 import { FilesView } from "./files-view";
+import { useDirectorySearch } from "./use-directory-search";
 
 type Props = {
   sessionId: number;
@@ -46,6 +47,10 @@ export function FilesPanel({
   const setMode = useChatSidebarStore((s) => s.setFilesMode);
   const showIgnored = useChatSidebarStore((s) => s.showIgnored);
   const setShowIgnored = useChatSidebarStore((s) => s.setShowIgnored);
+  // 搜索过滤态与查询串是本次查看会话的临时交互状态，不进持久化 store（决策见
+  // use-directory-search.ts 顶部注释）；持有在这一层是因为搜索按钮与「显示
+  // 忽略项」同一行在这里，而结果区在 DirectoryView——两者需要共享同一份状态。
+  const search = useDirectorySearch(sessionId, showIgnored);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -75,6 +80,22 @@ export function FilesPanel({
             )}
           </Toggle>
         ) : null}
+        {mode === "directory" && cwd !== "" ? (
+          <Toggle
+            size="sm"
+            className="h-6 w-6 shrink-0 p-0 data-[state=on]:bg-transparent data-[state=on]:text-primary"
+            pressed={search.active}
+            onPressedChange={search.toggle}
+            aria-label={t("chatContext.directory.search")}
+            title={
+              search.active
+                ? t("chatContext.directory.searchOn")
+                : t("chatContext.directory.searchOff")
+            }
+          >
+            <Search className="size-3" aria-hidden="true" />
+          </Toggle>
+        ) : null}
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         {mode === "changes" ? (
@@ -93,6 +114,7 @@ export function FilesPanel({
             remote={remote}
             showIgnored={showIgnored}
             gitChanges={gitChanges}
+            search={search}
           />
         ) : null}
       </div>

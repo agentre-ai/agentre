@@ -18,9 +18,14 @@ import {
   gitStatusLabel,
 } from "../git-rows";
 
+import { DirectorySearchPanel } from "./directory-search-panel";
 import { errorText, PanelNotice, PanelSkeleton } from "./panel-feedback";
 import { FileTypeIcon, SidebarRow } from "./sidebar-row";
 import { indentStyle } from "./tree-indent";
+import {
+  INACTIVE_DIRECTORY_SEARCH,
+  type DirectorySearch,
+} from "./use-directory-search";
 
 type Entry = workspace_fs_svc.EntryView;
 
@@ -45,6 +50,14 @@ type Props = {
    * 为 null——目录树照常渲染，只是不带叠加。
    */
   gitChanges?: Change[] | null;
+  /**
+   * 搜索过滤态（served requirement「文件搜索」）：由 FilesPanel 的
+   * useDirectorySearch 统一持有并下发，本组件不自己管这份状态——搜索按钮与
+   * 「显示忽略项」同一行，在 FilesPanel 那一层，而不是这里。默认给一个恒定的
+   * 「未激活」句柄，让不传这个 prop 的既有调用方（如 row.test.tsx 里直接渲染
+   * DirectoryView 的用例）照常只渲染树，行为不变。
+   */
+  search?: DirectorySearch;
 };
 
 /**
@@ -64,6 +77,7 @@ export function DirectoryView({
   remote,
   showIgnored,
   gitChanges = null,
+  search = INACTIVE_DIRECTORY_SEARCH,
 }: Props) {
   const { t } = useTranslation();
   const [levels, setLevels] = React.useState<Record<string, Level>>({});
@@ -191,6 +205,20 @@ export function DirectoryView({
 
   if (cwd === "") {
     return <PanelNotice text={t("chatContext.directory.noCwd")} />;
+  }
+
+  // 搜索过滤态激活时整个内容区换成扁平的搜索结果；树的 levels / expanded 状态
+  // 在上面那些 effect 里照常维护，不受这个分支影响——关闭过滤态回来时，同一份
+  // 缓存与展开集合原样还在（spec「关闭过滤态…树的展开状态不受影响」）。
+  if (search.active) {
+    return (
+      <DirectorySearchPanel
+        sessionId={sessionId}
+        cwd={cwd}
+        remote={remote}
+        search={search}
+      />
+    );
   }
 
   const root = levels[ROOT];

@@ -630,12 +630,26 @@
       "showIgnored": "Show ignored",
       "showIgnoredOn": "Hide ignored files",
       "showIgnoredOff": "Show ignored files",
+      "search": "Search",
+      "searchOn": "Close search",
+      "searchOff": "Search files",
       "loading": "Loading directory…",
       "empty": "This directory is empty",
       "truncated": "Showing the first {{limit}} entries only",
       "noCwd": "This session has no working directory",
       "readFailed": "Failed to read the directory",
       "retry": "Retry"
+    },
+    "search": {
+      "placeholder": "Search files by name…",
+      "hitCount": "{{count}} results",
+      "clear": "Clear search",
+      "hint": "Type to search files by name",
+      "empty": "No files match \"{{query}}\"",
+      "emptyHint": "Ignored files are excluded from search by default",
+      "truncated": "Showing the first {{limit}} results only",
+      "loading": "Searching…",
+      "readFailed": "Search failed"
     },
     "git": {
       "label": "Git",

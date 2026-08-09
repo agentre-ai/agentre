@@ -630,12 +630,26 @@
       "showIgnored": "显示忽略项",
       "showIgnoredOn": "隐藏被忽略的文件",
       "showIgnoredOff": "显示被忽略的文件",
+      "search": "搜索",
+      "searchOn": "关闭搜索",
+      "searchOff": "搜索文件",
       "loading": "正在读取目录…",
       "empty": "这个目录是空的",
       "truncated": "只显示了前 {{limit}} 项",
       "noCwd": "这个会话没有工作目录",
       "readFailed": "读取目录失败",
       "retry": "重试"
+    },
+    "search": {
+      "placeholder": "按文件名搜索…",
+      "hitCount": "{{count}} 个结果",
+      "clear": "清除搜索",
+      "hint": "输入以按文件名搜索",
+      "empty": "没有匹配“{{query}}”的文件",
+      "emptyHint": "默认不搜索被忽略的文件",
+      "truncated": "只显示了前 {{limit}} 个结果",
+      "loading": "正在搜索…",
+      "readFailed": "搜索失败"
     },
     "git": {
       "label": "Git",

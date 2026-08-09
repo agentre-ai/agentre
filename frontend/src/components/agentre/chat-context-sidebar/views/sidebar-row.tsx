@@ -48,6 +48,16 @@ type Props = {
   /** 显示名（basename、目录名，或链压缩行的末段）。 */
   name: string;
   /**
+   * 名称的可选替代渲染（搜索结果高亮命中子串用）。设置时代替 `name` 的纯文本
+   * 显示，但 `name` 本身仍照旧驱动 `data-name` 与菜单的「复制文件名」——高亮
+   * 只改视觉，不改这一行在其它地方被识别 / 操作的方式。拆成多个兄弟节点会让
+   * 无障碍名计算在节点之间插入多余空格，调用方设置本 prop 时应一并显式传
+   * `ariaLabel={name}`，让可访问名固定等于未拆分的纯文本。只对非链压缩行
+   * 生效（链压缩行的截断方向依赖纯文本测量，搜索结果本就不会同时是链压缩
+   * 行）。
+   */
+  nameChildren?: React.ReactNode;
+  /**
    * 名称文字色的覆盖：目录模式的 git 状态叠加给变动文件着色时用（served
    * requirement「目录模式的 git 状态叠加」）；未设置时用默认的 muted 文字色。
    */
@@ -101,6 +111,7 @@ export function SidebarRow({
   kind,
   path,
   name,
+  nameChildren,
   nameClassName,
   chainPrefix,
   depth,
@@ -183,7 +194,7 @@ export function SidebarRow({
     </span>
   ) : (
     <span className={cn("min-w-0 shrink truncate font-mono", nameClassName)}>
-      {name}
+      {nameChildren ?? name}
     </span>
   );
   const body = (

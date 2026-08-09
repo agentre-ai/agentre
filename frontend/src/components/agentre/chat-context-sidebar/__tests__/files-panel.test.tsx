@@ -1,8 +1,15 @@
 import "@testing-library/jest-dom/vitest";
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 const sonnerMocks = vi.hoisted(() => ({
   toast: { error: vi.fn(), success: vi.fn() },
@@ -11,6 +18,7 @@ vi.mock("sonner", () => sonnerMocks);
 
 const openPathMock = vi.fn();
 const listDirMock = vi.fn();
+const searchMock = vi.fn();
 // Git 模式的两个绑定这里只需要能被安全调用（本文件不断言它们），断言在
 // files-panel-git.test.tsx。
 const gitMocks = vi.hoisted(() => ({
@@ -34,6 +42,11 @@ vi.mock("@/../wailsjs/go/app/App", () => ({
     listDirMock(sessionId, relPath, ignored),
   WorkspaceFsGitChanges: gitMocks.changes,
   WorkspaceFsGitBranches: gitMocks.branches,
+  WorkspaceFsSearchFiles: (
+    sessionId: number,
+    query: string,
+    includeIgnored: boolean,
+  ) => searchMock(sessionId, query, includeIgnored),
 }));
 
 import {
@@ -100,6 +113,8 @@ beforeEach(() => {
   openPathMock.mockResolvedValue(undefined);
   listDirMock.mockReset();
   listDirMock.mockResolvedValue(listing([]));
+  searchMock.mockReset();
+  searchMock.mockResolvedValue({ hits: [], truncated: false });
   sonnerMocks.toast.error.mockReset();
 });
 
@@ -525,6 +540,406 @@ describe("FilesPanel directory mode", () => {
     expect(
       selectActivePreviewTab(useChatSidebarStore.getState(), 7),
     ).toMatchObject({ path: "main.go", sourceMode: "directory" });
+  });
+});
+
+describe("FilesPanel directory search", () => {
+  // 每个用例自己经 switchTo(/directory/i) 切档（含 (a) 需要断言「变动」档下
+  // 搜索按钮不存在），这里不预置 filesMode，否则会盖掉那个初始态。
+  beforeEach(() => {
+    listDirMock.mockResolvedValue(listing([]));
+  });
+
+  function searchToggle() {
+    return screen.getByRole("button", { name: /^search$/i });
+  }
+
+  function searchInput() {
+    return screen.getByRole("textbox", { name: /search files/i });
+  }
+
+  it("(a) shows the icon-only 搜索 button only in directory mode with a cwd, toggles a pressed filter state, and the input row exists only while active with focus landing in it", async () => {
+    renderPanel({});
+    expect(screen.queryByRole("button", { name: /^search$/i })).toBeNull();
+
+    await switchTo(/directory/i);
+    const toggle = await screen.findByRole("button", { name: /^search$/i });
+    // 纯图标：可见文本为空，可达名靠 aria-label。
+    expect(toggle).toHaveTextContent("");
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByRole("textbox", { name: /search files/i })).toBeNull();
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    const input = await screen.findByRole("textbox", { name: /search files/i });
+    expect(input).toHaveFocus();
+
+    await switchTo(/changes/i);
+    expect(screen.queryByRole("button", { name: /^search$/i })).toBeNull();
+  });
+
+  it("(a) does not render the 搜索 entry when the session has no working directory", async () => {
+    renderPanel({ cwd: "" });
+    await switchTo(/directory/i);
+    expect(screen.queryByRole("button", { name: /^search$/i })).toBeNull();
+  });
+
+  it("(b) returns to the tree with expansion state intact when the filter is closed via the toggle or the clear button; activating search does not itself call the backend again", async () => {
+    listDirMock.mockImplementation((_id: number, relPath: string) =>
+      Promise.resolve(
+        relPath === ""
+          ? listing([entry("app", true)])
+          : listing([entry("app.go")]),
+      ),
+    );
+    renderPanel({});
+    await switchTo(/directory/i);
+    await userEvent.click(
+      await screen.findByRole("button", { name: /expand app/i }),
+    );
+    expect(await screen.findByText("app.go")).toBeInTheDocument();
+    expect(listDirMock).toHaveBeenCalledTimes(2);
+
+    await userEvent.click(searchToggle());
+    expect(screen.queryByText("app.go")).toBeNull();
+    expect(listDirMock).toHaveBeenCalledTimes(2);
+
+    fireEvent.change(searchInput(), { target: { value: "zzz" } });
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    vi.useRealTimers();
+
+    // 关闭过滤态：树照原样出现，展开态不受影响，没有多打后端。
+    await userEvent.click(searchToggle());
+    expect(screen.getByText("app.go")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /collapse app/i }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(listDirMock).toHaveBeenCalledTimes(2);
+
+    // 重新激活、输入，再用清除按钮：同样回到树。
+    await userEvent.click(searchToggle());
+    fireEvent.change(searchInput(), { target: { value: "zzz" } });
+    await userEvent.click(
+      screen.getByRole("button", { name: /clear search/i }),
+    );
+    expect(screen.getByText("app.go")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /search files/i })).toBeNull();
+  });
+
+  it("(c) debounces rapid input changes into a single backend call carrying sessionId, the final query and the current showIgnored", async () => {
+    renderPanel({});
+    await switchTo(/directory/i);
+    await userEvent.click(
+      screen.getByRole("button", { name: /show ignored/i }),
+    );
+    await userEvent.click(searchToggle());
+
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+    const input = searchInput();
+    fireEvent.change(input, { target: { value: "a" } });
+    fireEvent.change(input, { target: { value: "ab" } });
+    fireEvent.change(input, { target: { value: "abc" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(299);
+    });
+    expect(searchMock).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(searchMock).toHaveBeenCalledTimes(1);
+    expect(searchMock).toHaveBeenCalledWith(7, "abc", true);
+  });
+
+  it("(c) a stale in-flight response cannot overwrite a newer one", async () => {
+    let resolveFirst: ((v: unknown) => void) | null = null;
+    let resolveSecond: ((v: unknown) => void) | null = null;
+    searchMock.mockImplementation((_id: number, query: string) => {
+      if (query === "ab") {
+        return new Promise((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      if (query === "abc") {
+        return new Promise((resolve) => {
+          resolveSecond = resolve;
+        });
+      }
+      throw new Error(`unexpected query ${query}`);
+    });
+    renderPanel({});
+    await switchTo(/directory/i);
+    await userEvent.click(searchToggle());
+
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+    const input = searchInput();
+    fireEvent.change(input, { target: { value: "ab" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(searchMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(input, { target: { value: "abc" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(searchMock).toHaveBeenCalledTimes(2);
+
+    // 更新的那次先回：结果应该反映它。命中的 basename 被高亮拆成了 <mark> +
+    // 纯文本几个兄弟节点，getByText 按单节点精确匹配会失配，因此用不受高亮
+    // 影响的 data-path 断言（与 data-name 一样直接取自 SidebarRow 的字符串
+    // prop，不经过 nameChildren 的拆分渲染）。
+    function resultPaths(): string[] {
+      return screen
+        .getAllByTestId("search-row")
+        .map((el) => el.getAttribute("data-path") ?? "");
+    }
+    await act(async () => {
+      resolveSecond!({
+        hits: [{ path: "src/abc.ts", isDir: false }],
+        truncated: false,
+      });
+    });
+    expect(resultPaths()).toEqual(["src/abc.ts"]);
+
+    // 旧的那次后回：不能覆盖新结果。
+    await act(async () => {
+      resolveFirst!({
+        hits: [{ path: "src/ab.ts", isDir: false }],
+        truncated: false,
+      });
+    });
+    expect(resultPaths()).toEqual(["src/abc.ts"]);
+  });
+
+  it("(d) renders results as flat rows (basename + head-truncated directory suffix, highlighted match) sharing the row and menu with other modes", async () => {
+    searchMock.mockResolvedValue({
+      hits: [
+        { path: "internal/service/chat_svc/chat.go", isDir: false },
+        { path: "README.md", isDir: false },
+      ],
+      truncated: false,
+    });
+    renderPanel({});
+    await switchTo(/directory/i);
+    await userEvent.click(searchToggle());
+
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+    fireEvent.change(searchInput(), { target: { value: "chat" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    vi.useRealTimers();
+
+    const rows = screen.getAllByTestId("search-row");
+    expect(rows.map((r) => r.getAttribute("data-name"))).toEqual([
+      "chat.go",
+      "README.md",
+    ]);
+    expect(screen.getByTestId("search-hit-count")).toHaveTextContent(
+      "2 results",
+    );
+
+    const chatRow = rows.find(
+      (r) => r.getAttribute("data-name") === "chat.go",
+    )!;
+    // 命中的子串高亮。
+    expect(within(chatRow).getByText("chat").tagName).toBe("MARK");
+    // 头截断的目录后缀。
+    expect(
+      within(chatRow).getByText("internal/service/chat_svc"),
+    ).toBeInTheDocument();
+    expect(chatRow).toHaveAttribute(
+      "title",
+      "internal/service/chat_svc/chat.go",
+    );
+
+    // 行的点击与其他模式一致：预览。
+    await userEvent.click(
+      within(chatRow).getByRole("button", { name: /chat\.go/ }),
+    );
+    expect(
+      selectActivePreviewTab(useChatSidebarStore.getState(), 7),
+    ).toMatchObject({
+      path: "internal/service/chat_svc/chat.go",
+      sourceMode: "directory",
+    });
+
+    // ⋯ 菜单与其他模式的文件行完全一致。
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    await user.click(
+      within(chatRow).getByRole("button", { name: /more actions/i }),
+    );
+    const menu = await screen.findByRole("menu");
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((el) => el.textContent),
+    ).toEqual([
+      "Preview",
+      "Preview in a new tab",
+      "Open with default app",
+      "Show in file manager",
+      "Copy relative path",
+      "Copy absolute path",
+      "Copy file name",
+    ]);
+  });
+
+  it("(e) shows a hint and does not call the backend while the query is empty; backspacing to empty stays in search mode instead of falling back to the tree", async () => {
+    renderPanel({});
+    await switchTo(/directory/i);
+    await userEvent.click(searchToggle());
+
+    expect(
+      await screen.findByText(/type to search files by name/i),
+    ).toBeInTheDocument();
+    expect(searchMock).not.toHaveBeenCalled();
+
+    const input = searchInput();
+    fireEvent.change(input, { target: { value: "a" } });
+    fireEvent.change(input, { target: { value: "" } });
+    expect(
+      screen.getByText(/type to search files by name/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("textbox", { name: /search files/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("(e) shows a no-hit empty state noting ignored files are excluded by default", async () => {
+    searchMock.mockResolvedValue({ hits: [], truncated: false });
+    renderPanel({});
+    await switchTo(/directory/i);
+    await userEvent.click(searchToggle());
+
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+    fireEvent.change(searchInput(), { target: { value: "zzz" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+
+    expect(screen.getByText(/no files match "zzz"/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/ignored files are excluded from search by default/i),
+    ).toBeInTheDocument();
+  });
+
+  it("(e) notes truncation with the actual number of returned hits", async () => {
+    searchMock.mockResolvedValue({
+      hits: [
+        { path: "a.go", isDir: false },
+        { path: "b.go", isDir: false },
+      ],
+      truncated: true,
+    });
+    renderPanel({});
+    await switchTo(/directory/i);
+    await userEvent.click(searchToggle());
+
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+    fireEvent.change(searchInput(), { target: { value: "go" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+
+    expect(
+      screen.getByText(/showing the first 2 results only/i),
+    ).toBeInTheDocument();
+  });
+
+  it("(e) shows a loading state right after typing, before the debounced call fires", async () => {
+    renderPanel({});
+    await switchTo(/directory/i);
+    await userEvent.click(searchToggle());
+
+    fireEvent.change(searchInput(), { target: { value: "main" } });
+    expect(screen.getByText(/searching/i)).toBeInTheDocument();
+    expect(searchMock).not.toHaveBeenCalled();
+  });
+
+  it("(e) shows an error state with a retry that re-issues the same query", async () => {
+    searchMock.mockRejectedValueOnce(new Error("boom"));
+    searchMock.mockResolvedValue({
+      hits: [{ path: "main.go", isDir: false }],
+      truncated: false,
+    });
+    renderPanel({});
+    await switchTo(/directory/i);
+    await userEvent.click(searchToggle());
+
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+    fireEvent.change(searchInput(), { target: { value: "main" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(screen.getByText("boom")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    // basename 被高亮拆成了兄弟节点，用不受影响的 data-path 断言命中。
+    expect(screen.getByTestId("search-row")).toHaveAttribute(
+      "data-path",
+      "main.go",
+    );
+    expect(searchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("(e) surfaces the daemon-outdated message verbatim for search failures too", async () => {
+    searchMock.mockRejectedValue(
+      new Error("Remote agentred is too old; please upgrade to use this view"),
+    );
+    renderPanel({ remote: true });
+    await switchTo(/directory/i);
+    await userEvent.click(searchToggle());
+
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+    fireEvent.change(searchInput(), { target: { value: "main" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+
+    expect(
+      screen.getByText(
+        "Remote agentred is too old; please upgrade to use this view",
+      ),
+    ).toBeInTheDocument();
   });
 });
 
