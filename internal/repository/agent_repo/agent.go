@@ -19,6 +19,8 @@ import (
 type AgentRepo interface {
 	Create(ctx context.Context, a *agent_entity.Agent) error
 	Update(ctx context.Context, a *agent_entity.Agent) error
+	// UpdateRow 只落 Agent 这一行，不动它的执行目标列表（同步落地专用，见实现注释）。
+	UpdateRow(ctx context.Context, a *agent_entity.Agent) error
 	Find(ctx context.Context, id int64) (*agent_entity.Agent, error)
 	FindByName(ctx context.Context, name string) (*agent_entity.Agent, error)
 	FindSystem(ctx context.Context) (*agent_entity.Agent, error)
@@ -61,6 +63,16 @@ func (r *agentRepo) Create(ctx context.Context, a *agent_entity.Agent) error {
 		}
 		return insertExecTargets(tx, a.ID, primaryTargetList(a.AgentBackendID, a.SkillsJSON))
 	})
+}
+
+// UpdateRow 只落 Agent 这一行，**不动**它的执行目标列表。
+//
+// 同步落地（internal/service/sync_svc）走这条：执行目标是账号级的独立同步对象，
+// 各自带着自己的同步标识与版本，不能被 Agent 行上的派生字段 AgentBackendID 重写
+// 成单元素列表——那会把对端配好的多档列表冲掉。
+func (r *agentRepo) UpdateRow(ctx context.Context, a *agent_entity.Agent) error {
+	a.EnsureSyncID()
+	return db.Ctx(ctx).Save(a).Error
 }
 
 // Update 落 Agent 行，并把执行目标列表整表替换成当前的单元素列表（带着

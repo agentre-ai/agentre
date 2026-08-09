@@ -129,6 +129,20 @@ func (mr *MockProjectLocationRepoMockRecorder) ListByProject(ctx, projectID any)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByProject", reflect.TypeOf((*MockProjectLocationRepo)(nil).ListByProject), ctx, projectID)
 }
 
+// Update mocks base method.
+func (m *MockProjectLocationRepo) Update(ctx context.Context, p *project_location_entity.ProjectLocation) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Update", ctx, p)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Update indicates an expected call of Update.
+func (mr *MockProjectLocationRepoMockRecorder) Update(ctx, p any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Update", reflect.TypeOf((*MockProjectLocationRepo)(nil).Update), ctx, p)
+}
+
 // UpdateDeviceID mocks base method.
 func (m *MockProjectLocationRepo) UpdateDeviceID(ctx context.Context, id int64, deviceID string) error {
 	m.ctrl.T.Helper()

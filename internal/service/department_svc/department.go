@@ -15,10 +15,12 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/department_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agenttool"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/syncwire"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/department_repo"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/service/sync_svc"
 )
 
 const (
@@ -244,6 +246,7 @@ func (s *departmentSvc) Create(ctx context.Context, req *CreateDepartmentRequest
 	if err := department_repo.Department().Create(ctx, d); err != nil {
 		return nil, err
 	}
+	sync_svc.NotifyCreate(ctx, syncwire.KindDepartment, d.ID, d.SyncMeta)
 	return &CreateDepartmentResponse{Item: toDepartmentItem(d, nil, 0, 0, 0)}, nil
 }
 
@@ -287,6 +290,7 @@ func (s *departmentSvc) Update(ctx context.Context, req *UpdateDepartmentRequest
 	if err := department_repo.Department().Update(ctx, existing); err != nil {
 		return nil, err
 	}
+	sync_svc.NotifyUpdate(ctx, syncwire.KindDepartment, existing.ID, existing.SyncMeta)
 	return &UpdateDepartmentResponse{Item: toDepartmentItem(existing, nil, 0, 0, 0)}, nil
 }
 
@@ -332,6 +336,7 @@ func (s *departmentSvc) Move(ctx context.Context, req *MoveDepartmentRequest) (*
 	if err := department_repo.Department().Update(ctx, existing); err != nil {
 		return nil, err
 	}
+	sync_svc.NotifyUpdate(ctx, syncwire.KindDepartment, existing.ID, existing.SyncMeta)
 	return &MoveDepartmentResponse{Item: toDepartmentItem(existing, nil, 0, 0, 0)}, nil
 }
 
@@ -364,7 +369,13 @@ func (s *departmentSvc) Reorder(ctx context.Context, req *ReorderDepartmentsRequ
 		}
 		seen[id] = struct{}{}
 	}
-	return department_repo.Department().ReorderSiblings(ctx, req.ParentID, req.OrderedIDs)
+	if err := department_repo.Department().ReorderSiblings(ctx, req.ParentID, req.OrderedIDs); err != nil {
+		return err
+	}
+	for _, sibling := range siblings {
+		sync_svc.NotifyUpdate(ctx, syncwire.KindDepartment, sibling.ID, sibling.SyncMeta)
+	}
+	return nil
 }
 
 // Delete 软删部门，支持 reparent / cascade。
@@ -380,6 +391,11 @@ func (s *departmentSvc) Delete(ctx context.Context, req *DeleteDepartmentRequest
 	if strategy == "" {
 		strategy = StrategyReparent
 	}
+	var (
+		movedAgents   []*agent_entity.Agent
+		deletedAgents []*agent_entity.Agent
+		deletedDepts  []*department_entity.Department
+	)
 	err = db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
 		txCtx := db.WithContextDB(ctx, tx)
 		switch strategy {
@@ -413,6 +429,7 @@ func (s *departmentSvc) Delete(ctx context.Context, req *DeleteDepartmentRequest
 					return err
 				}
 			}
+			movedAgents = agents
 		case StrategyCascade:
 			all, err := department_repo.Department().List(txCtx)
 			if err != nil {
@@ -423,14 +440,29 @@ func (s *departmentSvc) Delete(ctx context.Context, req *DeleteDepartmentRequest
 			if err != nil {
 				return err
 			}
-			for _, agentID := range collectAgentsInDepartments(allAgents, subtree) {
+			inSubtree := collectAgentsInDepartments(allAgents, subtree)
+			byID := make(map[int64]*agent_entity.Agent, len(allAgents))
+			for _, a := range allAgents {
+				byID[a.ID] = a
+			}
+			for _, agentID := range inSubtree {
 				if err := agent_repo.Agent().Delete(txCtx, agentID); err != nil {
 					return err
 				}
+				if a := byID[agentID]; a != nil {
+					deletedAgents = append(deletedAgents, a)
+				}
+			}
+			deptByID := make(map[int64]*department_entity.Department, len(all))
+			for _, d := range all {
+				deptByID[d.ID] = d
 			}
 			for _, id := range subtree {
 				if err := department_repo.Department().Delete(txCtx, id); err != nil {
 					return err
+				}
+				if d := deptByID[id]; d != nil {
+					deletedDepts = append(deletedDepts, d)
 				}
 			}
 			return nil
@@ -441,6 +473,18 @@ func (s *departmentSvc) Delete(ctx context.Context, req *DeleteDepartmentRequest
 	})
 	if err != nil {
 		return nil, err
+	}
+	for _, a := range movedAgents {
+		sync_svc.NotifyUpdate(ctx, syncwire.KindAgent, a.ID, a.SyncMeta)
+	}
+	for _, a := range deletedAgents {
+		sync_svc.NotifyDelete(ctx, syncwire.KindAgent, a.ID, a.SyncMeta)
+	}
+	for _, d := range deletedDepts {
+		sync_svc.NotifyDelete(ctx, syncwire.KindDepartment, d.ID, d.SyncMeta)
+	}
+	if !containsDepartment(deletedDepts, existing.ID) {
+		sync_svc.NotifyDelete(ctx, syncwire.KindDepartment, existing.ID, existing.SyncMeta)
 	}
 	return &DeleteDepartmentResponse{}, nil
 }
@@ -540,4 +584,15 @@ func toDepartmentItem(
 		item.LeadAgentName = lead.Name
 	}
 	return item
+}
+
+// containsDepartment 报告某个部门是否已经在列表里（级联删除时它自己也在 subtree 中，
+// 避免同一行入两次队）。
+func containsDepartment(rows []*department_entity.Department, id int64) bool {
+	for _, row := range rows {
+		if row != nil && row.ID == id {
+			return true
+		}
+	}
+	return false
 }

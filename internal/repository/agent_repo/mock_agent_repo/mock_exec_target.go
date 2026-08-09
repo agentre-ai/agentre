@@ -41,6 +41,20 @@ func (m *MockAgentExecTargetRepo) EXPECT() *MockAgentExecTargetRepoMockRecorder 
 	return m.recorder
 }
 
+// DeleteBySyncID mocks base method.
+func (m *MockAgentExecTargetRepo) DeleteBySyncID(ctx context.Context, syncID string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteBySyncID", ctx, syncID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteBySyncID indicates an expected call of DeleteBySyncID.
+func (mr *MockAgentExecTargetRepoMockRecorder) DeleteBySyncID(ctx, syncID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteBySyncID", reflect.TypeOf((*MockAgentExecTargetRepo)(nil).DeleteBySyncID), ctx, syncID)
+}
+
 // ListByAgent mocks base method.
 func (m *MockAgentExecTargetRepo) ListByAgent(ctx context.Context, agentID int64) ([]*agent_entity.AgentExecTarget, error) {
 	m.ctrl.T.Helper()
@@ -71,6 +85,21 @@ func (mr *MockAgentExecTargetRepoMockRecorder) ListByAgents(ctx, agentIDs any) *
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByAgents", reflect.TypeOf((*MockAgentExecTargetRepo)(nil).ListByAgents), ctx, agentIDs)
 }
 
+// ListByBackend mocks base method.
+func (m *MockAgentExecTargetRepo) ListByBackend(ctx context.Context, backendID int64) ([]*agent_entity.AgentExecTarget, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListByBackend", ctx, backendID)
+	ret0, _ := ret[0].([]*agent_entity.AgentExecTarget)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListByBackend indicates an expected call of ListByBackend.
+func (mr *MockAgentExecTargetRepoMockRecorder) ListByBackend(ctx, backendID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByBackend", reflect.TypeOf((*MockAgentExecTargetRepo)(nil).ListByBackend), ctx, backendID)
+}
+
 // Replace mocks base method.
 func (m *MockAgentExecTargetRepo) Replace(ctx context.Context, agentID int64, targets []*agent_entity.AgentExecTarget) error {
 	m.ctrl.T.Helper()
@@ -83,4 +112,18 @@ func (m *MockAgentExecTargetRepo) Replace(ctx context.Context, agentID int64, ta
 func (mr *MockAgentExecTargetRepoMockRecorder) Replace(ctx, agentID, targets any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Replace", reflect.TypeOf((*MockAgentExecTargetRepo)(nil).Replace), ctx, agentID, targets)
+}
+
+// UpsertFromSync mocks base method.
+func (m *MockAgentExecTargetRepo) UpsertFromSync(ctx context.Context, row *agent_entity.AgentExecTarget) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpsertFromSync", ctx, row)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpsertFromSync indicates an expected call of UpsertFromSync.
+func (mr *MockAgentExecTargetRepoMockRecorder) UpsertFromSync(ctx, row any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertFromSync", reflect.TypeOf((*MockAgentExecTargetRepo)(nil).UpsertFromSync), ctx, row)
 }

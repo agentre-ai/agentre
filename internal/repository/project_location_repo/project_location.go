@@ -28,6 +28,9 @@ type ProjectLocationRepo interface {
 	FindByProjectAndFingerprint(ctx context.Context, projectID int64, fingerprint string) (*project_location_entity.ProjectLocation, error)
 	ListByProject(ctx context.Context, projectID int64) ([]*project_location_entity.ProjectLocation, error)
 	UpdatePath(ctx context.Context, id int64, path string) error
+	// Update 整行落库（同步落地用：路径与存活状态一次写完，device_id 缓存由调用方
+	// 从既有行带过来，不在这里推断）。
+	Update(ctx context.Context, p *project_location_entity.ProjectLocation) error
 	// UpdateDeviceID 单独更新 device_id 缓存列，不动 path/status。配对成功后回填
 	// 本地 paired_agentreds.id 的字符串形式；解除配对后传空串清空（R2b）。
 	UpdateDeviceID(ctx context.Context, id int64, deviceID string) error
@@ -59,6 +62,12 @@ func (r *projectLocationRepo) Create(ctx context.Context, p *project_location_en
 	// 同步标识在行创建时就地生成，未登录期间也照常写入（R1/R12a）。
 	p.EnsureSyncID()
 	return db.Ctx(ctx).Create(p).Error
+}
+
+func (r *projectLocationRepo) Update(ctx context.Context, p *project_location_entity.ProjectLocation) error {
+	p.Updatetime = time.Now().UnixMilli()
+	p.EnsureSyncID()
+	return db.Ctx(ctx).Save(p).Error
 }
 
 func (r *projectLocationRepo) Get(ctx context.Context, id int64) (*project_location_entity.ProjectLocation, error) {

@@ -15,11 +15,14 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/project_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/syncmeta_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/pkg/procattr"
+	"github.com/agentre-ai/agentre/internal/pkg/syncwire"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_repo"
+	"github.com/agentre-ai/agentre/internal/service/sync_svc"
 )
 
 // ProjectSvc Project 模块的应用服务。
@@ -115,6 +118,7 @@ func (s *projectSvc) Create(ctx context.Context, req *CreateProjectRequest) (*pr
 	if err := project_repo.Project().Create(ctx, p); err != nil {
 		return nil, err
 	}
+	sync_svc.NotifyCreate(ctx, syncwire.KindProject, p.ID, p.SyncMeta)
 
 	// 初始成员 —— 失败不回滚（用户可以在设置里再加），但记日志。
 	for _, agentID := range req.InitialAgentIDs {
@@ -125,7 +129,9 @@ func (s *projectSvc) Create(ctx context.Context, req *CreateProjectRequest) (*pr
 			logger.Ctx(ctx).Warn("project_svc.Create: initial agent add failed",
 				zap.Int64("projectId", p.ID),
 				zap.Int64("agentId", agentID), zap.Error(err))
+			continue
 		}
+		notifyMemberChange(ctx, p.ID, agentID, sync_svc.OpCreate)
 	}
 	return p, nil
 }
@@ -158,6 +164,7 @@ func (s *projectSvc) Update(ctx context.Context, req *UpdateProjectRequest) (*pr
 	if err := project_repo.Project().Update(ctx, existing); err != nil {
 		return nil, err
 	}
+	sync_svc.NotifyUpdate(ctx, syncwire.KindProject, existing.ID, existing.SyncMeta)
 	return existing, nil
 }
 
@@ -189,7 +196,13 @@ func (s *projectSvc) Reorder(ctx context.Context, req *ReorderProjectsRequest) e
 		}
 		seen[id] = struct{}{}
 	}
-	return project_repo.Project().ReorderSiblings(ctx, req.ParentID, req.OrderedIDs)
+	if err := project_repo.Project().ReorderSiblings(ctx, req.ParentID, req.OrderedIDs); err != nil {
+		return err
+	}
+	for _, sibling := range siblings {
+		sync_svc.NotifyUpdate(ctx, syncwire.KindProject, sibling.ID, sibling.SyncMeta)
+	}
+	return nil
 }
 
 func (s *projectSvc) Delete(ctx context.Context, id int64) error {
@@ -215,7 +228,12 @@ func (s *projectSvc) Delete(ctx context.Context, id int64) error {
 	if n > 0 {
 		return i18n.NewError(ctx, code.ProjectHasActiveSessions)
 	}
-	return project_repo.Project().Delete(ctx, id)
+	if err := project_repo.Project().Delete(ctx, id); err != nil {
+		return err
+	}
+	// 名下的路径记录与成员关系随它一并落墓碑，级联在同步层展开（R6）。
+	sync_svc.NotifyDelete(ctx, syncwire.KindProject, existing.ID, existing.SyncMeta)
+	return nil
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -296,14 +314,54 @@ func (s *projectSvc) AddMember(ctx context.Context, projectID, agentID int64) er
 	if a == nil {
 		return i18n.NewError(ctx, code.ProjectAgentNotFound)
 	}
-	return project_repo.ProjectAgent().Add(ctx, projectID, agentID)
+	if err := project_repo.ProjectAgent().Add(ctx, projectID, agentID); err != nil {
+		return err
+	}
+	notifyMemberChange(ctx, projectID, agentID, sync_svc.OpCreate)
+	return nil
 }
 
 func (s *projectSvc) RemoveMember(ctx context.Context, projectID, agentID int64) error {
 	if projectID <= 0 || agentID <= 0 {
 		return i18n.NewError(ctx, code.InvalidParameter)
 	}
-	return project_repo.ProjectAgent().Remove(ctx, projectID, agentID)
+	// 成员关系是硬删：同步标识必须在行消失之前读出来（R6 的墓碑靠它上行）。
+	meta := memberSyncMeta(ctx, projectID, agentID)
+	if err := project_repo.ProjectAgent().Remove(ctx, projectID, agentID); err != nil {
+		return err
+	}
+	sync_svc.NotifyDelete(ctx, syncwire.KindProjectAgent, 0, meta)
+	return nil
+}
+
+// notifyMemberChange / memberSyncMeta 把成员关系那一行的同步元数据交给同步层。
+// 同步未装配时一次库都不查（Add 不回传落库后的行，只能反查一次）。
+func notifyMemberChange(ctx context.Context, projectID, agentID int64, op string) {
+	if !sync_svc.Active() {
+		return
+	}
+	sync_svc.Notify(ctx, sync_svc.LocalChange{
+		Kind: syncwire.KindProjectAgent, Op: op,
+		Meta: memberSyncMeta(ctx, projectID, agentID),
+	})
+}
+
+func memberSyncMeta(ctx context.Context, projectID, agentID int64) syncmeta_entity.SyncMeta {
+	if !sync_svc.Active() {
+		return syncmeta_entity.SyncMeta{}
+	}
+	rows, err := project_repo.ProjectAgent().ListByProject(ctx, projectID)
+	if err != nil {
+		logger.Ctx(ctx).Warn("project_svc.memberSyncMeta: read membership failed",
+			zap.Int64("projectId", projectID), zap.Error(err))
+		return syncmeta_entity.SyncMeta{}
+	}
+	for _, row := range rows {
+		if row.AgentID == agentID {
+			return row.SyncMeta
+		}
+	}
+	return syncmeta_entity.SyncMeta{}
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

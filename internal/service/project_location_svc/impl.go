@@ -10,8 +10,10 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/model/entity/project_location_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/syncwire"
 	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
 	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/service/sync_svc"
 )
 
 type projectLocationImpl struct{}
@@ -106,11 +108,13 @@ func (s *projectLocationImpl) Upsert(ctx context.Context, projectID int64, devic
 		}
 		existing.Path = path
 		existing.DeviceID = deviceID
+		sync_svc.NotifyUpdate(ctx, syncwire.KindProjectLocation, existing.ID, existing.SyncMeta)
 		return s.toResolvedView(existing, dv), nil
 	}
 	if err := project_location_repo.ProjectLocation().Create(ctx, entity); err != nil {
 		return nil, err
 	}
+	sync_svc.NotifyCreate(ctx, syncwire.KindProjectLocation, entity.ID, entity.SyncMeta)
 	return s.toResolvedView(entity, dv), nil
 }
 
@@ -122,7 +126,11 @@ func (s *projectLocationImpl) RemoveByProjectAndDevice(ctx context.Context, proj
 		}
 		return err
 	}
-	return project_location_repo.ProjectLocation().Delete(ctx, row.ID)
+	if err := project_location_repo.ProjectLocation().Delete(ctx, row.ID); err != nil {
+		return err
+	}
+	sync_svc.NotifyDelete(ctx, syncwire.KindProjectLocation, row.ID, row.SyncMeta)
+	return nil
 }
 
 // toResolvedView 把 entity 与 Upsert 已经拿到手的 DeviceView（可能为 nil）拼成

@@ -9,14 +9,18 @@ import (
 	"github.com/cago-frame/cago/database/db"
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/cago-frame/cago/pkg/i18n"
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/syncwire"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/department_repo"
 	"github.com/agentre-ai/agentre/internal/service/department_svc"
+	"github.com/agentre-ai/agentre/internal/service/sync_svc"
 )
 
 const (
@@ -92,6 +96,8 @@ func (s *agentSvc) Create(ctx context.Context, req *CreateAgentRequest) (*Create
 	if err := agent_repo.Agent().Create(ctx, a); err != nil {
 		return nil, err
 	}
+	// 执行目标行随 Agent 的写入路径一起变化，级联在同步层展开（R15/R15e）。
+	sync_svc.NotifyCreate(ctx, syncwire.KindAgent, a.ID, a.SyncMeta)
 	return &CreateAgentResponse{Item: toItem(a)}, nil
 }
 
@@ -130,9 +136,14 @@ func (s *agentSvc) Update(ctx context.Context, req *UpdateAgentRequest) (*Update
 	if err := existing.Check(ctx); err != nil {
 		return nil, err
 	}
+	// 执行目标列表被这次写入重排/裁剪：被挤掉的档要各自落墓碑（R6），留下来的档
+	// 随 Agent 一起上行（同步层的 dependents）。快照必须在写之前取。
+	targetsBefore := execTargetSnapshot(ctx, existing.ID)
 	if err := agent_repo.Agent().Update(ctx, existing); err != nil {
 		return nil, err
 	}
+	notifyDroppedExecTargets(ctx, targetsBefore, execTargetSnapshot(ctx, existing.ID))
+	sync_svc.NotifyUpdate(ctx, syncwire.KindAgent, existing.ID, existing.SyncMeta)
 	return &UpdateAgentResponse{Item: toItem(existing)}, nil
 }
 
@@ -164,6 +175,7 @@ func (s *agentSvc) Move(ctx context.Context, req *MoveAgentRequest) (*MoveAgentR
 	existing.DepartmentID = req.NewDepartmentID
 	existing.ParentAgentID = req.NewParentAgentID
 	existing.SortOrder = sortOrder
+	sync_svc.NotifyUpdate(ctx, syncwire.KindAgent, existing.ID, existing.SyncMeta)
 	return &MoveAgentResponse{Item: toItem(existing)}, nil
 }
 
@@ -205,7 +217,13 @@ func (s *agentSvc) Reorder(ctx context.Context, req *ReorderAgentsRequest) error
 		}
 		seen[id] = struct{}{}
 	}
-	return agent_repo.Agent().ReorderSiblings(ctx, req.DepartmentID, req.ParentAgentID, req.OrderedIDs)
+	if err := agent_repo.Agent().ReorderSiblings(ctx, req.DepartmentID, req.ParentAgentID, req.OrderedIDs); err != nil {
+		return err
+	}
+	for _, sibling := range siblings {
+		sync_svc.NotifyUpdate(ctx, syncwire.KindAgent, sibling.ID, sibling.SyncMeta)
+	}
+	return nil
 }
 
 func (s *agentSvc) Delete(ctx context.Context, req *DeleteAgentRequest) (*DeleteAgentResponse, error) {
@@ -232,6 +250,8 @@ func (s *agentSvc) Delete(ctx context.Context, req *DeleteAgentRequest) (*Delete
 	if err != nil {
 		return nil, err
 	}
+	// 成员关系与执行目标列表项随它一并落墓碑，级联在同步层展开（R6）。
+	sync_svc.NotifyDelete(ctx, syncwire.KindAgent, existing.ID, existing.SyncMeta)
 	return &DeleteAgentResponse{}, nil
 }
 
@@ -282,6 +302,7 @@ func (s *agentSvc) SetPinned(ctx context.Context, req *SetPinnedRequest) (*SetPi
 	if err := agent_repo.Agent().SetPinned(ctx, existing.ID, req.Pinned); err != nil {
 		return nil, err
 	}
+	sync_svc.NotifyUpdate(ctx, syncwire.KindAgent, existing.ID, existing.SyncMeta)
 	return &SetPinnedResponse{ID: existing.ID, Pinned: req.Pinned}, nil
 }
 
@@ -462,5 +483,40 @@ func toItem(a *agent_entity.Agent) *AgentItem {
 		Tools:          tools,
 		Createtime:     a.Createtime,
 		Updatetime:     a.Updatetime,
+	}
+}
+
+// execTargetSnapshot 取某个 Agent 当前的执行目标行；同步未装配时一次库都不查
+// ——单机构建与单元测试里这个查询一次都不该发生。
+func execTargetSnapshot(ctx context.Context, agentID int64) []*agent_entity.AgentExecTarget {
+	if !sync_svc.Active() {
+		return nil
+	}
+	rows, err := agent_repo.AgentExecTarget().ListByAgent(ctx, agentID)
+	if err != nil {
+		logger.Ctx(ctx).Warn("agent_svc.execTargetSnapshot: read exec targets failed",
+			zap.Int64("agentId", agentID), zap.Error(err))
+		return nil
+	}
+	return rows
+}
+
+// notifyDroppedExecTargets 把「写入前有、写入后没了」的那些档报成删除：它们在别的
+// 端还活着，不落墓碑就会在下一次下行时被原样送回来（R6）。
+func notifyDroppedExecTargets(ctx context.Context, before, after []*agent_entity.AgentExecTarget) {
+	if len(before) == 0 {
+		return
+	}
+	kept := make(map[string]struct{}, len(after))
+	for _, row := range after {
+		kept[row.SyncID] = struct{}{}
+	}
+	for _, row := range before {
+		if row.SyncID == "" {
+			continue
+		}
+		if _, ok := kept[row.SyncID]; !ok {
+			sync_svc.NotifyDelete(ctx, syncwire.KindAgentExecTarget, row.ID, row.SyncMeta)
+		}
 	}
 }

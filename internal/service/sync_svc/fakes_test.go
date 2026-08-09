@@ -1,0 +1,178 @@
+package sync_svc
+
+import (
+	"context"
+
+	"github.com/agentre-ai/agentre/internal/model/entity/app_setting_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/syncmeta_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/syncqueue_entity"
+)
+
+// 队列与同步元数据这几个仓储在本包的测试里是**有状态的存储**：引擎的行为（折叠、
+// 出队、暂缓、重放、30 天回收）恰恰体现在「写进去的东西下一步还在不在」上，用
+// mockgen 的期望链表达等于把被测逻辑再写一遍。因此这里用最小的内存替身，
+// 只有真正「一次调用一个答案」的 server_state 走 mockgen（见 sync_test.go）。
+
+type fakeOutboundQueue struct {
+	rows   []*syncqueue_entity.OutboundQueueItem
+	nextID int64
+}
+
+func (f *fakeOutboundQueue) Create(_ context.Context, row *syncqueue_entity.OutboundQueueItem) error {
+	f.nextID++
+	row.ID = f.nextID
+	f.rows = append(f.rows, row)
+	return nil
+}
+
+func (f *fakeOutboundQueue) ListByAccount(_ context.Context, accountID int64) ([]*syncqueue_entity.OutboundQueueItem, error) {
+	out := make([]*syncqueue_entity.OutboundQueueItem, 0, len(f.rows))
+	for _, row := range f.rows {
+		if row.SyncAccountID == accountID {
+			out = append(out, row)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeOutboundQueue) Delete(_ context.Context, id int64) error {
+	kept := f.rows[:0]
+	for _, row := range f.rows {
+		if row.ID != id {
+			kept = append(kept, row)
+		}
+	}
+	f.rows = kept
+	return nil
+}
+
+type fakeInboundQueue struct {
+	rows   []*syncqueue_entity.InboundQueueItem
+	nextID int64
+}
+
+func (f *fakeInboundQueue) Create(_ context.Context, row *syncqueue_entity.InboundQueueItem) error {
+	f.nextID++
+	row.ID = f.nextID
+	f.rows = append(f.rows, row)
+	return nil
+}
+
+func (f *fakeInboundQueue) ListByAccount(_ context.Context, accountID int64) ([]*syncqueue_entity.InboundQueueItem, error) {
+	out := make([]*syncqueue_entity.InboundQueueItem, 0, len(f.rows))
+	for _, row := range f.rows {
+		if row.SyncAccountID == accountID {
+			out = append(out, row)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeInboundQueue) Delete(_ context.Context, id int64) error {
+	kept := f.rows[:0]
+	for _, row := range f.rows {
+		if row.ID != id {
+			kept = append(kept, row)
+		}
+	}
+	f.rows = kept
+	return nil
+}
+
+type fakeLostChange struct {
+	rows   []*syncqueue_entity.LostChange
+	nextID int64
+}
+
+func (f *fakeLostChange) Create(_ context.Context, row *syncqueue_entity.LostChange) error {
+	f.nextID++
+	if row.ID == 0 {
+		row.ID = f.nextID
+	}
+	f.rows = append(f.rows, row)
+	return nil
+}
+
+func (f *fakeLostChange) ListByAccount(_ context.Context, accountID int64) ([]*syncqueue_entity.LostChange, error) {
+	out := make([]*syncqueue_entity.LostChange, 0, len(f.rows))
+	for _, row := range f.rows {
+		if row.SyncAccountID == accountID {
+			out = append(out, row)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeLostChange) Delete(_ context.Context, id int64) error {
+	kept := f.rows[:0]
+	for _, row := range f.rows {
+		if row.ID != id {
+			kept = append(kept, row)
+		}
+	}
+	f.rows = kept
+	return nil
+}
+
+// fakeSyncState 是七张表同步元数据列的内存替身，键是「对象类型:同步标识」。
+type fakeSyncState struct {
+	meta map[string]syncmeta_entity.SyncMeta
+	ids  map[string]int64
+}
+
+func newFakeSyncState() *fakeSyncState {
+	return &fakeSyncState{meta: map[string]syncmeta_entity.SyncMeta{}, ids: map[string]int64{}}
+}
+
+func (f *fakeSyncState) key(kind, syncID string) string { return kind + ":" + syncID }
+
+func (f *fakeSyncState) FindLocalID(_ context.Context, kind, syncID string) (int64, error) {
+	return f.ids[f.key(kind, syncID)], nil
+}
+
+func (f *fakeSyncState) FindVersion(_ context.Context, kind, syncID string) (int64, bool, bool, error) {
+	m, ok := f.meta[f.key(kind, syncID)]
+	if !ok {
+		return 0, false, false, nil
+	}
+	return m.SyncVersion, m.SyncDeletedAt > 0, true, nil
+}
+
+func (f *fakeSyncState) FindRow(context.Context, string, string, any) (bool, error) {
+	return false, nil
+}
+
+func (f *fakeSyncState) SaveMeta(_ context.Context, kind, syncID string, meta syncmeta_entity.SyncMeta) error {
+	f.meta[f.key(kind, syncID)] = meta
+	return nil
+}
+
+// fakeSettings 是本地 key-value 设置表的内存替身（游标住在这里）。
+type fakeSettings struct {
+	rows map[string]*app_setting_entity.AppSetting
+}
+
+func newFakeSettings() *fakeSettings {
+	return &fakeSettings{rows: map[string]*app_setting_entity.AppSetting{}}
+}
+
+func (f *fakeSettings) Get(_ context.Context, key string) (*app_setting_entity.AppSetting, error) {
+	row, ok := f.rows[key]
+	if !ok {
+		return nil, nil
+	}
+	return row, nil
+}
+
+func (f *fakeSettings) Set(_ context.Context, s *app_setting_entity.AppSetting) error {
+	f.rows[s.Key] = s
+	return nil
+}
+
+func (f *fakeSettings) List(context.Context) ([]*app_setting_entity.AppSetting, error) {
+	out := make([]*app_setting_entity.AppSetting, 0, len(f.rows))
+	for _, row := range f.rows {
+		out = append(out, row)
+	}
+	return out, nil
+}

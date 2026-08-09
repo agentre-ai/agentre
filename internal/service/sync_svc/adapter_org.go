@@ -1,0 +1,507 @@
+package sync_svc
+
+import (
+	"context"
+	"encoding/json"
+	"strconv"
+
+	"github.com/cago-frame/cago/pkg/consts"
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
+
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/department_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/syncwire"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/department_repo"
+	"github.com/agentre-ai/agentre/internal/repository/project_repo"
+	"github.com/agentre-ai/agentre/internal/repository/syncstate_repo"
+)
+
+// ── 部门 ────────────────────────────────────────────────────────────────────
+
+type departmentPayload struct {
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	Icon          string `json:"icon"`
+	AccentColor   string `json:"accent_color"`
+	ParentSyncID  string `json:"parent_sync_id,omitempty"`
+	LeadAgentSync string `json:"lead_agent_sync_id,omitempty"`
+	SortOrder     int    `json:"sort_order"`
+}
+
+type departmentAdapter struct{ baseAdapter }
+
+func (departmentAdapter) kind() string { return syncwire.KindDepartment }
+
+func (departmentAdapter) load(ctx context.Context, syncID string) (*outbound, error) {
+	row := &department_entity.Department{}
+	found, err := syncstate_repo.SyncState().FindRow(ctx, syncwire.KindDepartment, syncID, row)
+	if err != nil || !found {
+		return nil, err
+	}
+	parentSyncID := ""
+	if row.ParentID > 0 {
+		parent, ferr := department_repo.Department().Find(ctx, row.ParentID)
+		if ferr != nil {
+			return nil, ferr
+		}
+		if parent != nil {
+			parentSyncID = syncIDOf(parent.SyncMeta)
+		}
+	}
+	leadSyncID, err := agentSyncIDOfLocalID(ctx, row.LeadAgentID)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(departmentPayload{
+		Name:          row.Name,
+		Description:   row.Description,
+		Icon:          row.Icon,
+		AccentColor:   row.AccentColor,
+		ParentSyncID:  parentSyncID,
+		LeadAgentSync: leadSyncID,
+		SortOrder:     row.SortOrder,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &outbound{
+		SyncID:      row.SyncID,
+		BaseVersion: row.SyncVersion,
+		UpdatedAt:   row.Updatetime,
+		Payload:     payload,
+	}, nil
+}
+
+func (departmentAdapter) refs(in *inbound) []ref {
+	var p departmentPayload
+	_ = json.Unmarshal(in.Payload, &p)
+	return []ref{
+		{Kind: syncwire.KindDepartment, SyncID: p.ParentSyncID},
+		{Kind: syncwire.KindAgent, SyncID: p.LeadAgentSync},
+	}
+}
+
+func (departmentAdapter) apply(ctx context.Context, in *inbound, resolved map[string]int64) error {
+	var p departmentPayload
+	if err := json.Unmarshal(in.Payload, &p); err != nil {
+		return err
+	}
+	row := &department_entity.Department{}
+	found, err := syncstate_repo.SyncState().FindRow(ctx, syncwire.KindDepartment, in.SyncID, row)
+	if err != nil {
+		return err
+	}
+	row.Name, row.Description, row.Icon = p.Name, p.Description, p.Icon
+	row.AccentColor, row.SortOrder = p.AccentColor, p.SortOrder
+	row.ParentID = resolvedID(resolved, ref{Kind: syncwire.KindDepartment, SyncID: p.ParentSyncID})
+	row.LeadAgentID = resolvedID(resolved, ref{Kind: syncwire.KindAgent, SyncID: p.LeadAgentSync})
+	row.Status = consts.ACTIVE
+	if !found {
+		row.SyncID = in.SyncID
+		return department_repo.Department().Create(ctx, row)
+	}
+	return department_repo.Department().Update(ctx, row)
+}
+
+func (departmentAdapter) remove(ctx context.Context, in *inbound) error {
+	id, err := syncstate_repo.SyncState().FindLocalID(ctx, syncwire.KindDepartment, in.SyncID)
+	if err != nil || id == 0 {
+		return err
+	}
+	return department_repo.Department().Delete(ctx, id)
+}
+
+// ── Agent ───────────────────────────────────────────────────────────────────
+
+// agentPayload 里没有 avatar_data_url：头像按内容哈希单独走一条路（R16a），正文
+// 一律不进同步载荷。也没有 skills_json —— 技能授权下沉到执行目标行（R15e）。
+type agentPayload struct {
+	Name              string `json:"name"`
+	Description       string `json:"description"`
+	AvatarColor       string `json:"avatar_color"`
+	AvatarIcon        string `json:"avatar_icon"`
+	SystemBadge       string `json:"system_badge"`
+	DepartmentSyncID  string `json:"department_sync_id,omitempty"`
+	ParentAgentSyncID string `json:"parent_agent_sync_id,omitempty"`
+	SortOrder         int    `json:"sort_order"`
+	PromptJSON        string `json:"prompt_json"`
+	ToolsJSON         string `json:"tools_json"`
+	Pinned            bool   `json:"pinned"`
+}
+
+type agentAdapter struct{}
+
+func (agentAdapter) kind() string { return syncwire.KindAgent }
+
+func (agentAdapter) load(ctx context.Context, syncID string) (*outbound, error) {
+	row := &agent_entity.Agent{}
+	found, err := syncstate_repo.SyncState().FindRow(ctx, syncwire.KindAgent, syncID, row)
+	if err != nil || !found {
+		return nil, err
+	}
+	deptSyncID := ""
+	if row.DepartmentID > 0 {
+		dept, ferr := department_repo.Department().Find(ctx, row.DepartmentID)
+		if ferr != nil {
+			return nil, ferr
+		}
+		if dept != nil {
+			deptSyncID = syncIDOf(dept.SyncMeta)
+		}
+	}
+	parentSyncID, err := agentSyncIDOfLocalID(ctx, row.ParentAgentID)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(agentPayload{
+		Name:              row.Name,
+		Description:       row.Description,
+		AvatarColor:       row.AvatarColor,
+		AvatarIcon:        row.AvatarIcon,
+		SystemBadge:       row.SystemBadge,
+		DepartmentSyncID:  deptSyncID,
+		ParentAgentSyncID: parentSyncID,
+		SortOrder:         row.SortOrder,
+		PromptJSON:        row.PromptJSON,
+		ToolsJSON:         row.ToolsJSON,
+		Pinned:            row.Pinned,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &outbound{
+		SyncID:      row.SyncID,
+		BaseVersion: row.SyncVersion,
+		UpdatedAt:   row.Updatetime,
+		Payload:     payload,
+	}, nil
+}
+
+func (agentAdapter) refs(in *inbound) []ref {
+	var p agentPayload
+	_ = json.Unmarshal(in.Payload, &p)
+	return []ref{
+		{Kind: syncwire.KindDepartment, SyncID: p.DepartmentSyncID},
+		{Kind: syncwire.KindAgent, SyncID: p.ParentAgentSyncID},
+	}
+}
+
+func (agentAdapter) apply(ctx context.Context, in *inbound, resolved map[string]int64) error {
+	var p agentPayload
+	if err := json.Unmarshal(in.Payload, &p); err != nil {
+		return err
+	}
+	row := &agent_entity.Agent{}
+	found, err := syncstate_repo.SyncState().FindRow(ctx, syncwire.KindAgent, in.SyncID, row)
+	if err != nil {
+		return err
+	}
+	row.Name, row.Description = p.Name, p.Description
+	row.AvatarColor, row.AvatarIcon, row.SystemBadge = p.AvatarColor, p.AvatarIcon, p.SystemBadge
+	row.DepartmentID = resolvedID(resolved, ref{Kind: syncwire.KindDepartment, SyncID: p.DepartmentSyncID})
+	row.ParentAgentID = resolvedID(resolved, ref{Kind: syncwire.KindAgent, SyncID: p.ParentAgentSyncID})
+	row.SortOrder, row.PromptJSON, row.ToolsJSON, row.Pinned = p.SortOrder, p.PromptJSON, p.ToolsJSON, p.Pinned
+	row.Status = consts.ACTIVE
+	if !found {
+		// 头像正文与技能授权都不在载荷里：前者随 R16a 的哈希单独到，后者住在
+		// 执行目标行上，各自作为独立的同步对象落地。
+		row.SyncID = in.SyncID
+		row.AgentBackendID = 0
+		return agent_repo.Agent().Create(ctx, row)
+	}
+	// UpdateRow 只写 Agent 这一行：执行目标是独立的同步对象，不能被 Agent 行的
+	// 派生字段重写掉（agent_repo.Update 会那么做）。
+	return agent_repo.Agent().UpdateRow(ctx, row)
+}
+
+func (agentAdapter) remove(ctx context.Context, in *inbound) error {
+	id, err := syncstate_repo.SyncState().FindLocalID(ctx, syncwire.KindAgent, in.SyncID)
+	if err != nil || id == 0 {
+		return err
+	}
+	return agent_repo.Agent().Delete(ctx, id)
+}
+
+// dependents Agent 的执行目标列表跟着 Agent 的写入路径变化（agent_repo 在同一个
+// 事务里落两张表），因此 Agent 一有改动就把它当前的目标行一并入队。
+func (agentAdapter) dependents(ctx context.Context, syncID string) ([]relatedRow, error) {
+	return agentExecTargetRows(ctx, syncID)
+}
+
+// children 删 Agent 时它的成员关系与执行目标列表项一并落墓碑（R6）。
+func (agentAdapter) children(ctx context.Context, syncID string) ([]relatedRow, error) {
+	out, err := agentExecTargetRows(ctx, syncID)
+	if err != nil {
+		return nil, err
+	}
+	id, err := syncstate_repo.SyncState().FindLocalID(ctx, syncwire.KindAgent, syncID)
+	if err != nil || id == 0 {
+		return out, err
+	}
+	members, err := project_repo.ProjectAgent().ListByAgent(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range members {
+		out = append(out, relatedRow{
+			Kind: syncwire.KindProjectAgent, SyncID: row.SyncID, Version: row.SyncVersion,
+		})
+	}
+	return out, nil
+}
+
+func agentExecTargetRows(ctx context.Context, agentSyncID string) ([]relatedRow, error) {
+	id, err := syncstate_repo.SyncState().FindLocalID(ctx, syncwire.KindAgent, agentSyncID)
+	if err != nil || id == 0 {
+		return nil, err
+	}
+	targets, err := agent_repo.AgentExecTarget().ListByAgent(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]relatedRow, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, relatedRow{
+			Kind: syncwire.KindAgentExecTarget, LocalID: t.ID,
+			SyncID: t.SyncID, Version: t.SyncVersion,
+		})
+	}
+	return out, nil
+}
+
+// agentSyncIDOfLocalID 取某个 Agent 的同步标识；id <= 0 或行已不在时返回空串。
+func agentSyncIDOfLocalID(ctx context.Context, id int64) (string, error) {
+	if id <= 0 {
+		return "", nil
+	}
+	row, err := agent_repo.Agent().Find(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if row == nil {
+		return "", nil
+	}
+	return syncIDOf(row.SyncMeta), nil
+}
+
+// ── backend ─────────────────────────────────────────────────────────────────
+
+// agentBackendPayload 里的 provider 只有 provider_key 这个字符串键：llm_providers
+// 整表（含 APIKey）不出本机（决策 6）。指向哪台 agentred 走上行项顶层的指纹字段。
+type agentBackendPayload struct {
+	Type                  string `json:"type"`
+	Name                  string `json:"name"`
+	ProviderKey           string `json:"provider_key"`
+	CLIPath               string `json:"cli_path"`
+	ModelRoutes           string `json:"model_routes"`
+	Sandbox               string `json:"sandbox"`
+	Approval              string `json:"approval"`
+	EnvJSON               string `json:"env_json"`
+	ReasoningEffort       string `json:"reasoning_effort"`
+	DefaultPermissionMode string `json:"default_permission_mode"`
+	DefaultModel          string `json:"default_model"`
+	OpenClawGatewayURL    string `json:"openclaw_gateway_url"`
+	OpenClawAgentID       string `json:"openclaw_agent_id"`
+	OpenClawDefaultModel  string `json:"openclaw_default_model"`
+	OpenClawSessionMode   string `json:"openclaw_session_mode"`
+}
+
+type agentBackendAdapter struct{ baseAdapter }
+
+func (agentBackendAdapter) kind() string { return syncwire.KindAgentBackend }
+
+func (agentBackendAdapter) load(ctx context.Context, syncID string) (*outbound, error) {
+	row := &agent_backend_entity.AgentBackend{}
+	found, err := syncstate_repo.SyncState().FindRow(ctx, syncwire.KindAgentBackend, syncID, row)
+	if err != nil || !found {
+		return nil, err
+	}
+	// device_id 为空 = 「当前这台桌面端」，是个相对引用，原样保持为空（决策 14）。
+	deviceID, _ := strconv.ParseInt(row.DeviceID, 10, 64)
+	fingerprint, err := fingerprintOfLocalID(ctx, deviceID)
+	if err != nil {
+		// 本机已经解除了这台 agentred 的配对，翻不出指纹。宁可这条不上行，也不能
+		// 让它带着空指纹过机——那会在对端变成「跑在你那台桌面端上」（决策 14）。
+		logger.Ctx(ctx).Warn("sync_svc: backend points at an unpaired agentred, skipping upload",
+			zap.String("syncId", syncID), zap.Int64("deviceId", deviceID))
+		return nil, nil //nolint:nilerr // 见上：不是失败，是这一条按设计不发
+	}
+	payload, err := json.Marshal(agentBackendPayload{
+		Type:                  row.Type,
+		Name:                  row.Name,
+		ProviderKey:           row.LLMProviderKey,
+		CLIPath:               row.CLIPath,
+		ModelRoutes:           row.ModelRoutes,
+		Sandbox:               row.Sandbox,
+		Approval:              row.Approval,
+		EnvJSON:               row.EnvJSON,
+		ReasoningEffort:       row.ReasoningEffort,
+		DefaultPermissionMode: row.DefaultPermissionMode,
+		DefaultModel:          row.DefaultModel,
+		OpenClawGatewayURL:    row.OpenClawGatewayURL,
+		OpenClawAgentID:       row.OpenClawAgentID,
+		OpenClawDefaultModel:  row.OpenClawDefaultModel,
+		OpenClawSessionMode:   row.OpenClawSessionMode,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &outbound{
+		SyncID:              row.SyncID,
+		BaseVersion:         row.SyncVersion,
+		UpdatedAt:           row.Updatetime,
+		AgentredFingerprint: fingerprint,
+		Payload:             payload,
+	}, nil
+}
+
+// refs 指纹非空时要求本机配对表里有那一行：本机 agent_backends 只能用
+// paired_agentreds 的本地 ID 表达「哪台机器」，翻不出来就只能暂缓落地，
+// 否则这一档会被写成「本机」（决策 14 的相对引用语义）而在本机被错误地跑起来。
+func (agentBackendAdapter) refs(in *inbound) []ref {
+	return []ref{{Fingerprint: in.AgentredFingerprint}}
+}
+
+func (agentBackendAdapter) apply(ctx context.Context, in *inbound, resolved map[string]int64) error {
+	var p agentBackendPayload
+	if err := json.Unmarshal(in.Payload, &p); err != nil {
+		return err
+	}
+	deviceID := ""
+	if in.AgentredFingerprint != "" {
+		id := resolvedID(resolved, ref{Fingerprint: in.AgentredFingerprint})
+		if id == 0 {
+			return errRefMissing
+		}
+		deviceID = strconv.FormatInt(id, 10)
+	}
+	row := &agent_backend_entity.AgentBackend{}
+	found, err := syncstate_repo.SyncState().FindRow(ctx, syncwire.KindAgentBackend, in.SyncID, row)
+	if err != nil {
+		return err
+	}
+	row.Type, row.Name, row.LLMProviderKey = p.Type, p.Name, p.ProviderKey
+	row.DeviceID, row.CLIPath, row.ModelRoutes = deviceID, p.CLIPath, p.ModelRoutes
+	row.Sandbox, row.Approval, row.EnvJSON = p.Sandbox, p.Approval, p.EnvJSON
+	row.ReasoningEffort = p.ReasoningEffort
+	row.DefaultPermissionMode, row.DefaultModel = p.DefaultPermissionMode, p.DefaultModel
+	row.OpenClawGatewayURL, row.OpenClawAgentID = p.OpenClawGatewayURL, p.OpenClawAgentID
+	row.OpenClawDefaultModel, row.OpenClawSessionMode = p.OpenClawDefaultModel, p.OpenClawSessionMode
+	row.Status = consts.ACTIVE
+	if !found {
+		row.SyncID = in.SyncID
+		return agent_backend_repo.AgentBackend().Create(ctx, row)
+	}
+	return agent_backend_repo.AgentBackend().Update(ctx, row)
+}
+
+func (agentBackendAdapter) remove(ctx context.Context, in *inbound) error {
+	id, err := syncstate_repo.SyncState().FindLocalID(ctx, syncwire.KindAgentBackend, in.SyncID)
+	if err != nil || id == 0 {
+		return err
+	}
+	return agent_backend_repo.AgentBackend().Delete(ctx, id)
+}
+
+// children 删 backend 时引用它的执行目标项落墓碑，Agent 本身不删——它可能还有
+// 别的档，全没了才按 R15 提示没有可用机器（R6）。
+func (agentBackendAdapter) children(ctx context.Context, syncID string) ([]relatedRow, error) {
+	id, err := syncstate_repo.SyncState().FindLocalID(ctx, syncwire.KindAgentBackend, syncID)
+	if err != nil || id == 0 {
+		return nil, err
+	}
+	targets, err := agent_repo.AgentExecTarget().ListByBackend(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]relatedRow, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, relatedRow{
+			Kind: syncwire.KindAgentExecTarget, LocalID: t.ID,
+			SyncID: t.SyncID, Version: t.SyncVersion,
+		})
+	}
+	return out, nil
+}
+
+// ── 执行目标 ────────────────────────────────────────────────────────────────
+
+type agentExecTargetPayload struct {
+	AgentSyncID   string `json:"agent_sync_id"`
+	BackendSyncID string `json:"backend_sync_id"`
+	SortOrder     int    `json:"sort_order"`
+	SkillsJSON    string `json:"skills_json"`
+}
+
+type agentExecTargetAdapter struct{ baseAdapter }
+
+func (agentExecTargetAdapter) kind() string { return syncwire.KindAgentExecTarget }
+
+func (agentExecTargetAdapter) load(ctx context.Context, syncID string) (*outbound, error) {
+	row := &agent_entity.AgentExecTarget{}
+	found, err := syncstate_repo.SyncState().FindRow(ctx, syncwire.KindAgentExecTarget, syncID, row)
+	if err != nil || !found {
+		return nil, err
+	}
+	agentSyncID, err := agentSyncIDOfLocalID(ctx, row.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	backend, err := agent_backend_repo.AgentBackend().Find(ctx, row.AgentBackendID)
+	if err != nil {
+		return nil, err
+	}
+	if agentSyncID == "" || backend == nil {
+		return nil, nil
+	}
+	payload, err := json.Marshal(agentExecTargetPayload{
+		AgentSyncID:   agentSyncID,
+		BackendSyncID: syncIDOf(backend.SyncMeta),
+		SortOrder:     row.SortOrder,
+		SkillsJSON:    row.SkillsJSON,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &outbound{
+		SyncID:      row.SyncID,
+		BaseVersion: row.SyncVersion,
+		UpdatedAt:   row.SyncUpdatedAt,
+		Payload:     payload,
+	}, nil
+}
+
+func (agentExecTargetAdapter) refs(in *inbound) []ref {
+	var p agentExecTargetPayload
+	_ = json.Unmarshal(in.Payload, &p)
+	return []ref{
+		{Kind: syncwire.KindAgent, SyncID: p.AgentSyncID},
+		{Kind: syncwire.KindAgentBackend, SyncID: p.BackendSyncID},
+	}
+}
+
+func (agentExecTargetAdapter) apply(ctx context.Context, in *inbound, resolved map[string]int64) error {
+	var p agentExecTargetPayload
+	if err := json.Unmarshal(in.Payload, &p); err != nil {
+		return err
+	}
+	agentID := resolvedID(resolved, ref{Kind: syncwire.KindAgent, SyncID: p.AgentSyncID})
+	backendID := resolvedID(resolved, ref{Kind: syncwire.KindAgentBackend, SyncID: p.BackendSyncID})
+	if agentID == 0 || backendID == 0 {
+		return errRefMissing
+	}
+	row := &agent_entity.AgentExecTarget{
+		AgentID: agentID, AgentBackendID: backendID,
+		SortOrder: p.SortOrder, SkillsJSON: p.SkillsJSON,
+	}
+	row.SyncID = in.SyncID
+	return agent_repo.AgentExecTarget().UpsertFromSync(ctx, row)
+}
+
+func (agentExecTargetAdapter) remove(ctx context.Context, in *inbound) error {
+	return agent_repo.AgentExecTarget().DeleteBySyncID(ctx, in.SyncID)
+}
