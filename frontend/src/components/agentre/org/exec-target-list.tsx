@@ -200,7 +200,9 @@ export function ExecTargetList(props: Props) {
                 total={props.targets.length}
                 backend={b}
                 status={status}
-                isFirstAvailable={index === firstAvailableIndex}
+                // R20：只有一项时不显示「当前生效」徽标——一档时它零信息量，
+                // 与序号/拖拽柄/排序说明同批隐去。
+                isFirstAvailable={!single && index === firstAvailableIndex}
                 onMoveUp={index > 0 ? () => move(index, index - 1) : undefined}
                 onMoveDown={
                   index < props.targets.length - 1

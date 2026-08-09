@@ -64,15 +64,34 @@ func (s *Service) discoverForBackend(ctx context.Context, be *agent_backend_enti
 	return discoveryResult{backendType: backendType, backend: be, packs: packs}, err
 }
 
-// authorizedSkills 取 agentID 那一档(sort_order 最小的一档)的技能授权。存放位置
+// authorizedSkills 取 agentID 主档(sort_order 最小的一档)的技能授权。存放位置
 // 已从 agents.skills_json 下沉到 agent_exec_targets(R15e),这里不再读 Agent 行 ——
 // 也不做跨档并集:agentID 有几档就有几份互不相干的授权,这里只取最靠前那一档的。
 func (s *Service) authorizedSkills(ctx context.Context, agentID int64) ([]agent_entity.AgentSkillItem, error) {
+	return s.authorizedSkillsForTarget(ctx, agentID, 0)
+}
+
+// authorizedSkillsForTarget 取 agentID 名下**指定那一档**的技能授权(R15e)。
+// agentBackendID <= 0 或该档不在列表里时回落到主档 —— 老会话没钉过档,行为必须与
+// 钉档前一致。
+func (s *Service) authorizedSkillsForTarget(
+	ctx context.Context, agentID, agentBackendID int64,
+) ([]agent_entity.AgentSkillItem, error) {
 	targets, err := s.execTarget.ListByAgent(ctx, agentID)
 	if err != nil {
 		return nil, err
 	}
-	if len(targets) == 0 || targets[0] == nil {
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	if agentBackendID > 0 {
+		for _, t := range targets {
+			if t != nil && t.AgentBackendID == agentBackendID {
+				return t.GetSkills(), nil
+			}
+		}
+	}
+	if targets[0] == nil {
 		return nil, nil
 	}
 	return targets[0].GetSkills(), nil
@@ -304,14 +323,25 @@ func enabledPlugins(items []agent_entity.AgentSkillItem) map[string]bool {
 	return out
 }
 
-// EnabledPluginsMap 返回该 agent 的显式覆盖(强制开=true / 强制关=false)。
+// EnabledPluginsMap 返回该 agent 主档的显式覆盖(强制开=true / 强制关=false)。
 // 其余(含全局已开但未覆盖)不出现在 map → CLI 沿用全局 enabledPlugins,实现继承。
 func (s *Service) EnabledPluginsMap(ctx context.Context, agentID int64) (map[string]bool, error) {
+	return s.EnabledPluginsMapForTarget(ctx, agentID, 0)
+}
+
+// EnabledPluginsMapForTarget 同 EnabledPluginsMap,但授权取自 agentBackendID 指名的
+// **那一档**执行目标(R15b / R15e):技能授权已经下沉到单个执行目标,一轮该注入哪一份
+// 由「这一轮落到的那一档」回答,不是「Agent 的主档」—— 同一台机器上可以有多档,
+// 续轮取的必须是会话钉住的那一档的那份,不是同机第一档。agentBackendID <= 0
+// (老会话尚未钉档)回落到主档。
+func (s *Service) EnabledPluginsMapForTarget(
+	ctx context.Context, agentID, agentBackendID int64,
+) (map[string]bool, error) {
 	a, err := s.agent.Find(ctx, agentID)
 	if err != nil || a == nil {
 		return nil, err
 	}
-	authorized, err := s.authorizedSkills(ctx, agentID)
+	authorized, err := s.authorizedSkillsForTarget(ctx, agentID, agentBackendID)
 	if err != nil {
 		return nil, err
 	}

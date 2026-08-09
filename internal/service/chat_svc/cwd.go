@@ -118,9 +118,11 @@ func (s *chatSvc) ResolveSessionWorkspace(ctx context.Context, sessionID int64) 
 	if err != nil {
 		return 0, "", operationFailedWithCause(ctx, err)
 	}
+	// 钉住的那一档优先（R15b / 决策36）：主档在本机、会话钉在某台 agentred 上时，
+	// 回到主档会拿本机路径去列远端机器的文件。
 	var be *agent_backend_entity.AgentBackend
-	if a != nil && a.AgentBackendID > 0 {
-		be, err = agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
+	if backendID := sessionBackendID(sess, a); backendID > 0 {
+		be, err = agent_backend_repo.AgentBackend().Find(ctx, backendID)
 		if err != nil {
 			return 0, "", operationFailedWithCause(ctx, err)
 		}

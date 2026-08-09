@@ -63,7 +63,12 @@ func (s *service) saveLocalPathReportState(ctx context.Context, st localPathRepo
 
 // buildLocalPathSnapshot 读一份「本机为哪些项目配了路径」的整份快照（R16）。纯
 // 读取——project_repo.List 是这个函数唯一碰到的仓储调用，不写入任何本地表（R17）。
-func (s *service) buildLocalPathSnapshot(ctx context.Context) ([]syncwire.LocalPathReportItem, error) {
+//
+// accountID 是当前登录账号：属于**另一个**账号的行一律不进快照（R13a）。这条与
+// 账号级对象上行的门（notify.go 的 EligibleForSync）是同一条边界，且在这里分量更
+// 重——快照带的是那台机器上的绝对路径，隐私一节写明「一台共用机器上换账号登录，
+// 不应把上一个账号的项目名、Agent 与路径发到新账号下」。
+func (s *service) buildLocalPathSnapshot(ctx context.Context, accountID int64) ([]syncwire.LocalPathReportItem, error) {
 	rows, err := project_repo.Project().List(ctx)
 	if err != nil {
 		return nil, err
@@ -71,6 +76,9 @@ func (s *service) buildLocalPathSnapshot(ctx context.Context) ([]syncwire.LocalP
 	items := make([]syncwire.LocalPathReportItem, 0, len(rows))
 	for _, p := range rows {
 		if p == nil || p.LocalPathMissing || p.SyncID == "" {
+			continue
+		}
+		if !p.EligibleForSync(accountID) {
 			continue
 		}
 		path := strings.TrimSpace(p.Path)
@@ -112,7 +120,7 @@ func (s *service) reportLocalPathsOnce(ctx context.Context) error {
 		return nil
 	}
 
-	items, err := s.buildLocalPathSnapshot(ctx)
+	items, err := s.buildLocalPathSnapshot(ctx, accountID)
 	if err != nil {
 		return err
 	}

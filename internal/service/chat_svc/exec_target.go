@@ -7,12 +7,30 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 )
+
+// sessionBackendID 是「这条会话该用哪个 backend」的单一读口（R15b / 决策36）：
+// 钉住了就用钉住的那一档，没钉住（首轮 / 全部老会话）才回落到 Agent 的主档。
+//
+// 凡是拿着一条**已持久化会话**去解析 backend 的读路径都必须经过这里——同一台机器
+// 上可以有多档，回到 a.AgentBackendID 会让续轮拿到另一档的 CLI 路径、供应商、模型
+// 路由与技能授权，正是决策 16 禁止的中途漂移。这里只读不写：钉住的写入是 startTurn
+// 的职责（pinExecTargetIfUnset），查询一下不该把会话钉死。
+func sessionBackendID(sess *chat_entity.Session, a *agent_entity.Agent) int64 {
+	if sess != nil && sess.ExecAgentBackendID > 0 {
+		return sess.ExecAgentBackendID
+	}
+	if a == nil {
+		return 0
+	}
+	return a.AgentBackendID
+}
 
 // execDeviceID 返回 ! 命令应在哪台设备执行：remote 后端取其 DeviceID，本地为空串。
 func execDeviceID(be *agent_backend_entity.AgentBackend) string {
@@ -40,10 +58,7 @@ func (s *chatSvc) resolveExecTarget(ctx context.Context, sess *chat_entity.Sessi
 	if a == nil {
 		return nil, i18n.NewError(ctx, code.AgentNotFound)
 	}
-	backendID := a.AgentBackendID
-	if sess.ExecAgentBackendID > 0 {
-		backendID = sess.ExecAgentBackendID
-	}
+	backendID := sessionBackendID(sess, a)
 	if backendID <= 0 {
 		return nil, i18n.NewError(ctx, code.ChatAgentNoBackend)
 	}

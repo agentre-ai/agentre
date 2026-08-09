@@ -95,6 +95,8 @@ describe("ExecTargetList", () => {
     expect(screen.getByRole("button", { name: /Replace/ })).toBeInTheDocument();
     expect(screen.queryByLabelText(/Move target down/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+    // R20：只有一项时「当前生效」徽标也不出现——只有一档时说它是废话。
+    expect(screen.queryByText("Currently active")).toBeNull();
   });
 
   it("multiple targets: renders sequence badges and per-row move buttons", async () => {

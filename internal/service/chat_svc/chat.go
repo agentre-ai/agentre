@@ -661,10 +661,13 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	if a == nil {
 		return nil, i18n.NewError(ctx, code.AgentNotFound)
 	}
-	if a.AgentBackendID <= 0 {
+	// 钉住的那一档优先（R15b / 决策36）：启动命令要跟这条会话续轮实际用的那一档
+	// 一致，否则复制出去的是另一档的 CLI 路径 / 供应商 / 网关口令。
+	backendID := sessionBackendID(sess, a)
+	if backendID <= 0 {
 		return nil, i18n.NewError(ctx, code.ChatAgentNoBackend)
 	}
-	be, err := agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
+	be, err := agent_backend_repo.AgentBackend().Find(ctx, backendID)
 	if err != nil {
 		return nil, operationFailedWithCause(ctx, err)
 	}
@@ -3660,7 +3663,7 @@ func (s *chatSvc) prepareTurnRun(
 		Compact:           compact,
 		ForkAnchor:        forkAnchor,
 		MCPServers:        appendTurnMCP(ctx, nil, a, sess.ID, runner.Capabilities().Has(capability.CapMCPTools)),
-		EnabledPlugins:    enabledPluginsForTurn(ctx, a, runner.Capabilities().Has(capability.CapSkills)),
+		EnabledPlugins:    enabledPluginsForTurn(ctx, a, be.ID, runner.Capabilities().Has(capability.CapSkills)),
 	}
 	if userMsg != nil {
 		req.UserText = textOfMessage(userMsg)

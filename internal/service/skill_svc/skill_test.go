@@ -160,6 +160,42 @@ func TestEnabledPluginsMap_DoesNotUnionAcrossTargets(t *testing.T) {
 	})
 }
 
+// TestEnabledPluginsMapForTarget_UsesPinnedTargetNotPrimary 锁住 R15b/R15e 的注入
+// 口径:会话钉在第二档上时,这一轮注入的必须是**那一档**的技能授权,不是 sort_order
+// 最小的主档那份 —— 规格「注入路径不动…只是取值从「Agent 的那份」变成「这一轮落到
+// 的那一档的那份」」,测试接缝里那条「同机多档时续轮取的是原档的 backend 与技能,
+// 不是「同机第一档」」说的就是这里。
+func TestEnabledPluginsMapForTarget_UsesPinnedTargetNotPrimary(t *testing.T) {
+	Convey("Agent 挂两档,按第二档的 backend 取授权时只拿到第二档那份", t, func() {
+		ctrl := gomock.NewController(t)
+		al := mock_skill_svc.NewMockAgentLookup(ctrl)
+		ag := &agent_entity.Agent{ID: 7, AgentBackendID: 11}
+		al.EXPECT().Find(gomock.Any(), int64(7)).Return(ag, nil).AnyTimes()
+		first := skillTarget(agent_entity.AgentSkillItem{ID: "first-only@x", Enabled: true})
+		first.AgentBackendID = 11
+		second := skillTarget(agent_entity.AgentSkillItem{ID: "second-only@x", Enabled: true})
+		second.AgentBackendID = 22
+		et := &fakeExecTargets{rows: []*agent_entity.AgentExecTarget{first, second}}
+		s := newForTest(al, nil, et)
+
+		m, err := s.EnabledPluginsMapForTarget(context.Background(), 7, 22)
+		So(err, ShouldBeNil)
+		_, hasSecond := m["second-only@x"]
+		So(hasSecond, ShouldBeTrue)
+		_, hasFirst := m["first-only@x"]
+		So(hasFirst, ShouldBeFalse)
+
+		Convey("给 0(老会话未钉档)时回落到主档,与钉档前的行为一致", func() {
+			m, err := s.EnabledPluginsMapForTarget(context.Background(), 7, 0)
+			So(err, ShouldBeNil)
+			_, hasFirst := m["first-only@x"]
+			So(hasFirst, ShouldBeTrue)
+			_, hasSecond := m["second-only@x"]
+			So(hasSecond, ShouldBeFalse)
+		})
+	})
+}
+
 // TestListAgentSkillPacksForTarget_UsesGivenTargetNotAgentPrimary 是任务 12(组织
 // 架构页"一档一块")的读口:发现来源与授权标注都钉死在调用方给出的那一档
 // (agentBackendID),不是 Agent 的主档(sort_order 最小的那档,ListAgentSkillPacks

@@ -36,6 +36,38 @@ func projectRow(syncID, path string, localPathMissing bool) *project_entity.Proj
 	}
 }
 
+// projectRowForAccount 造一个已归属某个账号的项目行，用来验 R13a 的换账号边界。
+func projectRowForAccount(syncID, path string, accountID int64) *project_entity.Project {
+	return &project_entity.Project{
+		Path: path,
+		SyncMeta: syncmeta_entity.SyncMeta{
+			SyncID: syncID, SyncAccountID: accountID,
+		},
+	}
+}
+
+// TestReportLocalPathsOnce_GivenRowsOfAnotherAccount_ThenExcludedFromSnapshot
+// R13a：「登录的账号与本地行记录的账号不同时，这些行**不上行、也不携带原同步
+// 标识**」。本机路径快照同样受这条约束——它带的是上一个账号的项目同步标识与
+// 那台机器上的**绝对路径**，隐私一节写明「一台共用机器上换账号登录，不应把上一个
+// 账号的项目名、Agent 与路径发到新账号下」。
+func TestReportLocalPathsOnce_GivenRowsOfAnotherAccount_ThenExcludedFromSnapshot(t *testing.T) {
+	h := newHarness(t, true) // 当前登录账号 = 7
+	registerProjects(t, []*project_entity.Project{
+		projectRowForAccount("mine", "/Users/me/mine", 7),
+		projectRowForAccount("theirs", "/Users/me/secret-other-account", 99),
+		projectRowForAccount("unclaimed", "/Users/me/unclaimed", 0), // R12a：尚未认领，照常上报
+	})
+
+	require.NoError(t, h.svc.reportLocalPathsOnce(context.Background()))
+
+	require.Len(t, h.transport.localPathReports, 1)
+	assert.Equal(t, []syncwire.LocalPathReportItem{
+		{ProjectSyncID: "mine", Path: "/Users/me/mine"},
+		{ProjectSyncID: "unclaimed", Path: "/Users/me/unclaimed"},
+	}, h.transport.localPathReports[0])
+}
+
 // TestReportLocalPathsOnce_GivenSnapshot_ThenServerListMatchesLocal R16：本地
 // 增删改后下一次上报使服务端清单与本地一致——已配置路径的项目进快照，未配置
 // 路径 / 空路径的项目被过滤掉（对服务端而言就是「没有这一条」）。

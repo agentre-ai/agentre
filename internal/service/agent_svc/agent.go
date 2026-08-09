@@ -309,6 +309,9 @@ func (s *agentSvc) UploadAvatar(ctx context.Context, req *UploadAvatarRequest) (
 	if err := agent_repo.Agent().UpdateAvatar(ctx, existing.ID, req.DataURL, existing.Updatetime); err != nil {
 		return nil, err
 	}
+	// R16a：头像正文按内容哈希单独传，但「换了头像」本身是 Agent 行的一次普通修改，
+	// 必须照常触发上行 —— 不发这条通知，新头像要等用户碰巧改了别的字段才到对端。
+	sync_svc.NotifyUpdate(ctx, syncwire.KindAgent, existing.ID, existing.SyncMeta)
 	return &UploadAvatarResponse{Item: toItem(existing, execTargetSnapshot(ctx, existing.ID))}, nil
 }
 
@@ -325,6 +328,8 @@ func (s *agentSvc) DeleteAvatar(ctx context.Context, req *DeleteAvatarRequest) (
 	if err := agent_repo.Agent().UpdateAvatar(ctx, existing.ID, "", existing.Updatetime); err != nil {
 		return nil, err
 	}
+	// 同 UploadAvatar：清掉自定义头像也是一次内容变化（R16a）。
+	sync_svc.NotifyUpdate(ctx, syncwire.KindAgent, existing.ID, existing.SyncMeta)
 	return &DeleteAvatarResponse{Item: toItem(existing, execTargetSnapshot(ctx, existing.ID))}, nil
 }
 
