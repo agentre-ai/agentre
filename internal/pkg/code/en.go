@@ -103,6 +103,7 @@ var enUS = map[int]string{
 	ChatAgentNoBackend:              "This agent does not have a backend configured. Please select an Agent backend on the org chart page first.",
 	ChatRemoteRunInterrupted:        "This turn was interrupted here: the remote agentred restarted and the session was cut short — it did not fail. Everything above is kept; send a message to start a new turn.",
 	ChatRemoteDaemonUnreachable:     "This turn stops here: the remote agentred is unreachable and every reconnect attempt failed — it did not fail. Everything above is kept; you can continue once it is back.",
+	ChatAgentNoAvailableExecTarget:  "This agent has no available execution target right now",
 
 	ChatSteerNoActive:     "No in-flight conversation to enqueue into",
 	ChatSteerUnsupported:  "This backend does not support enqueueing during a turn",

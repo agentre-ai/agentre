@@ -568,6 +568,18 @@ const (
 	BlockReasonRemoteOpenClawUnavailable BlockReason = "remote-openclaw-unavailable"
 	// BlockReasonUnknownBackend 未知 Agent 后端类型。
 	BlockReasonUnknownBackend BlockReason = "unknown-backend"
+
+	// 以下三个是 R15 执行目标挑选专用的原因，与上面几个「backend 自身不可用」的判据
+	// 正交：它们描述的是这一档所在的机器 / 项目路径，不是 backend 配置本身。
+
+	// BlockReasonExecTargetUnpaired 本机没有配对这一档指向的那台 agentred（R2b：判据
+	// 是本地配对表里有没有这一行，不是有没有配对令牌）。
+	BlockReasonExecTargetUnpaired BlockReason = "exec-target-unpaired"
+	// BlockReasonExecTargetOffline 已配对，但该 agentred 当前不在线。
+	BlockReasonExecTargetOffline BlockReason = "exec-target-offline"
+	// BlockReasonExecTargetProjectPathMissing 会话绑定了项目，但这一档所在的机器上
+	// 没有配置这个项目的路径（决策 34）。不绑项目的会话不受这一项约束。
+	BlockReasonExecTargetProjectPathMissing BlockReason = "exec-target-project-path-missing"
 )
 
 type ChatAgentItem struct {

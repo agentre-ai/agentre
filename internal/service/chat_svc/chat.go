@@ -88,6 +88,13 @@ type ChatSvc interface {
 	ResolveSessionWorkspace(ctx context.Context, sessionID int64) (deviceID int64, cwd string, err error)
 	// ResolveLocalCommandScope 为已有 session 或未持久化的 agent/project 目标解析历史作用域。
 	ResolveLocalCommandScope(ctx context.Context, req *ResolveLocalCommandScopeRequest) (*LocalCommandScope, error)
+	// PickExecTarget 按 R15 顺序为一个 Agent 挑第一个可用的执行目标档：本机没配对 /
+	// 已配对但离线 / 会话绑的项目在那台机器上没配路径 / 既有 BlockReason 四类各自跳过。
+	// projectID <= 0（自由会话）不做「该机器上有没有配这个项目的路径」这一项判定。
+	// 列表为空 → ChatAgentNoBackend；全部不可用 → *ExecTargetNoneAvailableError（逐档
+	// 原因，Wails 只透 Error() 字符串，因此原因也编进了那条字符串里）。
+	// 不做会话粘性 —— 挑到之后钉不钉在这一档由调用方决定（R15b，块 4）。
+	PickExecTarget(ctx context.Context, agentID int64, projectID int64) (*ExecTargetChoice, error)
 	Send(ctx context.Context, req *SendRequest) (*SendResponse, error)
 	Compact(ctx context.Context, req *CompactRequest) (*CompactResponse, error)
 	GetGoal(ctx context.Context, req *GoalRequest) (*GoalResponse, error)
@@ -372,58 +379,9 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 					item.Online = dv.Online
 				}
 			}
-			switch agent_backend_entity.BackendType(be.Type) {
-			case agent_backend_entity.TypeBuiltin:
-				prov := providers[be.LLMProviderKey]
-				switch {
-				case prov != nil && prov.IsActive():
-					item.Chattable = true
-				case prov == nil:
-					// 内置后端没绑 / 找不到绑定的供应商。
-					item.BlockReason = BlockReasonBackendRequiresProvider
-					item.ChattableHint = "请先在设置 → LLM 供应商激活该 Agent 后端关联的供应商"
-				default:
-					// 后端绑的供应商存在但未激活/缺 Key。
-					item.BlockReason = BlockReasonProviderInactive
-					item.ChattableHint = "请先在设置 → LLM 供应商激活该 Agent 后端关联的供应商"
-				}
-			case agent_backend_entity.TypeClaudeCode, agent_backend_entity.TypeCodex, agent_backend_entity.TypePiAgent:
-				if be.LLMProviderKey == "" {
-					// 走 CLI 自身 login；这里不做可达性探测，启动失败由 chat turn 兜底报错。
-					item.Chattable = true
-				} else if prov := providers[be.LLMProviderKey]; prov == nil {
-					item.BlockReason = BlockReasonBackendRequiresProvider
-					item.ChattableHint = "请先在设置 → LLM 供应商激活该 Agent 后端关联的供应商"
-				} else if !prov.IsActive() {
-					item.BlockReason = BlockReasonProviderInactive
-					item.ChattableHint = "请先在设置 → LLM 供应商激活该 Agent 后端关联的供应商"
-				} else if kind := be.Kind(); kind == nil || !kind.ProviderTypeMatch(llm_provider_entity.ProviderType(prov.Type)) {
-					// 与 resolveAgentBackend 保持一致：激活但类型不匹配的 provider
-					// 仍不能启动该 CLI backend，不能继续误报为 gateway 缺失。
-					item.BlockReason = BlockReasonBackendRequiresProvider
-					item.ChattableHint = "请先在设置 → LLM 供应商选择与该 Agent 后端匹配的类型"
-				} else if remoteProviderKnownMissing(be) {
-					item.BlockReason = BlockReasonRemoteProviderMissing
-					item.ChattableHint = "远端 agentred 未配置该供应商，请前往「远端设备」页在对应设备上添加并填写 API Key"
-				} else if be.IsRemote() {
-					item.Chattable = true
-				} else if s.gateway == nil || s.gateway.Status().State != "running" {
-					item.BlockReason = BlockReasonGatewayNotRunning
-					item.ChattableHint = "本地网关未启动，CLI 后端暂不可用"
-				} else {
-					item.Chattable = true
-				}
-			case agent_backend_entity.TypeOpenClaw:
-				if be.IsRemote() {
-					item.BlockReason = BlockReasonRemoteOpenClawUnavailable
-					item.ChattableHint = "远端 OpenClaw 暂不可用：agentred 尚无安全的 secret enrollment/reference"
-				} else {
-					item.Chattable = true
-				}
-			default:
-				item.BlockReason = BlockReasonUnknownBackend
-				item.ChattableHint = "未知 Agent 后端类型"
-			}
+			gatewayRunning := s.gateway != nil && s.gateway.Status().State == "running"
+			item.Chattable, item.BlockReason, item.ChattableHint =
+				blockReasonForBackend(be, providers[be.LLMProviderKey], gatewayRunning)
 		} else if a.IsSystem() {
 			item.BlockReason = BlockReasonNoBackend
 			item.ChattableHint = "CEO 助手还没配置后端，请在组织架构页选择一个 Agent 后端"

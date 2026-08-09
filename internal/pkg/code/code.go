@@ -137,6 +137,7 @@ const (
 	ChatAgentNoBackend                             // Agent 还没配置后端，对话前请先选择
 	ChatRemoteRunInterrupted                       // 远端 agentred 重启/会话已中断，本轮被打断（不是运行失败）
 	ChatRemoteDaemonUnreachable                    // 与远端 agentred 断连且重连未成功，本轮到此为止
+	ChatAgentNoAvailableExecTarget                 // Agent 的有序执行目标列表非空，但逐档判定全部不可用（R15）
 )
 
 // Chat 排队消息（Enqueue / Steer / Cancel）17050~ 留段

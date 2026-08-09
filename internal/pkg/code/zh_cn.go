@@ -103,6 +103,7 @@ var zhCN = map[int]string{
 	ChatAgentNoBackend:              "该 Agent 还没配置后端，请先在组织架构页选择一个 Agent 后端",
 	ChatRemoteRunInterrupted:        "本轮在这里被打断了：远端 agentred 重启，这条会话已中断，不是运行失败。以上内容已保留，直接发消息即可开始新的一轮",
 	ChatRemoteDaemonUnreachable:     "本轮到此为止：连不上远端 agentred 了，多次重连都没成功，不是运行失败。以上内容已保留，等它恢复后可以继续",
+	ChatAgentNoAvailableExecTarget:  "这个 Agent 现在没有可用的执行机器",
 
 	ChatSteerNoActive:     "没有进行中的对话可以插入消息",
 	ChatSteerUnsupported:  "当前后端不支持在 AI 回答时插入消息",
