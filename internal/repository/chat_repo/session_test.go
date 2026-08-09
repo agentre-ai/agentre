@@ -285,6 +285,7 @@ func TestSessionRepo_Create(t *testing.T) {
 			"",            // purpose
 			0, "", "", "", // context_window, permission_mode, permission_mode_at_launch, model_override
 			int64(0), "", int64(0), // exec_device_id, exec_daemon_fingerprint, event_cursor —— 新建会话默认本机执行、无游标
+			int64(0),                                          // exec_agent_backend_id —— 新建会话默认未钉住任何一档
 			consts.ACTIVE, sqlmock.AnyArg(), sqlmock.AnyArg(), // status, createtime, updatetime
 		).
 		WillReturnResult(sqlmock.NewResult(99, 1))
@@ -517,21 +518,22 @@ func TestSessionRepo_UpdatePermissionModeAtLaunch(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestSessionRepo_UpdateExecDaemon 钉死「这条会话跑在哪台 daemon 上」的写入 SQL。
-// 关键不变式:(实例标识, 游标) 必须始终是同一条通知日志上的一对 —— 改绑到另一台
-// daemon 时,老游标指的是老 daemon 日志里的位置,必须在同一条语句里归零;换成两次
-// 写(先改绑再清游标)会留下一个「游标看起来对新 daemon 有效」的崩溃窗口。
+// TestSessionRepo_UpdateExecDaemon 钉死「这条会话跑在哪台 daemon 上、钉在哪一档」的
+// 写入 SQL(R15b / 决策36)。关键不变式:(实例标识, 游标) 必须始终是同一条通知日志上
+// 的一对 —— 改绑到另一台 daemon 时,老游标指的是老 daemon 日志里的位置,必须在同一
+// 条语句里归零;换成两次写(先改绑再清游标)会留下一个「游标看起来对新 daemon 有效」
+// 的崩溃窗口。exec_agent_backend_id 与设备/实例标识同一条语句一并写。
 func TestSessionRepo_UpdateExecDaemon(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 	repo := chat_repo.NewSession()
 
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE `chat_sessions` SET `event_cursor`=CASE WHEN exec_daemon_fingerprint = \\? THEN event_cursor ELSE 0 END,`exec_daemon_fingerprint`=\\?,`exec_device_id`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
-		WithArgs("sha256:beef", "sha256:beef", int64(3), sqlmock.AnyArg(), int64(42), consts.ACTIVE).
+	mock.ExpectExec("UPDATE `chat_sessions` SET `event_cursor`=CASE WHEN exec_daemon_fingerprint = \\? THEN event_cursor ELSE 0 END,`exec_agent_backend_id`=\\?,`exec_daemon_fingerprint`=\\?,`exec_device_id`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
+		WithArgs("sha256:beef", int64(51), "sha256:beef", int64(3), sqlmock.AnyArg(), int64(42), consts.ACTIVE).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	require.NoError(t, repo.UpdateExecDaemon(ctx, 42, 3, "sha256:beef"))
+	require.NoError(t, repo.UpdateExecDaemon(ctx, 42, 3, "sha256:beef", 51))
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -579,18 +581,19 @@ func TestSessionRepo_UpdateKeepsRemoteExecColumns(t *testing.T) {
 		"agent_status":            "running",
 		"exec_device_id":          int64(0),
 		"exec_daemon_fingerprint": "",
+		"exec_agent_backend_id":   int64(0),
 		"event_cursor":            int64(0),
 	}
 	captureUpdatedRow(t, gdb, row)
 
-	// 轮次开始时读出来的实体:还没 borrow 到远端,三列都是零值。
+	// 轮次开始时读出来的实体:还没 borrow 到远端,四列都是零值。
 	sess := &chat_entity.Session{ID: 42, AgentStatus: "running", Status: consts.ACTIVE}
 
-	// 写 1:borrow 到 daemon 2 时记下执行位置(chat_svc.recordExecDaemon)。
+	// 写 1:borrow 到 daemon 2 时记下执行位置与钉住的档(chat_svc.recordExecDaemon)。
 	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE `chat_sessions`").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
-	require.NoError(t, repo.UpdateExecDaemon(ctx, 42, 2, "sha256:beef"))
+	require.NoError(t, repo.UpdateExecDaemon(ctx, 42, 2, "sha256:beef", 51))
 
 	// 写 2:消费到 seq 33 时推进游标(chat_svc 的游标端口 SaveCursor)。
 	mock.ExpectBegin()
@@ -607,7 +610,45 @@ func TestSessionRepo_UpdateKeepsRemoteExecColumns(t *testing.T) {
 
 	assert.Equal(t, int64(2), row["exec_device_id"], "收尾不得把执行位置抹回本机")
 	assert.Equal(t, "sha256:beef", row["exec_daemon_fingerprint"], "收尾不得抹掉 daemon 实例标识")
+	assert.Equal(t, int64(51), row["exec_agent_backend_id"], "收尾不得把钉住的执行目标档抹回未钉住")
 	assert.Equal(t, int64(33), row["event_cursor"], "收尾不得把游标冲回 0")
+	assert.Equal(t, "idle", row["agent_status"], "收尾本来要写的状态照常落库")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSessionRepo_UpdateKeepsExecAgentBackendID 单独锁住会话粘性回归守卫
+// (R15b / 决策36):exec_agent_backend_id 是与 exec_device_id / exec_daemon_fingerprint
+// 并列的第四列,由同一条 UpdateExecDaemon 语句一并写入、一并加进 Update 的 Omit 清单;
+// 轮次收尾的整行 Save 用的是轮次开始时读出的旧实体(那时这一列还是 0),若它没被 Omit,
+// 收尾会把刚钉住的档抹回 0 —— 下一轮又变成重挑,直接违反决策36「不因为它离线就改派」
+// 的前提(钉住的值本身就会消失)。
+func TestSessionRepo_UpdateKeepsExecAgentBackendID(t *testing.T) {
+	ctx, gdb, mock := testutils.Database(t)
+	repo := chat_repo.NewSession()
+
+	row := map[string]any{
+		"agent_status":          "running",
+		"exec_agent_backend_id": int64(0),
+	}
+	captureUpdatedRow(t, gdb, row)
+
+	// 轮次开始时读出来的实体:还没钉住,这一列是零值。
+	sess := &chat_entity.Session{ID: 42, AgentStatus: "running", Status: consts.ACTIVE}
+
+	// 写 1:首轮挑到 backend 51,PickExecTarget 的结果钉住并写回。
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions`").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	require.NoError(t, repo.UpdateExecDaemon(ctx, 42, 0, "", 51))
+
+	// 写 2:running → idle 收尾,用的是上面那份**没跟着变**的内存实体。
+	sess.AgentStatus = "idle"
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions`").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	require.NoError(t, repo.Update(ctx, sess))
+
+	assert.Equal(t, int64(51), row["exec_agent_backend_id"], "收尾不得把钉住的执行目标档抹回未钉住")
 	assert.Equal(t, "idle", row["agent_status"], "收尾本来要写的状态照常落库")
 	require.NoError(t, mock.ExpectationsWereMet())
 }

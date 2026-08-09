@@ -47,10 +47,13 @@ type SessionRepo interface {
 	// touches permission_mode.
 	UpdatePermissionModeAtLaunch(ctx context.Context, sessionID int64, mode string) error
 	// UpdateExecDaemon 记录执行该会话的配对 daemon(paired_agentreds.id)及其实例标识
-	// (sha256:<hex>)。deviceID=0 + 空标识表示回到本机执行。实例标识变了(改绑到别的
-	// daemon / 改回本机)时,event_cursor 在同一条语句里归零 —— 游标只在它所属的那条
-	// 通知日志里有意义,不能跟着会话漂到另一台 daemon 上。标识不变则原样保留游标。
-	UpdateExecDaemon(ctx context.Context, sessionID int64, deviceID int64, daemonFingerprint string) error
+	// (sha256:<hex>)、以及这条会话钉住的执行目标档(agentBackendID,R15b / 决策36)。
+	// deviceID=0 + 空标识表示回到本机执行；agentBackendID=0 表示尚未钉住。三列同一条
+	// 语句一并写入、一并加进 Update 的 Omit 清单，不拆成两个写入点——这是已经踩过的坑
+	// (见 session.go Update 上的注释)。实例标识变了(改绑到别的 daemon / 改回本机)时,
+	// event_cursor 在同一条语句里归零 —— 游标只在它所属的那条通知日志里有意义,不能
+	// 跟着会话漂到另一台 daemon 上。标识不变则原样保留游标。
+	UpdateExecDaemon(ctx context.Context, sessionID int64, deviceID int64, daemonFingerprint string, agentBackendID int64) error
 	// UpdateEventCursor 记录桌面端已消费到的 daemon 通知 seq。只碰这一列,执行位置与
 	// 实例标识由 UpdateExecDaemon 负责。daemonFingerprint 是 seq 所属的那条通知日志的
 	// daemon 实例标识,进 WHERE 做守卫:会话已改绑后老连接迟到的写入落空(不报错,同
@@ -378,18 +381,19 @@ func (r *sessionRepo) Update(ctx context.Context, s *chat_entity.Session) error 
 	// 的一两个字段,却会把手上那份实体的**每一列**都写回去。凡是由专用单列更新负责的
 	// 列都必须在这里 Omit,否则一份读得早的实体会把它们盖回旧值:
 	//   - permission_mode / permission_mode_at_launch —— 运行中切换的模式与 spawn 快照;
-	//   - exec_device_id / exec_daemon_fingerprint / event_cursor(R12)—— 轮次开始时
-	//     读出的实体这三列还是零值,轮次中途 UpdateExecDaemon / UpdateEventCursor 才把
-	//     真值写进去,收尾时的整行回写因此会把「这条会话跑在哪台 daemon 上、消费到哪」
-	//     一起抹成 0 / '' / 0,空闲的远端会话从此落在 ListRemoteExecSessions 的取材
-	//     条件之外,再也进不了启动补齐。
-	// 这三列在服务层没有任何「写实体再 Update」的路径,Omit 不会丢掉谁的写入。
+	//   - exec_device_id / exec_daemon_fingerprint / exec_agent_backend_id /
+	//     event_cursor(R12 / R15b)—— 轮次开始时读出的实体这四列还是零值,轮次中途
+	//     UpdateExecDaemon / UpdateEventCursor 才把真值写进去,收尾时的整行回写因此
+	//     会把「这条会话跑在哪台 daemon 上、钉在哪一档、消费到哪」一起抹成 0 / '' / 0,
+	//     空闲的远端会话从此落在 ListRemoteExecSessions 的取材条件之外,再也进不了
+	//     启动补齐;钉住的档也会被抹回未钉住,下一轮又变成重挑(决策36明确禁止)。
+	// 这四列在服务层没有任何「写实体再 Update」的路径,Omit 不会丢掉谁的写入。
 	//   - model_override —— 会话级模型覆盖由 SetChatSessionModel(UpdateModelOverride)
 	//     单列写入;轮次收尾的整行 Save 若把它写回去,会把用户在轮次中途的换模型盖回
 	//     旧值(见 TestSessionRepo_UpdateKeepsModelOverride)。
 	err := db.Ctx(ctx).Omit(
 		"permission_mode", "permission_mode_at_launch",
-		"exec_device_id", "exec_daemon_fingerprint", "event_cursor",
+		"exec_device_id", "exec_daemon_fingerprint", "exec_agent_backend_id", "event_cursor",
 		"model_override",
 	).Save(s).Error
 	s.ApplyDerivedFields()
@@ -423,12 +427,15 @@ func (r *sessionRepo) UpdatePermissionModeAtLaunch(ctx context.Context, sessionI
 		}).Error
 }
 
-func (r *sessionRepo) UpdateExecDaemon(ctx context.Context, sessionID int64, deviceID int64, daemonFingerprint string) error {
+func (r *sessionRepo) UpdateExecDaemon(ctx context.Context, sessionID int64, deviceID int64, daemonFingerprint string, agentBackendID int64) error {
 	return db.Ctx(ctx).Model(&chat_entity.Session{}).
 		Where("id = ? AND status = ?", sessionID, consts.ACTIVE).
 		Updates(map[string]any{
 			"exec_device_id":          deviceID,
 			"exec_daemon_fingerprint": daemonFingerprint,
+			// 会话钉住的执行目标档(R15b / 决策36):与设备/实例标识同一条语句一并写,
+			// 三列同生共死,不拆成两个写入点。
+			"exec_agent_backend_id": agentBackendID,
 			// 换了一台 daemon 实例(含改回本机的空标识)就在同一条语句里把游标归零:
 			// 老游标指的是老 daemon 通知日志里的位置,留着会被下次 LoadCursor 当成对新
 			// daemon 有效。SQL 的 SET 右值一律读改写前的行值,所以这里比的是老标识。

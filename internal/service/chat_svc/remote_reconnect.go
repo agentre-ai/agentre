@@ -164,16 +164,18 @@ func (s *chatSvc) daemonFingerprint(ctx context.Context, deviceID int64) string 
 	return view.DaemonFingerprint
 }
 
-// recordExecDaemon 把「这条会话跑在哪台 daemon 的哪个实例上」写进会话行。
+// recordExecDaemon 把「这条会话跑在哪台 daemon 的哪个实例上、钉在哪一档」写进会话行
+// (R15b / 决策36)。
 //
 // 游标的读写守卫全靠这一对 (设备, 实例标识):不写,LoadCursor 永远判失效,断连补齐
 // 就退化回「断连即终止」。标识为空说明这台设备还没配对出实例标识,此时没有可记录的
-// 身份,写进去等于给游标伪造一个来路不明的归属。
-func (s *chatSvc) recordExecDaemon(ctx context.Context, sessionID, deviceID int64, fingerprint string) {
+// 身份,写进去等于给游标伪造一个来路不明的归属。agentBackendID 与设备/实例标识
+// 走同一条 UpdateExecDaemon 语句一并写入 —— 三列同生共死,不拆成两个写入点。
+func (s *chatSvc) recordExecDaemon(ctx context.Context, sessionID, deviceID int64, fingerprint string, agentBackendID int64) {
 	if fingerprint == "" || sessionID <= 0 {
 		return
 	}
-	if err := chat_repo.Session().UpdateExecDaemon(ctx, sessionID, deviceID, fingerprint); err != nil {
+	if err := chat_repo.Session().UpdateExecDaemon(ctx, sessionID, deviceID, fingerprint, agentBackendID); err != nil {
 		logger.Ctx(ctx).Warn("chat_svc.recordExecDaemon: persist exec daemon failed",
 			zap.Int64("sessionId", sessionID), zap.Int64("deviceId", deviceID), zap.Error(err))
 	}

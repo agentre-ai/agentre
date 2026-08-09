@@ -24,6 +24,11 @@ func execDeviceID(be *agent_backend_entity.AgentBackend) string {
 
 // resolveExecTarget 解析一个 session 值对象的当前执行目标。sess 可以是已持久化
 // 会话，也可以是只带 AgentID/ProjectID 的未持久化预会话对象；该方法只读仓储。
+//
+// 已持久化且已经钉住某一档的会话（R15b / 决策36）优先用那一档 —— "!" 命令的执行
+// 范围必须跟续轮实际解析到的 backend 一致，不能各算各的（同一台机器上可以有多档）。
+// 未钉住（预会话 / 老会话）时回落到 Agent 的当前主档，与今天一致；本方法只读，不写回
+// 钉住状态 —— 那是 startTurn 的职责，不能因为用户只是查询一下就把会话钉死。
 func (s *chatSvc) resolveExecTarget(ctx context.Context, sess *chat_entity.Session) (*LocalCommandScope, error) {
 	if sess == nil || sess.AgentID <= 0 || sess.ProjectID < 0 {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
@@ -35,12 +40,16 @@ func (s *chatSvc) resolveExecTarget(ctx context.Context, sess *chat_entity.Sessi
 	if a == nil {
 		return nil, i18n.NewError(ctx, code.AgentNotFound)
 	}
-	if a.AgentBackendID <= 0 {
+	backendID := a.AgentBackendID
+	if sess.ExecAgentBackendID > 0 {
+		backendID = sess.ExecAgentBackendID
+	}
+	if backendID <= 0 {
 		return nil, i18n.NewError(ctx, code.ChatAgentNoBackend)
 	}
-	be, err := agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
+	be, err := agent_backend_repo.AgentBackend().Find(ctx, backendID)
 	if err != nil {
-		return nil, operationFailedWithCause(ctx, err, zap.Int64("backendId", a.AgentBackendID))
+		return nil, operationFailedWithCause(ctx, err, zap.Int64("backendId", backendID))
 	}
 	if be == nil {
 		return nil, i18n.NewError(ctx, code.AgentBackendNotFound)

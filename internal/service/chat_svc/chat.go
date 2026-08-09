@@ -1031,7 +1031,7 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 	if sess == nil {
 		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
 	}
-	a, be, prov, err := s.resolveAgentBackend(ctx, sess.AgentID)
+	a, be, prov, err := s.resolveAgentBackend(ctx, sess, sess.AgentID, sess.ProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -1123,7 +1123,10 @@ func (s *chatSvc) StartGoal(ctx context.Context, req *StartGoalRequest) (*StartG
 	if req.Objective == nil || strings.TrimSpace(*req.Objective) == "" {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
-	a, be, prov, err := s.resolveAgentBackend(ctx, req.AgentID)
+	// sess=nil：这是全新会话，还没有可粘的档；projectID 用请求原始值——
+	// resolveProjectContext 的默认/成员校验发生在下面，这里只用来喂 R15 的
+	// "该机器上有没有配这个项目的路径" 判据，两边算的是同一个 project id。
+	a, be, prov, err := s.resolveAgentBackend(ctx, nil, req.AgentID, req.ProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -1151,6 +1154,8 @@ func (s *chatSvc) StartGoal(ctx context.Context, req *StartGoalRequest) (*StartG
 	if err := chat_repo.Session().Create(ctx, sess); err != nil {
 		return nil, operationFailedWithCause(ctx, err)
 	}
+	// 首轮实际落在这一档（R15b / 决策36）：会话行已存在，钉住它。
+	s.pinExecTargetIfUnset(ctx, sess, be)
 	setReq := &SetGoalRequest{
 		SessionID:   sess.ID,
 		Objective:   &objective,
@@ -1207,7 +1212,7 @@ func (s *chatSvc) goalSessionContext(ctx context.Context, sessionID int64) (*cha
 	if strings.TrimSpace(sess.ProviderSessionID) == "" {
 		return nil, nil, nil, nil, i18n.NewError(ctx, code.ChatGoalNoSession)
 	}
-	a, be, prov, err := s.resolveAgentBackend(ctx, sess.AgentID)
+	a, be, prov, err := s.resolveAgentBackend(ctx, sess, sess.AgentID, sess.ProjectID)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -1343,7 +1348,13 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
 
-	a, be, prov, err := s.resolveAgentBackend(ctx, targetAgentID)
+	// sess 非 nil 时是续轮（可能已经钉住某一档，R15b / 决策36）；sess 为 nil 时是
+	// 全新会话，还没有可粘的档，projectID 用请求原始值(下面新建 sess 时也是它)。
+	pickProjectID := req.ProjectID
+	if sess != nil {
+		pickProjectID = sess.ProjectID
+	}
+	a, be, prov, err := s.resolveAgentBackend(ctx, sess, targetAgentID, pickProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -1518,9 +1529,20 @@ func (s *chatSvc) isAgentInProjectChain(ctx context.Context, agentID int64, p *p
 	return false, nil
 }
 
-// resolveAgentBackend 查 agent → backend → provider 并做完整的"可对话"校验。
-// Send 和 Regenerate 都走这条；规则集中在一处避免两边漂移。
-func (s *chatSvc) resolveAgentBackend(ctx context.Context, agentID int64) (
+// resolveAgentBackend 查 agent → backend → provider 并做完整的"可对话"校验，同时是
+// 会话粘性（R15b / 决策36）的唯一解析点：sess 非 nil 且已经钉住某一档
+// (ExecAgentBackendID > 0) 时直接解析那一档、不重挑 —— 同一台机器上可以有多档，钉住
+// 的是档本身，续轮不因排序里有更靠前的档现在可用而改派。没钉住时（首轮 / sess 为
+// nil / 老会话）按 R15 顺序挑第一个可用的档（PickExecTarget，task 2 的挑选口）；挑到
+// 之后由调用方（startTurn / StartGoal）负责把它写回会话行 —— 本函数只解析，不写库。
+//
+// Agent 的执行目标列表为空时退化为直接用 a.AgentBackendID 解析：这与
+// agent_repo.hydrateExecTargets 的语义一致（两者理论上永远同值），提前短路避免对着
+// 一个天然只有 0/1 个目标的 Agent 走 PickExecTarget 的逐档 BlockReason 枚举。
+//
+// Send / Regenerate / Edit / Compact / StartGoal 等所有"起 / 续一轮"的入口都走这条；
+// 规则集中在一处避免多处漂移。
+func (s *chatSvc) resolveAgentBackend(ctx context.Context, sess *chat_entity.Session, agentID, projectID int64) (
 	*agent_entity.Agent,
 	*agent_backend_entity.AgentBackend,
 	*llm_provider_entity.LLMProvider,
@@ -1533,10 +1555,14 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, agentID int64) (
 	if a == nil {
 		return nil, nil, nil, i18n.NewError(ctx, code.NotFound)
 	}
-	if a.AgentBackendID <= 0 {
+	backendID, err := s.resolveTurnBackendID(ctx, sess, agentID, projectID, a.AgentBackendID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if backendID <= 0 {
 		return nil, nil, nil, i18n.NewError(ctx, code.ChatAgentNoBackend)
 	}
-	be, err := agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
+	be, err := agent_backend_repo.AgentBackend().Find(ctx, backendID)
 	if err != nil {
 		return nil, nil, nil, operationFailedWithCause(ctx, err)
 	}
@@ -1590,6 +1616,57 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, agentID int64) (
 	return a, be, prov, nil
 }
 
+// resolveTurnBackendID 是 resolveAgentBackend 的解析半边（R15b / 决策36）：决定这一轮
+// 该用哪个 backend id。写回半边见 pinExecTargetIfUnset —— 本函数只读不写。
+//
+//   - sess 已经钉住(ExecAgentBackendID > 0)：直接用它，不重挑。
+//   - 否则这个 Agent 的执行目标列表为空：退化用 fallbackBackendID
+//     (=a.AgentBackendID，与 agent_repo.hydrateExecTargets 的语义一致，理论上永远
+//     同值)，不经 PickExecTarget（对空列表它本就是 ChatAgentNoBackend）。
+//   - 否则按 R15 顺序挑第一个可用的档（PickExecTarget，task 2 的挑选口）。
+func (s *chatSvc) resolveTurnBackendID(
+	ctx context.Context, sess *chat_entity.Session, agentID, projectID, fallbackBackendID int64,
+) (int64, error) {
+	if sess != nil && sess.ExecAgentBackendID > 0 {
+		return sess.ExecAgentBackendID, nil
+	}
+	targets, err := agent_repo.AgentExecTarget().ListByAgent(ctx, agentID)
+	if err != nil {
+		return 0, operationFailedWithCause(ctx, err, zap.Int64("agentId", agentID))
+	}
+	if len(targets) == 0 {
+		return fallbackBackendID, nil
+	}
+	choice, err := s.PickExecTarget(ctx, agentID, projectID)
+	if err != nil {
+		return 0, err
+	}
+	return choice.Target.AgentBackendID, nil
+}
+
+// pinExecTargetIfUnset 给一条已持久化的会话首次钉住它落到的那一档（R15b / 决策36）：
+// 已经钉过（sess.ExecAgentBackendID != 0）不重复写 —— 续轮的解析短路在
+// resolveTurnBackendID 里发生，这里只在"没值"分支实际选出了 be 之后调用一次。
+//
+// 只处理本机档：远端档的钉住由 recordExecDaemon 在实际 borrow 到 *remote.Runtime 时
+// 一并完成（selectRunner → borrowRemoteRuntime，它现在也写 agentBackendID）——那里
+// 才拿得到当下真实的 daemon 实例标识，不在这里提前解析一次、写一份可能过期的指纹。
+//
+// 与 exec_device_id / exec_daemon_fingerprint 走同一条专用单列更新 UpdateExecDaemon
+// 一并写入，三列同生共死，不拆成两个写入点。写库失败只记日志、不阻断这一轮 —— 下一轮
+// 会再次落进"没值"分支重新挑选并重试写回，不会永久卡住对话。
+func (s *chatSvc) pinExecTargetIfUnset(ctx context.Context, sess *chat_entity.Session, be *agent_backend_entity.AgentBackend) {
+	if sess == nil || sess.ID <= 0 || be == nil || sess.ExecAgentBackendID != 0 || be.IsRemote() {
+		return
+	}
+	if err := chat_repo.Session().UpdateExecDaemon(ctx, sess.ID, 0, "", be.ID); err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.pinExecTargetIfUnset: persist pinned exec target failed",
+			zap.Int64("sessionId", sess.ID), zap.Int64("agentBackendId", be.ID), zap.Error(err))
+		return
+	}
+	sess.ExecAgentBackendID = be.ID
+}
+
 // AgentBackendHasCapability 报告某 agent 的后端 runtime 是否声明指定能力(领域无关探针)。
 //
 // 复用 resolveAgentBackend 的 agent → backend 解析链;对本地后端经全局 runtime 注册表
@@ -1597,7 +1674,8 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, agentID int64) (
 // MVP: 远程后端的能力探测需借 session(borrowRemoteRuntime),这里没有 session,
 // 暂统一返回 (false, nil)。
 func (s *chatSvc) AgentBackendHasCapability(ctx context.Context, agentID int64, wantCap capability.Capability) (bool, error) {
-	_, be, _, err := s.resolveAgentBackend(ctx, agentID)
+	// 无 session 上下文的探针：没有会话可粘、projectID 也无从谈起。
+	_, be, _, err := s.resolveAgentBackend(ctx, nil, agentID, 0)
 	if err != nil {
 		return false, err
 	}
@@ -1648,7 +1726,7 @@ func (s *chatSvc) Enqueue(ctx context.Context, req *EnqueueRequest) (*EnqueueRes
 		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
 	}
 
-	_, be, _, err := s.resolveAgentBackend(ctx, sess.AgentID)
+	_, be, _, err := s.resolveAgentBackend(ctx, sess, sess.AgentID, sess.ProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -1751,7 +1829,7 @@ func (s *chatSvc) Stop(ctx context.Context, req *StopRequest) (*StopResponse, er
 	// through the global runtime after its active control has been removed.
 	if !gracefulAbort {
 		if sess, err := chat_repo.Session().Find(ctx, req.SessionID); err == nil && sess != nil {
-			if _, be, _, berr := s.resolveAgentBackend(ctx, sess.AgentID); berr == nil && be != nil {
+			if _, be, _, berr := s.resolveAgentBackend(ctx, sess, sess.AgentID, sess.ProjectID); berr == nil && be != nil {
 				// 中断没下发下去不致命(前面已 cancel turnCtx 兜底),布尔判据这里
 				// 无人可报;失败的留底由 requestRuntimeAbort 自己记。
 				_, _ = s.requestRuntimeAbort(ctx, be, req.SessionID, 0)
@@ -1826,7 +1904,7 @@ func (s *chatSvc) reconcileSessionToIdle(ctx context.Context, sess *chat_entity.
 // 自己收尾,subagent 活动轮则由 Stop 接管翻 idle(决策 3)。turnToken 固定传 0(中断
 // 当前活跃的带外轮,等价旧行为)。
 func (s *chatSvc) abortOutOfBandTurn(ctx context.Context, sess *chat_entity.Session) (agentruntime.AbortOutcome, bool) {
-	_, be, _, err := s.resolveAgentBackend(ctx, sess.AgentID)
+	_, be, _, err := s.resolveAgentBackend(ctx, sess, sess.AgentID, sess.ProjectID)
 	if err != nil || be == nil {
 		logger.Ctx(ctx).Warn("chat_svc.Stop: cannot resolve backend to interrupt out-of-band turn",
 			zap.Int64("sessionId", sess.ID), zap.Error(err))
@@ -1915,7 +1993,7 @@ func (s *chatSvc) StopBackgroundTask(ctx context.Context, req *StopBackgroundTas
 		return nil, i18n.NewError(ctx, code.ChatStopBgTaskUnknown)
 	}
 
-	_, be, _, berr := s.resolveAgentBackend(ctx, sess.AgentID)
+	_, be, _, berr := s.resolveAgentBackend(ctx, sess, sess.AgentID, sess.ProjectID)
 	if berr != nil {
 		return nil, berr
 	}
@@ -2267,7 +2345,7 @@ func (s *chatSvc) SetPermissionMode(ctx context.Context, req *SetPermissionModeR
 		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
 	}
 
-	_, be, _, err := s.resolveAgentBackend(ctx, sess.AgentID)
+	_, be, _, err := s.resolveAgentBackend(ctx, sess, sess.AgentID, sess.ProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -2317,7 +2395,7 @@ func (s *chatSvc) CancelQueued(ctx context.Context, req *CancelQueuedRequest) (*
 		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
 	}
 
-	_, be, _, err := s.resolveAgentBackend(ctx, sess.AgentID)
+	_, be, _, err := s.resolveAgentBackend(ctx, sess, sess.AgentID, sess.ProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -2392,7 +2470,7 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 		return nil, i18n.NewError(ctx, code.ChatRegenerateNotAssistant)
 	}
 
-	a, be, prov, err := s.resolveAgentBackend(ctx, sess.AgentID)
+	a, be, prov, err := s.resolveAgentBackend(ctx, sess, sess.AgentID, sess.ProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -2504,7 +2582,7 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 		return nil, i18n.NewError(ctx, code.ChatEditNotUser)
 	}
 
-	a, be, prov, err := s.resolveAgentBackend(ctx, sess.AgentID)
+	a, be, prov, err := s.resolveAgentBackend(ctx, sess, sess.AgentID, sess.ProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -3034,6 +3112,11 @@ func (s *chatSvc) startTurn(
 		}
 		lock = gate.lock
 	}
+
+	// 首轮实际落在这一档（R15b / 决策36）：会话已经钉住就是 no-op,没钉住就在这里
+	// 钉住并写回——这是"没值涵盖首轮与全部老会话"里唯一的写点(本机档;远端档由
+	// recordExecDaemon 在下面 prepareTurnRun / runTurn 实际 borrow 到 runtime 时写)。
+	s.pinExecTargetIfUnset(ctx, sess, be)
 
 	userMsg := &chat_entity.Message{SessionID: sess.ID, Role: "user", DeviceID: be.DeviceID}
 	_ = userMsg.SetBlocks(userBlocks)
@@ -4876,7 +4959,7 @@ func (s *chatSvc) borrowRemoteRuntimeOwned(
 	// 不写就永远判失效,断连补齐退化成断连即终止(见 remote_reconnect.go);而 App
 	// 重启后「该连谁」也全靠这一行(见 CatchUpRemoteSessions)。runtime 是 device 级
 	// 共享的,同一台设备上的第二条会话走 cache 命中那条路,它自己的执行位置同样要落库。
-	s.recordExecDaemon(ctx, sessionID, deviceID, fp)
+	s.recordExecDaemon(ctx, sessionID, deviceID, fp, be.ID)
 
 	// 同步拉一次远端 backend 的 capability 矩阵缓存到本地,之后 rt.Capabilities()
 	// 直接返实际能力。已缓存过的 backendType 直接 noop(cache 命中不会再发 RPC)。

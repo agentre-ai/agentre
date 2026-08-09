@@ -57,15 +57,16 @@ import (
 )
 
 type chatMocks struct {
-	agent    *mock_agent_repo.MockAgentRepo
-	backend  *mock_agent_backend_repo.MockAgentBackendRepo
-	provider *mock_llm_provider_repo.MockLLMProviderRepo
-	session  *mock_chat_repo.MockSessionRepo
-	message  *mock_chat_repo.MockMessageRepo
-	dbMock   sqlmock.Sqlmock
-	ctx      context.Context
-	events   []recorded
-	svc      chat_svc.ChatSvc
+	agent      *mock_agent_repo.MockAgentRepo
+	backend    *mock_agent_backend_repo.MockAgentBackendRepo
+	provider   *mock_llm_provider_repo.MockLLMProviderRepo
+	session    *mock_chat_repo.MockSessionRepo
+	message    *mock_chat_repo.MockMessageRepo
+	execTarget *mock_agent_repo.MockAgentExecTargetRepo
+	dbMock     sqlmock.Sqlmock
+	ctx        context.Context
+	events     []recorded
+	svc        chat_svc.ChatSvc
 }
 
 type recorded struct {
@@ -105,19 +106,36 @@ func setupChatTest(t *testing.T) *chatMocks {
 	dbCtx, _, dbMock := testutils.Database(t)
 
 	m := &chatMocks{
-		agent:    mock_agent_repo.NewMockAgentRepo(ctrl),
-		backend:  mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl),
-		provider: mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl),
-		session:  mock_chat_repo.NewMockSessionRepo(ctrl),
-		message:  mock_chat_repo.NewMockMessageRepo(ctrl),
-		dbMock:   dbMock,
-		ctx:      dbCtx,
+		agent:      mock_agent_repo.NewMockAgentRepo(ctrl),
+		backend:    mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl),
+		provider:   mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl),
+		session:    mock_chat_repo.NewMockSessionRepo(ctrl),
+		message:    mock_chat_repo.NewMockMessageRepo(ctrl),
+		execTarget: mock_agent_repo.NewMockAgentExecTargetRepo(ctrl),
+		dbMock:     dbMock,
+		ctx:        dbCtx,
 	}
 	agent_repo.RegisterAgent(m.agent)
 	agent_backend_repo.RegisterAgentBackend(m.backend)
 	llm_provider_repo.RegisterLLMProvider(m.provider)
 	chat_repo.RegisterSession(m.session)
 	chat_repo.RegisterMessage(m.message)
+	agent_repo.RegisterAgentExecTarget(m.execTarget)
+
+	// 默认宽松桩：这批既有测试全部模拟"Agent 只有一个（隐式）执行目标"的场景
+	// (m.agent 直接给 AgentBackendID，不途经真实的 agent_exec_targets 表)。
+	// resolveAgentBackend 在会话没有钉住任何一档时，先看这个 Agent 的执行目标
+	// 列表是否为空——为空就直接退化用 a.AgentBackendID，语义与
+	// agent_repo.hydrateExecTargets 一致，不必每个测试都单独搭一份执行目标行
+	// mock。真正要验证 R15 多档挑选 / 会话粘性写回的用例在
+	// exec_target_pin_test.go 里用专门搭的、非空的执行目标列表覆盖这条默认。
+	m.execTarget.EXPECT().ListByAgent(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+	// 默认宽松桩：会话粘性钉住写回（R15b / 决策36）对这批既有测试是一个新增的
+	// 无关副作用——它们都不关心"钉在哪一档"这件事本身。gomock 按注册顺序匹配,
+	// 这条 AnyTimes() 注册在最前会拦掉这个方法的全部调用,因此不要在具体测试里
+	// 对同一方法再叠加精确期望(永远匹配不到);真正要验证写回参数的用例改用
+	// exec_target_pin_test.go 里独立搭建、不含这条宽松桩的专用 mock 环境。
+	m.session.EXPECT().UpdateExecDaemon(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	emitter := chat_svc.EmitterFunc(func(_ context.Context, name string, payload any) {
 		m.events = append(m.events, recorded{Name: name, Payload: payload})

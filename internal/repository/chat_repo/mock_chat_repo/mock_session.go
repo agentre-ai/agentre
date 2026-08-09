@@ -412,17 +412,17 @@ func (mr *MockSessionRepoMockRecorder) UpdateEventCursor(ctx, sessionID, daemonF
 }
 
 // UpdateExecDaemon mocks base method.
-func (m *MockSessionRepo) UpdateExecDaemon(ctx context.Context, sessionID, deviceID int64, daemonFingerprint string) error {
+func (m *MockSessionRepo) UpdateExecDaemon(ctx context.Context, sessionID, deviceID int64, daemonFingerprint string, agentBackendID int64) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateExecDaemon", ctx, sessionID, deviceID, daemonFingerprint)
+	ret := m.ctrl.Call(m, "UpdateExecDaemon", ctx, sessionID, deviceID, daemonFingerprint, agentBackendID)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // UpdateExecDaemon indicates an expected call of UpdateExecDaemon.
-func (mr *MockSessionRepoMockRecorder) UpdateExecDaemon(ctx, sessionID, deviceID, daemonFingerprint any) *gomock.Call {
+func (mr *MockSessionRepoMockRecorder) UpdateExecDaemon(ctx, sessionID, deviceID, daemonFingerprint, agentBackendID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateExecDaemon", reflect.TypeOf((*MockSessionRepo)(nil).UpdateExecDaemon), ctx, sessionID, deviceID, daemonFingerprint)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateExecDaemon", reflect.TypeOf((*MockSessionRepo)(nil).UpdateExecDaemon), ctx, sessionID, deviceID, daemonFingerprint, agentBackendID)
 }
 
 // UpdateModelOverride mocks base method.
