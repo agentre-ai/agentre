@@ -29,6 +29,13 @@ func (s *Service) discover(ctx context.Context, a *agent_entity.Agent) (discover
 	if err != nil || be == nil {
 		return discoveryResult{}, err
 	}
+	return s.discoverForBackend(ctx, be)
+}
+
+// discoverForBackend 是 discover 的核心：拿指定 backend 的已安装包。抽成独立函数是
+// 因为任务 12(组织架构页"一档一块")需要按**给定的执行目标**发现，不是按 Agent
+// 的主档——discover 本身保持不变(仍按 a.AgentBackendID 找 backend 再委派到这里)。
+func (s *Service) discoverForBackend(ctx context.Context, be *agent_backend_entity.AgentBackend) (discoveryResult, error) {
 	backendType := agent_backend_entity.BackendType(be.Type)
 	// 远端 backend:技能包装在 daemon 那台机器上,desktop 本地的 claude plugin list
 	// 看不到。经 RemoteDiscoverer 走 daemon skills.list 发现(借 device 连接池)。
@@ -151,6 +158,54 @@ func (s *Service) ListAgentSkillPacks(ctx context.Context, agentID int64, _ bool
 		return SkillCatalogDTO{}, err
 	}
 	mr := merge(agentskill.RecommendedFor(discovered.backendType), discovered.packs, authorized)
+	dto := make([]SkillPackDTO, 0, len(mr.packs))
+	for i, p := range mr.packs {
+		dto = append(dto, SkillPackDTO{
+			ID:               p.ID,
+			Name:             p.Name,
+			Description:      p.Description,
+			Skills:           p.Skills,
+			Source:           string(p.Source),
+			Recommended:      p.Recommended,
+			Installed:        p.Installed,
+			Enabled:          mr.enabled[i],
+			GloballyEnabled:  p.GloballyEnabled,
+			EffectiveEnabled: mr.effectiveEnabled[i],
+		})
+	}
+	return SkillCatalogDTO{Packs: dto}, nil
+}
+
+// ListAgentSkillPacksForTarget 同 ListAgentSkillPacks，但发现来源与授权都钉死在
+// agentID 名下 agentBackendID 对应的那一档执行目标上（R15e，任务 12"组织架构页
+// 一档一块"）：一档一块，互不干扰、不做并集——不像 ListAgentSkillPacks 只看
+// sort_order 最小的主档。找不到该档（agentBackendID 不在这个 Agent 的列表里，例如
+// 前端还没保存完就切换了）返回空目录、不是错误，与 agentID 找不到时的既有处理口径
+// 一致（见上面 ListAgentSkillPacks 对 a==nil 的处理）。
+func (s *Service) ListAgentSkillPacksForTarget(ctx context.Context, agentID, agentBackendID int64, _ bool) (SkillCatalogDTO, error) {
+	targets, err := s.execTarget.ListByAgent(ctx, agentID)
+	if err != nil {
+		return SkillCatalogDTO{}, err
+	}
+	var target *agent_entity.AgentExecTarget
+	for _, t := range targets {
+		if t.AgentBackendID == agentBackendID {
+			target = t
+			break
+		}
+	}
+	if target == nil {
+		return SkillCatalogDTO{}, nil
+	}
+	be, err := s.backend.Find(ctx, agentBackendID)
+	if err != nil || be == nil {
+		return SkillCatalogDTO{}, err
+	}
+	discovered, err := s.discoverForBackend(ctx, be)
+	if err != nil {
+		return SkillCatalogDTO{}, err
+	}
+	mr := merge(agentskill.RecommendedFor(discovered.backendType), discovered.packs, target.GetSkills())
 	dto := make([]SkillPackDTO, 0, len(mr.packs))
 	for i, p := range mr.packs {
 		dto = append(dto, SkillPackDTO{

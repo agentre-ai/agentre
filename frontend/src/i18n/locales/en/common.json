@@ -2003,6 +2003,42 @@
         "codex": "Runs tasks through Codex CLI. Tool calls are routed through the CLI.",
         "default": "Choose an agent backend to execute tasks."
       },
+      "execTargets": {
+        "title": "Execution Targets",
+        "add": "Add",
+        "addFull": "Add execution target",
+        "replace": "Replace",
+        "remove": "Remove",
+        "moveUp": "Move target up",
+        "moveDown": "Move target down",
+        "moved": "Moved to position {{position}} of {{total}}.",
+        "currentlyActive": "Currently active",
+        "online": "Online",
+        "offline": "Offline",
+        "localMachine": "Local machine",
+        "hint": "Tried in order; the first available one wins. You can mix different backends.",
+        "emptyTitle": "No execution targets yet",
+        "emptyHint": "At least one is required before this agent can start a session.",
+        "saveRejected": "Save rejected: add at least one execution target.",
+        "allUnavailableTitle": "\"{{name}}\" has no available execution target right now",
+        "addPanel": {
+          "searchPlaceholder": "Search machine or backend…",
+          "alreadyInList": "Already in the list",
+          "unpaired": "Not paired"
+        },
+        "reasons": {
+          "orphanBackend": "This execution target's backend no longer exists",
+          "backendRequiresProvider": "An LLM provider must be specified",
+          "providerInactive": "LLM provider is not active",
+          "remoteProviderMissing": "The remote device is missing this LLM provider",
+          "gatewayNotRunning": "Local gateway is not running",
+          "remoteOpenclawUnavailable": "Remote OpenClaw is unavailable",
+          "unknownBackend": "Unknown backend type",
+          "unpaired": "This computer isn't paired with it",
+          "offline": "Offline",
+          "projectPathMissing": "This machine has no configured path for this project"
+        }
+      },
       "basicInfo": "Basic Info",
       "charCount": "{{count}} chars",
       "deleteDialog": {
@@ -2025,20 +2061,25 @@
         "sectionTitle": "Skills · Skill Packs",
         "manage": "Manage skills",
         "count": "{{inherit}} inherited · {{on}} on · {{off}} off",
+        "countCompact": "{{inherit}} inherited · {{on}} on · {{off}} off",
         "inheritNote": "Gray = inherited from global · Blue = forced on for this agent · Red = forced off for this agent (global untouched). Changes apply on the agent's next new session.",
         "empty": "No skill packs granted",
         "personalNote": "Always available · personal skills (~/.claude/skills) can't be toggled individually",
         "summary": "{{enabled}} enabled · {{disabled}} disabled",
-        "title": "Skills"
+        "title": "Skills",
+        "copyFrom": "Copy from",
+        "copyFromDisabledHint": "Different backend type — package ids don't match",
+        "offlineNote": "Machine is offline, can't list packs to add · already-granted ones can still be removed"
       },
       "skillsGate": {
         "pill": "Unsupported",
         "title": "This backend doesn't support skills",
-        "description": "Skills are a Claude Code native capability. Switch to a Claude Code backend to enable and configure them."
+        "description": "Skills are a Claude Code native capability. Add a Claude Code execution target to enable and configure them for that target."
       },
       "skillPicker": {
         "title": "Add Skills · Skill Packs",
         "subtitle": "One pack = a set of skills, granted per agent",
+        "subtitleForTarget": "Target #{{index}} · {{machine}} · {{backend}} — only affects this one",
         "searchPlaceholder": "Search skill packs / descriptions…",
         "personalNote": "Personal skills (~/.claude/skills) are always available; the CLI can't toggle them individually"
       },

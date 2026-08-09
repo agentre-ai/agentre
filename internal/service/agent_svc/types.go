@@ -24,17 +24,29 @@ type CreateAgentResponse struct {
 	Item *AgentItem `json:"item"`
 }
 
-// UpdateAgentRequest 更新 Agent；禁止改 system_badge / department_id。
-type UpdateAgentRequest struct {
-	ID             int64                          `json:"id" binding:"required"`
-	Name           string                         `json:"name" binding:"required"`
-	Description    string                         `json:"description"`
-	AvatarColor    string                         `json:"avatarColor"`
-	AvatarIcon     string                         `json:"avatarIcon"`
-	AgentBackendID int64                          `json:"agentBackendId"`
-	Prompt         []string                       `json:"prompt"`
+// ExecTargetInputDTO 是 UpdateAgentRequest.ExecTargets 里的一项：R15 的执行目标 +
+// 这一档自己的技能授权（R15e / 决策 33）。数组顺序即 sort_order。
+type ExecTargetInputDTO struct {
+	AgentBackendID int64                          `json:"agentBackendId" binding:"required"`
 	Skills         []department_svc.AgentSkillDTO `json:"skills"`
-	Tools          []department_svc.AgentToolDTO  `json:"tools"`
+}
+
+// UpdateAgentRequest 更新 Agent；禁止改 system_badge / department_id。
+//
+// ExecTargets 是 R15 的有序执行目标列表，取代了历史上单一的 AgentBackendID +
+// Skills 两个字段——每次保存都是整份替换（与 Name/Prompt/Tools 等其它字段一样，
+// 这里从来都是全量快照式写入，不是增量 patch）。至少要有一项：列表为空的 Agent
+// 不能起会话，这条校验在 svc.Update 里做，界面在保存前用同一条件禁用保存
+// （R15：「列表为空的 Agent 不能起会话——界面在保存时就要求至少一项」）。
+type UpdateAgentRequest struct {
+	ID          int64                         `json:"id" binding:"required"`
+	Name        string                        `json:"name" binding:"required"`
+	Description string                        `json:"description"`
+	AvatarColor string                        `json:"avatarColor"`
+	AvatarIcon  string                        `json:"avatarIcon"`
+	Prompt      []string                      `json:"prompt"`
+	ExecTargets []ExecTargetInputDTO          `json:"execTargets"`
+	Tools       []department_svc.AgentToolDTO `json:"tools"`
 }
 
 type UpdateAgentResponse struct {

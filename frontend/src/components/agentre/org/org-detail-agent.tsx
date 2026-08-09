@@ -1,5 +1,4 @@
 import * as React from "react";
-import type { TFunction } from "i18next";
 import {
   AlertTriangle,
   Ban,
@@ -8,7 +7,6 @@ import {
   Info,
   Network,
   Trash2,
-  Wrench,
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -25,13 +23,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
@@ -58,6 +49,11 @@ import { useSkillCatalog } from "./use-skill-catalog";
 import { safeAgentColor, type OrgAgent, type OrgDepartment } from "./types";
 import { useAutoSave } from "./use-auto-save";
 import { AutoSaveStatus } from "./auto-save-status";
+import { ExecTargetList, type ExecTargetRow } from "./exec-target-list";
+import {
+  ExecTargetSkillsBlock,
+  type CopySource,
+} from "./exec-target-skills-block";
 
 type Props = {
   agent: OrgAgent;
@@ -73,22 +69,19 @@ type Props = {
   onClose: () => void;
 };
 
-const backendHintKeys: Record<string, string> = {
-  claudecode: "org.agent.backendHints.claudeCode",
-  "claude-code": "org.agent.backendHints.claudeCode",
-  codex: "org.agent.backendHints.codex",
-  builtin: "org.agent.backendHints.builtin",
+// ExecTargetEdit 是编辑态执行目标行（R15/R15e）：agentBackendId 定位这一档，
+// skills 是它自己的技能授权（下沉到执行目标行,不再是 Agent 级一份）。
+type ExecTargetEdit = {
+  agentBackendId: number;
+  skills: department_svc.AgentSkillDTO[];
 };
 
-type BackendSummaryLike = Pick<
-  agent_backend_svc.BackendItem,
-  | "id"
-  | "type"
-  | "name"
-  | "llmProviderName"
-  | "llmProviderModel"
-  | "llmProviderActive"
->;
+function execTargetsFromAgent(agent: OrgAgent): ExecTargetEdit[] {
+  return (agent.execTargets ?? []).map((t) => ({
+    agentBackendId: t.agentBackendId,
+    skills: (t.skills ?? []).map((s) => ({ ...s })),
+  }));
+}
 
 export function OrgDetailAgent(props: Props) {
   const { t } = useTranslation();
@@ -102,9 +95,8 @@ export function OrgDetailAgent(props: Props) {
         description: props.agent.description,
         avatarColor: safeAgentColor(props.agent.avatarColor),
         avatarIcon: props.agent.avatarIcon || "",
-        backendId: props.agent.agentBackendId,
+        execTargets: execTargetsFromAgent(props.agent),
         prompt: (props.agent.prompt ?? []).join("\n"),
-        skills: (props.agent.skills ?? []).map((s) => ({ ...s })),
         tools: ((): department_svc.AgentToolDTO[] => {
           const cur = new Map(
             (props.agent.tools ?? []).map((tl) => [tl.key, tl.enabled]),
@@ -115,7 +107,8 @@ export function OrgDetailAgent(props: Props) {
           }));
         })(),
       },
-      isValid: (v) => v.name.trim() !== "",
+      // R15：列表为空的 Agent 不能起会话——界面在保存时就要求至少一项。
+      isValid: (v) => v.name.trim() !== "" && v.execTargets.length > 0,
       save: (v) =>
         props.onUpdate(
           agent_svc.UpdateAgentRequest.createFrom({
@@ -124,9 +117,8 @@ export function OrgDetailAgent(props: Props) {
             description: v.description,
             avatarColor: v.avatarColor,
             avatarIcon: v.avatarIcon,
-            agentBackendId: v.backendId,
             prompt: v.prompt.split("\n").filter((s) => s.trim() !== ""),
-            skills: v.skills,
+            execTargets: v.execTargets,
             tools: v.tools,
           }),
         ),
@@ -137,9 +129,8 @@ export function OrgDetailAgent(props: Props) {
     description,
     avatarColor,
     avatarIcon,
-    backendId,
+    execTargets,
     prompt,
-    skills,
     tools,
   } = values;
 
@@ -155,24 +146,108 @@ export function OrgDetailAgent(props: Props) {
     reportToId !== 0
       ? (props.agents.find((a) => a.id === reportToId) ?? null)
       : null;
-  const selectedBackend =
-    props.backends.find((b) => b.id === backendId) ??
-    (props.agent.backend?.id === backendId ? props.agent.backend : undefined);
 
-  // 任务 8：不可对话状态内联提示。
-  // no-backend：未绑后端；builtin 选了但无已激活供应商时换提示并提供跳转。
+  // props.agent.backend 是这个 Agent 的主档 backend 摘要（department_svc.Load 已
+  // join 好，见 AgentItem.backend 字段注释）：props.backends 全量列表还没加载完/
+  // 该 backend 已被删但摘要还留着时的兜底,不让界面在这段时间内空白。
+  const backendById = React.useMemo(() => {
+    const m = new Map<number, agent_backend_svc.BackendItem>();
+    for (const b of props.backends) m.set(b.id, b);
+    if (props.agent.backend && !m.has(props.agent.backend.id)) {
+      m.set(
+        props.agent.backend.id,
+        backendItemFromSummary(props.agent.backend),
+      );
+    }
+    return m;
+  }, [props.backends, props.agent.backend]);
+  const backendsForList = React.useMemo(
+    () => [...backendById.values()],
+    [backendById],
+  );
+
+  const singleTarget = execTargets.length === 1;
+  const primaryTarget = execTargets[0];
+  const selectedBackend = primaryTarget
+    ? (backendById.get(primaryTarget.agentBackendId) ??
+      (props.agent.backend?.id === primaryTarget.agentBackendId
+        ? props.agent.backend
+        : undefined))
+    : undefined;
+
+  // 任务 8：不可对话状态内联提示（继续只覆盖单档场景——多档时"哪一档缺什么"已经在
+  // 执行目标列表的逐行徽标 + 全部不可用横幅里说明，不需要在这里重复一份笼统提示）。
   const hasUsableProvider =
     selectedBackend?.llmProviderActive === true &&
     Boolean(selectedBackend?.llmProviderName?.trim());
-  const noBackendBound = backendId <= 0;
+  const noBackendBound = execTargets.length === 0;
   const builtinMissingProvider =
+    singleTarget &&
     !noBackendBound &&
     selectedBackend?.type === "builtin" &&
     !hasUsableProvider;
 
+  const patchExecTargets = (next: ExecTargetRow[]) => {
+    const skillsByBackend = new Map(
+      execTargets.map((t) => [t.agentBackendId, t.skills]),
+    );
+    const merged: ExecTargetEdit[] = next.map((r) => ({
+      agentBackendId: r.agentBackendId,
+      skills: skillsByBackend.get(r.agentBackendId) ?? [],
+    }));
+    patch({ execTargets: merged }, { immediate: true });
+  };
+
+  const patchTargetSkills = (
+    targetIndex: number,
+    skills: department_svc.AgentSkillDTO[],
+  ) => {
+    const next = execTargets.map((t, i) =>
+      i === targetIndex ? { ...t, skills } : t,
+    );
+    patch({ execTargets: next }, { immediate: true });
+  };
+
+  const execTargetLabel = (index: number) => {
+    const b = backendById.get(execTargets[index]?.agentBackendId ?? 0);
+    const machine = b?.deviceId
+      ? b.deviceName || b.deviceId
+      : t("org.agent.execTargets.localMachine");
+    return `${index + 1} · ${machine}`;
+  };
+
+  const copySourcesFor = (targetIndex: number): CopySource[] => {
+    const targetBackend = backendById.get(
+      execTargets[targetIndex]?.agentBackendId ?? 0,
+    );
+    return execTargets
+      .map((t, i) => ({ t, i }))
+      .filter(({ i }) => i !== targetIndex)
+      .map(({ t, i }) => {
+        const srcBackend = backendById.get(t.agentBackendId);
+        return {
+          index: i,
+          label: execTargetLabel(i),
+          skills: t.skills,
+          sameType: Boolean(
+            srcBackend &&
+            targetBackend &&
+            srcBackend.type === targetBackend.type,
+          ),
+        };
+      });
+  };
+
+  // 单档场景（R20：与今天逐像素一致）继续用既有的 GrantedChips + CapabilityPicker
+  // 单份渲染,数据源从 execTargets[0] 取。
   const { caps } = useBackendCapabilities(selectedBackend?.type);
   const skillsCapOn = caps?.has("skills") ?? false;
-  const skillCatalog = useSkillCatalog(props.agent.id, skillsCapOn);
+  const primarySkills = primaryTarget?.skills ?? [];
+  const skillCatalog = useSkillCatalog(
+    props.agent.id,
+    primaryTarget?.agentBackendId ?? 0,
+    skillsCapOn,
+  );
   const [skillPickerOpen, setSkillPickerOpen] = React.useState(false);
 
   const handleUploadFile = async (file: File) => {
@@ -240,12 +315,12 @@ export function OrgDetailAgent(props: Props) {
   );
 
   const skillStateOf = (id: string): TriState => {
-    const s = skills.find((x) => x.id === id);
+    const s = primarySkills.find((x) => x.id === id);
     if (!s) return "inherit";
     return s.enabled ? "on" : "off";
   };
   const setSkillState = (id: string, next: TriState) => {
-    const rest = skills.filter((s) => s.id !== id);
+    const rest = primarySkills.filter((s) => s.id !== id);
     const nextSkills =
       next === "inherit"
         ? rest
@@ -256,7 +331,7 @@ export function OrgDetailAgent(props: Props) {
               enabled: next === "on",
             }),
           ];
-    patch({ skills: nextSkills }, { immediate: true });
+    patchTargetSkills(0, nextSkills);
   };
 
   const triLabels: Record<TriState, string> = {
@@ -265,9 +340,9 @@ export function OrgDetailAgent(props: Props) {
     off: t("capability.triState.off"),
   };
 
-  const onSkills = skills.filter((s) => s.enabled);
-  const offSkills = skills.filter((s) => !s.enabled);
-  const overriddenIds = new Set(skills.map((s) => s.id));
+  const onSkills = primarySkills.filter((s) => s.enabled);
+  const offSkills = primarySkills.filter((s) => !s.enabled);
+  const overriddenIds = new Set(primarySkills.map((s) => s.id));
   const inheritedIds = [...globallyOn].filter((id) => !overriddenIds.has(id));
   const skillChips: GrantedChip[] = [
     ...inheritedIds.map((id) => ({
@@ -301,7 +376,10 @@ export function OrgDetailAgent(props: Props) {
     if (!skillCatalog.fetched) void skillCatalog.load(false);
   };
   const removeSkillOverride = (id: string) =>
-    patch({ skills: skills.filter((s) => s.id !== id) }, { immediate: true });
+    patchTargetSkills(
+      0,
+      primarySkills.filter((s) => s.id !== id),
+    );
 
   const promptCharCount = prompt.replace(/\s/g, "").length;
 
@@ -473,10 +551,10 @@ export function OrgDetailAgent(props: Props) {
           </div>
         </section>
 
-        <section className="space-y-2.5" data-slot="agent-section-backend">
+        <section data-slot="agent-section-backend">
           {noBackendBound ? (
             <Alert
-              className="border-status-waiting/40 bg-status-waiting-bg text-xs"
+              className="mb-2.5 border-status-waiting/40 bg-status-waiting-bg text-xs"
               data-testid="org-agent-no-backend"
             >
               <AlertTriangle className="size-4" aria-hidden="true" />
@@ -490,7 +568,7 @@ export function OrgDetailAgent(props: Props) {
           ) : null}
           {builtinMissingProvider ? (
             <Alert
-              className="border-status-waiting/40 bg-status-waiting-bg text-xs"
+              className="mb-2.5 border-status-waiting/40 bg-status-waiting-bg text-xs"
               data-testid="org-agent-provider-gap"
             >
               <AlertTriangle className="size-4" aria-hidden="true" />
@@ -529,58 +607,16 @@ export function OrgDetailAgent(props: Props) {
               </AlertDescription>
             </Alert>
           ) : null}
-          <h3 className="font-mono text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
-            {t("org.agent.backend.title")}
-          </h3>
-          <Select
-            value={backendId > 0 ? String(backendId) : ""}
-            onValueChange={(v) =>
-              patch({ backendId: Number(v) }, { immediate: true })
-            }
-          >
-            <SelectTrigger
-              aria-label={t("org.agent.backend.title")}
-              className="h-auto bg-input-bg px-3 py-2.5"
-            >
-              <div className="flex min-w-0 items-center gap-2.5">
-                <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-sm bg-secondary text-foreground">
-                  <Wrench className="size-3.5" aria-hidden="true" />
-                </span>
-                {selectedBackend ? (
-                  <div className="flex min-w-0 flex-col items-start">
-                    <span className="max-w-full truncate text-sm font-semibold text-foreground">
-                      {selectedBackend.name}
-                    </span>
-                    <span className="max-w-full truncate font-mono text-2xs font-normal text-muted-foreground">
-                      {backendProviderSummary(selectedBackend, t)}
-                    </span>
-                  </div>
-                ) : (
-                  <SelectValue placeholder={t("common.unassigned")} />
-                )}
-              </div>
-            </SelectTrigger>
-            <SelectContent>
-              {props.backends.map((b) => (
-                <SelectItem key={b.id} value={String(b.id)}>
-                  <div className="flex min-w-0 flex-col items-start">
-                    <span className="max-w-full truncate text-sm font-semibold">
-                      {b.name}
-                    </span>
-                    <span className="max-w-full truncate font-mono text-2xs text-muted-foreground">
-                      {backendProviderSummary(b, t)}
-                    </span>
-                  </div>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-2xs text-muted-foreground">
-            {t(
-              backendHintKeys[selectedBackend?.type ?? ""] ??
-                "org.agent.backendHints.default",
-            )}
-          </p>
+          <ExecTargetList
+            agentId={props.agent.id}
+            agentName={props.agent.name}
+            targets={execTargets.map((t) => ({
+              agentBackendId: t.agentBackendId,
+            }))}
+            backends={backendsForList}
+            onChange={patchExecTargets}
+            saveRejected={pendingInvalid && execTargets.length === 0}
+          />
         </section>
 
         <section className="space-y-2" data-slot="agent-section-prompt">
@@ -605,74 +641,103 @@ export function OrgDetailAgent(props: Props) {
           </div>
         </section>
 
-        <section className="space-y-2.5" data-slot="agent-section-skills">
-          {caps?.has("skills") ? (
-            <>
-              <GrantedChips
-                title={t("org.agent.skills.sectionTitle")}
-                countLabel={t("org.agent.skills.count", {
-                  inherit: inheritedIds.length,
-                  on: onSkills.length,
-                  off: offSkills.length,
-                })}
-                chipIcon={Boxes}
-                chips={skillChips}
-                addLabel={t("org.agent.skills.manage")}
-                removeLabel={(name) => t("capability.picker.remove", { name })}
-                onRemove={removeSkillOverride}
-                onAdd={openSkillPicker}
-                emptyLabel={t("org.agent.skills.empty")}
-                footerNote={t("org.agent.skills.inheritNote")}
-              />
-              <CapabilityPicker
-                open={skillPickerOpen}
-                title={t("org.agent.skillPicker.title")}
-                subtitle={t("org.agent.skillPicker.subtitle")}
-                searchPlaceholder={t("org.agent.skillPicker.searchPlaceholder")}
-                items={pickerItems}
-                loading={skillCatalog.loading}
-                triLabels={triLabels}
-                footerSummary={t("org.agent.skills.count", {
-                  inherit: inheritedIds.length,
-                  on: onSkills.length,
-                  off: offSkills.length,
-                })}
-                footerNote={t("org.agent.skillPicker.personalNote")}
-                onToggle={() => {}}
-                onSetState={setSkillState}
-                onConfirm={() => setSkillPickerOpen(false)}
-                onCancel={() => setSkillPickerOpen(false)}
-                onRescan={() => void skillCatalog.load(true)}
-              />
-            </>
-          ) : (
-            <div className="space-y-2">
-              <div className="flex items-center gap-1.5">
-                <h3 className="font-mono text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  {t("org.agent.skills.title")}
-                </h3>
-                <div className="flex-1" />
-                <span className="rounded bg-secondary px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
-                  {t("org.agent.skillsGate.pill")}
-                </span>
-              </div>
-              <div className="flex items-start gap-2.5 rounded-md border border-border bg-secondary/30 px-3 py-2.5">
-                <Ban
-                  className="mt-0.5 size-3.5 text-muted-foreground"
-                  aria-hidden="true"
-                />
-                <div className="space-y-0.5">
-                  <p className="text-2xs font-semibold text-foreground">
-                    {t("org.agent.skillsGate.title")}
-                  </p>
-                  <p className="font-mono text-2xs text-muted-foreground">
-                    {t("org.agent.skillsGate.description")}
-                  </p>
+        {execTargets.length > 0 && (
+          <section className="space-y-2.5" data-slot="agent-section-skills">
+            {singleTarget ? (
+              caps?.has("skills") ? (
+                <>
+                  <GrantedChips
+                    title={t("org.agent.skills.sectionTitle")}
+                    countLabel={t("org.agent.skills.count", {
+                      inherit: inheritedIds.length,
+                      on: onSkills.length,
+                      off: offSkills.length,
+                    })}
+                    chipIcon={Boxes}
+                    chips={skillChips}
+                    addLabel={t("org.agent.skills.manage")}
+                    removeLabel={(name) =>
+                      t("capability.picker.remove", { name })
+                    }
+                    onRemove={removeSkillOverride}
+                    onAdd={openSkillPicker}
+                    emptyLabel={t("org.agent.skills.empty")}
+                    footerNote={t("org.agent.skills.inheritNote")}
+                  />
+                  <CapabilityPicker
+                    open={skillPickerOpen}
+                    title={t("org.agent.skillPicker.title")}
+                    subtitle={t("org.agent.skillPicker.subtitle")}
+                    searchPlaceholder={t(
+                      "org.agent.skillPicker.searchPlaceholder",
+                    )}
+                    items={pickerItems}
+                    loading={skillCatalog.loading}
+                    triLabels={triLabels}
+                    footerSummary={t("org.agent.skills.count", {
+                      inherit: inheritedIds.length,
+                      on: onSkills.length,
+                      off: offSkills.length,
+                    })}
+                    footerNote={t("org.agent.skillPicker.personalNote")}
+                    onToggle={() => {}}
+                    onSetState={setSkillState}
+                    onConfirm={() => setSkillPickerOpen(false)}
+                    onCancel={() => setSkillPickerOpen(false)}
+                    onRescan={() => void skillCatalog.load(true)}
+                  />
+                </>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-1.5">
+                    <h3 className="font-mono text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {t("org.agent.skills.title")}
+                    </h3>
+                    <div className="flex-1" />
+                    <span className="rounded bg-secondary px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
+                      {t("org.agent.skillsGate.pill")}
+                    </span>
+                  </div>
+                  <div className="flex items-start gap-2.5 rounded-md border border-border bg-secondary/30 px-3 py-2.5">
+                    <Ban
+                      className="mt-0.5 size-3.5 text-muted-foreground"
+                      aria-hidden="true"
+                    />
+                    <div className="space-y-0.5">
+                      <p className="text-2xs font-semibold text-foreground">
+                        {t("org.agent.skillsGate.title")}
+                      </p>
+                      <p className="font-mono text-2xs text-muted-foreground">
+                        {t("org.agent.skillsGate.description")}
+                      </p>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
-          )}
-        </section>
+              )
+            ) : (
+              <>
+                <h3 className="font-mono text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {t("org.agent.skills.sectionTitle")}
+                </h3>
+                {execTargets.map((target, index) => (
+                  <ExecTargetSkillsBlock
+                    key={target.agentBackendId}
+                    agentId={props.agent.id}
+                    index={index}
+                    total={execTargets.length}
+                    backend={backendById.get(target.agentBackendId)}
+                    skills={target.skills}
+                    onSkillsChange={(next) => patchTargetSkills(index, next)}
+                    copySources={copySourcesFor(index)}
+                  />
+                ))}
+                <p className="font-mono text-2xs text-muted-foreground">
+                  {t("org.agent.skills.inheritNote")}
+                </p>
+              </>
+            )}
+          </section>
+        )}
 
         {caps?.has("mcp_tools") && (
           <section className="space-y-2.5" data-slot="agent-section-tools">
@@ -758,25 +823,41 @@ export function OrgDetailAgent(props: Props) {
   );
 }
 
-function backendProviderSummary(
-  backend: BackendSummaryLike,
-  t: TFunction,
-): string {
-  const providerName = backend.llmProviderName?.trim();
-  const model = backend.llmProviderModel?.trim();
-  const inactiveSuffix =
-    backend.llmProviderActive === false && providerName
-      ? t("org.agent.backend.inactiveSuffix")
-      : "";
-
-  if (providerName && model) {
-    return `${providerName} · ${model}${inactiveSuffix}`;
-  }
-  if (providerName) {
-    return `${providerName}${inactiveSuffix}`;
-  }
-  if (model) {
-    return model;
-  }
-  return t("org.agent.backend.unlinkedProvider");
+// backendItemFromSummary 把 AgentItem.backend（department_svc.BackendSummary，只有
+// 少数字段的只读摘要）撑成 ExecTargetList/ExecTargetSkillsBlock 期望的
+// agent_backend_svc.BackendItem 形状——只在 props.backends 全量列表还没覆盖这个
+// backend 时才用得到这份兜底，撑出来的字段（deviceId 等）留空/假值即可：这个兜底
+// 场景下这个 backend 本来就只知道这几个摘要字段。
+function backendItemFromSummary(
+  b: department_svc.BackendSummary,
+): agent_backend_svc.BackendItem {
+  return {
+    id: b.id,
+    type: b.type,
+    name: b.name,
+    llmProviderKey: "",
+    llmProviderName: b.llmProviderName,
+    llmProviderType: "",
+    llmProviderModel: b.llmProviderModel,
+    llmProviderActive: b.llmProviderActive,
+    cliPath: "",
+    modelRoutes: "",
+    sandbox: "",
+    approval: "",
+    envJson: "",
+    reasoningEffort: "",
+    defaultPermissionMode: "",
+    defaultModel: "",
+    openClawGatewayUrl: "",
+    openClawAgentId: "",
+    openClawDefaultModel: "",
+    openClawSessionMode: "",
+    hasToken: false,
+    deviceId: "",
+    deviceName: "",
+    online: false,
+    agentCount: 0,
+    createtime: 0,
+    updatetime: 0,
+  };
 }

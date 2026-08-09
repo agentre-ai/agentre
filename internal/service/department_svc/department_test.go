@@ -193,6 +193,7 @@ func setupLoadSvc(t *testing.T) (
 	*mock_agent_repo.MockAgentRepo,
 	*mock_agent_backend_repo.MockAgentBackendRepo,
 	*mock_llm_provider_repo.MockLLMProviderRepo,
+	*mock_agent_repo.MockAgentExecTargetRepo,
 	*departmentSvc,
 ) {
 	t.Helper()
@@ -202,16 +203,18 @@ func setupLoadSvc(t *testing.T) (
 	agentMock := mock_agent_repo.NewMockAgentRepo(ctrl)
 	backendMock := mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl)
 	providerMock := mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl)
+	execTargetMock := mock_agent_repo.NewMockAgentExecTargetRepo(ctrl)
 	department_repo.RegisterDepartment(deptMock)
 	agent_repo.RegisterAgent(agentMock)
 	agent_backend_repo.RegisterAgentBackend(backendMock)
 	llm_provider_repo.RegisterLLMProvider(providerMock)
-	return context.Background(), deptMock, agentMock, backendMock, providerMock, &departmentSvc{now: func() int64 { return 1700000000 }}
+	agent_repo.RegisterAgentExecTarget(execTargetMock)
+	return context.Background(), deptMock, agentMock, backendMock, providerMock, execTargetMock, &departmentSvc{now: func() int64 { return 1700000000 }}
 }
 
 func TestLoad_ToolsProjectionAndAvailableTools(t *testing.T) {
 	convey.Convey("Load 部门+Agent", t, func() {
-		ctx, deptMock, agentMock, backendMock, providerMock, svc := setupLoadSvc(t)
+		ctx, deptMock, agentMock, backendMock, providerMock, execTargetMock, svc := setupLoadSvc(t)
 
 		convey.Convey("AgentItem.Tools 投影 + LoadOrgResponse.AvailableTools == agenttool.Keys()", func() {
 			deptMock.EXPECT().List(gomock.Any()).Return([]*department_entity.Department{
@@ -226,6 +229,7 @@ func TestLoad_ToolsProjectionAndAvailableTools(t *testing.T) {
 			}, nil)
 			backendMock.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{}, nil)
 			providerMock.EXPECT().List(gomock.Any()).Return(nil, nil)
+			execTargetMock.EXPECT().ListByAgents(gomock.Any(), []int64{10}).Return(nil, nil)
 
 			resp, err := svc.Load(ctx, &LoadOrgRequest{})
 			assert.NoError(t, err)
@@ -234,6 +238,42 @@ func TestLoad_ToolsProjectionAndAvailableTools(t *testing.T) {
 			assert.Equal(t, "org", resp.Agents[0].Tools[0].Key)
 			assert.True(t, resp.Agents[0].Tools[0].Enabled)
 			assert.Equal(t, agenttool.Keys(), resp.AvailableTools)
+		})
+	})
+}
+
+// TestLoad_ExecTargets 锁住 R15/R15e：AgentItem.ExecTargets 按 sort_order 给出有序
+// 执行目标列表，每一档带着自己的技能授权（存放位置已下沉到执行目标行）。
+func TestLoad_ExecTargets(t *testing.T) {
+	convey.Convey("Load 部门+Agent 的执行目标列表", t, func() {
+		ctx, deptMock, agentMock, backendMock, providerMock, execTargetMock, svc := setupLoadSvc(t)
+
+		convey.Convey("多档 → AgentItem.ExecTargets 按 sort_order 给出，各自带技能", func() {
+			deptMock.EXPECT().List(gomock.Any()).Return(nil, nil)
+			agentMock.EXPECT().List(gomock.Any()).Return([]*agent_entity.Agent{
+				{ID: 10, Name: "Eva", Status: 1, PromptJSON: "[]", SkillsJSON: "[]", ToolsJSON: "[]"},
+			}, nil)
+			backendMock.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{}, nil)
+			providerMock.EXPECT().List(gomock.Any()).Return(nil, nil)
+			execTargetMock.EXPECT().ListByAgents(gomock.Any(), []int64{10}).Return(
+				map[int64][]*agent_entity.AgentExecTarget{
+					10: {
+						{ID: 1, AgentID: 10, AgentBackendID: 51, SortOrder: 0, SkillsJSON: `[{"id":"superpowers@x","enabled":true}]`},
+						{ID: 2, AgentID: 10, AgentBackendID: 52, SortOrder: 1, SkillsJSON: `[]`},
+					},
+				}, nil)
+
+			resp, err := svc.Load(ctx, &LoadOrgRequest{})
+			assert.NoError(t, err)
+			if assert.Len(t, resp.Agents, 1) && assert.Len(t, resp.Agents[0].ExecTargets, 2) {
+				assert.Equal(t, int64(51), resp.Agents[0].ExecTargets[0].AgentBackendID)
+				if assert.Len(t, resp.Agents[0].ExecTargets[0].Skills, 1) {
+					assert.Equal(t, "superpowers@x", resp.Agents[0].ExecTargets[0].Skills[0].ID)
+					assert.True(t, resp.Agents[0].ExecTargets[0].Skills[0].Enabled)
+				}
+				assert.Equal(t, int64(52), resp.Agents[0].ExecTargets[1].AgentBackendID)
+				assert.Empty(t, resp.Agents[0].ExecTargets[1].Skills)
+			}
 		})
 	})
 }

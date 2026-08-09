@@ -39,6 +39,17 @@ type ExecTargetUnavailable struct {
 	Hint           string
 }
 
+// ExecTargetAvailabilityView 是单个执行目标档的可用性判定结果，供组织架构页 Agent
+// 详情逐档展示（R15，任务 12）。只含原语字段——不透出 agent_backend_entity.AgentBackend
+// 实体（Wails 边界只过 DTO，见 internal/app 的既有约定）；backend 名称/机器等展示信息
+// 由前端按 AgentBackendID 去已经在手的 backends 列表里查，不在这里重复。
+type ExecTargetAvailabilityView struct {
+	AgentBackendID int64       `json:"agentBackendId"`
+	Available      bool        `json:"available"`
+	Reason         BlockReason `json:"reason"`
+	Hint           string      `json:"hint"`
+}
+
 // ExecTargetNoneAvailableError 在一个 Agent 的执行目标列表非空、但逐档判定全部不可用时
 // 由 PickExecTarget 返回。Reasons 按列表顺序给出每一档的原因，供调用方结构化消费；
 // Error() 把同一份信息渲染成文本，是 Wails 边界唯一透给前端的通道（只过 Error() 字符串）。
@@ -110,6 +121,38 @@ func (s *chatSvc) PickExecTarget(ctx context.Context, agentID int64, projectID i
 		},
 		Reasons: unavailable,
 	}
+}
+
+// ListExecTargetAvailability 逐档判定一个 Agent 的执行目标列表可用性，供组织架构页
+// 展示（R15，任务 12）。与 PickExecTarget 共用同一套判定原语（AgentBackend.Find +
+// evalExecTargetAvailability），但刻意**不在遇到第一个可用档时提前返回**——界面要
+// 同时看到列表里每一档的状态（含徽标「当前生效/在线/离线/未配对/…」），不只是最终
+// 会派发到哪一档。projectID<=0（自由会话）不做项目路径判定，与 PickExecTarget 一致。
+// 空列表返回空切片、无错误——「保存被拒」是写路径（agent_svc.Update）的职责，读路径
+// 只如实报告。
+func (s *chatSvc) ListExecTargetAvailability(ctx context.Context, agentID int64, projectID int64) ([]ExecTargetAvailabilityView, error) {
+	targets, err := agent_repo.AgentExecTarget().ListByAgent(ctx, agentID)
+	if err != nil {
+		return nil, operationFailedWithCause(ctx, err, zap.Int64("agentId", agentID))
+	}
+	out := make([]ExecTargetAvailabilityView, 0, len(targets))
+	for _, target := range targets {
+		be, err := agent_backend_repo.AgentBackend().Find(ctx, target.AgentBackendID)
+		if err != nil {
+			return nil, operationFailedWithCause(ctx, err, zap.Int64("agentBackendId", target.AgentBackendID))
+		}
+		reason, hint, err := s.evalExecTargetAvailability(ctx, be, projectID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ExecTargetAvailabilityView{
+			AgentBackendID: target.AgentBackendID,
+			Available:      reason == "",
+			Reason:         reason,
+			Hint:           hint,
+		})
+	}
+	return out, nil
 }
 
 // evalExecTargetAvailability 判一档执行目标是否可用（R15）：

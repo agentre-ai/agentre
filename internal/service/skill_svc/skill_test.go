@@ -160,6 +160,59 @@ func TestEnabledPluginsMap_DoesNotUnionAcrossTargets(t *testing.T) {
 	})
 }
 
+// TestListAgentSkillPacksForTarget_UsesGivenTargetNotAgentPrimary 是任务 12(组织
+// 架构页"一档一块")的读口:发现来源与授权标注都钉死在调用方给出的那一档
+// (agentBackendID),不是 Agent 的主档(sort_order 最小的那档,ListAgentSkillPacks
+// 走的路径)——两档各自独立,互不干扰、不做并集(R15e)。
+func TestListAgentSkillPacksForTarget_UsesGivenTargetNotAgentPrimary(t *testing.T) {
+	Convey("按 agentBackendID 取目录:发现与授权都钉在给定的那一档,不是 Agent 的主档", t, func() {
+		ctrl := gomock.NewController(t)
+		al := mock_skill_svc.NewMockAgentLookup(ctrl)
+		bl := mock_skill_svc.NewMockBackendLookup(ctrl)
+		bl.EXPECT().Find(gomock.Any(), int64(11)).Return(&agent_backend_entity.AgentBackend{
+			Type: string(agent_backend_entity.TypeClaudeCode),
+		}, nil).AnyTimes()
+		restore := agentskill.SwapDiscovererForTest(agent_backend_entity.TypeClaudeCode, fakeDisc{[]agentskill.SkillPack{
+			{ID: "superpowers@x", Name: "superpowers", Installed: true, Source: agentskill.SourceInstalled},
+		}})
+		defer restore()
+		primary := skillTarget(agent_entity.AgentSkillItem{ID: "opsctl@x", Enabled: true})
+		primary.AgentBackendID = 9
+		second := skillTarget(agent_entity.AgentSkillItem{ID: "superpowers@x", Enabled: true})
+		second.AgentBackendID = 11
+		et := &fakeExecTargets{rows: []*agent_entity.AgentExecTarget{primary, second}}
+		s := newForTest(al, bl, et)
+
+		cat, err := s.ListAgentSkillPacksForTarget(context.Background(), 6, 11, false)
+		So(err, ShouldBeNil)
+		byID := map[string]SkillPackDTO{}
+		for _, p := range cat.Packs {
+			byID[p.ID] = p
+		}
+		So(byID["superpowers@x"].Enabled, ShouldBeTrue)
+		_, hasOpsctl := byID["opsctl@x"]
+		So(hasOpsctl, ShouldBeFalse) // 第一档(主档)的授权不该混进来
+	})
+}
+
+// TestListAgentSkillPacksForTarget_UnknownTargetReturnsEmptyCatalog 找不到该档
+// (agentBackendID 不在这个 Agent 的列表里)时返回空目录、不是错误——与
+// a==nil 时既有的处理口径一致。
+func TestListAgentSkillPacksForTarget_UnknownTargetReturnsEmptyCatalog(t *testing.T) {
+	Convey("给的 agentBackendID 不在该 Agent 的执行目标列表里 → 空目录", t, func() {
+		ctrl := gomock.NewController(t)
+		al := mock_skill_svc.NewMockAgentLookup(ctrl)
+		bl := mock_skill_svc.NewMockBackendLookup(ctrl)
+		et := &fakeExecTargets{rows: []*agent_entity.AgentExecTarget{skillTarget()}}
+		et.rows[0].AgentBackendID = 9
+		s := newForTest(al, bl, et)
+
+		cat, err := s.ListAgentSkillPacksForTarget(context.Background(), 6, 999, false)
+		So(err, ShouldBeNil)
+		So(cat.Packs, ShouldBeEmpty)
+	})
+}
+
 func TestListAgentSkillPacks(t *testing.T) {
 	Convey("合并推荐 + 发现 + 授权标注", t, func() {
 		ctrl := gomock.NewController(t)

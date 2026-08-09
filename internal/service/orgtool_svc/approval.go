@@ -204,15 +204,16 @@ func (s *orgtoolSvc) updateAgent(ctx context.Context, rawArgs json.RawMessage) (
 		prompt = args.Prompt
 	}
 	if _, err := s.agentCommand.Update(ctx, &agent_svc.UpdateAgentRequest{
-		ID:             args.ID,
-		Name:           name,
-		Description:    description,
-		AvatarColor:    cur.AvatarColor,
-		AvatarIcon:     cur.AvatarIcon,
-		AgentBackendID: cur.AgentBackendID,
-		Prompt:         prompt,
-		Skills:         cur.Skills,
-		Tools:          cur.Tools,
+		ID:          args.ID,
+		Name:        name,
+		Description: description,
+		AvatarColor: cur.AvatarColor,
+		AvatarIcon:  cur.AvatarIcon,
+		Prompt:      prompt,
+		// 这个工具不改执行目标列表/技能授权(R15/R15e)，原样带回去——不重复校验，
+		// 也不把 Agent 现有的多档配置折叠成一档。
+		ExecTargets: execTargetInputsFromItem(cur.ExecTargets),
+		Tools:       cur.Tools,
 	}); err != nil {
 		return "", err
 	}
@@ -271,4 +272,15 @@ func (s *orgtoolSvc) loadAgent(ctx context.Context, id int64) (*department_svc.A
 		}
 	}
 	return nil, fmt.Errorf("找不到 agent(id=%d)", id)
+}
+
+// execTargetInputsFromItem 把 AgentItem.ExecTargets(读侧 DTO)转成
+// agent_svc.UpdateAgentRequest.ExecTargets(写侧 DTO)，原样透传——这个工具从不改
+// 执行目标列表，只是把现值带回写请求里（agent_svc.Update 要求整份替换）。
+func execTargetInputsFromItem(items []department_svc.AgentExecTargetItem) []agent_svc.ExecTargetInputDTO {
+	out := make([]agent_svc.ExecTargetInputDTO, 0, len(items))
+	for _, it := range items {
+		out = append(out, agent_svc.ExecTargetInputDTO{AgentBackendID: it.AgentBackendID, Skills: it.Skills})
+	}
+	return out
 }

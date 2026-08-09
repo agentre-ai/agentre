@@ -98,7 +98,7 @@ func (s *agentSvc) Create(ctx context.Context, req *CreateAgentRequest) (*Create
 	}
 	// 执行目标行随 Agent 的写入路径一起变化，级联在同步层展开（R15/R15e）。
 	sync_svc.NotifyCreate(ctx, syncwire.KindAgent, a.ID, a.SyncMeta)
-	return &CreateAgentResponse{Item: toItem(a)}, nil
+	return &CreateAgentResponse{Item: toItem(a, execTargetSnapshot(ctx, a.ID))}, nil
 }
 
 func (s *agentSvc) Update(ctx context.Context, req *UpdateAgentRequest) (*UpdateAgentResponse, error) {
@@ -119,18 +119,20 @@ func (s *agentSvc) Update(ctx context.Context, req *UpdateAgentRequest) (*Update
 			return nil, i18n.NewError(ctx, code.AgentNameDuplicated)
 		}
 	}
+	targets, err := s.buildExecTargets(ctx, req.ExecTargets)
+	if err != nil {
+		return nil, err
+	}
 	existing.Name = newName
 	existing.Description = strings.TrimSpace(req.Description)
 	existing.AvatarColor = strings.TrimSpace(req.AvatarColor)
 	existing.AvatarIcon = strings.TrimSpace(req.AvatarIcon)
-	if req.AgentBackendID > 0 && req.AgentBackendID != existing.AgentBackendID {
-		if err := s.requireActiveBackend(ctx, req.AgentBackendID); err != nil {
-			return nil, err
-		}
-		existing.AgentBackendID = req.AgentBackendID
-	}
+	// AgentBackendID/SkillsJSON 是 Agent 行上的历史派生字段（=targets[0]，其它只读
+	// 代码路径仍在读，见 department_svc.toAgentExecTargetItems 的调用点注释）；写口
+	// 只信 ExecTargets，这里只是把派生值保持同步，不重复做校验。
+	existing.AgentBackendID = targets[0].AgentBackendID
+	existing.SkillsJSON = targets[0].SkillsJSON
 	existing.SetPrompt(req.Prompt)
-	existing.SkillsJSON = encodeSkills(skillsFromDTO(req.Skills))
 	existing.SetTools(toolsFromDTO(req.Tools))
 	existing.Updatetime = s.now()
 	if err := existing.Check(ctx); err != nil {
@@ -139,12 +141,48 @@ func (s *agentSvc) Update(ctx context.Context, req *UpdateAgentRequest) (*Update
 	// 执行目标列表被这次写入重排/裁剪：被挤掉的档要各自落墓碑（R6），留下来的档
 	// 随 Agent 一起上行（同步层的 dependents）。快照必须在写之前取。
 	targetsBefore := execTargetSnapshot(ctx, existing.ID)
-	if err := agent_repo.Agent().Update(ctx, existing); err != nil {
+	if err := agent_repo.Agent().UpdateWithTargets(ctx, existing, targets); err != nil {
 		return nil, err
 	}
-	notifyDroppedExecTargets(ctx, targetsBefore, execTargetSnapshot(ctx, existing.ID))
+	targetsAfter := execTargetSnapshot(ctx, existing.ID)
+	notifyDroppedExecTargets(ctx, targetsBefore, targetsAfter)
 	sync_svc.NotifyUpdate(ctx, syncwire.KindAgent, existing.ID, existing.SyncMeta)
-	return &UpdateAgentResponse{Item: toItem(existing)}, nil
+	return &UpdateAgentResponse{Item: toItem(existing, targetsAfter)}, nil
+}
+
+// buildExecTargets 把 UpdateAgentRequest.ExecTargets 转成仓储层的执行目标列表：
+// 校验至少一项（R15：「列表为空的 Agent 不能起会话——界面在保存时就要求至少一项」，
+// 这里是那条校验的服务端防线）、每一档的 backend 存在且启用、同一个 Agent 不重复
+// 挂同一个 backend（前端「+ 添加」面板已经靠这个不变量把「已在列表中」的选项置灰，
+// 这里是同一条不变量的服务端防线）。
+func (s *agentSvc) buildExecTargets(ctx context.Context, items []ExecTargetInputDTO) ([]*agent_entity.AgentExecTarget, error) {
+	if len(items) == 0 {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	// 先做不碰 DB 的结构校验（每档 backendId 有效 + 同一个 Agent 不重复挂同一个
+	// backend），全部通过之后才逐个去查 backend 是否存在且启用——避免对一个注定
+	// 因结构问题被拒的请求发出多余的 Find 调用。
+	seen := make(map[int64]struct{}, len(items))
+	for _, it := range items {
+		if it.AgentBackendID <= 0 {
+			return nil, i18n.NewError(ctx, code.InvalidParameter)
+		}
+		if _, dup := seen[it.AgentBackendID]; dup {
+			return nil, i18n.NewError(ctx, code.InvalidParameter)
+		}
+		seen[it.AgentBackendID] = struct{}{}
+	}
+	out := make([]*agent_entity.AgentExecTarget, 0, len(items))
+	for _, it := range items {
+		if err := s.requireActiveBackend(ctx, it.AgentBackendID); err != nil {
+			return nil, err
+		}
+		out = append(out, &agent_entity.AgentExecTarget{
+			AgentBackendID: it.AgentBackendID,
+			SkillsJSON:     encodeSkills(skillsFromDTO(it.Skills)),
+		})
+	}
+	return out, nil
 }
 
 func (s *agentSvc) Move(ctx context.Context, req *MoveAgentRequest) (*MoveAgentResponse, error) {
@@ -176,7 +214,7 @@ func (s *agentSvc) Move(ctx context.Context, req *MoveAgentRequest) (*MoveAgentR
 	existing.ParentAgentID = req.NewParentAgentID
 	existing.SortOrder = sortOrder
 	sync_svc.NotifyUpdate(ctx, syncwire.KindAgent, existing.ID, existing.SyncMeta)
-	return &MoveAgentResponse{Item: toItem(existing)}, nil
+	return &MoveAgentResponse{Item: toItem(existing, execTargetSnapshot(ctx, existing.ID))}, nil
 }
 
 func (s *agentSvc) Reorder(ctx context.Context, req *ReorderAgentsRequest) error {
@@ -271,7 +309,7 @@ func (s *agentSvc) UploadAvatar(ctx context.Context, req *UploadAvatarRequest) (
 	if err := agent_repo.Agent().UpdateAvatar(ctx, existing.ID, req.DataURL, existing.Updatetime); err != nil {
 		return nil, err
 	}
-	return &UploadAvatarResponse{Item: toItem(existing)}, nil
+	return &UploadAvatarResponse{Item: toItem(existing, execTargetSnapshot(ctx, existing.ID))}, nil
 }
 
 func (s *agentSvc) DeleteAvatar(ctx context.Context, req *DeleteAvatarRequest) (*DeleteAvatarResponse, error) {
@@ -287,7 +325,7 @@ func (s *agentSvc) DeleteAvatar(ctx context.Context, req *DeleteAvatarRequest) (
 	if err := agent_repo.Agent().UpdateAvatar(ctx, existing.ID, "", existing.Updatetime); err != nil {
 		return nil, err
 	}
-	return &DeleteAvatarResponse{Item: toItem(existing)}, nil
+	return &DeleteAvatarResponse{Item: toItem(existing, execTargetSnapshot(ctx, existing.ID))}, nil
 }
 
 // SetPinned 切换 Agent 用户置顶。系统 agent 也允许置顶（虽然恒置顶），不特判。
@@ -455,7 +493,9 @@ func toolsFromDTO(items []department_svc.AgentToolDTO) []agent_entity.AgentToolI
 	return out
 }
 
-func toItem(a *agent_entity.Agent) *AgentItem {
+// toItem 把 Agent 行 + 它当前的执行目标列表打平成前端 DTO。targets 由调用方给出
+// （通常是刚写完之后的 execTargetSnapshot 结果），避免这里重复查询。
+func toItem(a *agent_entity.Agent, targets []*agent_entity.AgentExecTarget) *AgentItem {
 	rawSkills := decodeSkills(a.SkillsJSON)
 	skills := make([]department_svc.AgentSkillDTO, 0, len(rawSkills))
 	for _, s := range rawSkills {
@@ -480,10 +520,32 @@ func toItem(a *agent_entity.Agent) *AgentItem {
 		SortOrder:      a.SortOrder,
 		Prompt:         a.GetPrompt(),
 		Skills:         skills,
+		ExecTargets:    toAgentExecTargetItems(targets),
 		Tools:          tools,
 		Createtime:     a.Createtime,
 		Updatetime:     a.Updatetime,
 	}
+}
+
+// toAgentExecTargetItems 把执行目标行投影成前端 DTO（与 department_svc 的同名私有
+// 辅助函数职责相同，两处入口各自独立维护——见 agent_entity.AgentExecTarget 到
+// department_svc.AgentExecTargetItem 的转换，department_svc.Load 走批量查询、
+// 这里走单个 Agent 的写后快照，来源不同不合并）。
+func toAgentExecTargetItems(rows []*agent_entity.AgentExecTarget) []department_svc.AgentExecTargetItem {
+	out := make([]department_svc.AgentExecTargetItem, 0, len(rows))
+	for _, row := range rows {
+		rawSkills := row.GetSkills()
+		skills := make([]department_svc.AgentSkillDTO, 0, len(rawSkills))
+		for _, s := range rawSkills {
+			skills = append(skills, department_svc.AgentSkillDTO{ID: s.ID, Enabled: s.Enabled})
+		}
+		out = append(out, department_svc.AgentExecTargetItem{
+			ID:             row.ID,
+			AgentBackendID: row.AgentBackendID,
+			Skills:         skills,
+		})
+	}
+	return out
 }
 
 // execTargetSnapshot 取某个 Agent 当前的执行目标行；同步未装配时一次库都不查

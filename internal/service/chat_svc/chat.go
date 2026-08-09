@@ -95,6 +95,10 @@ type ChatSvc interface {
 	// 原因，Wails 只透 Error() 字符串，因此原因也编进了那条字符串里）。
 	// 不做会话粘性 —— 挑到之后钉不钉在这一档由调用方决定（R15b，块 4）。
 	PickExecTarget(ctx context.Context, agentID int64, projectID int64) (*ExecTargetChoice, error)
+	// ListExecTargetAvailability 逐档判定一个 Agent 的执行目标列表可用性（R15，任务
+	// 12 的组织架构页用）。与 PickExecTarget 的关键差异是不提前返回——每一档都要给出
+	// 结果，供界面同时展示。
+	ListExecTargetAvailability(ctx context.Context, agentID int64, projectID int64) ([]ExecTargetAvailabilityView, error)
 	Send(ctx context.Context, req *SendRequest) (*SendResponse, error)
 	Compact(ctx context.Context, req *CompactRequest) (*CompactResponse, error)
 	GetGoal(ctx context.Context, req *GoalRequest) (*GoalResponse, error)

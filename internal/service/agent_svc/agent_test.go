@@ -124,7 +124,7 @@ func TestCreateAgent(t *testing.T) {
 
 func TestUpdateAgent(t *testing.T) {
 	convey.Convey("更新 Agent", t, func() {
-		ctx, agentMock, _, _, svc := setupSvc(t)
+		ctx, agentMock, _, backendMock, svc := setupSvc(t)
 
 		convey.Convey("AvatarIcon round-trip", func() {
 			agentMock.EXPECT().Find(gomock.Any(), int64(42)).
@@ -133,13 +133,16 @@ func TestUpdateAgent(t *testing.T) {
 					DepartmentID: 2, AgentBackendID: 5, Status: consts.ACTIVE,
 					PromptJSON: "[]", SkillsJSON: "[]",
 				}, nil)
+			backendMock.EXPECT().Find(gomock.Any(), int64(5)).Return(activeBackend(5), nil)
 			var captured *agent_entity.Agent
-			agentMock.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, a *agent_entity.Agent) error {
-				captured = a
-				return nil
-			})
+			agentMock.EXPECT().UpdateWithTargets(gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, a *agent_entity.Agent, _ []*agent_entity.AgentExecTarget) error {
+					captured = a
+					return nil
+				})
 			resp, err := svc.Update(ctx, &UpdateAgentRequest{
 				ID: 42, Name: "Eva", AvatarColor: "agent-2", AvatarIcon: "hammer",
+				ExecTargets: []ExecTargetInputDTO{{AgentBackendID: 5}},
 			})
 			assert.NoError(t, err)
 			assert.Equal(t, "hammer", captured.AvatarIcon)
@@ -153,12 +156,15 @@ func TestUpdateAgent(t *testing.T) {
 					DepartmentID: 2, AgentBackendID: 5, Status: consts.ACTIVE,
 					PromptJSON: "[]", SkillsJSON: "[]",
 				}, nil)
-			agentMock.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, a *agent_entity.Agent) error {
-				assert.Equal(t, "", a.AvatarIcon)
-				return nil
-			})
+			backendMock.EXPECT().Find(gomock.Any(), int64(5)).Return(activeBackend(5), nil)
+			agentMock.EXPECT().UpdateWithTargets(gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, a *agent_entity.Agent, _ []*agent_entity.AgentExecTarget) error {
+					assert.Equal(t, "", a.AvatarIcon)
+					return nil
+				})
 			_, err := svc.Update(ctx, &UpdateAgentRequest{
 				ID: 42, Name: "Eva", AvatarColor: "agent-2", AvatarIcon: "",
+				ExecTargets: []ExecTargetInputDTO{{AgentBackendID: 5}},
 			})
 			assert.NoError(t, err)
 		})
@@ -170,11 +176,69 @@ func TestUpdateAgent(t *testing.T) {
 					DepartmentID: 2, AgentBackendID: 5, Status: consts.ACTIVE,
 					PromptJSON: "[]", SkillsJSON: "[]",
 				}, nil)
+			backendMock.EXPECT().Find(gomock.Any(), int64(5)).Return(activeBackend(5), nil)
 			_, err := svc.Update(ctx, &UpdateAgentRequest{
 				ID: 42, Name: "Eva", AvatarColor: "agent-2",
-				AvatarIcon: strings.Repeat("x", 33),
+				AvatarIcon:  strings.Repeat("x", 33),
+				ExecTargets: []ExecTargetInputDTO{{AgentBackendID: 5}},
 			})
 			assert.Error(t, err)
+		})
+
+		convey.Convey("空执行目标列表拒绝保存（R15：列表为空的 Agent 不能起会话）", func() {
+			agentMock.EXPECT().Find(gomock.Any(), int64(42)).
+				Return(&agent_entity.Agent{
+					ID: 42, Name: "Eva", AvatarColor: "agent-2",
+					DepartmentID: 2, AgentBackendID: 5, Status: consts.ACTIVE,
+					PromptJSON: "[]", SkillsJSON: "[]",
+				}, nil)
+			_, err := svc.Update(ctx, &UpdateAgentRequest{
+				ID: 42, Name: "Eva", AvatarColor: "agent-2",
+			})
+			assert.Error(t, err)
+		})
+
+		convey.Convey("重复 backend 拒绝保存", func() {
+			agentMock.EXPECT().Find(gomock.Any(), int64(42)).
+				Return(&agent_entity.Agent{
+					ID: 42, Name: "Eva", AvatarColor: "agent-2",
+					DepartmentID: 2, AgentBackendID: 5, Status: consts.ACTIVE,
+					PromptJSON: "[]", SkillsJSON: "[]",
+				}, nil)
+			_, err := svc.Update(ctx, &UpdateAgentRequest{
+				ID: 42, Name: "Eva", AvatarColor: "agent-2",
+				ExecTargets: []ExecTargetInputDTO{{AgentBackendID: 5}, {AgentBackendID: 5}},
+			})
+			assert.Error(t, err)
+		})
+
+		convey.Convey("多档：全部写入并按顺序打平成响应", func() {
+			agentMock.EXPECT().Find(gomock.Any(), int64(42)).
+				Return(&agent_entity.Agent{
+					ID: 42, Name: "Eva", AvatarColor: "agent-2",
+					DepartmentID: 2, AgentBackendID: 5, Status: consts.ACTIVE,
+					PromptJSON: "[]", SkillsJSON: "[]",
+				}, nil)
+			backendMock.EXPECT().Find(gomock.Any(), int64(5)).Return(activeBackend(5), nil)
+			backendMock.EXPECT().Find(gomock.Any(), int64(6)).Return(activeBackend(6), nil)
+			var captured []*agent_entity.AgentExecTarget
+			agentMock.EXPECT().UpdateWithTargets(gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, _ *agent_entity.Agent, targets []*agent_entity.AgentExecTarget) error {
+					captured = targets
+					return nil
+				})
+			_, err := svc.Update(ctx, &UpdateAgentRequest{
+				ID: 42, Name: "Eva", AvatarColor: "agent-2",
+				ExecTargets: []ExecTargetInputDTO{
+					{AgentBackendID: 5, Skills: []department_svc.AgentSkillDTO{{ID: "superpowers@x", Enabled: true}}},
+					{AgentBackendID: 6},
+				},
+			})
+			assert.NoError(t, err)
+			if assert.Len(t, captured, 2) {
+				assert.Equal(t, int64(5), captured[0].AgentBackendID)
+				assert.Equal(t, int64(6), captured[1].AgentBackendID)
+			}
 		})
 	})
 }
@@ -354,7 +418,7 @@ func TestCreateAgent_WithTools(t *testing.T) {
 
 func TestUpdateAgent_WithTools(t *testing.T) {
 	convey.Convey("Update Agent 带 Tools", t, func() {
-		ctx, agentMock, _, _, svc := setupSvc(t)
+		ctx, agentMock, _, backendMock, svc := setupSvc(t)
 
 		convey.Convey("请求带 Tools → entity ToolsJSON 落值 + 响应 Item.Tools 回传", func() {
 			agentMock.EXPECT().Find(gomock.Any(), int64(42)).
@@ -363,14 +427,17 @@ func TestUpdateAgent_WithTools(t *testing.T) {
 					DepartmentID: 2, AgentBackendID: 5, Status: consts.ACTIVE,
 					PromptJSON: "[]", SkillsJSON: "[]", ToolsJSON: "[]",
 				}, nil)
+			backendMock.EXPECT().Find(gomock.Any(), int64(5)).Return(activeBackend(5), nil)
 			var captured *agent_entity.Agent
-			agentMock.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, a *agent_entity.Agent) error {
-				captured = a
-				return nil
-			})
+			agentMock.EXPECT().UpdateWithTargets(gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, a *agent_entity.Agent, _ []*agent_entity.AgentExecTarget) error {
+					captured = a
+					return nil
+				})
 			resp, err := svc.Update(ctx, &UpdateAgentRequest{
 				ID: 42, Name: "Eva", AvatarColor: "agent-2",
-				Tools: []department_svc.AgentToolDTO{{Key: "org", Enabled: false}},
+				ExecTargets: []ExecTargetInputDTO{{AgentBackendID: 5}},
+				Tools:       []department_svc.AgentToolDTO{{Key: "org", Enabled: false}},
 			})
 			assert.NoError(t, err)
 			tools := captured.GetTools()

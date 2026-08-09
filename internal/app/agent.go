@@ -45,9 +45,12 @@ func (a *App) SetAgentPinned(req *agent_svc.SetPinnedRequest) (*agent_svc.SetPin
 	return agent_svc.Agent().SetPinned(a.ctx, req)
 }
 
-// ListAgentSkillPacks 返回某 agent 可见的技能包目录(推荐 + 发现 + 已授权)。
-func (a *App) ListAgentSkillPacks(agentID int64, refresh bool) (skill_svc.SkillCatalogDTO, error) {
-	return skill_svc.Default().ListAgentSkillPacks(a.ctx, agentID, refresh)
+// ListAgentSkillPacks 返回某 agent 名下 agentBackendID 这一档执行目标可见的技能包
+// 目录(推荐 + 发现 + 已授权)——R15e「一档一块」：发现来源与授权都钉死在这一档，
+// 不与 Agent 名下别的档合并（任务 12：组织架构页技能节改成一档一块之后，每块各自
+// 用自己的 agentBackendID 调这里，不再只看 Agent 的主档）。
+func (a *App) ListAgentSkillPacks(agentID int64, agentBackendID int64, refresh bool) (skill_svc.SkillCatalogDTO, error) {
+	return skill_svc.Default().ListAgentSkillPacksForTarget(a.ctx, agentID, agentBackendID, refresh)
 }
 
 // ListAgentSkillCommands 返回当前 agent 在 cwd 中可调用的 Skill 命令目录。

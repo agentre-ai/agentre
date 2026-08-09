@@ -18,13 +18,13 @@ afterEach(() => {
 describe("useSkillCatalog", () => {
   it("does not fetch until load() is called", () => {
     const fn = stubBinding([]);
-    const { result } = renderHook(() => useSkillCatalog(7));
+    const { result } = renderHook(() => useSkillCatalog(7, 51));
     expect(fn).not.toHaveBeenCalled();
     expect(result.current.items).toEqual([]);
     expect(result.current.fetched).toBe(false);
   });
 
-  it("loads and maps packs on load(false)", async () => {
+  it("loads and maps packs on load(false), scoped to the given exec target's backend", async () => {
     const fn = stubBinding([
       {
         id: "sp@m",
@@ -37,11 +37,11 @@ describe("useSkillCatalog", () => {
         enabled: true,
       },
     ]);
-    const { result } = renderHook(() => useSkillCatalog(7));
+    const { result } = renderHook(() => useSkillCatalog(7, 51));
     await act(async () => {
       await result.current.load(false);
     });
-    expect(fn).toHaveBeenCalledWith(7, false);
+    expect(fn).toHaveBeenCalledWith(7, 51, false);
     await waitFor(() => expect(result.current.items).toHaveLength(1));
     expect(result.current.items[0].name).toBe("superpowers");
     expect(result.current.fetched).toBe(true);
@@ -49,18 +49,18 @@ describe("useSkillCatalog", () => {
 
   it("rescan calls the binding with refresh=true", async () => {
     const fn = stubBinding([]);
-    const { result } = renderHook(() => useSkillCatalog(7));
+    const { result } = renderHook(() => useSkillCatalog(7, 51));
     await act(async () => {
       await result.current.load(true);
     });
-    expect(fn).toHaveBeenCalledWith(7, true);
+    expect(fn).toHaveBeenCalledWith(7, 51, true);
   });
 
   it("captures errors", async () => {
     const fn = vi.fn().mockRejectedValue(new Error("boom"));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (window as any).go = { app: { App: { ListAgentSkillPacks: fn } } };
-    const { result } = renderHook(() => useSkillCatalog(7));
+    const { result } = renderHook(() => useSkillCatalog(7, 51));
     await act(async () => {
       await result.current.load(false);
     });
@@ -69,8 +69,20 @@ describe("useSkillCatalog", () => {
 
   it("auto-loads once on mount when autoLoad is true", async () => {
     const fn = stubBinding([]);
-    renderHook(() => useSkillCatalog(7, true));
+    renderHook(() => useSkillCatalog(7, 51, true));
     await waitFor(() => expect(fn).toHaveBeenCalledTimes(1));
-    expect(fn).toHaveBeenCalledWith(7, false);
+    expect(fn).toHaveBeenCalledWith(7, 51, false);
+  });
+
+  it("re-fetches when the exec target's backend id changes (different block, same agent)", async () => {
+    const fn = stubBinding([]);
+    const { rerender } = renderHook(
+      ({ backendId }) => useSkillCatalog(7, backendId, true),
+      { initialProps: { backendId: 51 } },
+    );
+    await waitFor(() => expect(fn).toHaveBeenCalledTimes(1));
+    rerender({ backendId: 52 });
+    await waitFor(() => expect(fn).toHaveBeenCalledTimes(2));
+    expect(fn).toHaveBeenLastCalledWith(7, 52, false);
   });
 });

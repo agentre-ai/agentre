@@ -358,3 +358,17 @@ func (mr *MockAgentRepoMockRecorder) UpdateRow(ctx, a any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateRow", reflect.TypeOf((*MockAgentRepo)(nil).UpdateRow), ctx, a)
 }
+
+// UpdateWithTargets mocks base method.
+func (m *MockAgentRepo) UpdateWithTargets(ctx context.Context, a *agent_entity.Agent, targets []*agent_entity.AgentExecTarget) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateWithTargets", ctx, a, targets)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateWithTargets indicates an expected call of UpdateWithTargets.
+func (mr *MockAgentRepoMockRecorder) UpdateWithTargets(ctx, a, targets any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateWithTargets", reflect.TypeOf((*MockAgentRepo)(nil).UpdateWithTargets), ctx, a, targets)
+}

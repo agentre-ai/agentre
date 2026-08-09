@@ -325,6 +325,37 @@ func TestUpdateReplacesExecTarget(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestUpdateWithTargetsReplacesGivenOrderedList 写口:UpdateWithTargets 让调用方
+// （agent_svc,R15 多档编辑)直接给出完整的有序执行目标列表,不像 Update 那样把
+// a.AgentBackendID/a.SkillsJSON 折成单元素列表——两档都要落地,顺序即 sort_order。
+func TestUpdateWithTargetsReplacesGivenOrderedList(t *testing.T) {
+	ctx, mock, repo := setupRepo(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `agents` SET").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT \\* FROM `agent_exec_targets` WHERE agent_id = \\? ORDER BY sort_order ASC, id ASC").
+		WithArgs(int64(42)).
+		WillReturnRows(execTargetRows())
+	mock.ExpectExec("INSERT INTO `agent_exec_targets`").
+		WithArgs(
+			int64(42), int64(9), 0, `[{"id":"opsctl@x","enabled":true}]`,
+			sqlmock.AnyArg(), int64(0), int64(0), int64(0), "", int64(0),
+			int64(42), int64(10), 1, `[]`,
+			sqlmock.AnyArg(), int64(0), int64(0), int64(0), "", int64(0),
+		).
+		WillReturnResult(sqlmock.NewResult(1, 2))
+	mock.ExpectCommit()
+
+	err := repo.UpdateWithTargets(ctx, &agent_entity.Agent{
+		ID: 42, Name: "Eva", DepartmentID: 1, AgentBackendID: 9, Status: consts.ACTIVE,
+		SkillsJSON: `[{"id":"opsctl@x","enabled":true}]`,
+	}, []*agent_entity.AgentExecTarget{
+		{AgentBackendID: 9, SkillsJSON: `[{"id":"opsctl@x","enabled":true}]`},
+		{AgentBackendID: 10, SkillsJSON: `[]`},
+	})
+	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 // TestUpsertFromSync_InsertsNewRowWithIncomingSyncID 下行来的执行目标沿用它自己的
 // 同步标识落地(R1);Agent 下还没有别的行时直接插入。
 func TestUpsertFromSync_InsertsNewRowWithIncomingSyncID(t *testing.T) {

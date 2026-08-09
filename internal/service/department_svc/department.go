@@ -65,6 +65,14 @@ func (s *departmentSvc) Load(ctx context.Context, _ *LoadOrgRequest) (*LoadOrgRe
 	if err != nil {
 		return nil, err
 	}
+	agentIDs := make([]int64, 0, len(agents))
+	for _, a := range agents {
+		agentIDs = append(agentIDs, a.ID)
+	}
+	execTargetsByAgent, err := agent_repo.AgentExecTarget().ListByAgents(ctx, agentIDs)
+	if err != nil {
+		return nil, err
+	}
 
 	providerByKey := make(map[string]string)
 	providerModelByKey := make(map[string]string)
@@ -167,10 +175,11 @@ func (s *departmentSvc) Load(ctx context.Context, _ *LoadOrgRequest) (*LoadOrgRe
 			// 技能授权已下沉到 AgentExecTarget（R15e），Agent 行的 SkillsJSON 只是
 			// 遗留写入载荷；这里借一个临时的执行目标值对象复用同一份解码逻辑，
 			// 不引入新的仓储依赖（department_svc 不消费 agent_repo.AgentExecTarget()）。
-			Skills:     toAgentSkillDTO((&agent_entity.AgentExecTarget{SkillsJSON: a.SkillsJSON}).GetSkills()),
-			Tools:      toAgentToolDTO(a.GetTools()),
-			Createtime: a.Createtime,
-			Updatetime: a.Updatetime,
+			Skills:      toAgentSkillDTO((&agent_entity.AgentExecTarget{SkillsJSON: a.SkillsJSON}).GetSkills()),
+			ExecTargets: toAgentExecTargetItems(execTargetsByAgent[a.ID]),
+			Tools:       toAgentToolDTO(a.GetTools()),
+			Createtime:  a.Createtime,
+			Updatetime:  a.Updatetime,
 		}
 		if d := deptByID[a.DepartmentID]; d != nil {
 			item.DepartmentName = d.Name
@@ -185,6 +194,20 @@ func (s *departmentSvc) Load(ctx context.Context, _ *LoadOrgRequest) (*LoadOrgRe
 	}
 	resp.AvailableTools = agenttool.Keys()
 	return resp, nil
+}
+
+// toAgentExecTargetItems 把一个 Agent 的执行目标行（已按 sort_order 升序，见
+// AgentExecTargetRepo.ListByAgents 的接口注释）投影成前端 DTO。
+func toAgentExecTargetItems(rows []*agent_entity.AgentExecTarget) []AgentExecTargetItem {
+	out := make([]AgentExecTargetItem, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, AgentExecTargetItem{
+			ID:             row.ID,
+			AgentBackendID: row.AgentBackendID,
+			Skills:         toAgentSkillDTO(row.GetSkills()),
+		})
+	}
+	return out
 }
 
 func toAgentSkillDTO(items []agent_entity.AgentSkillItem) []AgentSkillDTO {

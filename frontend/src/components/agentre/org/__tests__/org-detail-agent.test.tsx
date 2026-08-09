@@ -7,8 +7,18 @@ import { OrgDetailAgent } from "../org-detail-agent";
 import type { OrgAgent, OrgDepartment } from "../types";
 import type { agent_backend_svc } from "../../../../../wailsjs/go/models";
 
-const agent = (overrides: Partial<OrgAgent> = {}): OrgAgent =>
-  ({
+// agent() 是测试夹具：agentBackendId/skills 是历史派生字段（=execTargets[0]，
+// 仍被组织架构页当前只读代码路径消费的兼容视图），execTargets 才是真源
+// （R15/R15e）。调用方沿用 agentBackendId/skills 覆写时自动派生出对应的单元素
+// execTargets——这样绝大多数既有测试（单档场景）不需要改一行；需要多档的测试
+// 直接显式传 execTargets 覆盖掉这份自动派生。
+const agent = (overrides: Partial<OrgAgent> = {}): OrgAgent => {
+  const agentBackendId = overrides.agentBackendId ?? 0;
+  const skills = overrides.skills ?? [
+    { id: "superpowers@m", enabled: true },
+    { id: "frontend-design@m", enabled: true },
+  ];
+  const base = {
     id: 7,
     name: "Eva",
     description: "工程总监",
@@ -19,17 +29,16 @@ const agent = (overrides: Partial<OrgAgent> = {}): OrgAgent =>
     departmentName: "工程部",
     parentAgentId: 0,
     parentAgentName: "",
-    agentBackendId: 0,
+    agentBackendId,
     sortOrder: 1,
     prompt: ["你是 Eva。", "负责工程。"],
-    skills: [
-      { id: "superpowers@m", enabled: true },
-      { id: "frontend-design@m", enabled: true },
-    ],
+    skills,
+    execTargets: agentBackendId > 0 ? [{ id: 1, agentBackendId, skills }] : [],
     createtime: 0,
     updatetime: 0,
-    ...overrides,
-  }) as OrgAgent;
+  };
+  return { ...base, ...overrides } as OrgAgent;
+};
 
 const dept: OrgDepartment = {
   id: 1,
@@ -178,19 +187,15 @@ describe("OrgDetailAgent", () => {
     expect(screen.queryByRole("tab", { name: /Image/ })).toBeNull();
   });
 
-  it("renders the Agent backend section like the Pencil detail card", () => {
+  it("renders the execution targets section as a single-target row (R15/R20)", () => {
     renderPanel({ agentBackendId: 5 }, [backend()]);
     expect(
-      screen.getByRole("heading", { name: "Agent Backend" }),
+      screen.getByRole("heading", { name: "Execution Targets" }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("Agent Backend")).toBeInTheDocument();
-    expect(screen.getByText("Claude Code")).toBeInTheDocument();
-    expect(screen.getByText("Anthropic 官方 · Sonnet 4.6")).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "Runs tasks through Claude Code CLI. Tool calls are routed through the CLI.",
-      ),
-    ).toBeInTheDocument();
+    // 单档：没有序号、机器标为"本机"，第二行是"类型 · 名称"。
+    expect(screen.getByText("Local machine")).toBeInTheDocument();
+    expect(screen.getByText(/Claude Code · Claude Code/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Replace/ })).toBeInTheDocument();
   });
 
   it("falls back to the Agent backend summary when the backend list is empty", () => {
@@ -205,8 +210,8 @@ describe("OrgDetailAgent", () => {
         llmProviderActive: true,
       },
     });
-    expect(screen.getByText("Claude Code")).toBeInTheDocument();
-    expect(screen.getByText("Anthropic 官方 · Sonnet 4.6")).toBeInTheDocument();
+    expect(screen.getByText("Local machine")).toBeInTheDocument();
+    expect(screen.getByText(/Claude Code · Claude Code/)).toBeInTheDocument();
   });
 
   it("counts non-whitespace chars in system prompt", async () => {
@@ -425,8 +430,13 @@ describe("OrgDetailAgent", () => {
     await waitFor(() => expect(onUpdate).toHaveBeenCalled());
     expect(onUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        skills: expect.arrayContaining([
-          expect.objectContaining({ id: "global-off@m", enabled: false }),
+        execTargets: expect.arrayContaining([
+          expect.objectContaining({
+            agentBackendId: 5,
+            skills: expect.arrayContaining([
+              expect.objectContaining({ id: "global-off@m", enabled: false }),
+            ]),
+          }),
         ]),
       }),
     );
@@ -441,9 +451,9 @@ describe("OrgDetailAgent", () => {
           /Bind an agent backend to start chatting; the built-in backend also needs an LLM provider\./,
         ),
       ).toBeInTheDocument();
-      // 后端选择器保持在原位。
+      // 执行目标列表保持在原位（R15：重做成有序列表，节保留在原位置)。
       expect(
-        screen.getByRole("heading", { name: "Agent Backend" }),
+        screen.getByRole("heading", { name: "Execution Targets" }),
       ).toBeInTheDocument();
     });
 
@@ -543,7 +553,8 @@ describe("OrgDetailAgent", () => {
     });
 
     it("saves the name on blur", async () => {
-      const { onUpdate } = renderPanel();
+      // R15: 保存要求至少一个执行目标，这里显式配一个，测的是「改名会保存」这件事本身。
+      const { onUpdate } = renderPanel({ agentBackendId: 5 }, [backend()]);
       const input = screen.getByLabelText("Name");
       fireEvent.change(input, { target: { value: "Boris 二号" } });
       fireEvent.blur(input);

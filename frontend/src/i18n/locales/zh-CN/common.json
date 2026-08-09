@@ -2003,6 +2003,42 @@
         "codex": "通过 Codex CLI 执行任务，工具调用经 CLI 中转。",
         "default": "选择一个 Agent 后端来执行任务。"
       },
+      "execTargets": {
+        "title": "执行目标",
+        "add": "添加",
+        "addFull": "添加执行目标",
+        "replace": "更换",
+        "remove": "移除",
+        "moveUp": "上移执行目标",
+        "moveDown": "下移执行目标",
+        "moved": "已移到第 {{position}} 位，共 {{total}} 位。",
+        "currentlyActive": "当前生效",
+        "online": "在线",
+        "offline": "离线",
+        "localMachine": "本机",
+        "hint": "按顺序尝试，第一个可用的胜出。可以混用不同后端。",
+        "emptyTitle": "还没有执行目标",
+        "emptyHint": "至少要有一项，这个 Agent 才能起会话。",
+        "saveRejected": "保存被拒：请至少添加一个执行目标。",
+        "allUnavailableTitle": "「{{name}}」现在没有可用的执行机器",
+        "addPanel": {
+          "searchPlaceholder": "搜索机器或后端…",
+          "alreadyInList": "已在列表中",
+          "unpaired": "未配对"
+        },
+        "reasons": {
+          "orphanBackend": "该执行目标引用的后端已不存在",
+          "backendRequiresProvider": "需指定 LLM Provider",
+          "providerInactive": "LLM 供应商未激活",
+          "remoteProviderMissing": "远端缺少 LLM 供应商",
+          "gatewayNotRunning": "本地网关未启动",
+          "remoteOpenclawUnavailable": "远端 OpenClaw 暂不可用",
+          "unknownBackend": "未知后端类型",
+          "unpaired": "这台电脑未配对它",
+          "offline": "离线",
+          "projectPathMissing": "这台机器上没有配置这个项目的路径"
+        }
+      },
       "basicInfo": "基本信息",
       "charCount": "{{count}} 字",
       "deleteDialog": {
@@ -2025,20 +2061,25 @@
         "sectionTitle": "技能 · SKILL PACKS",
         "manage": "管理技能",
         "count": "继承 {{inherit}} · 强制开 {{on}} · 强制关 {{off}}",
+        "countCompact": "继承 {{inherit}} · 开 {{on}} · 关 {{off}}",
         "inheritNote": "灰=继承全局已启用 · 蓝=仅此 agent 强制开 · 红=仅此 agent 强制关(不动全局)。改动下次起新会话生效。",
         "empty": "未授予技能包",
         "personalNote": "始终可用 · 个人技能（~/.claude/skills）不可单独开关",
         "summary": "{{enabled}} 启用 · {{disabled}} 禁用",
-        "title": "技能"
+        "title": "技能",
+        "copyFrom": "复制自",
+        "copyFromDisabledHint": "后端类型不同，包 ID 对不上",
+        "offlineNote": "机器离线，列不出可添加的包 · 已授权的仍可移除"
       },
       "skillsGate": {
         "pill": "backend 不支持",
         "title": "当前 backend 不支持技能",
-        "description": "技能是 Claude Code 原生能力 · 切换到 Claude Code 后端即可启用并配置"
+        "description": "技能是 Claude Code 原生能力 · 添加一档 Claude Code 类型的执行目标即可为它单独启用并配置"
       },
       "skillPicker": {
         "title": "添加技能 · Skill Packs",
         "subtitle": "一个包 = 一组 skill，按 agent 授权",
+        "subtitleForTarget": "第 {{index}} 档 · {{machine}} · {{backend}} —— 只影响这一档",
         "searchPlaceholder": "搜索技能包 / 描述…",
         "personalNote": "个人技能（~/.claude/skills）始终可用，CLI 不支持单独开关"
       },
