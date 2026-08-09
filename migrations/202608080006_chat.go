@@ -14,6 +14,7 @@ import (
 //   - context_window           runner 上报的模型上下文窗口 token 数；0 走 provider/catalog 兜底
 //   - permission_mode          运行时切换的 CLI 模式（claudecode/codex）
 //   - permission_mode_at_launch  spawn 时下发的快照（claudecode 专用），决定前端能否切回 bypass
+//   - provider_key             会话级 LLM 供应商 key；空串 = 跟随 agent 绑定（spec 2026-08-09）
 //
 // chat_messages —— 一条消息（user / assistant）。blocks_json 用 cago/agents 的 StoredBlock 编码。
 //   - cached_tokens / cache_creation_tokens / reasoning_tokens  provider.Usage 三个 token 维度
@@ -38,7 +39,7 @@ func migration202608080006() *gormigrate.Migration {
 	context_window INTEGER NOT NULL DEFAULT 0,
 	permission_mode TEXT NOT NULL DEFAULT '',
 	permission_mode_at_launch TEXT NOT NULL DEFAULT '',
-	model_override TEXT NOT NULL DEFAULT '',
+	provider_key TEXT NOT NULL DEFAULT '',
 	exec_device_id BIGINT NOT NULL DEFAULT 0,
 	exec_daemon_fingerprint TEXT NOT NULL DEFAULT '',
 	event_cursor BIGINT NOT NULL DEFAULT 0,

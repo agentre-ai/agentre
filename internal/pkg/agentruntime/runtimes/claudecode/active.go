@@ -48,8 +48,9 @@ type claudeActive struct {
 	// 变了,acquireSession 会用这个字段比对、强制 evict 重 spawn。
 	launchedEffort string
 	// launchedModel 记录 spawn 时下发给 claude CLI 的 --model <id>(effectiveModel)。
-	// --model 同是启动期 flag;下一轮 effectiveModel(会话级 override 变化)变了,
-	// acquireSession 镜像 launchedEffort 先例强制 evict 重 spawn。
+	// --model 同是启动期 flag;下一轮 effectiveModel(provider.Model / backend.
+	// DefaultModel)变化时,acquireSession 镜像 launchedEffort 先例强制 evict 重
+	// spawn,否则 LRU 复用的 CLI 子进程一直跑旧模型(镜像 codex 的 modelChanged)。
 	launchedModel string
 
 	// askWaiters 记录当前阻塞中的 AskUserQuestion control_request。

@@ -290,9 +290,9 @@ export function buildRenderItems({
         items.push({ block: b, type: "compact_boundary" });
         break;
       case "notice":
-        // 偏离提示 block:结构化 selectedModel/actualModel 由后端投影填充,
-        // 渲染走 transcript-row-view 的 notice 分支(t() 文案 + 等宽模型名);
-        // 旧数据无结构化字段时同分支回退到 Text 原样渲染。
+        // 持久 notice（含供应商回退等）走 transcript-row-view 的 notice 分支：
+        // 结构化 providerKey 由后端投影填充（走 t() 文案）；旧数据/其它来源的
+        // 非结构化 notice 同分支回退到 Text 原样渲染。
         items.push({ block: b, type: "notice" });
         break;
       default:

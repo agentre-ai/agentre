@@ -312,16 +312,15 @@ func TestToChatMessage_NoticeBlockProjection(t *testing.T) {
 	require.Len(t, cm.Blocks, 1)
 	assert.Equal(t, "notice", cm.Blocks[0].Type)
 	assert.Equal(t, "info", cm.Blocks[0].Level)
-	// 非结构化文本(旧数据 / 其它来源的 notice)原样渲染 Text,不带模型字段。
+	// 非结构化文本(旧数据 / 其它来源的 notice)原样渲染 Text,不带供应商字段。
 	assert.Equal(t, "hi", cm.Blocks[0].Text)
-	assert.Empty(t, cm.Blocks[0].SelectedModel)
-	assert.Empty(t, cm.Blocks[0].ActualModel)
+	assert.Empty(t, cm.Blocks[0].ProviderKey)
 }
 
 func TestToChatMessage_NoticeBlockProjectionDecodesStructuredPayload(t *testing.T) {
 	m := &chat_entity.Message{ID: 1, SessionID: 9, Role: "assistant"}
 	require.NoError(t, m.SetBlocks([]blocks.ContentBlock{
-		blocks.NoticeBlock{Level: "info", Text: `{"selected":"selected-model","actual":"actual-model"}`},
+		blocks.NoticeBlock{Level: "info", Text: `{"providerKey":"key-99"}`},
 	}))
 
 	cm, err := toChatMessage(m)
@@ -329,9 +328,8 @@ func TestToChatMessage_NoticeBlockProjectionDecodesStructuredPayload(t *testing.
 	require.Len(t, cm.Blocks, 1)
 	assert.Equal(t, "notice", cm.Blocks[0].Type)
 	assert.Equal(t, "info", cm.Blocks[0].Level)
-	assert.Equal(t, "selected-model", cm.Blocks[0].SelectedModel)
-	assert.Equal(t, "actual-model", cm.Blocks[0].ActualModel)
-	// 结构化负载不把原始 JSON 泄漏给前端 —— 前端用 SelectedModel/ActualModel 走 t() 渲染。
+	assert.Equal(t, "key-99", cm.Blocks[0].ProviderKey)
+	// 结构化负载不把原始 JSON 泄漏给前端 —— 前端用 ProviderKey 走 t() 渲染。
 	assert.Empty(t, cm.Blocks[0].Text)
 }
 
@@ -619,6 +617,53 @@ func installMockPool(t *testing.T, ctrl *gomock.Controller, svc *chatSvc, device
 	m.lease.EXPECT().Release().AnyTimes()
 	svc.setConnPoolForTest(m.pool)
 	return m
+}
+
+// TestPrepareTurnRun_RemoteSendsEffectiveProviderKey 钉死决策 9 桌面侧:远端 backend
+// 组装 RunRequest 时 wire 必须带 effectiveProviderKey(会话 provider_key 优先),
+// 而不是 agent 绑定 —— daemon 按它自解。
+func TestPrepareTurnRun_RemoteSendsEffectiveProviderKey(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	svc := &chatSvc{}
+	installMockPool(t, ctrl, svc, 7)
+
+	sess := &chat_entity.Session{ID: 100, AgentID: 7, ProviderKey: "session-key"}
+	a := &agent_entity.Agent{ID: 7, AgentBackendID: 12}
+	be := &agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "agent-bound-key",
+		DeviceID: "7",
+	}
+
+	prepared, err := svc.prepareTurnRun(context.Background(), sess, a, be, nil, nil, nil, "", false, false)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	assert.Equal(t, "session-key", prepared.req.LLMProviderKey, "远端应透传 effectiveProviderKey(会话 provider_key 优先)")
+	assert.Nil(t, prepared.req.Provider, "远端不跨机器携带明文 APIKey")
+}
+
+// TestPrepareTurnRun_RemoteNoSessionProviderKeyFallsBackToAgentBinding 钉死决策 9
+// 边界:会话无 provider_key 时 effectiveProviderKey = agent 绑定。
+func TestPrepareTurnRun_RemoteNoSessionProviderKeyFallsBackToAgentBinding(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	svc := &chatSvc{}
+	installMockPool(t, ctrl, svc, 7)
+
+	sess := &chat_entity.Session{ID: 101, AgentID: 7, ProviderKey: ""}
+	a := &agent_entity.Agent{ID: 7, AgentBackendID: 12}
+	be := &agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "agent-bound-key",
+		DeviceID: "7",
+	}
+
+	prepared, err := svc.prepareTurnRun(context.Background(), sess, a, be, nil, nil, nil, "", false, false)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	assert.Equal(t, "agent-bound-key", prepared.req.LLMProviderKey, "无会话 provider_key 时回落到 agent 绑定")
+	assert.Nil(t, prepared.req.Provider)
 }
 
 // TestBorrowRemoteRuntime_SharesConnAcrossSessions verifies the refcount cache:

@@ -384,10 +384,7 @@ type MCPServerSpec struct {
 type RunRequest struct {
 	Backend  *agent_backend_entity.AgentBackend
 	Provider *llm_provider_entity.LLMProvider // 可为 nil（CLI 后端走自身 login）
-	// ModelOverride 是本会话的模型覆盖值（''=跟随供应商默认）。进程内传参，不过线：
-	// 远端执行的 wire 契约在 wire.RunParams.ModelOverride（见 remote/wire）。
-	ModelOverride string
-	AgentID       int64 // Agent 工作目录 key：<AppDataDir>/agents/<agentID>
+	AgentID  int64                            // Agent 工作目录 key：<AppDataDir>/agents/<agentID>
 	// SessionID 是这一轮在**本进程内**的会话身份：runner 的会话表（子进程缓存 /
 	// waiter / 自主续轮通道）全按它索引，控制类接口（Steerer / Aborter /
 	// ToolPermissionSink / WaiterLister …）收到的 sessionID 也是它。
@@ -498,6 +495,12 @@ type RunResult struct {
 	// 在 agentred daemon(不 bootstrap chat_repo)里触发 nil panic。把状态回吐
 	// 给 chat_svc 持久化,避免 runtime 层反向依赖 repository。
 	LaunchPermissionMode string
+
+	// ProviderFallbackKey 是决策 9 的回退信号(仅远端 remote runtime 会填):daemon 按
+	// wire 的 effectiveProviderKey 自解失败(会话 provider_key 缺失/非 active)时回退
+	// agent 绑定执行,并把被回退的 key 经 ack 透到这里。chat_svc 据此追加一条持久
+	// notice(与本地 Q3 一致)。空串 = 未回退。
+	ProviderFallbackKey string
 }
 
 // Steerer is implemented by Runtimes that support mid-turn message

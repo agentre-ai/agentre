@@ -1,4 +1,11 @@
-export { ModelPill } from "./model-pill";
-export type { ModelPillProps } from "./model-pill";
-export { useModelPill } from "./use-model-pill";
-export type { UseModelPillOptions, UseModelPillReturn } from "./use-model-pill";
+export { ProviderPill } from "./provider-pill";
+export type { ProviderPillProps } from "./provider-pill";
+export { useProviderPill } from "./use-provider-pill";
+export type {
+  UseProviderPillOptions,
+  UseProviderPillReturn,
+} from "./use-provider-pill";
+export {
+  isProviderCompatible,
+  isProviderSelectableBackend,
+} from "./use-provider-pill";

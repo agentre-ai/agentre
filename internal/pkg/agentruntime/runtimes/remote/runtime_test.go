@@ -1722,20 +1722,20 @@ func TestBuildRunParams_ForwardsEnabledPlugins(t *testing.T) {
 	}
 }
 
-// TestBuildRunParams_ForwardsModelOverride 钉死 buildRunParams 把
-// RunRequest.ModelOverride 透传到 wire.RunParams,且 JSON round-trip 保留该字段
-// (远端会话换模型:override 随 wire 过线,daemon 侧组装 req 时回填)。
-func TestBuildRunParams_ForwardsModelOverride(t *testing.T) {
+// TestBuildRunParams_ForwardsLLMProviderKey 钉死决策 9 的 wire 契约:req.LLMProviderKey
+// (会话 provider_key 优先的 effectiveProviderKey)必须随 buildRunParams 透传到
+// wire.RunParams.LLMProviderKey,daemon 才能按它自解。
+func TestBuildRunParams_ForwardsLLMProviderKey(t *testing.T) {
 	params, err := buildRunParams(agentruntime.RunRequest{
-		Backend:       &agent_backend_entity.AgentBackend{},
-		SessionID:     9,
-		ModelOverride: "claude-haiku-4-5",
+		Backend:        &agent_backend_entity.AgentBackend{},
+		SessionID:      9,
+		LLMProviderKey: "session-key",
 	})
 	if err != nil {
 		t.Fatalf("buildRunParams: %v", err)
 	}
-	if params.ModelOverride != "claude-haiku-4-5" {
-		t.Fatalf("buildRunParams dropped ModelOverride: %+v", params)
+	if params.LLMProviderKey != "session-key" {
+		t.Fatalf("buildRunParams dropped LLMProviderKey: %+v", params)
 	}
 
 	raw, err := json.Marshal(params)
@@ -1746,9 +1746,35 @@ func TestBuildRunParams_ForwardsModelOverride(t *testing.T) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.ModelOverride != "claude-haiku-4-5" {
-		t.Fatalf("ModelOverride not preserved across wire JSON: %+v", out)
+	if out.LLMProviderKey != "session-key" {
+		t.Fatalf("LLMProviderKey not preserved across wire JSON: %+v", out)
 	}
+}
+
+// TestRun_SurfacesProviderFallbackKeyFromAck 钉死决策 9 信号回传的 remote 侧:daemon
+// 在 ack.ProviderFallbackKey 回传被回退的会话 provider_key 时,remote runtime 必须把
+// 它透进 RunResult,让 chat_svc 据此追加一条持久 notice(与本地 Q3 一致)。
+func TestRun_SurfacesProviderFallbackKeyFromAck(t *testing.T) {
+	_, cli, capture, rt := setupRemote(t)
+	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, params any, result any) error {
+			rp := params.(wire.RunParams)
+			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderFallbackKey: "session-key"}
+			return nil
+		}).Times(1)
+
+	events, runResult, err := rt.Run(context.Background(), agentruntime.RunRequest{
+		Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode), ID: 1, Name: "x"},
+		SessionID: 42,
+		UserText:  "hello",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, runResult)
+	assert.Equal(t, "session-key", runResult.ProviderFallbackKey, "ack 的 ProviderFallbackKey 必须透进 RunResult")
+
+	capture.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{SessionID: 42})
+	_, ok := <-events
+	assert.False(t, ok)
 }
 
 func TestGoal_DispatchesWireRPCsWithBackendMetadata(t *testing.T) {

@@ -573,10 +573,8 @@
       "me": "Me"
     },
     "notice": {
-      "modelDeviation": {
-        "sentence": "Selected model {{selected}} was not applied; actually using {{actual}}",
-        "selected": "Selected model",
-        "actual": "was not applied; actually using"
+      "providerFallback": {
+        "sentence": "Selected provider {{provider}} is unavailable; fell back to the agent binding"
       }
     },
     "meta": {
@@ -2160,21 +2158,16 @@
     },
     "reorderFailed": "Failed to save order, please retry"
   },
-  "modelPill": {
+  "providerPill": {
     "active": "Active",
-    "aria": "Model: {{model}}",
-    "errorFetch": "Failed to load model list. Please try again.",
-    "errorPersist": "Failed to save the model switch. Please try again.",
-    "errorProvider": "No model list found for this provider (it may have been removed or is offline).",
-    "followDefault": "Follow provider default",
-    "followDefaultDesc": "Use the provider default model bound to this agent",
-    "followDefaultUnbound": "Follow default",
-    "footer": "The switch takes effect from the next turn; the running turn is unaffected",
-    "freeInputPlaceholder": "Type a model ID, press Enter to confirm",
-    "heading": "Model",
-    "submit": "Use",
-    "title": "Switch model · current {{model}}",
-    "unboundExisting": "No provider bound; existing sessions cannot switch models"
+    "aria": "Provider: {{provider}}",
+    "errorFetch": "Failed to load providers. Please try again.",
+    "followAgentBinding": "Follow agent binding",
+    "followAgentBindingDesc": "Use the provider default bound to this agent",
+    "followAgentBindingUnboundDesc": "Leave unselected; use the CLI login state",
+    "heading": "Provider",
+    "title": "Select provider · current {{provider}}",
+    "unselected": "Select provider"
   },
   "permissionMode": {
     "active": "ACTIVE",

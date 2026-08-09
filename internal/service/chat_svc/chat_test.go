@@ -2017,7 +2017,6 @@ func TestSend_NewSession(t *testing.T) {
 		m.session.EXPECT().Create(gomock.Any(), gomock.Any()).
 			DoAndReturn(func(_ context.Context, s *chat_entity.Session) error {
 				assert.Equal(t, firstUserText, s.Title)
-				assert.Equal(t, "custom-model", s.ModelOverride)
 				s.ID = 100
 				return nil
 			})
@@ -2045,7 +2044,7 @@ func TestSend_NewSession(t *testing.T) {
 		m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 		resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{
-			AgentID: 7, Text: firstUserText, ModelOverride: "custom-model",
+			AgentID: 7, Text: firstUserText,
 		})
 		assert.NoError(t, err)
 		assert.Equal(t, int64(100), resp.SessionID)
@@ -2078,7 +2077,7 @@ func TestSend_ExistingSessionUsesSessionAgentBackend(t *testing.T) {
 	t.Cleanup(restore)
 
 	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
-		ID: 100, AgentID: 7, AgentStatus: "idle", ModelOverride: "stored-model", Status: consts.ACTIVE,
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
 	}, nil)
 	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
 		ID: 7, Name: "Correct", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
@@ -2108,7 +2107,7 @@ func TestSend_ExistingSessionUsesSessionAgentBackend(t *testing.T) {
 	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{
-		SessionID: 100, AgentID: 99, Text: "hi", ModelOverride: "ignored-model",
+		SessionID: 100, AgentID: 99, Text: "hi",
 	})
 	assert.NoError(t, err)
 	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
@@ -2119,7 +2118,6 @@ func TestSend_ExistingSessionUsesSessionAgentBackend(t *testing.T) {
 		assert.Equal(t, int64(7), req.AgentID)
 		assert.Equal(t, int64(100), req.SessionID)
 		assert.Equal(t, "hi", req.UserText)
-		assert.Equal(t, "stored-model", req.ModelOverride)
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for runtime request")
 	}
@@ -2300,6 +2298,147 @@ func TestCompact_CodexStartsCompactTurnWithoutUserMessage(t *testing.T) {
 		assert.Equal(t, "manual", payload.Compact.Trigger)
 	}
 	assert.True(t, sawCompactBoundary, "compact turn should emit compact boundary divider")
+}
+
+// TestCompact_ExistingSession_ProviderKeyOverridesAgentBinding 钉死决策 3 对 Compact 的
+// 覆盖:会话 provider_key 优先于 agent 绑定解析必须对**所有**本地 turn 入口生效,包括
+// Compact —— #26 时代 compact 经 prepareTurnRun 的 ModelOverride 走会话级模型覆盖,
+// 分支后 override 已移除,若 Compact 不应用 resolveSessionProvider,带 provider_key 的
+// 会话在 compact 轮会悄悄退回 agent 绑定(且不提示),与 send / Regenerate / Edit 不一致。
+func TestCompact_ExistingSession_ProviderKeyOverridesAgentBinding(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+	chat_svc.RegisterGateway(&fakeChatGateway{
+		status: httpgateway.GatewayStatus{State: "running", URL: "http://127.0.0.1:60080"},
+	})
+	t.Cleanup(func() { chat_svc.RegisterGateway(nil) })
+	runner := &compactRecordingRunner{recordingRunner: &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeCodex, runner)
+	t.Cleanup(restore)
+
+	sess := &chat_entity.Session{
+		ID:                100,
+		AgentID:           7,
+		AgentStatus:       "idle",
+		Status:            consts.ACTIVE,
+		ProviderSessionID: "codex-thread-123",
+		ProviderKey:       "key-99",
+		PermissionMode:    "default",
+	}
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Codex", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeOpenAIResponse)), nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-99").Return(newActiveProvider("key-99", string(llm_provider_entity.TypeOpenAIResponse)), nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(3, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			msg.ID = 1001
+			return nil
+		}).Times(1)
+	m.dbMock.ExpectCommit()
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	resp, err := m.svc.Compact(ctx, &chat_svc.CompactRequest{SessionID: 100})
+	assert.NoError(t, err)
+	assert.Equal(t, int64(100), resp.SessionID)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	select {
+	case req := <-runner.requests:
+		require.NotNil(t, req.Provider)
+		assert.Equal(t, "key-99", req.Provider.ProviderKey, "Compact 轮也必须按会话 provider_key 解析,而非 agent 绑定")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for runtime request")
+	}
+}
+
+// TestCompact_ExistingSession_MissingSessionProviderFallsBackWithNotice 钉死决策 8 对
+// Compact 的覆盖:会话 provider_key 指向的供应商缺失 → compact 轮同样回退 agent 绑定并
+// 追加一条持久 transcript notice(与 send / Regenerate / Edit 一致);provider_key 不清除。
+func TestCompact_ExistingSession_MissingSessionProviderFallsBackWithNotice(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+	chat_svc.RegisterGateway(&fakeChatGateway{
+		status: httpgateway.GatewayStatus{State: "running", URL: "http://127.0.0.1:60080"},
+	})
+	t.Cleanup(func() { chat_svc.RegisterGateway(nil) })
+	runner := &compactRecordingRunner{recordingRunner: &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeCodex, runner)
+	t.Cleanup(restore)
+
+	sess := &chat_entity.Session{
+		ID:                100,
+		AgentID:           7,
+		AgentStatus:       "idle",
+		Status:            consts.ACTIVE,
+		ProviderSessionID: "codex-thread-123",
+		ProviderKey:       "gone-provider",
+		PermissionMode:    "default",
+	}
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Codex", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeOpenAIResponse)), nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "gone-provider").Return(nil, nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(3, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			msg.ID = 1001
+			return nil
+		}).Times(1)
+	m.dbMock.ExpectCommit()
+	var persisted *chat_entity.Message
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, msg *chat_entity.Message) error {
+			msgCopy := *msg
+			persisted = &msgCopy
+			return nil
+		}).AnyTimes()
+
+	resp, err := m.svc.Compact(ctx, &chat_svc.CompactRequest{SessionID: 100})
+	assert.NoError(t, err)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	select {
+	case req := <-runner.requests:
+		require.NotNil(t, req.Provider)
+		assert.Equal(t, "key-21", req.Provider.ProviderKey, "会话供应商缺失时 compact 应回退 agent 绑定")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for runtime request")
+	}
+
+	require.NotNil(t, persisted, "compact assistant 消息应被持久化")
+	persistedBlocks, err := persisted.GetBlocks()
+	require.NoError(t, err)
+	var noticeFound bool
+	for _, b := range persistedBlocks {
+		nb, ok := b.(blocks.NoticeBlock)
+		if !ok {
+			continue
+		}
+		var payload struct {
+			ProviderKey string `json:"providerKey"`
+		}
+		if json.Unmarshal([]byte(nb.Text), &payload) == nil && payload.ProviderKey == "gone-provider" {
+			noticeFound = true
+		}
+	}
+	assert.True(t, noticeFound, "回退时 compact transcript 必须追加一条持久 notice,携带被回退的 provider_key")
 }
 
 func TestSend_PiAgentPersistsNativeSessionBeforeTurnDrain(t *testing.T) {

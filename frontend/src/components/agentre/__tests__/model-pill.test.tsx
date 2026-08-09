@@ -1,8 +1,10 @@
 /**
- * model-pill.test.tsx — composer ModelPill 渲染态 + 交互（规格 UI 决策 7/8）。
+ * model-pill.test.tsx — 新建会话 LLM 供应商选择器（规格「新建会话供应商选择器」+ 决策 4/5）。
  *
- * 覆盖：默认/已覆盖/加载中/错误行、未绑已有会话灰显 disable + tooltip、
- * 未绑新建会话自由输入、popover 交互、新建会话瞬态（不落库）。
+ * 覆盖：只列兼容供应商（builtin→全部 / claudecode→anthropic / codex→openai-response /
+ * piagent→anthropic+openai-chat+openai-response）；未绑 agent（CLI 登录态）也显示；
+ * 瞬态选择 / 点击「跟随 agent 绑定」清回；列表加载中 → pill 禁用；拉取失败 → 弹层底部错误行。
+ * （openclaw 不渲染 / 已有会话无 pill 是 chat-panel 级门控，见 chat-panel.test.tsx。）
  */
 
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -11,25 +13,26 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const appMocks = vi.hoisted(() => ({
   ListLLMProviders: vi.fn(),
-  ListLLMModels: vi.fn(),
-  SetChatSessionModel: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../../../../wailsjs/go/app/App", () => appMocks);
 
-import { ModelPill, useModelPill } from "../model-pill";
-import type { UseModelPillOptions } from "../model-pill";
+import {
+  isProviderCompatible,
+  isProviderSelectableBackend,
+  ProviderPill,
+  useProviderPill,
+} from "../model-pill";
+import type { UseProviderPillOptions } from "../model-pill";
 
 beforeEach(() => {
   vi.clearAllMocks();
   appMocks.ListLLMProviders.mockResolvedValue({ items: [] });
-  appMocks.ListLLMModels.mockResolvedValue({ items: [] });
-  appMocks.SetChatSessionModel.mockResolvedValue(undefined);
 });
 
-function Harness(props: UseModelPillOptions) {
-  const pill = useModelPill(props);
-  return <ModelPill {...pill} />;
+function Harness(props: UseProviderPillOptions) {
+  const pill = useProviderPill(props);
+  return <ProviderPill {...pill} />;
 }
 
 function deferred<T>() {
@@ -40,183 +43,212 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-const BOUND_SESSION: UseModelPillOptions = {
-  sessionId: 5,
-  llmProviderKey: "provider-key",
-  initialOverride: "",
-  providerDefaultModel: "default-model",
+const ANTHROPIC_PROVIDER = {
+  id: 1,
+  providerKey: "acme-anthropic",
+  name: "Acme Claude",
+  type: "anthropic",
+  model: "claude-sonnet-4-5",
+  baseUrl: "",
+  maskedApiKey: "",
+  hasApiKey: true,
+  maxOutput: 0,
+  contextWindow: 200000,
+  createtime: 0,
+  updatetime: 0,
 };
 
-const MODELS = [
-  {
-    id: "default-model",
-    vendor: "Acme",
-    contextWindow: 128000,
-    maxOutput: 0,
-    modalities: [],
-    thinking: false,
-    knownInCago: true,
-  },
-  {
-    id: "big-model",
-    vendor: "Acme",
-    contextWindow: 256000,
-    maxOutput: 0,
-    modalities: [],
-    thinking: false,
-    knownInCago: true,
-  },
-];
+const CHAT_PROVIDER = {
+  id: 2,
+  providerKey: "acme-chat",
+  name: "Acme Chat",
+  type: "openai-chat",
+  model: "gpt-4o",
+  baseUrl: "",
+  maskedApiKey: "",
+  hasApiKey: true,
+  maxOutput: 0,
+  contextWindow: 128000,
+  createtime: 0,
+  updatetime: 0,
+};
 
-function mockBoundProviders() {
-  appMocks.ListLLMProviders.mockResolvedValue({
-    items: [{ id: 11, providerKey: "provider-key", name: "Acme Provider" }],
+const RESPONSE_PROVIDER = {
+  id: 3,
+  providerKey: "acme-response",
+  name: "Acme Resp",
+  type: "openai-response",
+  model: "gpt-5",
+  baseUrl: "",
+  maskedApiKey: "",
+  hasApiKey: true,
+  maxOutput: 0,
+  contextWindow: 128000,
+  createtime: 0,
+  updatetime: 0,
+};
+
+const ALL_PROVIDERS = [ANTHROPIC_PROVIDER, CHAT_PROVIDER, RESPONSE_PROVIDER];
+
+describe("provider compatibility gate（与后端 ProviderTypeMatch 对齐）", () => {
+  it("builtin → 全部供应商兼容", () => {
+    expect(isProviderCompatible("builtin", "anthropic")).toBe(true);
+    expect(isProviderCompatible("builtin", "openai-chat")).toBe(true);
+    expect(isProviderCompatible("builtin", "openai-response")).toBe(true);
   });
-  appMocks.ListLLMModels.mockResolvedValue({ items: MODELS });
-}
 
-describe("ModelPill", () => {
-  it("已绑已有会话 · 默认：pill 显示 provider 默认模型，弹层「跟随供应商默认」高亮 + 模型列表 + 底部常显", async () => {
-    mockBoundProviders();
-    render(<Harness {...BOUND_SESSION} />);
+  it("claudecode → 仅 anthropic", () => {
+    expect(isProviderCompatible("claudecode", "anthropic")).toBe(true);
+    expect(isProviderCompatible("claudecode", "openai-chat")).toBe(false);
+    expect(isProviderCompatible("claudecode", "openai-response")).toBe(false);
+  });
 
-    // 列表加载完成后 pill 可用并显示默认模型名。
-    await waitFor(() =>
-      expect(screen.getByTestId("model-pill")).not.toBeDisabled(),
-    );
-    expect(screen.getByTestId("model-pill")).toHaveTextContent("default-model");
+  it("codex → 仅 openai-response", () => {
+    expect(isProviderCompatible("codex", "openai-response")).toBe(true);
+    expect(isProviderCompatible("codex", "anthropic")).toBe(false);
+    expect(isProviderCompatible("codex", "openai-chat")).toBe(false);
+  });
+
+  it("piagent → anthropic / openai-chat / openai-response", () => {
+    expect(isProviderCompatible("piagent", "anthropic")).toBe(true);
+    expect(isProviderCompatible("piagent", "openai-chat")).toBe(true);
+    expect(isProviderCompatible("piagent", "openai-response")).toBe(true);
+  });
+
+  it("openclaw 不渲染供应商选择器", () => {
+    expect(isProviderSelectableBackend("openclaw")).toBe(false);
+    expect(isProviderCompatible("openclaw", "anthropic")).toBe(false);
+    expect(isProviderSelectableBackend("")).toBe(false);
+  });
+
+  it("builtin / claudecode / codex / piagent 均可选供应商", () => {
+    expect(isProviderSelectableBackend("builtin")).toBe(true);
+    expect(isProviderSelectableBackend("claudecode")).toBe(true);
+    expect(isProviderSelectableBackend("codex")).toBe(true);
+    expect(isProviderSelectableBackend("piagent")).toBe(true);
+  });
+});
+
+describe("ProviderPill · 新建会话供应商选择器", () => {
+  it("只列兼容供应商：claudecode 弹层只显示 anthropic，不列 openai-chat / openai-response", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({ items: ALL_PROVIDERS });
+    render(<Harness backendType="claudecode" />);
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
 
     const user = userEvent.setup();
-    await user.click(screen.getByTestId("model-pill"));
+    await user.click(pill);
 
-    expect(screen.getByText("Follow provider default")).toBeInTheDocument();
     const listbox = screen.getByRole("listbox");
-    expect(within(listbox).getByText("default-model")).toBeInTheDocument();
-    expect(within(listbox).getByText("big-model")).toBeInTheDocument();
-    expect(within(listbox).getByText("128K")).toBeInTheDocument();
-    // 底部常显「切换从下一轮开始生效」。
-    expect(
-      screen.getByText(/takes effect from the next turn/),
-    ).toBeInTheDocument();
+    expect(within(listbox).getByText("Acme Claude")).toBeInTheDocument();
+    expect(within(listbox).queryByText("Acme Chat")).not.toBeInTheDocument();
+    expect(within(listbox).queryByText("Acme Resp")).not.toBeInTheDocument();
   });
 
-  it("已绑已有会话 · 已覆盖：pill 高亮 active，选「跟随供应商默认」调 SetChatSessionModel 清空", async () => {
-    mockBoundProviders();
-    render(<Harness {...BOUND_SESSION} initialOverride="big-model" />);
+  it("builtin 弹层列出全部供应商", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({ items: ALL_PROVIDERS });
+    render(<Harness backendType="builtin" />);
 
-    await waitFor(() =>
-      expect(screen.getByTestId("model-pill")).not.toBeDisabled(),
-    );
-    expect(screen.getByTestId("model-pill")).toHaveTextContent("big-model");
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
 
     const user = userEvent.setup();
-    await user.click(screen.getByTestId("model-pill"));
-    await user.click(screen.getByText("Follow provider default"));
+    await user.click(pill);
 
-    expect(appMocks.SetChatSessionModel).toHaveBeenCalledWith(5, "");
+    const listbox = screen.getByRole("listbox");
+    expect(within(listbox).getByText("Acme Claude")).toBeInTheDocument();
+    expect(within(listbox).getByText("Acme Chat")).toBeInTheDocument();
+    expect(within(listbox).getByText("Acme Resp")).toBeInTheDocument();
   });
 
-  it("已绑 · 选择列表项调 SetChatSessionModel 落库", async () => {
-    mockBoundProviders();
-    render(<Harness {...BOUND_SESSION} />);
-    await waitFor(() =>
-      expect(screen.getByTestId("model-pill")).not.toBeDisabled(),
-    );
+  it("未绑 agent（CLI 登录态）也显示供应商选择器，第一项语义为「不选，走 CLI 登录态」", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({ items: ALL_PROVIDERS });
+    render(<Harness backendType="piagent" boundProviderKey="" />);
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+
+    // 未选时 pill 标签显示占位文案「选择供应商」。
+    expect(pill).toHaveTextContent("Select provider");
 
     const user = userEvent.setup();
-    await user.click(screen.getByTestId("model-pill"));
+    await user.click(pill);
+
+    const listbox = screen.getByRole("listbox");
+    // 未选时「跟随 agent 绑定」项高亮（aria-selected）且语义为 CLI 登录态。
+    const follow = within(listbox).getByRole("option", {
+      name: /CLI login state/i,
+    });
+    expect(follow).toHaveAttribute("aria-selected", "true");
+    // 兼容供应商仍全部列出。
+    expect(within(listbox).getByText("Acme Claude")).toBeInTheDocument();
+    expect(within(listbox).getByText("Acme Chat")).toBeInTheDocument();
+    expect(within(listbox).getByText("Acme Resp")).toBeInTheDocument();
+  });
+
+  it("选中供应商 → pill 显示供应商名；点「跟随 agent 绑定」清回占位", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({ items: ALL_PROVIDERS });
+    render(<Harness backendType="codex" />);
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+
+    const user = userEvent.setup();
+    await user.click(pill);
     await user.click(
-      within(screen.getByRole("listbox")).getByText("big-model"),
+      within(screen.getByRole("listbox")).getByText("Acme Resp"),
     );
 
-    expect(appMocks.SetChatSessionModel).toHaveBeenCalledWith(5, "big-model");
+    // 选中后 pill 显示供应商名。
+    expect(screen.getByTestId("provider-pill")).toHaveTextContent("Acme Resp");
+
+    // 点击「跟随 agent 绑定」清回（无瞬态选择）。
+    await user.click(screen.getByTestId("provider-pill"));
+    await user.click(
+      within(screen.getByRole("listbox")).getByRole("option", {
+        name: /Follow agent binding/i,
+      }),
+    );
+    expect(screen.getByTestId("provider-pill")).toHaveTextContent(
+      "Select provider",
+    );
   });
 
-  it("已绑 · 列表加载中：pill 禁用", async () => {
+  it("列表加载中 → pill 禁用；加载完成 → 可用", async () => {
     const slow = deferred<{ items: unknown[] }>();
     appMocks.ListLLMProviders.mockReturnValue(slow.promise);
-    render(<Harness {...BOUND_SESSION} />);
+    render(<Harness backendType="claudecode" />);
 
-    expect(screen.getByTestId("model-pill")).toBeDisabled();
+    expect(screen.getByTestId("provider-pill")).toBeDisabled();
 
     act(() => {
-      slow.resolve({
-        items: [{ id: 11, providerKey: "provider-key", name: "Acme" }],
-      });
+      slow.resolve({ items: [ANTHROPIC_PROVIDER] });
     });
-    appMocks.ListLLMModels.mockResolvedValue({ items: MODELS });
     await waitFor(() =>
-      expect(screen.getByTestId("model-pill")).not.toBeDisabled(),
+      expect(screen.getByTestId("provider-pill")).not.toBeDisabled(),
     );
   });
 
-  it("已绑 · provider 离线（provider 找不到）：弹层底部错误行", async () => {
-    appMocks.ListLLMProviders.mockResolvedValue({ items: [] });
-    render(<Harness {...BOUND_SESSION} />);
-    await waitFor(() =>
-      expect(screen.getByTestId("model-pill")).not.toBeDisabled(),
-    );
+  it("拉取失败 → 弹层底部错误行（provider-pill-error）", async () => {
+    appMocks.ListLLMProviders.mockRejectedValue(new Error("boom"));
+    render(<Harness backendType="claudecode" />);
 
-    const user = userEvent.setup();
-    await user.click(screen.getByTestId("model-pill"));
-
-    expect(screen.getByTestId("model-pill-error")).toHaveTextContent(
-      "No model list found",
-    );
-  });
-
-  it("未绑 provider + 已有会话：pill 灰显 disable + tooltip，无弹层交互", async () => {
-    appMocks.ListLLMProviders.mockResolvedValue({ items: [] });
-    render(
-      <Harness
-        sessionId={5}
-        llmProviderKey=""
-        initialOverride=""
-        providerDefaultModel=""
-      />,
-    );
-
-    const pill = screen.getByTestId("model-pill");
-    expect(pill).toBeDisabled();
-    expect(pill).toHaveAttribute(
-      "title",
-      "No provider bound; existing sessions cannot switch models",
-    );
-
-    // 点击不打开弹层（disabled 按钮不触发 popover）。
-    const user = userEvent.setup();
-    await user.click(pill);
-    expect(screen.queryByText("Model")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/Type a model ID/)).not.toBeInTheDocument();
-  });
-
-  it("未绑 provider + 新建会话：弹层「跟随默认」+ 自由输入模型 id，回车/提交设置瞬态且不落库", async () => {
-    appMocks.ListLLMProviders.mockResolvedValue({ items: [] });
-    render(
-      <Harness
-        sessionId={0}
-        llmProviderKey=""
-        initialOverride=""
-        providerDefaultModel=""
-      />,
-    );
-
-    const pill = screen.getByTestId("model-pill");
-    expect(pill).not.toBeDisabled();
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
 
     const user = userEvent.setup();
     await user.click(pill);
-    expect(
-      within(screen.getByRole("listbox")).getByText("Follow default"),
-    ).toBeInTheDocument();
 
-    const input = screen.getByLabelText(/Type a model ID/);
-    await user.type(input, "cli-custom-model{Enter}");
-
-    // 瞬态设置：不调 SetChatSessionModel（新建会话），pill 显示所选模型。
-    expect(appMocks.SetChatSessionModel).not.toHaveBeenCalled();
-    expect(screen.getByTestId("model-pill")).toHaveTextContent(
-      "cli-custom-model",
+    expect(screen.getByTestId("provider-pill-error")).toHaveTextContent(
+      "Failed to load providers",
     );
+  });
+
+  it("openclaw backend 不拉取供应商（列表为空、不加载）", () => {
+    render(<Harness backendType="openclaw" />);
+
+    expect(screen.getByTestId("provider-pill")).not.toBeDisabled();
+    expect(appMocks.ListLLMProviders).not.toHaveBeenCalled();
   });
 });

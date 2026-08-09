@@ -337,15 +337,42 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	//   - GatewayURL 是 daemon 本机 127.0.0.1:<port>,对 daemon spawn 的 CLI 子
 	//     进程可达;desktop 本机 URL 在 daemon 上拨不到。
 	var provider *llm_provider_entity.LLMProvider
-	if be.LLMProviderKey != "" && h.deps.Lookup != nil {
-		pv, err := h.deps.Lookup.FindByKey(ctx, be.LLMProviderKey)
-		if err != nil {
+	// 会话级供应商选择(决策 9):wire 带 effectiveProviderKey(会话 provider_key 优先),
+	// daemon 按它自解,而不是只认 agent 绑定。缺省时回落 agent 绑定。
+	//
+	// 回退语义:会话 provider_key 在 daemon 缺失/非 active → 回退 agent 绑定(或
+	// CLI 登录态)执行,并回传 providerFallbackKey 信号,桌面端据此追加一条持久
+	// notice(与本地 Q3 一致);provider_key 不清除。effective key 就是 agent 绑定
+	// 时保持旧行为:缺失直接报 ErrProviderMissing(桌面端 remoteProviderKnownMissing
+	// 会先拦已知缺失的 agent 绑定)。
+	providerFallbackKey := ""
+	effectiveKey := strings.TrimSpace(p.LLMProviderKey)
+	if effectiveKey == "" {
+		effectiveKey = be.LLMProviderKey
+	}
+	if effectiveKey != "" && h.deps.Lookup != nil {
+		pv, err := h.deps.Lookup.FindByKey(ctx, effectiveKey)
+		if err == nil && pv != nil && pv.IsActive() {
+			provider = pv
+		} else if effectiveKey != be.LLMProviderKey {
+			// 会话 provider_key 缺失/非 active → 回退 agent 绑定(或 CLI 登录态)。
+			providerFallbackKey = effectiveKey
+			if be.LLMProviderKey != "" {
+				bpv, berr := h.deps.Lookup.FindByKey(ctx, be.LLMProviderKey)
+				if berr != nil {
+					return wire.RunAck{}, &rpc.Error{
+						Code:    rpc.ErrProviderMissing.Code,
+						Message: fmt.Sprintf("LLM provider %q not configured on remote daemon: %v", be.LLMProviderKey, berr),
+					}
+				}
+				provider = bpv
+			}
+		} else {
 			return wire.RunAck{}, &rpc.Error{
 				Code:    rpc.ErrProviderMissing.Code,
-				Message: fmt.Sprintf("LLM provider %q not configured on remote daemon: %v", be.LLMProviderKey, err),
+				Message: fmt.Sprintf("LLM provider %q not configured on remote daemon: %v", effectiveKey, err),
 			}
 		}
-		provider = pv
 	}
 
 	var gatewayURL, gatewayToken string
@@ -396,7 +423,6 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 			em.sid,
 		),
 		EnabledPlugins: p.EnabledPlugins,
-		ModelOverride:  p.ModelOverride,
 	}
 	if piPreparer != nil {
 		// PermissionMode carries only the remote transport generation owner for
@@ -409,7 +435,7 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		prepared := h.sessions[em.rid] == piOwner && piOwner.prepared != nil
 		h.mu.RUnlock()
 		if prepared {
-			return h.startPreparedPi(em, p, &be, piOwner, bt)
+			return h.startPreparedPi(em, p, &be, piOwner, bt, providerFallbackKey)
 		}
 		return h.preparePi(em, p, &be, piOwner, piPreparer, req)
 	}
@@ -421,6 +447,9 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	owner := &runtimeSession{backendType: bt}
 	h.register(em.rid, owner)
 	ack := wire.RunAck{SessionID: p.SessionID}
+	if providerFallbackKey != "" {
+		ack.ProviderFallbackKey = providerFallbackKey
+	}
 	if result != nil {
 		ack.LaunchPermissionMode = result.LaunchPermissionMode
 		if be.IsPiAgent() {
@@ -533,6 +562,7 @@ func (h *RuntimeHandlers) startPreparedPi(
 	be *agent_backend_entity.AgentBackend,
 	owner *runtimeSession,
 	bt agent_backend_entity.BackendType,
+	providerFallbackKey string,
 ) (wire.RunAck, error) {
 	h.mu.Lock()
 	providerSessionID := owner.providerSessionID
@@ -570,6 +600,9 @@ func (h *RuntimeHandlers) startPreparedPi(
 		return wire.RunAck{}, errors.Join(context.Canceled, cleanupErr)
 	}
 	ack := wire.RunAck{SessionID: p.SessionID, ProviderSessionID: providerSessionID}
+	if providerFallbackKey != "" {
+		ack.ProviderFallbackKey = providerFallbackKey
+	}
 	if result != nil {
 		ack.LaunchPermissionMode = result.LaunchPermissionMode
 		if strings.TrimSpace(result.ProviderSessionID) != "" {

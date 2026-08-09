@@ -1,34 +1,8 @@
 import { render, screen } from "@testing-library/react";
-import i18next from "i18next";
-import { describe, expect, it, vi } from "vitest";
-
-import enCommon from "@/i18n/locales/en/common.json";
-
-// 用录制 spy 替掉 useTranslation,断言 notice 分支确实以 t("chat.notice.modelDeviation",
-// { selected, actual }) 双参数调用 —— 证明文案走 i18n、模型 id 以插值参数流入而非烘死。
-//
-// mockT 本身转发给一个独立的、加载了真实 en/common.json 的 i18next 实例
-// (不走 "@/i18n" 单例,因为那个单例依赖同样被本文件 mock 掉的 "react-i18next" 的
-// initReactI18next 插件) —— 这样断言调用参数的旧用例不受影响,同时新增的可见文本
-// 断言能拿到跟生产环境一致的真实翻译结果,而不是裸 key。
-const realI18n = i18next.createInstance();
-void realI18n.init({
-  lng: "en",
-  fallbackLng: "en",
-  resources: { en: { common: enCommon } },
-  defaultNS: "common",
-  interpolation: { escapeValue: false },
-});
-
-const mockT = vi.fn((key: string, options?: Record<string, unknown>) =>
-  realI18n.t(key, options),
-);
-
-vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: mockT }),
-}));
+import { describe, expect, it } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
+import i18n from "@/i18n";
 import {
   TranscriptRenderContext,
   TranscriptRowView,
@@ -36,10 +10,13 @@ import {
 
 import type { TranscriptRow } from "../transcript-rows";
 
+// 供应商回退等持久 notice 走既有 NoticeBlock 渲染：Text 原样显示。
+// （#26 的结构化模型偏离提示已随 model_override 整体移除，ChatBlock 不再有
+// selectedModel / actualModel 字段，见 specs/2026-08-09-new-session-provider-select.md。）
+
 type NoticeBlock = {
-  selectedModel?: string;
-  actualModel?: string;
   text?: string;
+  providerKey?: string;
 };
 
 function noticeRow(block: NoticeBlock): TranscriptRow {
@@ -71,7 +48,6 @@ function noticeRow(block: NoticeBlock): TranscriptRow {
 }
 
 function renderRow(row: TranscriptRow) {
-  mockT.mockClear();
   render(
     <TooltipProvider>
       <TranscriptRenderContext.Provider
@@ -91,56 +67,37 @@ function renderRow(row: TranscriptRow) {
   );
 }
 
-describe("transcript model-deviation notice", () => {
-  it("renders a structured notice via t() with both model ids in monospace", () => {
+describe("transcript notice block", () => {
+  it("renders a notice text verbatim", () => {
     renderRow(
       noticeRow({
-        selectedModel: "selected-model",
-        actualModel: "actual-model",
+        text: "Selected provider X is unavailable; fell back to the agent binding",
       }),
     );
 
-    // t() 以「双参数」调用 —— 文案 key + 两个模型 id 插值。
-    expect(mockT).toHaveBeenCalledWith("chat.notice.modelDeviation.sentence", {
-      selected: "selected-model",
-      actual: "actual-model",
-    });
-
-    // 两个模型名各自以等宽字体渲染。
-    const selectedEl = screen.getByText("selected-model");
-    expect(selectedEl.className).toContain("font-mono");
-    const actualEl = screen.getByText("actual-model");
-    expect(actualEl.className).toContain("font-mono");
+    expect(
+      screen.getByText(
+        "Selected provider X is unavailable; fell back to the agent binding",
+      ),
+    ).toBeDefined();
   });
 
-  it("renders the visible sentence with a space between the model id and the following copy, matching the aria-label sentence", () => {
-    const selected = "e2e-unbound-model";
-    const actual = "e2e-fake-model";
-
-    renderRow(noticeRow({ selectedModel: selected, actualModel: actual }));
-
-    const expectedSentence = realI18n
-      .t("chat.notice.modelDeviation.sentence", { selected, actual })
-      .replace(/\s+/g, " ")
-      .trim();
-
-    const notice = screen.getByTestId("model-deviation-notice");
-    const visibleText = (notice.textContent ?? "").replace(/\s+/g, " ").trim();
-
-    // 回归:selected span 与后面的 "was not applied..." 文案之间少一个空格,
-    // 导致渲染成 "...modelwas not applied..."。可见文本(空白归一化后)必须和
-    // aria-label 已经拼好的 sentence 一致。
-    expect(visibleText).toBe(expectedSentence);
+  it("renders an empty-text notice as an empty status box (no crash)", () => {
+    renderRow(noticeRow({ text: "" }));
+    expect(screen.getByTestId("transcript-notice")).toBeInTheDocument();
   });
 
-  it("renders a legacy unstructured notice text verbatim", () => {
-    renderRow(noticeRow({ text: "legacy notice text" }));
+  it("renders a provider-fallback notice（结构化 providerKey）走 i18n 文案", () => {
+    // 决策 8：会话所选供应商缺失/停用 → 回退 agent 绑定并追加持久 notice，
+    // 文案「所选供应商 X 不可用，已回退 agent 绑定」必须显示，而不是空框。
+    renderRow(noticeRow({ providerKey: "gone-provider" }));
 
-    expect(screen.getByText("legacy notice text")).toBeDefined();
-    // 无结构化字段时不走模型偏离文案。
-    expect(mockT).not.toHaveBeenCalledWith(
-      "chat.notice.modelDeviation.sentence",
-      expect.anything(),
-    );
+    expect(
+      screen.getByText(
+        i18n.t("chat.notice.providerFallback.sentence", {
+          provider: "gone-provider",
+        }),
+      ),
+    ).toBeInTheDocument();
   });
 });
