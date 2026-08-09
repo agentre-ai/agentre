@@ -72,15 +72,15 @@ func (mr *MockAgentExecTargetRepoMockRecorder) ListByAgents(ctx, agentIDs any) *
 }
 
 // Replace mocks base method.
-func (m *MockAgentExecTargetRepo) Replace(ctx context.Context, agentID int64, backendIDs []int64) error {
+func (m *MockAgentExecTargetRepo) Replace(ctx context.Context, agentID int64, targets []*agent_entity.AgentExecTarget) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Replace", ctx, agentID, backendIDs)
+	ret := m.ctrl.Call(m, "Replace", ctx, agentID, targets)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Replace indicates an expected call of Replace.
-func (mr *MockAgentExecTargetRepoMockRecorder) Replace(ctx, agentID, backendIDs any) *gomock.Call {
+func (mr *MockAgentExecTargetRepoMockRecorder) Replace(ctx, agentID, targets any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Replace", reflect.TypeOf((*MockAgentExecTargetRepo)(nil).Replace), ctx, agentID, backendIDs)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Replace", reflect.TypeOf((*MockAgentExecTargetRepo)(nil).Replace), ctx, agentID, targets)
 }

@@ -11,9 +11,10 @@ import (
 
 // Service 技能包组合服务。依赖通过消费者侧窄接口注入(DIP)。
 type Service struct {
-	agent   AgentLookup
-	backend BackendLookup
-	remote  RemoteDiscoverer // 远端 backend 走 daemon 发现;本地 backend 不用
+	agent      AgentLookup
+	backend    BackendLookup
+	execTarget ExecTargetLookup // 技能授权挂在执行目标行上(R15e),不再挂在 Agent 行
+	remote     RemoteDiscoverer // 远端 backend 走 daemon 发现;本地 backend 不用
 }
 
 type discoveryResult struct {
@@ -54,6 +55,20 @@ func (s *Service) discover(ctx context.Context, a *agent_entity.Agent) (discover
 		CLIPath:     be.CLIPath,
 	})
 	return discoveryResult{backendType: backendType, backend: be, packs: packs}, err
+}
+
+// authorizedSkills 取 agentID 那一档(sort_order 最小的一档)的技能授权。存放位置
+// 已从 agents.skills_json 下沉到 agent_exec_targets(R15e),这里不再读 Agent 行 ——
+// 也不做跨档并集:agentID 有几档就有几份互不相干的授权,这里只取最靠前那一档的。
+func (s *Service) authorizedSkills(ctx context.Context, agentID int64) ([]agent_entity.AgentSkillItem, error) {
+	targets, err := s.execTarget.ListByAgent(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if len(targets) == 0 || targets[0] == nil {
+		return nil, nil
+	}
+	return targets[0].GetSkills(), nil
 }
 
 // mergeResult 合并后的包列表及对应的 enabled 标注。
@@ -131,7 +146,11 @@ func (s *Service) ListAgentSkillPacks(ctx context.Context, agentID int64, _ bool
 	if err != nil {
 		return SkillCatalogDTO{}, err
 	}
-	mr := merge(agentskill.RecommendedFor(discovered.backendType), discovered.packs, a.GetSkills())
+	authorized, err := s.authorizedSkills(ctx, agentID)
+	if err != nil {
+		return SkillCatalogDTO{}, err
+	}
+	mr := merge(agentskill.RecommendedFor(discovered.backendType), discovered.packs, authorized)
 	dto := make([]SkillPackDTO, 0, len(mr.packs))
 	for i, p := range mr.packs {
 		dto = append(dto, SkillPackDTO{
@@ -162,8 +181,12 @@ func (s *Service) ListAgentSkillCommands(ctx context.Context, agentID int64, cwd
 	if err != nil {
 		return SkillCommandCatalogDTO{}, err
 	}
+	authorized, err := s.authorizedSkills(ctx, agentID)
+	if err != nil {
+		return SkillCommandCatalogDTO{}, err
+	}
 
-	mr := merge(agentskill.RecommendedFor(discovered.backendType), discovered.packs, a.GetSkills())
+	mr := merge(agentskill.RecommendedFor(discovered.backendType), discovered.packs, authorized)
 	commands := make([]SkillCommandDTO, 0)
 	seen := map[string]struct{}{}
 	appendCommand := func(name, description string) {
@@ -204,7 +227,7 @@ func (s *Service) ListAgentSkillCommands(ctx context.Context, agentID int64, cwd
 				BackendType:    discovered.backendType,
 				CLIPath:        discovered.backend.CLIPath,
 				Cwd:            strings.TrimSpace(cwd),
-				EnabledPlugins: enabledPlugins(a.GetSkills()),
+				EnabledPlugins: enabledPlugins(authorized),
 			})
 			if err != nil {
 				return SkillCommandCatalogDTO{}, err
@@ -233,5 +256,9 @@ func (s *Service) EnabledPluginsMap(ctx context.Context, agentID int64) (map[str
 	if err != nil || a == nil {
 		return nil, err
 	}
-	return enabledPlugins(a.GetSkills()), nil
+	authorized, err := s.authorizedSkills(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	return enabledPlugins(authorized), nil
 }

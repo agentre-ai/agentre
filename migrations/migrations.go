@@ -34,5 +34,6 @@ func migrationList() []*gormigrate.Migration {
 		migration202608080011(), // agent_exec_targets + 单元素回填
 		migration202608080012(), // projects.local_path_missing（本机未配置路径状态位）
 		migration202608080013(), // project_locations 自然键改为 (project, daemon_fingerprint)
+		migration202608080014(), // agent_exec_targets.skills_json（技能授权下沉到执行目标行）
 	}
 }

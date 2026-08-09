@@ -66,7 +66,7 @@ func (s *agentSvc) Create(ctx context.Context, req *CreateAgentRequest) (*Create
 		Updatetime:     now,
 	}
 	a.SetPrompt(req.Prompt)
-	a.SetSkills(skillsFromDTO(req.Skills))
+	a.SkillsJSON = encodeSkills(skillsFromDTO(req.Skills))
 	a.SetTools(toolsFromDTO(req.Tools))
 	if err := a.Check(ctx); err != nil {
 		return nil, err
@@ -124,7 +124,7 @@ func (s *agentSvc) Update(ctx context.Context, req *UpdateAgentRequest) (*Update
 		existing.AgentBackendID = req.AgentBackendID
 	}
 	existing.SetPrompt(req.Prompt)
-	existing.SetSkills(skillsFromDTO(req.Skills))
+	existing.SkillsJSON = encodeSkills(skillsFromDTO(req.Skills))
 	existing.SetTools(toolsFromDTO(req.Tools))
 	existing.Updatetime = s.now()
 	if err := existing.Check(ctx); err != nil {
@@ -411,6 +411,21 @@ func skillsFromDTO(items []department_svc.AgentSkillDTO) []agent_entity.AgentSki
 	return out
 }
 
+// encodeSkills / decodeSkills 技能授权的存放位置已下沉到 AgentExecTarget（R15e），
+// GetSkills/SetSkills 也随字段一起搬了过去；agent_svc 仍然只经手 Agent 结构体上的
+// SkillsJSON 原始载荷（写给仓储层，由 agent_repo 转落到那唯一一档的执行目标行,
+// 见 agent_repo.primaryTargetList），这里借一个临时的执行目标值对象复用同一份
+// 编解码逻辑，不重复实现。
+func encodeSkills(items []agent_entity.AgentSkillItem) string {
+	t := agent_entity.AgentExecTarget{}
+	t.SetSkills(items)
+	return t.SkillsJSON
+}
+
+func decodeSkills(raw string) []agent_entity.AgentSkillItem {
+	return (&agent_entity.AgentExecTarget{SkillsJSON: raw}).GetSkills()
+}
+
 func toolsFromDTO(items []department_svc.AgentToolDTO) []agent_entity.AgentToolItem {
 	out := make([]agent_entity.AgentToolItem, 0, len(items))
 	for _, t := range items {
@@ -420,7 +435,7 @@ func toolsFromDTO(items []department_svc.AgentToolDTO) []agent_entity.AgentToolI
 }
 
 func toItem(a *agent_entity.Agent) *AgentItem {
-	rawSkills := a.GetSkills()
+	rawSkills := decodeSkills(a.SkillsJSON)
 	skills := make([]department_svc.AgentSkillDTO, 0, len(rawSkills))
 	for _, s := range rawSkills {
 		skills = append(skills, department_svc.AgentSkillDTO{ID: s.ID, Enabled: s.Enabled})

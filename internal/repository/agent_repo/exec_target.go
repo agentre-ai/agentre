@@ -16,7 +16,11 @@ import (
 type AgentExecTargetRepo interface {
 	ListByAgent(ctx context.Context, agentID int64) ([]*agent_entity.AgentExecTarget, error)
 	ListByAgents(ctx context.Context, agentIDs []int64) (map[int64][]*agent_entity.AgentExecTarget, error)
-	Replace(ctx context.Context, agentID int64, backendIDs []int64) error
+	// Replace 整表替换成 targets 给出的顺序：下标即 sort_order，调用方只需给
+	// AgentBackendID + SkillsJSON，ID/AgentID/SortOrder 由仓储自己落。技能授权
+	// （R15e）与它所在的档同生共死：没有被带进新列表的档连它的 skills_json 一起
+	// 消失，不需要一个单独的"清理授权"步骤。
+	Replace(ctx context.Context, agentID int64, targets []*agent_entity.AgentExecTarget) error
 }
 
 var defaultAgentExecTarget AgentExecTargetRepo
@@ -43,9 +47,9 @@ func (r *agentExecTargetRepo) ListByAgents(ctx context.Context, agentIDs []int64
 	return out, nil
 }
 
-func (r *agentExecTargetRepo) Replace(ctx context.Context, agentID int64, backendIDs []int64) error {
+func (r *agentExecTargetRepo) Replace(ctx context.Context, agentID int64, targets []*agent_entity.AgentExecTarget) error {
 	return db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
-		return replaceExecTargets(tx, agentID, backendIDs)
+		return replaceExecTargets(tx, agentID, targets)
 	})
 }
 
@@ -63,37 +67,42 @@ func listExecTargets(ctx context.Context, agentIDs []int64) ([]*agent_entity.Age
 	return rows, err
 }
 
-// replaceExecTargets 把一个 Agent 的执行目标整表替换成 backendIDs 给出的顺序。
-// tx 由调用方给出：Agent 行与它的执行目标行必须在同一个事务里落库。
-func replaceExecTargets(tx *gorm.DB, agentID int64, backendIDs []int64) error {
+// replaceExecTargets 把一个 Agent 的执行目标整表替换成 targets 给出的顺序。
+// tx 由调用方给出：Agent 行与它的执行目标行必须在同一个事务里落库。delete-then-
+// reinsert 是"删档连带删授权"（R15e）成立的原因：没有被带进 targets 的档，连它
+// 的 skills_json 一起消失，不存在"档已删、授权没删"的中间态。
+func replaceExecTargets(tx *gorm.DB, agentID int64, targets []*agent_entity.AgentExecTarget) error {
 	if err := tx.Where("agent_id = ?", agentID).Delete(&agent_entity.AgentExecTarget{}).Error; err != nil {
 		return err
 	}
-	return insertExecTargets(tx, agentID, backendIDs)
+	return insertExecTargets(tx, agentID, targets)
 }
 
 // insertExecTargets 按下标落 sort_order 插入执行目标行；空列表不发 INSERT。
-func insertExecTargets(tx *gorm.DB, agentID int64, backendIDs []int64) error {
-	if len(backendIDs) == 0 {
+// 只信 targets 里的 AgentBackendID / SkillsJSON，ID/AgentID/SortOrder 由这里落。
+func insertExecTargets(tx *gorm.DB, agentID int64, targets []*agent_entity.AgentExecTarget) error {
+	if len(targets) == 0 {
 		return nil
 	}
-	rows := make([]*agent_entity.AgentExecTarget, 0, len(backendIDs))
-	for i, backendID := range backendIDs {
+	rows := make([]*agent_entity.AgentExecTarget, 0, len(targets))
+	for i, t := range targets {
 		rows = append(rows, &agent_entity.AgentExecTarget{
 			AgentID:        agentID,
-			AgentBackendID: backendID,
+			AgentBackendID: t.AgentBackendID,
 			SortOrder:      i,
+			SkillsJSON:     t.SkillsJSON,
 		})
 	}
 	return tx.Create(&rows).Error
 }
 
-// primaryTargetList 把「Agent 当前的那一个 backend」表达成执行目标列表：0 = 空列表。
-func primaryTargetList(backendID int64) []int64 {
+// primaryTargetList 把「Agent 当前的那一个 backend + 它这一档的技能授权」表达成
+// 执行目标列表：0 = 空列表。
+func primaryTargetList(backendID int64, skillsJSON string) []*agent_entity.AgentExecTarget {
 	if backendID <= 0 {
 		return nil
 	}
-	return []int64{backendID}
+	return []*agent_entity.AgentExecTarget{{AgentBackendID: backendID, SkillsJSON: skillsJSON}}
 }
 
 // hydrateOne 补齐单个 Agent 的派生值；补不齐就不交出这个 Agent —— 交出去的话
