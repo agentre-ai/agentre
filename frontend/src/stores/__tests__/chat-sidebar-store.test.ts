@@ -394,14 +394,11 @@ describe("chat-sidebar-store", () => {
       expect(paths(8)).toEqual(["b.md"]);
     });
 
-    it("closes other tabs and tabs to the right, keeping pinned ones", () => {
+    it("closes other tabs, keeping pinned ones", () => {
       store().openPreviewInNewTab(7, "a.md", "directory");
       store().openPreviewInNewTab(7, "b.md", "directory");
       store().openPreviewInNewTab(7, "c.md", "directory");
       store().togglePreviewTabPin(7, "a.md");
-
-      store().closePreviewTabsToRight(7, "b.md");
-      expect(paths(7)).toEqual(["a.md", "b.md"]);
 
       store().closeOtherPreviewTabs(7, "b.md");
       expect(paths(7)).toEqual(["a.md", "b.md"]);
@@ -410,6 +407,21 @@ describe("chat-sidebar-store", () => {
       store().closeOtherPreviewTabs(7, "b.md");
       expect(paths(7)).toEqual(["b.md"]);
       expect(activePath(7)).toBe("b.md");
+    });
+
+    // 「全部关闭」= 整组关掉,固定标签也不例外(菜单项就叫「全部关闭」;要留下某
+    // 几个的语义已经由「关闭其他」承担)。关光之后整条会话条目消失,预览面板收起。
+    it("closes every tab including pinned ones, leaving other sessions alone", () => {
+      store().openPreviewInNewTab(7, "a.md", "directory");
+      store().openPreviewInNewTab(7, "b.md", "directory");
+      store().togglePreviewTabPin(7, "a.md");
+      store().openPreview(8, "other.md", "directory");
+
+      store().closeAllPreviewTabs(7);
+
+      expect(entry(7)).toBeUndefined();
+      expect(selectActivePreviewTab(store(), 7)).toBeNull();
+      expect(paths(8)).toEqual(["other.md"]);
     });
 
     it("evicts the least recently activated unpinned tab at the 8 tab cap", () => {

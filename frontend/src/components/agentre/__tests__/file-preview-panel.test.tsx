@@ -692,18 +692,58 @@ describe("FilePreviewPanel", () => {
 
       const tab = within(panel).getAllByRole("tab")[1];
       await userEvent.pointer({ keys: "[MouseRight]", target: tab });
+      // 标签菜单的项集合与次序（spec「右键菜单 · 预览标签」）：固定 / 关闭三项 /
+      // 复制相对路径。「关闭右侧」不在其中。
       expect(
-        screen.getByRole("menuitem", { name: "Close Others" }),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByRole("menuitem", { name: "Close Tabs to the Right" }),
-      ).toBeInTheDocument();
-      await userEvent.click(screen.getByRole("menuitem", { name: /Pin/ }));
+        screen.getAllByRole("menuitem").map((item) => item.textContent),
+      ).toEqual([
+        "Pin",
+        "Close",
+        "Close Others",
+        "Close All",
+        "Copy relative path",
+      ]);
+      await userEvent.click(screen.getByRole("menuitem", { name: /^Pin$/ }));
 
       expect(store().previewTabsBySession[7].tabs[1]).toMatchObject({
         isPinned: true,
         isPreview: false,
       });
+    });
+
+    it("closes every tab from Close All, including pinned ones, and collapses the panel", async () => {
+      const panel = await openTwoTabs();
+      store().togglePreviewTabPin(7, "docs/a.md");
+
+      const tab = within(panel).getAllByRole("tab")[1];
+      await userEvent.pointer({ keys: "[MouseRight]", target: tab });
+      await userEvent.click(
+        screen.getByRole("menuitem", { name: "Close All" }),
+      );
+
+      await waitFor(() =>
+        expect(store().previewTabsBySession[7]).toBeUndefined(),
+      );
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("complementary", { name: "File preview" }),
+        ).toBeNull(),
+      );
+    });
+
+    it("copies the tab's relative path from its context menu", async () => {
+      const user = userEvent.setup();
+      const panel = await openTwoTabs();
+
+      const tab = within(panel).getAllByRole("tab")[0];
+      await user.pointer({ keys: "[MouseRight]", target: tab });
+      await user.click(
+        screen.getByRole("menuitem", { name: "Copy relative path" }),
+      );
+
+      await waitFor(async () =>
+        expect(await navigator.clipboard.readText()).toBe("docs/a.md"),
+      );
     });
 
     it("keeps the tab of a file that has been deleted and shows the read failure", async () => {

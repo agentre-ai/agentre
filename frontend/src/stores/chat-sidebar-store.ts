@@ -104,8 +104,11 @@ type ChatSidebarState = {
   closePreviewTab: (sessionId: number, path: string) => void;
   /** 关闭其他标签（固定的留下）。 */
   closeOtherPreviewTabs: (sessionId: number, path: string) => void;
-  /** 关闭右侧标签（固定的留下）。 */
-  closePreviewTabsToRight: (sessionId: number, path: string) => void;
+  /**
+   * 全部关闭：整组关掉，固定标签也不例外——「要留下某几个」的语义已经由「关闭
+   * 其他」承担，菜单项就叫「全部关闭」。关光之后整条会话条目消失，预览面板收起。
+   */
+  closeAllPreviewTabs: (sessionId: number) => void;
 };
 
 /** 取某会话的活动标签；没有打开任何标签时返回 null（预览面板据此收起）。 */
@@ -413,19 +416,17 @@ function commitOrWarn(
 }
 
 // closeMany 关掉一批标签：keep 为真的标签留下，固定标签一律留下（与 chat-tabs 的
-// closeOthers / closeTabsToRight 一致）。活动标签被关掉时落到操作目标身上。
+// closeOthers 一致）。活动标签被关掉时落到操作目标身上。
 function closeMany(
   state: ChatSidebarState,
   sessionId: number,
   path: string,
-  keep: (tab: FilePreviewTab, index: number) => boolean,
+  keep: (tab: FilePreviewTab) => boolean,
 ): Partial<ChatSidebarState> {
   const entry = state.previewTabsBySession[sessionId];
   if (!entry) return state;
   if (!entry.tabs.some((tab) => tab.path === path)) return state;
-  const tabs = entry.tabs.filter(
-    (tab, index) => keep(tab, index) || tab.isPinned,
-  );
+  const tabs = entry.tabs.filter((tab) => keep(tab) || tab.isPinned);
   if (tabs.length === entry.tabs.length) return state;
   const activePath =
     entry.activePath !== null &&
@@ -645,13 +646,10 @@ export const useChatSidebarStore = create<ChatSidebarState>()(
         set((state) =>
           closeMany(state, sessionId, path, (tab) => tab.path === path),
         ),
-      closePreviewTabsToRight: (sessionId, path) =>
+      closeAllPreviewTabs: (sessionId) =>
         set((state) => {
-          const entry = state.previewTabsBySession[sessionId];
-          if (!entry) return state;
-          const idx = entry.tabs.findIndex((tab) => tab.path === path);
-          if (idx < 0) return state;
-          return closeMany(state, sessionId, path, (_tab, i) => i <= idx);
+          if (!state.previewTabsBySession[sessionId]) return state;
+          return commit(state, sessionId, null);
         }),
     }),
     {

@@ -2,10 +2,11 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import {
-  ArrowRightFromLine,
   ChevronDown,
+  Copy,
   Pin,
   PinOff,
+  SquareX,
   X,
   XCircle,
 } from "lucide-react";
@@ -23,6 +24,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { copyTextWithToast } from "@/lib/clipboard-toast";
 import { cn } from "@/lib/utils";
 import {
   useChatSidebarStore,
@@ -40,9 +42,10 @@ type Props = {
  * ≥ 2 时渲染——单文件路径与改造前完全一致，不为多标签能力给单文件用户加一行 chrome。
  *
  * 语义与应用内既有的会话标签条（chat-tabs/tab-strip.tsx）保持一致：临时标签斜体、
- * 活动标签背景提亮加顶部主色条、双击转常驻、右键菜单固定 / 关闭 / 关闭其他 / 关闭
- * 右侧。标签等比收缩到下限后横向滚动，右端是常驻的溢出菜单（列出全部标签、可直接
- * 切换），活动标签始终自动滚入可见区。
+ * 活动标签背景提亮加顶部主色条、双击转常驻。右键菜单按 spec「右键菜单 · 预览标签」
+ * 分三组：固定 / 取消固定；关闭 / 关闭其他 / 全部关闭；复制相对路径（标签的 path
+ * 就是会话级 relPath）。标签等比收缩到下限后横向滚动，右端是常驻的溢出菜单（列出
+ * 全部标签、可直接切换），活动标签始终自动滚入可见区。
  */
 export function PreviewTabStrip({ sessionId }: Props) {
   const { t } = useTranslation();
@@ -56,9 +59,7 @@ export function PreviewTabStrip({ sessionId }: Props) {
   const closeOtherPreviewTabs = useChatSidebarStore(
     (s) => s.closeOtherPreviewTabs,
   );
-  const closePreviewTabsToRight = useChatSidebarStore(
-    (s) => s.closePreviewTabsToRight,
-  );
+  const closeAllPreviewTabs = useChatSidebarStore((s) => s.closeAllPreviewTabs);
 
   const tabs = entry?.tabs ?? [];
   if (tabs.length < 2) return null;
@@ -95,12 +96,11 @@ export function PreviewTabStrip({ sessionId }: Props) {
       className="flex h-[34px] shrink-0 items-stretch overflow-hidden border-b border-border bg-muted"
     >
       <div className="scrollbar-none flex h-full min-h-0 min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden">
-        {tabs.map((tab, idx) => (
+        {tabs.map((tab) => (
           <PreviewTab
             key={tab.path}
             tab={tab}
             active={tab.path === entry?.activePath}
-            isLast={idx === tabs.length - 1}
             onActivate={() => activatePreviewTab(sessionId, tab.path)}
             onDoublePromote={() => {
               activatePreviewTab(sessionId, tab.path);
@@ -109,7 +109,7 @@ export function PreviewTabStrip({ sessionId }: Props) {
             onTogglePin={() => togglePreviewTabPin(sessionId, tab.path)}
             onClose={() => closePreviewTab(sessionId, tab.path)}
             onCloseOthers={() => closeOtherPreviewTabs(sessionId, tab.path)}
-            onCloseToRight={() => closePreviewTabsToRight(sessionId, tab.path)}
+            onCloseAll={() => closeAllPreviewTabs(sessionId)}
           />
         ))}
       </div>
@@ -127,23 +127,21 @@ export function PreviewTabStrip({ sessionId }: Props) {
 function PreviewTab({
   tab,
   active,
-  isLast,
   onActivate,
   onDoublePromote,
   onTogglePin,
   onClose,
   onCloseOthers,
-  onCloseToRight,
+  onCloseAll,
 }: {
   tab: FilePreviewTab;
   active: boolean;
-  isLast: boolean;
   onActivate: () => void;
   onDoublePromote: () => void;
   onTogglePin: () => void;
   onClose: () => void;
   onCloseOthers: () => void;
-  onCloseToRight: () => void;
+  onCloseAll: () => void;
 }) {
   const { t } = useTranslation();
   const Icon = PREVIEW_KIND_ICON[previewIconKind(tab.path)];
@@ -233,9 +231,22 @@ function PreviewTab({
           <XCircle />
           <span>{t("chatTabs.actions.closeOthers")}</span>
         </ContextMenuItem>
-        <ContextMenuItem onSelect={onCloseToRight} disabled={isLast}>
-          <ArrowRightFromLine />
-          <span>{t("chatTabs.actions.closeRight")}</span>
+        <ContextMenuItem onSelect={onCloseAll}>
+          <SquareX />
+          <span>{t("chatContext.filePreview.closeAll")}</span>
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        {/* 标签的 path 就是会话级 relPath，与行菜单的「复制相对路径」同一个语义、
+            复用同一个 key。 */}
+        <ContextMenuItem
+          onSelect={() =>
+            void copyTextWithToast(tab.path, {
+              successTitle: t("common.copied"),
+            })
+          }
+        >
+          <Copy />
+          <span>{t("chatContext.row.copyRelPath")}</span>
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
