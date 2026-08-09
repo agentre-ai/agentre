@@ -269,12 +269,22 @@ function imageFilesFromClipboard(data: DataTransfer): File[] {
   );
 }
 
-// 把 token 数显示成 "42.3k / 200k" 这种紧凑形式，跟 inline 底栏的 10px 字号匹配。
-// >= 1000 时按 k 缩写并保留 1 位小数；< 1000 时直接显示。
-function formatTokens(n: number): string {
+// 把 token 数显示成 "42.3k / 1M" 这种紧凑形式，跟 inline 底栏的 10px 字号匹配。
+// 三档，k 与 M 同构（商小于阈值保 1 位小数、否则取整）：
+//   - < 1000        → 原样
+//   - [1e3, 1e6)    → k：商 >= 100 取整，否则 1 位小数
+//   - >= 1e6        → M：商 >= 10 取整，否则 1 位小数；整数时省掉 ".0"（1e6 → "1M"）
+// 1M 上下文窗口的模型必须读成 "1M" 而不是 "1000k"。
+export function formatTokens(n: number): string {
   if (n < 1000) return String(n);
-  const v = n / 1000;
-  return v >= 100 ? `${Math.round(v)}k` : `${v.toFixed(1)}k`;
+  if (n < 1_000_000) {
+    const v = n / 1000;
+    return v >= 100 ? `${Math.round(v)}k` : `${v.toFixed(1)}k`;
+  }
+  const v = n / 1_000_000;
+  if (v >= 10) return `${Math.round(v)}M`;
+  const s = v.toFixed(1);
+  return `${s.endsWith(".0") ? s.slice(0, -2) : s}M`;
 }
 
 // formatResetIn 把"距离 ISO 时间点还有多久"渲染成紧凑的 XdYh / Xh / Xm 形式

@@ -42,6 +42,7 @@ import {
   ChatTranscript,
   type ChatTranscriptHandle,
   formatResetIn,
+  formatTokens,
 } from "@/components/agentre/chat";
 import { ChatStreamsHost } from "@/components/agentre/chat-streams-host";
 import {
@@ -1479,6 +1480,33 @@ describe("ChatTranscript message tail attachments", () => {
 
     await screen.findByText("当前目录如下…");
     expect(screen.getAllByRole("separator")).toHaveLength(1);
+  });
+});
+
+describe("formatTokens", () => {
+  it("小于 1000 原样输出", () => {
+    expect(formatTokens(0)).toBe("0");
+    expect(formatTokens(999)).toBe("999");
+  });
+
+  it("[1e3, 1e6) 走 k 档: 商 >=100 取整, 否则一位小数", () => {
+    expect(formatTokens(1_000)).toBe("1.0k");
+    expect(formatTokens(12_340)).toBe("12.3k");
+    expect(formatTokens(120_500)).toBe("121k");
+    expect(formatTokens(999_000)).toBe("999k");
+  });
+
+  it(">=1e6 走 M 档: 商 >=10 取整, 否则一位小数", () => {
+    expect(formatTokens(1_000_000)).toBe("1M");
+    expect(formatTokens(1_200_000)).toBe("1.2M");
+    expect(formatTokens(9_900_000)).toBe("9.9M");
+    expect(formatTokens(10_000_000)).toBe("10M");
+    expect(formatTokens(12_500_000)).toBe("13M");
+  });
+
+  it("k↔M 临界: 999_999 仍是 k, 1_000_000 进 M", () => {
+    expect(formatTokens(999_999)).toBe("1000k");
+    expect(formatTokens(1_000_000)).toBe("1M");
   });
 });
 
