@@ -217,6 +217,30 @@ describe("行的统一点击语义", () => {
       selectActivePreviewTab(useChatSidebarStore.getState(), 1),
     ).toMatchObject({ path: "README.md", isPreview: false });
   });
+
+  it("已有临时标签时双击另一行：原临时标签保留在原地，双击的行转常驻新增一个标签（不是原地互相覆盖）", async () => {
+    renderChanges({});
+    const user = setupUser();
+
+    // 单击 chat.go 开出临时标签，再单击 README.md 原地替换它——此时仍只有
+    // 一个临时标签（README.md）。真实鼠标双击会先各打一次 click 再打
+    // dblclick：如果 onClick / onDoubleClick 挂在同一个元素上，双击 logo.png
+    // 的第一次 click 会把 README.md 那个临时标签原地替换成 logo.png，
+    // dblclick 随即只是把同一个位置转常驻——最终只剩 1 个标签，而不是
+    // README.md（仍临时）+ logo.png（转常驻）两个标签。
+    await user.click(screen.getByRole("button", { name: /chat\.go/ }));
+    await user.click(screen.getByRole("button", { name: /README\.md/ }));
+    await user.dblClick(screen.getByRole("button", { name: /logo\.png/ }));
+
+    const entry = useChatSidebarStore.getState().previewTabsBySession[1];
+    expect(entry?.tabs).toHaveLength(2);
+    expect(entry?.tabs.find((tab) => tab.path === "README.md")).toMatchObject({
+      isPreview: true,
+    });
+    expect(
+      entry?.tabs.find((tab) => tab.path === "assets/logo.png"),
+    ).toMatchObject({ isPreview: false });
+  });
 });
 
 describe("不可预览的行", () => {

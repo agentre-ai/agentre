@@ -37,6 +37,20 @@ export type SessionPreviewTabs = {
   activePath: string | null;
 };
 
+/**
+ * openPreview 的返回值：行的双击手势靠它判断「这一次 click 有没有原地替换掉别的
+ * 临时标签」（sidebar-row.tsx 的 onClick 记下它、onDoubleClick 据此调用
+ * restoreClobberedPreviewTab 补回）。真实鼠标双击在派发 dblclick 之前会先各打一次
+ * click：第一次 click 命中「原地替换」分支时 replaced 是被替换掉的那个标签；第二
+ * 次 click（此时目标路径已经因为第一次 click 而在标签组里）命中的是「已打开，只
+ * 是重新激活」分支，alreadyOpen=true、replaced 恒为 null——调用方必须据此**不要**
+ * 用这次的 null 覆盖第一次 click 记下的值，否则双击要补回的那个标签就丢了。
+ */
+export type PreviewClickOutcome = {
+  alreadyOpen: boolean;
+  replaced: FilePreviewTab | null;
+};
+
 /** 每会话最多 8 个标签；再开就淘汰最久未被激活的未固定标签（spec「上限与淘汰」）。 */
 export const MAX_PREVIEW_TABS = 8;
 /** 全局只留最近 20 个会话的标签表，按「该会话标签最后一次被激活的时间」淘汰整条。 */
@@ -57,18 +71,27 @@ type ChatSidebarState = {
   setShowIgnored: (showIgnored: boolean) => void;
   setGitBaseline: (sessionId: number, ref: string) => void;
   clearGitBaseline: (sessionId: number) => void;
-  /** 单击语义：打开成临时标签，原地替换上一个临时标签；文件已打开则激活既有标签。 */
+  /**
+   * 单击语义：打开成临时标签，原地替换上一个临时标签；文件已打开则激活既有标签。
+   * 返回值见 PreviewClickOutcome——行的双击手势要用它在原地替换发生时记下「刚刚
+   * 替换掉了谁」，以便双击结束后补回来（否则双击会把它连同一起吞掉）。
+   */
   openPreview: (
     sessionId: number,
     path: string,
     sourceMode: PreviewSourceMode,
-  ) => void;
+  ) => PreviewClickOutcome;
   /** 双击 / 右键「在新标签页预览」：直接开常驻标签；文件已打开则激活并转常驻。 */
   openPreviewInNewTab: (
     sessionId: number,
     path: string,
     sourceMode: PreviewSourceMode,
   ) => void;
+  /**
+   * 补回一个被单击「原地替换」吞掉的临时标签；只供行的双击手势自我修复用，见
+   * sidebar-row.tsx。已经存在同路径标签时是 no-op（不覆盖双击自己已经建立的状态）。
+   */
+  restoreClobberedPreviewTab: (sessionId: number, tab: FilePreviewTab) => void;
   /** 双击当前标签：把活动的临时标签转成常驻标签。 */
   promoteActivePreviewTab: (sessionId: number) => void;
   /** 切换到某个已打开的标签。 */
@@ -466,13 +489,23 @@ export const useChatSidebarStore = create<ChatSidebarState>()(
           return { gitBaselineBySession: next };
         }),
       openPreview: (sessionId, path, sourceMode) => {
-        if (!isOpenable(sessionId, path, sourceMode)) return;
+        if (!isOpenable(sessionId, path, sourceMode)) {
+          return { alreadyOpen: false, replaced: null };
+        }
+        let outcome: PreviewClickOutcome = {
+          alreadyOpen: false,
+          replaced: null,
+        };
         set((state) => {
           const entry = state.previewTabsBySession[sessionId] ?? EMPTY_ENTRY;
           const existing = entry.tabs.findIndex((tab) => tab.path === path);
           if (existing >= 0) {
             // 已打开的文件被再次单击：激活既有标签，不新建、也不降级成临时标签；
-            // 但入口模式仍决定首视图（决策 9），从另一个模式点进来要重设。
+            // 但入口模式仍决定首视图（决策 9），从另一个模式点进来要重设。这也是
+            // 真实鼠标双击里第二次 click 命中的分支（第一次 click 已经把目标路径
+            // 换进了标签组）——outcome.replaced 恒为 null，调用方不能拿它去覆盖
+            // 第一次 click 记下的值。
+            outcome = { alreadyOpen: true, replaced: null };
             return commit(
               state,
               sessionId,
@@ -481,6 +514,7 @@ export const useChatSidebarStore = create<ChatSidebarState>()(
           }
           const previewIdx = entry.tabs.findIndex((tab) => tab.isPreview);
           const replaced = previewIdx >= 0 ? entry.tabs[previewIdx] : null;
+          outcome = { alreadyOpen: false, replaced };
           const tab: FilePreviewTab = {
             path,
             // 入口模式决定首视图：临时标签被同模式的下一个文件原地替换时保留
@@ -501,6 +535,7 @@ export const useChatSidebarStore = create<ChatSidebarState>()(
           }
           return commitOrWarn(state, sessionId, insertTab(entry, tab));
         });
+        return outcome;
       },
       openPreviewInNewTab: (sessionId, path, sourceMode) => {
         if (!isOpenable(sessionId, path, sourceMode)) return;
@@ -530,6 +565,22 @@ export const useChatSidebarStore = create<ChatSidebarState>()(
           return commitOrWarn(state, sessionId, insertTab(entry, tab));
         });
       },
+      restoreClobberedPreviewTab: (sessionId, tab) =>
+        set((state) => {
+          const entry = state.previewTabsBySession[sessionId];
+          if (!entry) return state;
+          // 双击自己已经把这个路径建立成了某种标签（比如恰好把它双击回来）：不
+          // 覆盖双击刚建立的状态。
+          if (entry.tabs.some((t) => t.path === tab.path)) return state;
+          const inserted = insertTab(entry, tab);
+          if (!inserted) return state;
+          // insertTab 会把新标签设成活动标签，但这里活动标签应该仍是双击刚转常
+          // 驻的那一个——补回来的只是「一个之前存在过的标签」，不该抢走焦点。
+          return commit(state, sessionId, {
+            ...inserted,
+            activePath: entry.activePath,
+          });
+        }),
       promoteActivePreviewTab: (sessionId) =>
         set((state) => {
           const entry = state.previewTabsBySession[sessionId];
