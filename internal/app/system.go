@@ -64,6 +64,16 @@ func isAbsolutePath(p string) bool {
 	return false
 }
 
+// RevealPath 在系统文件管理器中打开 path 所在目录并选中该文件。
+// path 必须是绝对路径；包含 ".." 时拒绝。末尾 :line[:col] 后缀会被剥离。
+func (a *App) RevealPath(path string) error {
+	cleaned, err := validateOpenPath(path)
+	if err != nil {
+		return err
+	}
+	return runRevealPlatform(cleaned)
+}
+
 // OpenLogsDir 在系统文件管理器中打开 Agentre 的日志目录（不存在时先创建）。
 // 用于「设置 → 版本 & 更新 → 打开日志」，方便用户取日志附到 Bug 反馈里。
 func (a *App) OpenLogsDir() error {
@@ -85,5 +95,16 @@ func runOpenPlatform(path string) error {
 		return runOpenCmd("cmd", "/c", "start", "", path)
 	default:
 		return runOpenCmd("xdg-open", path)
+	}
+}
+
+func runRevealPlatform(path string) error {
+	switch runtime.GOOS {
+	case "darwin":
+		return runOpenCmd("open", "-R", path)
+	case "windows":
+		return runOpenCmd("explorer", "/select,"+path)
+	default:
+		return runOpenCmd("nautilus", "--select", path)
 	}
 }

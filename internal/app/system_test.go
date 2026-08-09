@@ -101,3 +101,68 @@ func TestOpenPath_dispatchesPlatformCommand(t *testing.T) {
 		})
 	})
 }
+
+func TestRevealPath_dispatchesPlatformCommand(t *testing.T) {
+	Convey("Given a stubbed exec runner", t, func() {
+		var gotName string
+		var gotArgs []string
+		origRun := runOpenCmd
+		runOpenCmd = func(name string, args ...string) error {
+			gotName = name
+			gotArgs = args
+			return nil
+		}
+		defer func() { runOpenCmd = origRun }()
+
+		Convey("when RevealPath is called with a valid absolute path", func() {
+			a := &App{}
+			err := a.RevealPath("/tmp/file.go:42")
+			So(err, ShouldBeNil)
+
+			switch runtime.GOOS {
+			case "darwin":
+				So(gotName, ShouldEqual, "open")
+				So(gotArgs, ShouldResemble, []string{"-R", "/tmp/file.go"})
+			case "windows":
+				So(gotName, ShouldEqual, "explorer")
+				So(gotArgs, ShouldResemble, []string{"/select,/tmp/file.go"})
+			default:
+				So(gotName, ShouldEqual, "nautilus")
+				So(gotArgs, ShouldResemble, []string{"--select", "/tmp/file.go"})
+			}
+		})
+
+		Convey("when exec returns error, then RevealPath propagates", func() {
+			runOpenCmd = func(name string, args ...string) error {
+				return errors.New("boom")
+			}
+			a := &App{}
+			err := a.RevealPath("/tmp/file.go")
+			So(err, ShouldNotBeNil)
+		})
+
+		Convey("when path is invalid, then exec is not called", func() {
+			called := false
+			runOpenCmd = func(name string, args ...string) error {
+				called = true
+				return nil
+			}
+			a := &App{}
+			err := a.RevealPath("relative/path.go")
+			So(err, ShouldNotBeNil)
+			So(called, ShouldBeFalse)
+		})
+
+		Convey("when path contains '..', then exec is not called", func() {
+			called := false
+			runOpenCmd = func(name string, args ...string) error {
+				called = true
+				return nil
+			}
+			a := &App{}
+			err := a.RevealPath("/tmp/../etc/file.go")
+			So(err, ShouldNotBeNil)
+			So(called, ShouldBeFalse)
+		})
+	})
+}
