@@ -545,6 +545,19 @@ type ChatSessionDetail struct {
 	// ProjectID = 0 表示自由会话；> 0 时受 project_svc 管控。
 	// 前端 ChatPanel 用它派生 breadcrumb 路径。
 	ProjectID int64 `json:"projectId,omitempty"`
+	// ExecTargetCount 是这个会话所属 Agent 的有序执行目标列表长度（R15）。前端聊天头
+	// 用它放宽 chip 显示守卫：多档 Agent 的会话总是显示机器 chip（含本机），单档维持
+	// 今天「只有远端会话才显示」的行为（R20）。0/1 与「未绑执行目标列表」（老 Agent）
+	// 在这里不做区分——两者都不该显示 chip。
+	ExecTargetCount int `json:"execTargetCount"`
+	// CwdUnavailableReason 在 Cwd 为空时给出结构化原因（R10）：Wails 边界只过
+	// Error() 字符串，没有结构化通道，前端因此没法从一个失败的 RPC 反推出"是本机
+	// 未配置路径,还是远端没配,还是自由会话压根没有 cwd"——这个字段把
+	// resolveSessionCwd 的错误分类透出来，供会话文件面板据此展示 R10 专用的
+	// 空态文案而不是一律笼统的"没有工作目录"。取值：""(Cwd 非空，或没有可归类的
+	// 原因) / "local-path-missing"（本机未配置路径，ProjectLocalPathMissing）/
+	// "location-missing"（远端机器未配置路径，ProjectLocationMissing）。
+	CwdUnavailableReason string `json:"cwdUnavailableReason,omitempty"`
 }
 
 // BlockReason 是不可对话 Agent 的结构化原因枚举；空串 = 可对话（与 Chattable=true 一致）。
@@ -722,6 +735,12 @@ type SendRequest struct {
 	PermissionMode string `json:"permissionMode,omitempty"`
 	// ModelOverride 仅新建会话时生效；已有会话通过 SetSessionModel 切换。
 	ModelOverride string `json:"modelOverride,omitempty"`
+	// ExecTargetOverride 是 R15a 的手动指定：仅新建会话时生效（与 ModelOverride 同一条
+	// 规则），值是用户在空会话态「改选」浮层里选中的 agentBackendID。0 = 不指定，按
+	// R15 顺序自动挑第一个可用的档。非零时必须在该 Agent 的执行目标列表里且此刻可用，
+	// 否则整个 Send 失败（不静默回落自动挑选）——拒绝指定一个不可用的档。已有会话
+	// （SessionID>0）忽略这个字段：会话早已按 R15b 钉在它落到的那一档上，不可能再改。
+	ExecTargetOverride int64 `json:"execTargetOverride,omitempty"`
 	// EmitTurnStartedBypass 表示本轮由"非查看者"发起(子 agent 调用经 subagent_svc
 	// 阻塞起轮),需经会话级旁路 chat:autonomous:<sessionId> 把 per-turn 流名推给该会话
 	// 已打开(可能在后台)的 ChatPanel, 让它翻 running + openStream —— 否则只有发起者

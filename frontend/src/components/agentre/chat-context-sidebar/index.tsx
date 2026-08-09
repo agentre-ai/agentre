@@ -21,6 +21,12 @@ type Props = {
   onJumpToMessage: (messageId: number) => void;
   cwd?: string;
   remote?: boolean;
+  /** R10：cwd 为空时的结构化原因，透给「目录」模式渲染专用空态。 */
+  cwdUnavailableReason?: string;
+  /** 会话绑定的项目 id，R10 空态的"指定本机路径"入口据此调用 ProjectSetLocalPath。 */
+  projectId?: number;
+  /** 指定路径成功后的回调——调用方据此重新 LoadSession。 */
+  onCwdSpecified?: () => void;
 };
 
 export function ChatContextSidebar({
@@ -30,6 +36,9 @@ export function ChatContextSidebar({
   onJumpToMessage,
   cwd = "",
   remote = false,
+  cwdUnavailableReason,
+  projectId,
+  onCwdSpecified,
 }: Props) {
   const { t } = useTranslation();
   const activeTab = useChatSidebarStore((s) => s.activeTab);
@@ -116,6 +125,9 @@ export function ChatContextSidebar({
             const mid = turnToMessageId.get(turn);
             if (mid != null) onJumpToMessage(mid);
           }}
+          cwdUnavailableReason={cwdUnavailableReason}
+          projectId={projectId}
+          onCwdSpecified={onCwdSpecified}
         />
       )}
     </ResizableSidebar>

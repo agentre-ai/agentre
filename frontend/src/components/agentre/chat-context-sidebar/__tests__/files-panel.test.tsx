@@ -11,6 +11,8 @@ vi.mock("sonner", () => sonnerMocks);
 
 const openPathMock = vi.fn();
 const listDirMock = vi.fn();
+const selectDirectoryMock = vi.fn();
+const setLocalPathMock = vi.fn();
 // Git 模式的两个绑定这里只需要能被安全调用（本文件不断言它们），断言在
 // files-panel-git.test.tsx。
 const gitMocks = vi.hoisted(() => ({
@@ -33,6 +35,8 @@ vi.mock("@/../wailsjs/go/app/App", () => ({
     listDirMock(sessionId, relPath, ignored),
   WorkspaceFsGitChanges: gitMocks.changes,
   WorkspaceFsGitBranches: gitMocks.branches,
+  SelectDirectory: (title: string) => selectDirectoryMock(title),
+  ProjectSetLocalPath: (req: unknown) => setLocalPathMock(req),
 }));
 
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
@@ -96,6 +100,8 @@ beforeEach(() => {
   openPathMock.mockResolvedValue(undefined);
   listDirMock.mockReset();
   listDirMock.mockResolvedValue(listing([]));
+  selectDirectoryMock.mockReset();
+  setLocalPathMock.mockReset();
   sonnerMocks.toast.error.mockReset();
 });
 
@@ -283,6 +289,43 @@ describe("FilesPanel directory mode", () => {
       await screen.findByText(/this session has no working directory/i),
     ).toBeInTheDocument();
     expect(listDirMock).not.toHaveBeenCalled();
+  });
+
+  // R10: 本机未配置路径不复用 WorkspaceFsNoCwd 那句笼统提示，专用空态给出可以
+  // 就地指定路径的入口，指定成功后回调让调用方重新 LoadSession。
+  it("shows the R10 local-path-missing state instead of the generic no-cwd copy, and specifying a path calls ProjectSetLocalPath + onCwdSpecified", async () => {
+    selectDirectoryMock.mockResolvedValue("/Users/me/Code/agentre-hub");
+    setLocalPathMock.mockResolvedValue({ id: 9, localPathMissing: false });
+    const onCwdSpecified = vi.fn();
+
+    renderPanel({
+      cwd: "",
+      cwdUnavailableReason: "local-path-missing",
+      projectId: 9,
+      onCwdSpecified,
+    });
+
+    expect(
+      await screen.findByText(
+        /this computer hasn't configured a path for this project yet/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/this session has no working directory/i),
+    ).not.toBeInTheDocument();
+    expect(listDirMock).not.toHaveBeenCalled();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /specify local path/i }),
+    );
+
+    await waitFor(() => {
+      expect(setLocalPathMock).toHaveBeenCalledWith({
+        id: 9,
+        path: "/Users/me/Code/agentre-hub",
+      });
+    });
+    expect(onCwdSpecified).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces a remote-offline failure with a retry that re-requests", async () => {

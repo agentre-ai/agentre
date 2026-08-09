@@ -565,6 +565,19 @@ func TestResolveSessionCwd_LocalPropagatesLocalPathMissing(t *testing.T) {
 	assert.NotEqual(t, code.WorkspaceFsNoCwd, httpErr.Code)
 }
 
+// TestCwdUnavailableReasonFor 锁住 R10 的分类表：三种"没有 cwd"必须映射到三个
+// 彼此可区分的取值，且未知/无归类原因的错误落空串兜底，不冒充第四种状态。
+func TestCwdUnavailableReasonFor(t *testing.T) {
+	ctx := context.Background()
+	assert.Equal(t, "local-path-missing",
+		cwdUnavailableReasonFor(i18n.NewError(ctx, code.ProjectLocalPathMissing)))
+	assert.Equal(t, "location-missing",
+		cwdUnavailableReasonFor(i18n.NewError(ctx, code.ProjectLocationMissing)))
+	assert.Equal(t, "", cwdUnavailableReasonFor(i18n.NewError(ctx, code.WorkspaceFsNoCwd)))
+	assert.Equal(t, "", cwdUnavailableReasonFor(errors.New("unrelated failure")))
+	assert.Equal(t, "", cwdUnavailableReasonFor(nil))
+}
+
 // ── noopDaemonClient ─────────────────────────────────────────────────────────
 
 type noopDaemonClient struct{}

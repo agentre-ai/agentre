@@ -637,7 +637,10 @@
       "truncated": "Showing the first {{limit}} entries only",
       "noCwd": "This session has no working directory",
       "readFailed": "Failed to read the directory",
-      "retry": "Retry"
+      "retry": "Retry",
+      "localPathMissingTitle": "This computer hasn't configured a path for this project yet",
+      "localPathMissingHint": "This project was synced from your account — the file panel needs a local working directory to list its contents.",
+      "localPathMissingAction": "Specify local path"
     },
     "git": {
       "scope": {
@@ -732,6 +735,32 @@
       "send": "Send failed: {{msg}}",
       "stop": "Stop failed: {{msg}}",
       "stopBackgroundTask": "Failed to stop background task: {{msg}}"
+    },
+    "execTarget": {
+      "willRunPrefix": "Will run on",
+      "willRunSuffix": "",
+      "droppedPrefix": "{{name}} is unavailable — will run on",
+      "reselect": "Change",
+      "pickerTitle": "Which machine to run on",
+      "pickerScope": "Only affects this session",
+      "stickyHint": "Always want to use it? Drag it to first.",
+      "goAdjust": "Adjust order",
+      "allUnavailableTitle": "\"{{name}}\" has no available execution machine right now",
+      "offlineTitle": "{{name}} is currently offline",
+      "offlineHint": "The context lives on that machine — it won't be reassigned. Wait for it to come back online, or start a new session with the same opening message.",
+      "offlineNewSession": "Start a new session",
+      "reasons": {
+        "orphanBackend": "The backend this target refers to no longer exists",
+        "backendRequiresProvider": "LLM provider required",
+        "providerInactive": "LLM provider not active",
+        "remoteProviderMissing": "Remote is missing this LLM provider",
+        "gatewayNotRunning": "Local gateway is not running",
+        "remoteOpenclawUnavailable": "Remote OpenClaw is not available yet",
+        "unknownBackend": "Unknown backend type",
+        "unpaired": "This computer isn't paired with it",
+        "offline": "Offline",
+        "projectPathMissing": "This machine has no path configured for this project"
+      }
     },
     "launchCommand": {
       "copy": "Copy Launch Command",
@@ -1013,8 +1042,6 @@
       "itemPrefix": "New project chat with",
       "itemTitle": "New project chat with {{agentName}}",
       "memberHeading": "New chat in {{projectName}}",
-      "missingRemotePathWarning": "[command-palette] \"{{agentName}}\" has no path configured on this project's remote machine. Fill it in under Project Settings · Members.",
-      "offlineWarning": "[command-palette] The device \"{{deviceName}}\" for \"{{agentName}}\" is offline, so a session cannot be started.",
       "otherHeading": "Other Agents",
       "notInProject": "Not in this project"
     },
@@ -1675,6 +1702,17 @@
       "loadFailed": "Load failed: {{error}}",
       "reorderFailed": "Failed to save project order: {{error}}"
     },
+    "localPath": {
+      "badge": "Not configured",
+      "allMissingTitle": "This device hasn't configured a path for any project yet",
+      "allMissingDescription": "All {{count}} projects from your account are here — configure each one's directory to start chatting on this machine.",
+      "specifyPath": "Specify path…",
+      "mergeIntoExisting": "Merge into existing project…",
+      "specifyFailed": "Failed to specify path: {{error}}",
+      "unconfiguredInline": "This device hasn't configured one yet",
+      "unconfiguredHint": "This project was synced from your account — specify a directory to start chatting on this machine.",
+      "specifyShort": "Specify…"
+    },
     "search": {
       "aria": "Search projects / sessions",
       "clear": "Clear filter",
@@ -1721,6 +1759,21 @@
     "insertAfterAI": "Inserted after AI finishes",
     "notCancellable": "Not cancellable (codex backend)",
     "notCancellableTitle": "codex turn/steer protocol is not cancellable after send"
+  },
+  "projectMerge": {
+    "title": "Merge into existing project",
+    "description": "The two projects become one. This action can't be undone with a single click.",
+    "pickTargetLabel": "Merge into",
+    "pickTargetPlaceholder": "Choose a project to merge into…",
+    "noCandidates": "No other project to merge into",
+    "keepPathNote": "The local project's local path is kept, so sessions can still start.",
+    "reassignNote": "Sessions, member agents, sub-projects, and remote path records from both sides move to the merged project.",
+    "identityNote": "The account-side project wins: name, icon, color, and description take its values.",
+    "confirm": "Merge",
+    "cancel": "Cancel",
+    "errors": {
+      "mergeFailed": "Merge failed: {{error}}"
+    }
   },
   "quitConfirm": {
     "title": "Quit Agentre?",

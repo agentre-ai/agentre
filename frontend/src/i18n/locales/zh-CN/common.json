@@ -637,7 +637,10 @@
       "truncated": "只显示了前 {{limit}} 项",
       "noCwd": "这个会话没有工作目录",
       "readFailed": "读取目录失败",
-      "retry": "重试"
+      "retry": "重试",
+      "localPathMissingTitle": "这台电脑还没有为这个项目配置路径",
+      "localPathMissingHint": "这个项目是从账号里同步来的，文件面板需要一个本机工作目录才能列出内容。",
+      "localPathMissingAction": "指定本机路径"
     },
     "git": {
       "scope": {
@@ -732,6 +735,32 @@
       "send": "发送失败：{{msg}}",
       "stop": "停止失败：{{msg}}",
       "stopBackgroundTask": "停止后台任务失败：{{msg}}"
+    },
+    "execTarget": {
+      "willRunPrefix": "将在",
+      "willRunSuffix": "上运行",
+      "droppedPrefix": "{{name}}不可用，将在",
+      "reselect": "改选",
+      "pickerTitle": "在哪台机器上跑",
+      "pickerScope": "只影响这一次",
+      "stickyHint": "总是想用它？拖到第一位。",
+      "goAdjust": "去调整",
+      "allUnavailableTitle": "「{{name}}」现在没有可用的执行机器",
+      "offlineTitle": "{{name}} 当前离线",
+      "offlineHint": "上下文都在那台机器上，不会改派。等它上线，或用同样的开头新建一个会话。",
+      "offlineNewSession": "新建一个会话",
+      "reasons": {
+        "orphanBackend": "该执行目标引用的后端已不存在",
+        "backendRequiresProvider": "需指定 LLM Provider",
+        "providerInactive": "LLM 供应商未激活",
+        "remoteProviderMissing": "远端缺少 LLM 供应商",
+        "gatewayNotRunning": "本地网关未启动",
+        "remoteOpenclawUnavailable": "远端 OpenClaw 暂不可用",
+        "unknownBackend": "未知后端类型",
+        "unpaired": "这台电脑未配对它",
+        "offline": "离线",
+        "projectPathMissing": "这台机器上没有配置这个项目的路径"
+      }
     },
     "launchCommand": {
       "copy": "复制启动命令",
@@ -1013,8 +1042,6 @@
       "itemPrefix": "在项目中新建对话：",
       "itemTitle": "在项目中新建对话：{{agentName}}",
       "memberHeading": "在 {{projectName}} 中新建 chat",
-      "missingRemotePathWarning": "[command-palette] 「{{agentName}}」在该项目的远端机器上没有配置路径，请到「项目设置 · 成员」补齐",
-      "offlineWarning": "[command-palette] 「{{agentName}}」所在的设备「{{deviceName}}」当前离线，无法启动会话",
       "otherHeading": "其它 Agent",
       "notInProject": "不在该项目"
     },
@@ -1675,6 +1702,17 @@
       "loadFailed": "加载失败：{{error}}",
       "reorderFailed": "项目顺序保存失败：{{error}}"
     },
+    "localPath": {
+      "badge": "未配置",
+      "allMissingTitle": "这台设备还没有为任何项目配置路径",
+      "allMissingDescription": "账号里的 {{count}} 个项目都在，指定各自的目录后就能在本机开会话。",
+      "specifyPath": "指定路径…",
+      "mergeIntoExisting": "合并到已有项目…",
+      "specifyFailed": "指定路径失败：{{error}}",
+      "unconfiguredInline": "这台设备还没有配置",
+      "unconfiguredHint": "这个项目从账号同步而来，指定目录后才能在本机开会话。",
+      "specifyShort": "指定…"
+    },
     "search": {
       "aria": "搜索项目 / 会话",
       "clear": "清空筛选",
@@ -1721,6 +1759,21 @@
     "insertAfterAI": "AI 完成后插入",
     "notCancellable": "不可撤回（codex 后端）",
     "notCancellableTitle": "codex turn/steer 协议一发即不可撤"
+  },
+  "projectMerge": {
+    "title": "合并到已有项目",
+    "description": "两个项目会变成一个。这个动作不能一键撤销。",
+    "pickTargetLabel": "合并到",
+    "pickTargetPlaceholder": "选择要合并到的项目…",
+    "noCandidates": "没有其它项目可以合并",
+    "keepPathNote": "保留本机项目的本机路径，会话照常能起。",
+    "reassignNote": "两边的会话、成员 Agent、子项目与远端路径记录都会归到合并后的项目下。",
+    "identityNote": "以账号里那一个为准：名称、图标、颜色、描述取账号侧的值。",
+    "confirm": "合并",
+    "cancel": "取消",
+    "errors": {
+      "mergeFailed": "合并失败：{{error}}"
+    }
   },
   "quitConfirm": {
     "title": "退出 Agentre？",

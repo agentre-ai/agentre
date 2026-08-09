@@ -23,8 +23,10 @@ const appMocks = vi.hoisted(() => ({
   ProjectListSessions: vi.fn(),
   ProjectListTree: vi.fn(),
   ProjectLocationList: vi.fn(),
+  ProjectMerge: vi.fn(),
   ProjectRemoveMember: vi.fn(),
   ProjectReorder: vi.fn(),
+  ProjectSetLocalPath: vi.fn(),
   ProjectUpdate: vi.fn(),
   RemoteDeviceList: vi.fn(),
   SelectDirectory: vi.fn(),
@@ -1378,6 +1380,195 @@ describe("ProjectsPage 新建终端 end-to-end routing", () => {
   });
 });
 
+// R10「未配置」标注 + R11a「合并到已有项目」：项目树里的角标 / 批量说明 /
+// 单行动作入口。
+describe("ProjectsPage local path missing (R10/R11a)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    useSessionReadStore.setState({ overrides: new Map() });
+    useChatAgentsStore.getState().__reset();
+    useChatTabsStore.setState({ tabs: [], activeTabId: null });
+
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    appMocks.ProjectListSessions.mockResolvedValue([]);
+    appMocks.ProjectLocationList.mockResolvedValue([]);
+    appMocks.RemoteDeviceList.mockResolvedValue([]);
+    appMocks.ProjectGet.mockResolvedValue({
+      project: null,
+      directMembers: [],
+      inheritedMembers: [],
+    });
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("Given some projects missing and some configured, Then only the missing row gets the badge (not every row)", async () => {
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: {
+          color: "agent-1",
+          icon: "folder",
+          id: 1,
+          name: "agentre",
+          parentID: 0,
+          path: "/tmp/agentre",
+          localPathMissing: false,
+        },
+        children: [],
+      },
+      {
+        project: {
+          color: "agent-2",
+          icon: "folder",
+          id: 2,
+          name: "agentre-hub",
+          parentID: 0,
+          path: "",
+          localPathMissing: true,
+        },
+        children: [],
+      },
+    ]);
+    renderProjectsPage();
+
+    await screen.findByText("agentre-hub");
+    const badges = await screen.findAllByTestId(
+      "project-local-path-missing-badge",
+    );
+    expect(badges).toHaveLength(1);
+    expect(
+      screen.queryByText("projects.localPath.allMissingTitle"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Given every project missing, Then per-row badges are suppressed and the top banner explains it instead", async () => {
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: {
+          color: "agent-1",
+          icon: "folder",
+          id: 1,
+          name: "agentre",
+          parentID: 0,
+          path: "",
+          localPathMissing: true,
+        },
+        children: [],
+      },
+      {
+        project: {
+          color: "agent-2",
+          icon: "folder",
+          id: 2,
+          name: "agentre-hub",
+          parentID: 0,
+          path: "",
+          localPathMissing: true,
+        },
+        children: [],
+      },
+    ]);
+    renderProjectsPage();
+
+    await screen.findByText(
+      "This device hasn't configured a path for any project yet",
+    );
+    expect(
+      screen.queryByTestId("project-local-path-missing-badge"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Given the project menu on an unconfigured project, When '指定路径…' is picked and a directory is chosen, Then ProjectSetLocalPath is called and the tree reloads", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: {
+          color: "agent-1",
+          icon: "folder",
+          id: 1,
+          name: "agentre-hub",
+          parentID: 0,
+          path: "",
+          localPathMissing: true,
+        },
+        children: [],
+      },
+    ]);
+    appMocks.SelectDirectory.mockResolvedValue("/Users/me/Code/agentre-hub");
+    appMocks.ProjectSetLocalPath.mockResolvedValue({
+      id: 1,
+      localPathMissing: false,
+    });
+    renderProjectsPage();
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "More actions for agentre-hub",
+      }),
+    );
+    await user.click(await screen.findByText("Specify path…"));
+
+    await waitFor(() => {
+      expect(appMocks.ProjectSetLocalPath).toHaveBeenCalledWith({
+        id: 1,
+        path: "/Users/me/Code/agentre-hub",
+      });
+    });
+    // Reload happens after specifying — ProjectListTree gets called again.
+    await waitFor(() => {
+      expect(appMocks.ProjectListTree.mock.calls.length).toBeGreaterThan(1);
+    });
+  });
+
+  it("Given the project menu on an unconfigured project, When '合并到已有项目…' is picked, Then the merge dialog opens with the other project as the only candidate", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: {
+          color: "agent-1",
+          icon: "folder",
+          id: 1,
+          name: "agentre-hub (local)",
+          parentID: 0,
+          path: "/Users/me/Code/agentre-hub",
+          localPathMissing: false,
+        },
+        children: [],
+      },
+      {
+        project: {
+          color: "agent-2",
+          icon: "folder",
+          id: 2,
+          name: "agentre-hub",
+          parentID: 0,
+          path: "",
+          localPathMissing: true,
+        },
+        children: [],
+      },
+    ]);
+    renderProjectsPage();
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "More actions for agentre-hub",
+      }),
+    );
+    await user.click(await screen.findByText("Merge into existing project…"));
+
+    expect(
+      await screen.findByText("Merge into existing project"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("combobox", { name: /merge into/i }),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("ProjectSettingsDrawer members", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1428,6 +1619,97 @@ describe("ProjectSettingsDrawer members", () => {
 
     expect(await screen.findByText("Builder")).toBeInTheDocument();
     expect(screen.queryByText("Agent #5")).not.toBeInTheDocument();
+  });
+});
+
+// R10：基本页签的本机路径字段——已配置照旧只读，未配置换成可指定入口
+// （project-settings-drawer.tsx BasicTab）。
+describe("ProjectSettingsDrawer basic tab local path (R10)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    useChatAgentsStore.getState().__reset();
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    appMocks.ProjectLocationList.mockResolvedValue([]);
+    appMocks.RemoteDeviceList.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("Given a configured project, Then the path field stays a readonly input", async () => {
+    appMocks.ProjectGet.mockResolvedValue({
+      project: {
+        color: "agent-1",
+        description: "",
+        icon: "folder",
+        id: 1,
+        name: "agentre",
+        path: "/Users/me/Code/agentre",
+        localPathMissing: false,
+      },
+      directMembers: [],
+      inheritedMembers: [],
+    });
+
+    render(
+      <ProjectSettingsDrawer
+        projectID={1}
+        onClose={() => {}}
+        onChanged={() => {}}
+        onDeleted={() => {}}
+      />,
+    );
+
+    const input = await screen.findByDisplayValue("/Users/me/Code/agentre");
+    expect(input).toHaveAttribute("readonly");
+    expect(screen.queryByText("Specify…")).not.toBeInTheDocument();
+  });
+
+  it("Given an unconfigured project, Then a 'Specify…' entry replaces the readonly input and picking a directory saves it", async () => {
+    const user = setupUser();
+    appMocks.ProjectGet.mockResolvedValue({
+      project: {
+        color: "agent-1",
+        description: "",
+        icon: "folder",
+        id: 1,
+        name: "agentre-hub",
+        path: "",
+        localPathMissing: true,
+      },
+      directMembers: [],
+      inheritedMembers: [],
+    });
+    appMocks.SelectDirectory.mockResolvedValue("/Users/me/Code/agentre-hub");
+    appMocks.ProjectSetLocalPath.mockResolvedValue({
+      id: 1,
+      localPathMissing: false,
+    });
+    const onChanged = vi.fn();
+
+    render(
+      <ProjectSettingsDrawer
+        projectID={1}
+        onClose={() => {}}
+        onChanged={onChanged}
+        onDeleted={() => {}}
+      />,
+    );
+
+    await screen.findByText(
+      "This project was synced from your account — specify a directory to start chatting on this machine.",
+    );
+    await user.click(await screen.findByText("Specify…"));
+
+    await waitFor(() => {
+      expect(appMocks.ProjectSetLocalPath).toHaveBeenCalledWith({
+        id: 1,
+        path: "/Users/me/Code/agentre-hub",
+      });
+    });
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
   });
 });
 

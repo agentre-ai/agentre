@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/cago-frame/cago/pkg/i18n"
+	"github.com/cago-frame/cago/pkg/utils/httputils"
 	"gorm.io/gorm"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
@@ -16,6 +17,26 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
 )
+
+// cwdUnavailableReasonFor 把 resolveSessionCwd 的错误分类成结构化字符串（R10），
+// 供 LoadSession 填充 ChatSessionDetail.CwdUnavailableReason——Wails 边界只过
+// Error() 字符串，这是唯一能让前端区分"本机未配置路径 / 远端未配置路径 / 压根
+// 没有 cwd"三种情形的通道。err 不携带这两个已知码时返回空串，前端按既有的笼统
+// 提示兜底，不引入第四种未知状态。
+func cwdUnavailableReasonFor(err error) string {
+	var appErr *httputils.Error
+	if !errors.As(err, &appErr) {
+		return ""
+	}
+	switch appErr.Code {
+	case code.ProjectLocalPathMissing:
+		return "local-path-missing"
+	case code.ProjectLocationMissing:
+		return "location-missing"
+	default:
+		return ""
+	}
+}
 
 // CwdResolver session → cwd 解析器；project_svc 在启动时调 RegisterCwdResolver
 // 注入；未注入时回退到 agentruntime.AgentCwd（保留 Agent 级老行为）。

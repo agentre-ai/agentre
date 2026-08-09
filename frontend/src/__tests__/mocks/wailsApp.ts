@@ -90,6 +90,10 @@ export const LookupLLMModel = windowBackedMock("LookupLLMModel", () =>
 export const ListAgentBackends = windowBackedMock("ListAgentBackends", () =>
   Promise.resolve({ items: [] }),
 );
+export const ListAgentExecTargetAvailability = windowBackedMock(
+  "ListAgentExecTargetAvailability",
+  () => Promise.resolve([]),
+);
 export const CreateAgentBackend = windowBackedMock("CreateAgentBackend", () =>
   Promise.resolve({ item: { id: 1 } }),
 );
@@ -222,6 +226,12 @@ export const ProjectRemoveMember = windowBackedMock("ProjectRemoveMember", () =>
 );
 export const ProjectMove = windowBackedMock("ProjectMove", () =>
   Promise.resolve({ item: { id: 1 } }),
+);
+export const ProjectSetLocalPath = windowBackedMock("ProjectSetLocalPath", () =>
+  Promise.resolve({ id: 1 }),
+);
+export const ProjectMerge = windowBackedMock("ProjectMerge", () =>
+  Promise.resolve({ id: 1 }),
 );
 
 // Issue bindings

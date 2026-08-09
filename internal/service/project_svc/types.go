@@ -36,6 +36,14 @@ type ReorderProjectsRequest struct {
 	OrderedIDs []int64
 }
 
+// MergeProjectsRequest 合并两个本地项目行（R11a）。SourceID / TargetID 不区分谁是
+// 「主」谁是「被合并」——两者对等地各自可能是账号侧/本机侧、可能是较早/较晚创建，
+// 由 Merge 内部按规则挑赢家，与用户先选中哪一个无关。
+type MergeProjectsRequest struct {
+	SourceID int64
+	TargetID int64
+}
+
 // ProjectAgentMember 项目成员视图，区分直接成员 vs 继承成员。
 type ProjectAgentMember struct {
 	AgentID       int64

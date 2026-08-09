@@ -3,6 +3,8 @@ import type { TFunction } from "i18next";
 import {
   Briefcase,
   ChevronDown,
+  FolderCog,
+  GitMerge,
   MessagesSquare,
   MoreVertical,
   Plus,
@@ -67,6 +69,10 @@ import {
   type DeleteProjectTarget,
 } from "./delete-project-dialog";
 import { ProjectNewDialog } from "./project-new-dialog";
+import {
+  ProjectMergeDialog,
+  type ProjectMergeSource,
+} from "./project-merge-dialog";
 import { ProjectSettingsDrawer } from "./project-settings-drawer";
 import { ResizableSidebar } from "./resizable-sidebar";
 import { SessionGroup } from "./session-group";
@@ -162,6 +168,12 @@ function ProjectsPage() {
   const [settingsProjectID, setSettingsProjectID] = React.useState(0);
   const [deleteTarget, setDeleteTarget] =
     React.useState<DeleteProjectTarget | null>(null);
+  // R11a「合并到已有项目」：source=null 关闭对话框。
+  const [mergeSource, setMergeSource] =
+    React.useState<ProjectMergeSource | null>(null);
+  const [specifyPathError, setSpecifyPathError] = React.useState<string | null>(
+    null,
+  );
   const [reorderError, setReorderError] = React.useState<string | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -229,6 +241,45 @@ function ProjectsPage() {
     walk(tree);
     return map;
   }, [tree]);
+
+  // R10「未配置」标注：逐行角标只在"未配置的行少于全部"时出现——全部未配置
+  // （刚登录新机器）时逐行角标撤掉，改成树顶一条说明 + 批量指定入口，
+  // 否则每行都挂等于没有信息，反而像坏了。
+  const allProjects = React.useMemo(
+    () => [...projectByID.values()],
+    [projectByID],
+  );
+  const allMissing =
+    allProjects.length > 0 && allProjects.every((p) => p.localPathMissing);
+
+  // R11a「合并到已有项目」候选：除自己外的全部项目，按名称排序方便找。
+  const mergeCandidatesFor = React.useCallback(
+    (sourceID: number) =>
+      allProjects
+        .filter((p) => p.id !== sourceID)
+        .map((p) => ({ id: p.id, name: p.name }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [allProjects],
+  );
+
+  const handleSpecifyPath = React.useCallback(
+    async (projectID: number) => {
+      setSpecifyPathError(null);
+      try {
+        const picked = await WailsApp.SelectDirectory(
+          t("projectNew.selectDirectory"),
+        );
+        if (!picked) return;
+        await WailsApp.ProjectSetLocalPath({ id: projectID, path: picked });
+        void refresh();
+      } catch (e) {
+        setSpecifyPathError(
+          t("projects.localPath.specifyFailed", { error: String(e) }),
+        );
+      }
+    },
+    [refresh, t],
+  );
 
   // focus 一次性消费:从 /projects?focus=<id> 进来(如会话设置页点击「项目」),树加载完
   // 且 id 命中时打开该项目的设置抽屉,然后清掉 query 防止重复打开。命中失败(已删/非法)
@@ -436,6 +487,26 @@ function ProjectsPage() {
           ) : (
             <DndContext sensors={sensors} onDragEnd={handleProjectDragEnd}>
               <div className="flex flex-col gap-1">
+                {allMissing ? (
+                  <div className="mb-1 flex flex-col gap-1 rounded-md border border-border bg-card p-3">
+                    <span className="text-sm font-medium">
+                      {t("projects.localPath.allMissingTitle")}
+                    </span>
+                    <p className="text-2xs leading-relaxed text-muted-foreground">
+                      {t("projects.localPath.allMissingDescription", {
+                        count: allProjects.length,
+                      })}
+                    </p>
+                  </div>
+                ) : null}
+                {specifyPathError ? (
+                  <div
+                    role="status"
+                    className="px-0.5 text-2xs text-destructive"
+                  >
+                    {specifyPathError}
+                  </div>
+                ) : null}
                 <ProjectSortableList
                   nodes={tree}
                   depth={0}
@@ -446,6 +517,9 @@ function ProjectsPage() {
                   onOpenSettings={(id) => setSettingsProjectID(id)}
                   onAddSubProject={(id) => openCreateDialog(id)}
                   onDelete={(id, name) => setDeleteTarget({ id, name })}
+                  allMissing={allMissing}
+                  onSpecifyPath={(id) => void handleSpecifyPath(id)}
+                  onMergeInto={(id, name) => setMergeSource({ id, name })}
                   dragDisabled={dragDisabled}
                 />
               </div>
@@ -478,6 +552,15 @@ function ProjectsPage() {
         onClose={() => setDeleteTarget(null)}
         onDeleted={() => {
           setDeleteTarget(null);
+          refreshProjectData();
+        }}
+      />
+      <ProjectMergeDialog
+        source={mergeSource}
+        candidates={mergeSource ? mergeCandidatesFor(mergeSource.id) : []}
+        onClose={() => setMergeSource(null)}
+        onMerged={() => {
+          setMergeSource(null);
           refreshProjectData();
         }}
       />
@@ -624,6 +707,11 @@ type ProjectCardProps = {
   onOpenSettings: (id: number) => void;
   onAddSubProject: (parentID: number) => void;
   onDelete: (id: number, name: string) => void;
+  // R10：全部项目都未配置本机路径时（换新机器），逐行「未配置」角标要撤掉，
+  // 只在树顶留一条说明——见 ProjectsPage 里 allMissing 的注释。
+  allMissing: boolean;
+  onSpecifyPath: (id: number) => void;
+  onMergeInto: (id: number, name: string) => void;
   drag?: ProjectDragState;
 };
 
@@ -762,6 +850,9 @@ function ProjectCard({
   onOpenSettings,
   onAddSubProject,
   onDelete,
+  allMissing,
+  onSpecifyPath,
+  onMergeInto,
   drag,
 }: ProjectCardProps) {
   const { t } = useTranslation();
@@ -978,6 +1069,9 @@ function ProjectCard({
           onOpenSettings={onOpenSettings}
           onAddSubProject={onAddSubProject}
           onDelete={onDelete}
+          allMissing={allMissing}
+          onSpecifyPath={onSpecifyPath}
+          onMergeInto={onMergeInto}
           dragDisabled={!drag}
         />
       </div>
@@ -1079,6 +1173,10 @@ function ProjectCard({
                     : isSub
                       ? "font-mono text-2xs font-semibold uppercase tracking-wider text-muted-foreground"
                       : "text-[15px] font-semibold",
+                  // R10：全部未配置时逐行角标撤掉，名字也不必变灰——见 allMissing 注释。
+                  project.localPathMissing && !allMissing
+                    ? "text-muted-foreground"
+                    : "",
                 )}
               >
                 {project.name}
@@ -1095,6 +1193,14 @@ function ProjectCard({
                     className="inline-block size-1.5 rounded-full bg-status-running"
                   />
                   {activeCount}
+                </span>
+              ) : null}
+              {project.localPathMissing && !allMissing ? (
+                <span
+                  data-testid="project-local-path-missing-badge"
+                  className="inline-flex shrink-0 items-center rounded-sm border border-border px-1.5 py-0.5 text-2xs font-medium text-muted-foreground"
+                >
+                  {t("projects.localPath.badge")}
                 </span>
               ) : null}
             </button>
@@ -1140,6 +1246,23 @@ function ProjectCard({
                     })
                   }
                 />
+                {project.localPathMissing ? (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onSelect={() => onSpecifyPath(project.id)}
+                    >
+                      <FolderCog className="size-3.5" aria-hidden="true" />
+                      {t("projects.localPath.specifyPath")}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => onMergeInto(project.id, project.name)}
+                    >
+                      <GitMerge className="size-3.5" aria-hidden="true" />
+                      {t("projects.localPath.mergeIntoExisting")}
+                    </DropdownMenuItem>
+                  </>
+                ) : null}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   variant="destructive"

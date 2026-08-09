@@ -561,13 +561,26 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		// 查询失败一律不阻塞加载会话本身。
 		var prov *llm_provider_entity.LLMProvider
 		var be *agent_backend_entity.AgentBackend
-		if a.AgentBackendID > 0 {
-			if be, _ = agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID); be != nil {
+		// 会话已经钉住某一档时(sess.ExecAgentBackendID > 0，R15b / 决策36)优先解析
+		// 那一档，而不是 Agent 的（最小 sort_order）默认档——否则多档 Agent 里续轮
+		// 落在第二档以后的会话，聊天头会一直展示错误的机器/后端信息。没钉住时回落
+		// a.AgentBackendID，与 resolveTurnBackendID 的语义一致。
+		displayBackendID := sess.ExecAgentBackendID
+		if displayBackendID <= 0 {
+			displayBackendID = a.AgentBackendID
+		}
+		if displayBackendID > 0 {
+			if be, _ = agent_backend_repo.AgentBackend().Find(ctx, displayBackendID); be != nil {
 				resp.Session.BackendType = be.Type
 				if be.LLMProviderKey != "" {
 					prov, _ = llm_provider_repo.LLMProvider().FindByKey(ctx, be.LLMProviderKey)
 				}
 			}
+		}
+		// ExecTargetCount 给前端聊天头 chip 守卫用（R15 / R20）：多档 Agent 的会话
+		// 总是显示机器 chip(含本机)，单档维持既有"只有远端才显示"的行为。
+		if targets, terr := agent_repo.AgentExecTarget().ListByAgent(ctx, sess.AgentID); terr == nil {
+			resp.Session.ExecTargetCount = len(targets)
 		}
 		if prov != nil {
 			resp.Session.LLMProviderType = prov.Type
@@ -597,6 +610,7 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 			if cwd, cerr := resolveSessionCwd(ctx, sess, be); cerr == nil {
 				resp.Session.Cwd = cwd
 			} else {
+				resp.Session.CwdUnavailableReason = cwdUnavailableReasonFor(cerr)
 				logger.Ctx(ctx).Debug("LoadSession: cwd resolve degraded",
 					zap.Int64("sessionID", sess.ID),
 					zap.Error(cerr))
@@ -1358,7 +1372,20 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 	if sess != nil {
 		pickProjectID = sess.ProjectID
 	}
-	a, be, prov, err := s.resolveAgentBackend(ctx, sess, targetAgentID, pickProjectID)
+	// R15a 手动指定：仅新建会话（sess 为 nil）生效，与 ModelOverride 同一条规则——
+	// 已有会话早就按 R15b 钉在它落到的那一档上，这个字段对它没有意义。用一个只填了
+	// ExecAgentBackendID 的探针 session 喂给 resolveAgentBackend，让
+	// resolveTurnBackendID 走"已钉住"分支直接采用它，不再触发 PickExecTarget 的
+	// 自动挑选；探针不落库，真正的持久化钉住由下面 startTurn → pinExecTargetIfUnset
+	// 对真实新建的 sess 完成。
+	resolveSess := sess
+	if sess == nil && req.ExecTargetOverride > 0 {
+		if err := s.validateExecTargetOverride(ctx, targetAgentID, pickProjectID, req.ExecTargetOverride); err != nil {
+			return nil, err
+		}
+		resolveSess = &chat_entity.Session{ExecAgentBackendID: req.ExecTargetOverride}
+	}
+	a, be, prov, err := s.resolveAgentBackend(ctx, resolveSess, targetAgentID, pickProjectID)
 	if err != nil {
 		return nil, err
 	}
