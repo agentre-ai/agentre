@@ -37,6 +37,7 @@ export function ChatContextSidebar({
   const { t } = useTranslation();
   const activeTab = useChatSidebarStore((s) => s.activeTab);
   const setActiveTab = useChatSidebarStore((s) => s.setActiveTab);
+  const filesMode = useChatSidebarStore((s) => s.filesMode);
 
   const outline = React.useMemo(() => deriveOutline(messages), [messages]);
   const files = React.useMemo(() => deriveFiles(messages), [messages]);
@@ -73,7 +74,18 @@ export function ChatContextSidebar({
   // Git 页的取数挂在这一层：顶层 tab 的计数角标与 Git 页内容共用同一份状态；
   // enabled 保证只有 Git 顶层 tab 可见时才打后端（决策 13），跟随 Git 从
   // 「文件」页内一档提升为顶层 tab 而改挂在这里（此前挂在 FilesPanel 上）。
-  const git = useGitChanges({ sessionId, cwd, enabled: activeTab === "git" });
+  //
+  // 「目录」模式的 git 状态叠加也要「未提交」这份数据（served requirement
+  // 「目录模式的 git 状态叠加」），继续复用这一个 hook 实例、只多打
+  // overlayEnabled——activeTab 与 filesMode 互斥，Git 页可见与目录模式可见
+  // 从不同时为真，两个消费者因此永远只共享一次在途请求，不会因为各开一个
+  // useGitChanges 而重复打后端。
+  const git = useGitChanges({
+    sessionId,
+    cwd,
+    enabled: activeTab === "git",
+    overlayEnabled: activeTab === "files" && filesMode === "directory",
+  });
 
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
@@ -122,6 +134,7 @@ export function ChatContextSidebar({
           files={files}
           cwd={cwd}
           remote={remote}
+          gitChanges={git.overlayChanges}
           onJumpToTurn={(turn) => {
             const mid = turnToMessageId.get(turn);
             if (mid != null) onJumpToMessage(mid);

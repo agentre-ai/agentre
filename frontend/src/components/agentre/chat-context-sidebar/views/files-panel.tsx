@@ -7,6 +7,7 @@ import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
 
 import type { FileEntry } from "../derive";
 import { FilesModeSwitcher } from "../files-mode-switcher";
+import type { Change } from "../git-rows";
 
 import { DirectoryView } from "./directory-view";
 import { FilesView } from "./files-view";
@@ -16,6 +17,11 @@ type Props = {
   files: FileEntry[];
   cwd: string;
   remote: boolean;
+  /**
+   * 目录模式的 git 状态叠加数据（served requirement「目录模式的 git 状态叠加」）：
+   * 非 git 仓库、读取失败或尚未加载时为 null——目录树照常渲染，只是不带叠加。
+   */
+  gitChanges?: Change[] | null;
   onJumpToTurn: (turn: number) => void;
 };
 
@@ -32,6 +38,7 @@ export function FilesPanel({
   files,
   cwd,
   remote,
+  gitChanges = null,
   onJumpToTurn,
 }: Props) {
   const { t } = useTranslation();
@@ -85,6 +92,7 @@ export function FilesPanel({
             cwd={cwd}
             remote={remote}
             showIgnored={showIgnored}
+            gitChanges={gitChanges}
           />
         ) : null}
       </div>

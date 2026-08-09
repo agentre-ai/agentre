@@ -4,9 +4,12 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-import type { TFunction } from "i18next";
-
-import { deriveGitRows, type GitRow } from "../git-rows";
+import {
+  deriveGitRows,
+  GIT_STATUS_META,
+  gitStatusLabel,
+  type GitRow,
+} from "../git-rows";
 
 import { PanelNotice, PanelSkeleton } from "./panel-feedback";
 import { SidebarRow } from "./sidebar-row";
@@ -23,34 +26,6 @@ type Props = {
   state: GitChangesState;
   onRetry: () => void;
 };
-
-// 五类状态各有稳定的字母与配色；字母对读屏隐藏，另给一个文本标签（无障碍约定）。
-const STATUS_META: Record<string, { letter: string; className: string }> = {
-  modified: { letter: "M", className: "text-status-waiting" },
-  added: { letter: "A", className: "text-status-running" },
-  deleted: { letter: "D", className: "text-destructive" },
-  renamed: { letter: "R", className: "text-primary" },
-  untracked: { letter: "?", className: "text-muted-foreground" },
-};
-
-/**
- * statusLabel 逐个写死 key 而不是拼 `chatContext.git.status.${status}` —— 动态
- * key 会从 i18n 的静态 key 覆盖检查里溜掉，漏翻译不会被测出来。
- */
-function statusLabel(t: TFunction, status: string): string {
-  switch (status) {
-    case "added":
-      return t("chatContext.git.status.added");
-    case "deleted":
-      return t("chatContext.git.status.deleted");
-    case "renamed":
-      return t("chatContext.git.status.renamed");
-    case "untracked":
-      return t("chatContext.git.status.untracked");
-    default:
-      return t("chatContext.git.status.modified");
-  }
-}
 
 /**
  * GitView 是「文件」页的「Git」模式内容区：当前档的变动文件扁平列表。
@@ -158,7 +133,7 @@ function Row({
   remote: boolean;
 }) {
   const { t } = useTranslation();
-  const meta = STATUS_META[row.status] ?? STATUS_META.modified;
+  const meta = GIT_STATUS_META[row.status] ?? GIT_STATUS_META.modified;
   return (
     <SidebarRow
       sessionId={sessionId}
@@ -183,7 +158,7 @@ function Row({
           >
             {meta.letter}
           </span>
-          <span className="sr-only">{statusLabel(t, row.status)}</span>
+          <span className="sr-only">{gitStatusLabel(t, row.status)}</span>
         </>
       }
       trailing={

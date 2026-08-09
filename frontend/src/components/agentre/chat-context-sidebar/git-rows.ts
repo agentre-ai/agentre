@@ -1,6 +1,8 @@
+import type { TFunction } from "i18next";
+
 import type { workspace_fs_svc } from "@/../wailsjs/go/models";
 
-type Change = workspace_fs_svc.ChangeView;
+export type Change = workspace_fs_svc.ChangeView;
 
 /**
  * GitRow 是 Git 模式一行的显示模型。Git 变动天然跨目录且路径深，所以这里是扁平
@@ -43,4 +45,61 @@ export function deriveGitRows(changes: Change[] | null | undefined): GitRow[] {
       };
     })
     .sort((a, b) => a.path.localeCompare(b.path));
+}
+
+export type GitStatusMeta = { letter: string; className: string };
+
+/**
+ * GIT_STATUS_META 是五类状态各自的字母与配色，Git 页与目录模式的状态叠加共用
+ * 这一份映射（served requirement 明确要求复用，不重复定义颜色语义）。字母对
+ * 读屏隐藏，另有 gitStatusLabel 给出文字标签（无障碍约定）。
+ */
+export const GIT_STATUS_META: Record<string, GitStatusMeta> = {
+  modified: { letter: "M", className: "text-status-waiting" },
+  added: { letter: "A", className: "text-status-running" },
+  deleted: { letter: "D", className: "text-destructive" },
+  renamed: { letter: "R", className: "text-primary" },
+  untracked: { letter: "?", className: "text-muted-foreground" },
+};
+
+/**
+ * gitStatusLabel 逐个写死 key 而不是拼 `chatContext.git.status.${status}` —— 动态
+ * key 会从 i18n 的静态 key 覆盖检查里溜掉，漏翻译不会被测出来。
+ */
+export function gitStatusLabel(t: TFunction, status: string): string {
+  switch (status) {
+    case "added":
+      return t("chatContext.git.status.added");
+    case "deleted":
+      return t("chatContext.git.status.deleted");
+    case "renamed":
+      return t("chatContext.git.status.renamed");
+    case "untracked":
+      return t("chatContext.git.status.untracked");
+    default:
+      return t("chatContext.git.status.modified");
+  }
+}
+
+/**
+ * countSubtreeChanges 数出 dirRelPath 子树内有多少条变动路径落在其中（不含
+ * dirRelPath 自身——一个目录不会是它自己的变动行）。dirRelPath === "" 代表
+ * 会话工作目录本身（目录模式的树根），此时子树就是整份变动清单。
+ *
+ * 压缩链的子树统计与未压缩时完全一致，不需要特殊处理：collapseDirChain 的定义
+ * 保证链的中间段恰好只有一个子目录、不含文件，链下的全部变动因此必然落在链尾
+ * （调用方传入的 frontier 路径）子树里——对链尾调用一次本函数即得到整条链的
+ * 统计。
+ */
+export function countSubtreeChanges(
+  paths: readonly string[],
+  dirRelPath: string,
+): number {
+  if (dirRelPath === "") return paths.length;
+  const prefix = `${dirRelPath}/`;
+  let count = 0;
+  for (const p of paths) {
+    if (p.startsWith(prefix)) count++;
+  }
+  return count;
 }

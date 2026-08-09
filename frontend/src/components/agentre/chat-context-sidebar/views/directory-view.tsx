@@ -5,11 +5,18 @@ import { useTranslation } from "react-i18next";
 import { WorkspaceFsListDir } from "@/../wailsjs/go/app/App";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 import { useSessionStatus } from "@/stores/session-status-store";
 
 import type { workspace_fs_svc } from "@/../wailsjs/go/models";
 
 import { collapseDirChain, type ChainEntry } from "../derive";
+import {
+  type Change,
+  countSubtreeChanges,
+  GIT_STATUS_META,
+  gitStatusLabel,
+} from "../git-rows";
 
 import { errorText, PanelNotice, PanelSkeleton } from "./panel-feedback";
 import { FileTypeIcon, SidebarRow } from "./sidebar-row";
@@ -31,6 +38,13 @@ type Props = {
   cwd: string;
   remote: boolean;
   showIgnored: boolean;
+  /**
+   * git 状态叠加数据（served requirement「目录模式的 git 状态叠加」）：与 Git
+   * 页「未提交」档同一份数据，由调用方（ChatContextSidebar 的 useGitChanges）
+   * 统一取数并下发，本组件不自己发起取数。非 git 仓库、读取失败或尚未加载时
+   * 为 null——目录树照常渲染，只是不带叠加。
+   */
+  gitChanges?: Change[] | null;
 };
 
 /**
@@ -44,9 +58,29 @@ type Props = {
  * 路径解析、`.git` 恒隐藏与忽略判定全在后端（`WorkspaceFsListDir` 的入参是
  * sessionID 而不是路径，决策 2），本地会话与远端 agentred 会话走同一个绑定。
  */
-export function DirectoryView({ sessionId, cwd, remote, showIgnored }: Props) {
+export function DirectoryView({
+  sessionId,
+  cwd,
+  remote,
+  showIgnored,
+  gitChanges = null,
+}: Props) {
   const { t } = useTranslation();
   const [levels, setLevels] = React.useState<Record<string, Level>>({});
+
+  // 状态叠加只需要两样从变动清单派生的东西：按相对路径查状态（文件行着色/
+  // 加字母）、以及路径本身的数组（目录行的子树计数）。两者都不依赖已加载的
+  // 层——变动清单自带完整的仓库相对路径，子树计数因此在目录还没展开时也能
+  // 算出来（decisive context：「不能只从已加载层派生」）。
+  const gitStatusByPath = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of gitChanges ?? []) map.set(c.path, c.status);
+    return map;
+  }, [gitChanges]);
+  const gitChangePaths = React.useMemo(
+    () => (gitChanges ?? []).map((c) => c.path),
+    [gitChanges],
+  );
   const [expanded, setExpanded] = React.useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -180,30 +214,62 @@ export function DirectoryView({ sessionId, cwd, remote, showIgnored }: Props) {
     );
   }
 
-  const renderFile = (entry: Entry, relPath: string, depth: number) => (
-    <SidebarRow
-      key={relPath}
-      sessionId={sessionId}
-      cwd={cwd}
-      remote={remote}
-      sourceMode="directory"
-      kind="file"
-      path={relPath}
-      name={entry.name}
-      depth={depth}
-      title={relPath}
-      lead={
-        <>
-          {/* 与目录 chevron 等宽的槽位，让同级目录名 / 文件名对齐。 */}
-          <span className="size-3.5 shrink-0" aria-hidden="true" />
-          <FileTypeIcon path={relPath} />
-        </>
-      }
-      testId="directory-row"
-      className={entry.gitIgnored ? "opacity-50" : undefined}
-      rowData={{ "data-git-ignored": entry.gitIgnored ? "true" : undefined }}
-    />
-  );
+  const renderFile = (entry: Entry, relPath: string, depth: number) => {
+    // 未变动的文件在清单里没有条目，statusByPath 查不到 —— 不着色、不显示
+    // 字母（served requirement 明确要求两者只对「变动」文件出现）。
+    const status = gitStatusByPath.get(relPath);
+    const meta = status
+      ? (GIT_STATUS_META[status] ?? GIT_STATUS_META.modified)
+      : null;
+    return (
+      <SidebarRow
+        key={relPath}
+        sessionId={sessionId}
+        cwd={cwd}
+        remote={remote}
+        sourceMode="directory"
+        kind="file"
+        path={relPath}
+        name={entry.name}
+        nameClassName={meta?.className}
+        depth={depth}
+        title={relPath}
+        lead={
+          <>
+            {/* 与目录 chevron 等宽的槽位，让同级目录名 / 文件名对齐。 */}
+            <span className="size-3.5 shrink-0" aria-hidden="true" />
+            <FileTypeIcon path={relPath} />
+          </>
+        }
+        trailing={
+          meta ? (
+            <>
+              {/* 字母对读屏隐藏，文字标签走 sr-only（与 Git 页同一套无障碍约定，
+                  两者共用 gitStatusLabel/GIT_STATUS_META，不重复定义颜色语义）。
+                  不显示 +N/−N 角标（served requirement 明确排除）。 */}
+              <span
+                data-status-letter
+                aria-hidden="true"
+                className={cn(
+                  "w-3 shrink-0 text-center font-mono text-[10px] font-bold",
+                  meta.className,
+                )}
+              >
+                {meta.letter}
+              </span>
+              <span className="sr-only">{gitStatusLabel(t, status!)}</span>
+            </>
+          ) : undefined
+        }
+        testId="directory-row"
+        className={entry.gitIgnored ? "opacity-50" : undefined}
+        rowData={{
+          "data-git-ignored": entry.gitIgnored ? "true" : undefined,
+          "data-git-status": status,
+        }}
+      />
+    );
+  };
 
   const renderDir = (entry: Entry, relPath: string, depth: number) => {
     // 展开/收起状态与「点这一行触发的取数」按链首（这一行在父层里的位置）为
@@ -220,6 +286,10 @@ export function DirectoryView({ sessionId, cwd, remote, showIgnored }: Props) {
     // 段，子项都只比这一行多缩进一级（spec「其子项缩进只增加一级」）。
     const frontierPath = chain.cursor;
     const frontierLevel = levels[frontierPath];
+    // 压缩链的子树统计对链尾（frontierPath）算一次即可代表整条链：链的中间段
+    // 按定义恰好只有一个子目录、不含文件，链下的全部变动必然落在链尾子树里
+    // （countSubtreeChanges 的实现注释有完整推导）。
+    const subtreeCount = countSubtreeChanges(gitChangePaths, frontierPath);
     return (
       <div key={relPath} className="flex flex-col">
         <SidebarRow
@@ -257,6 +327,23 @@ export function DirectoryView({ sessionId, cwd, remote, showIgnored }: Props) {
               )}
               <Folder className="size-3.5 shrink-0" aria-hidden="true" />
             </>
+          }
+          trailing={
+            subtreeCount > 0 ? (
+              // 数量为零时不显示（served requirement）；非零时用与「modified」
+              // 同一份状态色，代表「这棵子树里有变动」，不区分具体是哪几类状态
+              // 的混合（子树可能同时含多种状态，见 mockup H2：单个数字用一种
+              // 状态色，不是 +N/−N 角标，也不逐类拆分）。
+              <span
+                data-testid="dir-subtree-count"
+                className={cn(
+                  "shrink-0 font-mono text-[10px] font-medium tabular-nums",
+                  GIT_STATUS_META.modified.className,
+                )}
+              >
+                {subtreeCount}
+              </span>
+            ) : undefined
           }
           testId="directory-row"
           className={entry.gitIgnored ? "opacity-50" : undefined}

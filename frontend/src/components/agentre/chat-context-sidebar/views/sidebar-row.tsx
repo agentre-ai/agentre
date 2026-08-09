@@ -48,6 +48,11 @@ type Props = {
   /** 显示名（basename、目录名，或链压缩行的末段）。 */
   name: string;
   /**
+   * 名称文字色的覆盖：目录模式的 git 状态叠加给变动文件着色时用（served
+   * requirement「目录模式的 git 状态叠加」）；未设置时用默认的 muted 文字色。
+   */
+  nameClassName?: string;
+  /**
    * 链压缩行独有：链中除末段外的前缀（含尾部 "/"，如 "internal/service/"）。
    * 未设置时按普通单段名渲染，行为与压缩前完全一致。设置时整段「前缀 + name」
    * 作为一个整体从头截断（保留末段）——与 Git 页目录后缀的截断方向一致。
@@ -96,6 +101,7 @@ export function SidebarRow({
   kind,
   path,
   name,
+  nameClassName,
   chainPrefix,
   depth,
   title,
@@ -164,7 +170,10 @@ export function SidebarRow({
     // （末段，节点的身份）永远保留，与 Git 页目录后缀的截断方向一致。
     <span
       dir="rtl"
-      className="min-w-0 shrink truncate text-left font-mono"
+      className={cn(
+        "min-w-0 shrink truncate text-left font-mono",
+        nameClassName,
+      )}
       data-testid="chain-name"
     >
       <span className="opacity-55" data-testid="chain-prefix">
@@ -173,7 +182,9 @@ export function SidebarRow({
       {name}
     </span>
   ) : (
-    <span className="min-w-0 shrink truncate font-mono">{name}</span>
+    <span className={cn("min-w-0 shrink truncate font-mono", nameClassName)}>
+      {name}
+    </span>
   );
   const body = (
     <>
