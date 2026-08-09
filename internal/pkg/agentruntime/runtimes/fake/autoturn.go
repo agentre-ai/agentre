@@ -68,6 +68,7 @@ func (r *Runtime) scheduleAutonomousTurn(sessionID int64, label string) {
 			Result: &agentruntime.RunResult{
 				ProviderSessionID: fmt.Sprintf("e2e-fake-%d", sessionID),
 				Model:             "e2e-fake-model",
+				ContextWindow:     ContextWindowTokens,
 			},
 			Trigger: autoTurnTrigger,
 		}

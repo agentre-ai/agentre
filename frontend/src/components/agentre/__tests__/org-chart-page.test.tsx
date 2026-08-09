@@ -183,10 +183,12 @@ describe("OrgChartPage navigation intents", () => {
 
     render(
       <MemoryRouter
-        initialEntries={[{
-          pathname: "/org",
-          state: { orgSelection: { kind: "agent", id: 42 } },
-        }]}
+        initialEntries={[
+          {
+            pathname: "/org",
+            state: { orgSelection: { kind: "agent", id: 42 } },
+          },
+        ]}
       >
         <OrgChartPage />
       </MemoryRouter>,

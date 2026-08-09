@@ -42,6 +42,7 @@ import {
   ChatTranscript,
   type ChatTranscriptHandle,
   formatResetIn,
+  formatTokens,
 } from "@/components/agentre/chat";
 import { ChatStreamsHost } from "@/components/agentre/chat-streams-host";
 import {
@@ -1482,6 +1483,37 @@ describe("ChatTranscript message tail attachments", () => {
   });
 });
 
+describe("formatTokens", () => {
+  it("小于 1000 原样输出", () => {
+    expect(formatTokens(0)).toBe("0");
+    expect(formatTokens(999)).toBe("999");
+  });
+
+  it("[1e3, 1e6) 走 k 档: 商 >=100 取整, 否则一位小数", () => {
+    expect(formatTokens(1_000)).toBe("1.0k");
+    expect(formatTokens(12_340)).toBe("12.3k");
+    expect(formatTokens(120_500)).toBe("121k");
+    expect(formatTokens(999_000)).toBe("999k");
+  });
+
+  it(">=1e6 走 M 档: 商 >=10 取整, 否则一位小数", () => {
+    expect(formatTokens(1_000_000)).toBe("1M");
+    expect(formatTokens(1_200_000)).toBe("1.2M");
+    expect(formatTokens(9_900_000)).toBe("9.9M");
+    expect(formatTokens(10_000_000)).toBe("10M");
+    expect(formatTokens(12_500_000)).toBe("13M");
+  });
+
+  it("k 档取整到 1000 就进 M: 1000k 在任何输入下都不出现", () => {
+    // 999_999 按量级本该落 k 档, 但商四舍五入后是 1000 —— 那正是本轮要消灭的字符串。
+    expect(formatTokens(999_999)).toBe("1M");
+    expect(formatTokens(999_500)).toBe("1M");
+    // 边界另一侧: 取整后还是 999, 仍留在 k 档。
+    expect(formatTokens(999_499)).toBe("999k");
+    expect(formatTokens(1_000_000)).toBe("1M");
+  });
+});
+
 describe("formatResetIn", () => {
   const now = Date.parse("2026-05-28T00:00:00Z");
 
@@ -1559,8 +1591,10 @@ describe("ChatComposer quota meter", () => {
         }
       />,
     );
-    expect(screen.getByText(/5h 43%/)).toBeInTheDocument();
-    expect(screen.getByText(/7d 18%/)).toBeInTheDocument();
+    // 前缀与数值分处两个 span(供窄屏单独隐藏前缀), 故按整块文本断言。
+    const meter = screen.getByLabelText(/Claude.*quota/);
+    expect(meter).toHaveTextContent("5h 43%");
+    expect(meter).toHaveTextContent("7d 18%");
   });
 
   it("stale=true 时仍显示上次数字, 但不渲染可见的 stale 角标", () => {
@@ -1577,12 +1611,13 @@ describe("ChatComposer quota meter", () => {
         }
       />,
     );
-    expect(screen.getByText(/5h 30%/)).toBeInTheDocument();
-    expect(screen.getByText(/7d 10%/)).toBeInTheDocument();
+    const meter = screen.getByLabelText(/Claude.*quota/);
+    expect(meter).toHaveTextContent("5h 30%");
+    expect(meter).toHaveTextContent("7d 10%");
     expect(screen.queryByText(/stale/)).toBeNull();
   });
 
-  it("tooltip 展示 5h 重置还剩多少分钟", () => {
+  it("HoverCard 面板展示 5h 重置还剩多少分钟(取代原生 title)", () => {
     vi.useFakeTimers();
     vi.setSystemTime(resetNow);
     try {
@@ -1602,10 +1637,15 @@ describe("ChatComposer quota meter", () => {
           }
         />,
       );
-      expect(screen.getByLabelText(/Claude.*quota/)).toHaveAttribute(
-        "title",
-        expect.stringContaining("resets in 40m"),
-      );
+      const trigger = screen.getByLabelText(/Claude.*quota/);
+      // 触发区可聚焦, 聚焦即展开面板(键盘用户也能读到详情)。
+      expect(trigger).not.toHaveAttribute("title");
+      act(() => {
+        fireEvent.focusIn(trigger);
+        // Radix 的 open 走 openDelay 定时器, fake timers 下必须推进才会展开。
+        vi.advanceTimersByTime(500);
+      });
+      expect(screen.getByText(/resets in 40m/)).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
@@ -1618,7 +1658,7 @@ describe("ChatComposer quota meter", () => {
         quotaUsage={{ reason: "auth_expired", fetchedAtMs: 1 } as never}
       />,
     );
-    expect(screen.getByText(/5h —%/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Claude.*quota/)).toHaveTextContent("5h —%");
   });
 });
 

@@ -26,13 +26,18 @@ type Actions = {
   __reset: () => void;
 };
 
-// shallowSameState 判断两个 UsageState 是否在 HUD 显示维度上相同。
-// 比较 reason / stale / fetchedAtMs 以及 data 的 5h、7d、sonnet/opus 百分比。
-// resets_at 字段是 ISO 字符串,直接 === 比较即可。
+// shallowSameState 判断两个 UsageState 是否在 HUD 显示维度上相同:
+// reason / stale + data 的四个百分比与四个 resets_at(都是 QuotaMeter 与其
+// HoverCard 面板会渲染的量)。resets_at 是 ISO 字符串,直接 === 比较即可。
+//
+// 刻意不比较 fetchedAtMs:后端每次 probe 都写新的时间戳(cc_usage_svc/manager.go),
+// 60s tick 下它必变。把它算进"是否同值"会让短路恒不成立,订阅者每分钟集体
+// re-render 一次 —— 那正是这个函数要避免的事。
+// 代价:数值没变时 store 里留的是上一次的 fetchedAtMs。目前前端没有任何
+// "数据有多新"的展示消费它;将来若要展示,得改成比较后单独更新该字段。
 function shallowSameState(a: UsageState, b: UsageState): boolean {
   if (a.reason !== b.reason) return false;
   if ((a.stale ?? false) !== (b.stale ?? false)) return false;
-  if (a.fetchedAtMs !== b.fetchedAtMs) return false;
   const da = a.data;
   const db = b.data;
   if (!da && !db) return true;
@@ -43,7 +48,9 @@ function shallowSameState(a: UsageState, b: UsageState): boolean {
     (da.sonnetWeeklyPercent ?? null) === (db.sonnetWeeklyPercent ?? null) &&
     (da.opusWeeklyPercent ?? null) === (db.opusWeeklyPercent ?? null) &&
     (da.fiveHourResetsAt ?? null) === (db.fiveHourResetsAt ?? null) &&
-    (da.weeklyResetsAt ?? null) === (db.weeklyResetsAt ?? null)
+    (da.weeklyResetsAt ?? null) === (db.weeklyResetsAt ?? null) &&
+    (da.sonnetWeeklyResetsAt ?? null) === (db.sonnetWeeklyResetsAt ?? null) &&
+    (da.opusWeeklyResetsAt ?? null) === (db.opusWeeklyResetsAt ?? null)
   );
 }
 

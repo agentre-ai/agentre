@@ -591,12 +591,19 @@
     },
     "quota": {
       "aria": "Claude Code quota 5h {{five}}% 7d {{seven}}% from {{device}}",
+      "panel": {
+        "fiveHour": "5-hour window",
+        "opusWeekly": "Opus 7-day",
+        "sonnetWeekly": "Sonnet 7-day",
+        "title": "Claude subscription usage",
+        "usedNote": "Percentages are usage · refreshed every 60s",
+        "weekly": "7-day window"
+      },
       "resetRemaining": " (resets in {{time}})",
       "title": {
         "authExpired": "Claude Code OAuth expired · run 'claude /login' on {{device}}",
         "deviceOffline": "{{device}} offline",
         "network": "Claude Code quota · {{device}} (network error, showing last value)",
-        "ok": "Claude Code quota · {{device}}",
         "rateLimited": "Claude Code quota · {{device}} (429 backoff, showing last value)"
       }
     },
