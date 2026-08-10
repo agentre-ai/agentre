@@ -340,12 +340,13 @@ func TestToChatMessage_NoticeBlockProjectionDecodesStructuredPayload(t *testing.
 // JSON 直接泄漏到界面上。
 func TestToChatMessage_NoticeBlockProjectionDecodesProviderSwitch(t *testing.T) {
 	cases := []struct {
-		name        string
-		text        string
-		providerKey string
+		name         string
+		text         string
+		providerKey  string
+		providerName string
 	}{
-		{name: "切到某个供应商", text: encodeProviderSwitch("key-99"), providerKey: "key-99"},
-		{name: "切回跟随 agent 绑定", text: encodeProviderSwitch(""), providerKey: ""},
+		{name: "切到某个供应商", text: encodeProviderSwitch("key-99", "中转 · GLM 5.2"), providerKey: "key-99", providerName: "中转 · GLM 5.2"},
+		{name: "切回跟随 agent 绑定", text: encodeProviderSwitch("", ""), providerKey: "", providerName: ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -360,6 +361,7 @@ func TestToChatMessage_NoticeBlockProjectionDecodesProviderSwitch(t *testing.T) 
 			assert.Equal(t, "notice", cm.Blocks[0].Type)
 			assert.Equal(t, "switch", cm.Blocks[0].NoticeKind, "前端据此选切换文案而非回退文案")
 			assert.Equal(t, tc.providerKey, cm.Blocks[0].ProviderKey)
+			assert.Equal(t, tc.providerName, cm.Blocks[0].ProviderName, "展示名随投影透传给前端")
 			assert.Empty(t, cm.Blocks[0].Text, "结构化负载不把原始 JSON 泄漏给前端")
 		})
 	}
@@ -370,7 +372,7 @@ func TestToChatMessage_NoticeBlockProjectionDecodesProviderSwitch(t *testing.T) 
 func TestToChatMessage_NoticeBlockProjectionKeepsFallbackKindEmpty(t *testing.T) {
 	m := &chat_entity.Message{ID: 1, SessionID: 9, Role: "assistant"}
 	require.NoError(t, m.SetBlocks([]blocks.ContentBlock{
-		blocks.NoticeBlock{Level: "info", Text: encodeProviderFallback("gone-provider")},
+		blocks.NoticeBlock{Level: "info", Text: encodeProviderFallback("gone-provider", "")},
 	}))
 
 	cm, err := toChatMessage(m)

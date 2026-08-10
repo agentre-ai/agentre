@@ -115,7 +115,7 @@ func TestRunTurn_ProviderFallbackAppendsPersistentNotice(t *testing.T) {
 		}).AnyTimes()
 
 	s.runTurn(ctx, sess, a, be, prov, nil, assistant, "stream", "", false, nil, turnExtras{
-		providerFallbackNotice: &blocks.NoticeBlock{Level: "info", Text: encodeProviderFallback("gone-provider")},
+		providerFallbackNotice: &blocks.NoticeBlock{Level: "info", Text: encodeProviderFallback("gone-provider", "")},
 	})
 
 	select {
@@ -255,4 +255,41 @@ func TestRunTurn_RemoteFallbackSignalAppendsPersistentNotice(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal([]byte(notice.Text), &payload))
 	assert.Equal(t, "gone-provider", payload.ProviderKey, "持久 notice 携带被回退的会话 provider_key")
+}
+
+// TestSessionProviderOverride_FallbackNoticeCarriesProviderName 钉死设计决策 2：会话
+// 所选供应商还在(只是停用/类型不兼容)时,回退 notice 一并带上它的展示名 —— 与切换
+// notice 同源同形,同一次改动覆盖。
+func TestSessionProviderOverride_FallbackNoticeCarriesProviderName(t *testing.T) {
+	m, ctx := setupDirectRunTest(t)
+	s := NewChat(NoopEmitter{}).(*chatSvc)
+	be := &agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE,
+	}
+	m.provider.EXPECT().FindByKey(ctx, "stale-key").Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: "stale-key", Name: "中转 · GLM 5.2",
+		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.DELETE,
+	}, nil)
+
+	_, notice := s.sessionProviderOverride(ctx, be, "stale-key", nil)
+
+	require.NotNil(t, notice)
+	assert.JSONEq(t, `{"providerKey":"stale-key","providerName":"中转 · GLM 5.2"}`, notice.Text)
+}
+
+// TestSessionProviderOverride_FallbackNoticeOmitsNameWhenProviderGone 钉死设计决策 2
+// 的边界：供应商已被删(查不到实体)时没有名字可给,notice 保持只显示 key —— 前端据此
+// 回退渲染,不能出现「有时有名有时是 UUID」的不稳定文案。
+func TestSessionProviderOverride_FallbackNoticeOmitsNameWhenProviderGone(t *testing.T) {
+	m, ctx := setupDirectRunTest(t)
+	s := NewChat(NoopEmitter{}).(*chatSvc)
+	be := &agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE,
+	}
+	m.provider.EXPECT().FindByKey(ctx, "gone-key").Return(nil, nil)
+
+	_, notice := s.sessionProviderOverride(ctx, be, "gone-key", nil)
+
+	require.NotNil(t, notice)
+	assert.JSONEq(t, `{"providerKey":"gone-key"}`, notice.Text)
 }

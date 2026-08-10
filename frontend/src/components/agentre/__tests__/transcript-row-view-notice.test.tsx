@@ -17,6 +17,7 @@ import type { TranscriptRow } from "../transcript-rows";
 type NoticeBlock = {
   text?: string;
   providerKey?: string;
+  providerName?: string;
   noticeKind?: string;
 };
 
@@ -133,5 +134,44 @@ describe("transcript notice block", () => {
     expect(
       screen.getByText(i18n.t("chat.notice.providerSwitch.followAgentBinding")),
     ).toBeInTheDocument();
+  });
+
+  it("renders a provider-switch notice 优先显示供应商展示名而非裸 key（决策 1）", () => {
+    // 用户在 pill 上选的是供应商名，回看 transcript 应该读到同一个名字，而不是
+    // providerKey 那串 UUID。
+    renderRow(
+      noticeRow({
+        providerKey: "36a04495-dfe9-40ef-a3c5-2b62468db6b1",
+        providerName: "中转 · GLM 5.2",
+        noticeKind: "switch",
+      }),
+    );
+
+    expect(
+      screen.getByText(
+        i18n.t("chat.notice.providerSwitch.sentence", {
+          provider: "中转 · GLM 5.2",
+        }),
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/36a04495-dfe9-40ef-a3c5-2b62468db6b1/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders a provider-fallback notice 优先显示供应商展示名而非裸 key（决策 2）", () => {
+    // 回退 notice 与切换 notice 同构：供应商实体还在（只是停用/不兼容）时同样有名字。
+    renderRow(
+      noticeRow({ providerKey: "acme-anthropic", providerName: "备用网关" }),
+    );
+
+    expect(
+      screen.getByText(
+        i18n.t("chat.notice.providerFallback.sentence", {
+          provider: "备用网关",
+        }),
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/acme-anthropic/)).not.toBeInTheDocument();
   });
 });

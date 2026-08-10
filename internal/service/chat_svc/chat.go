@@ -725,7 +725,7 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 // providerNoticePayload 是供应商相关的持久 notice 写进 blocks.NoticeBlock.Text 的小 JSON。
 // NoticeBlock 是 cago 库的 UI-only 块,只有 Level/Text 两个字段(库类型,不能加字段),所以
 // 把结构化信息编码进 Text;前端投影(noticeBlockToChatBlock)解回 ChatBlock 的
-// ProviderKey / NoticeKind 再用 t() 渲染。该块从不发给 LLM。
+// ProviderKey / ProviderName / NoticeKind 再用 t() 渲染。该块从不发给 LLM。
 // 旧数据 / 非结构化文本的 NoticeBlock 走 Text 原样渲染兜底。
 //
 // 两种 kind:
@@ -734,24 +734,41 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 //   - "switch" = 用户在会话里切换了供应商(2026-08-10 决策 9):ProviderKey 是切换后的
 //     会话级 key,**空串表示改回跟随 agent 绑定 / CLI 登录态** —— 所以这一种不能靠
 //     "ProviderKey 非空" 判定负载有效,kind 字段本身才是判据。
+//
+// ProviderName 是展示名(2026-08-10 显示缺陷修复决策 1/2):后端按当前解析到的供应商
+// 实体填入,查不到(供应商已删)时留空 —— 前端优先渲染它,为空则回退到 key。名字只有
+// 产出 notice 的后端手里有,不能让前端按 key 反查(供应商列表可能未拉/已缺项)。
 type providerNoticePayload struct {
-	ProviderKey string `json:"providerKey,omitempty"`
-	Kind        string `json:"kind,omitempty"`
+	ProviderKey  string `json:"providerKey,omitempty"`
+	ProviderName string `json:"providerName,omitempty"`
+	Kind         string `json:"kind,omitempty"`
 }
 
 // providerNoticeKindSwitch 见 providerNoticePayload 的 kind 说明。回退提示不写 kind,
 // 与旧数据同形。
 const providerNoticeKindSwitch = "switch"
 
-func encodeProviderFallback(providerKey string) string {
-	b, _ := json.Marshal(providerNoticePayload{ProviderKey: providerKey})
+// providerDisplayName 取供应商展示名。prov 为 nil(查不到实体 / 未选任何供应商)时
+// 返回空串,由调用方据此决定 notice 前端渲染时回退到 key 还是「跟随 agent 绑定」的
+// 专用文案(2026-08-10 显示缺陷修复决策 1/2)。
+func providerDisplayName(prov *llm_provider_entity.LLMProvider) string {
+	if prov == nil {
+		return ""
+	}
+	return prov.Name
+}
+
+func encodeProviderFallback(providerKey, providerName string) string {
+	b, _ := json.Marshal(providerNoticePayload{ProviderKey: providerKey, ProviderName: providerName})
 	return string(b)
 }
 
 // encodeProviderSwitch 编码「本会话自此改用某供应商」的持久 notice(2026-08-10 决策 9)。
-// providerKey 为空 = 改回跟随 agent 绑定。
-func encodeProviderSwitch(providerKey string) string {
-	b, _ := json.Marshal(providerNoticePayload{ProviderKey: providerKey, Kind: providerNoticeKindSwitch})
+// providerKey 为空 = 改回跟随 agent 绑定,此时 providerName 恒为空。
+func encodeProviderSwitch(providerKey, providerName string) string {
+	b, _ := json.Marshal(providerNoticePayload{
+		ProviderKey: providerKey, ProviderName: providerName, Kind: providerNoticeKindSwitch,
+	})
 	return string(b)
 }
 
@@ -781,15 +798,16 @@ func firstNonEmpty(values ...string) string {
 }
 
 // noticeBlockToChatBlock 把持久化的 blocks.NoticeBlock 投影成前端 ChatBlock。
-// 供应商回退/切换提示(本功能产出的结构化小 JSON)解回 ProviderKey + NoticeKind、
-// Text 置空 —— 前端走 t() 渲染;非结构化旧数据原样透传 Text。
+// 供应商回退/切换提示(本功能产出的结构化小 JSON)解回 ProviderKey + ProviderName +
+// NoticeKind、Text 置空 —— 前端走 t() 渲染;非结构化旧数据原样透传 Text。
 func noticeBlockToChatBlock(tb blocks.NoticeBlock) ChatBlock {
 	if p, ok := decodeProviderNotice(tb.Text); ok {
 		return ChatBlock{
-			Type:        "notice",
-			Level:       tb.Level,
-			ProviderKey: p.ProviderKey,
-			NoticeKind:  p.Kind,
+			Type:         "notice",
+			Level:        tb.Level,
+			ProviderKey:  p.ProviderKey,
+			ProviderName: p.ProviderName,
+			NoticeKind:   p.Kind,
 		}
 	}
 	return ChatBlock{Type: "notice", Level: tb.Level, Text: tb.Text}
@@ -1817,9 +1835,15 @@ func (s *chatSvc) sessionProviderOverride(
 		kind.ProviderTypeMatch(llm_provider_entity.ProviderType(prov.Type)) {
 		return prov, nil
 	}
+	// 展示名(决策 2):实体查到了(只是停用/类型不兼容)就带上它的名字;查询失败或
+	// 实体本身不存在(供应商已删)则 providerDisplayName 返回空串,notice 保持只显示 key。
+	name := ""
+	if err == nil {
+		name = providerDisplayName(prov)
+	}
 	return baseProv, &blocks.NoticeBlock{
 		Level: "info",
-		Text:  encodeProviderFallback(key),
+		Text:  encodeProviderFallback(key, name),
 	}
 }
 
@@ -4105,11 +4129,12 @@ func (s *chatSvc) runTurn(
 		}
 		// 远端(决策 9):daemon 按 wire 的 effectiveProviderKey 自解失败、回退 agent
 		// 绑定后经 ack 回传被回退的 provider_key,这里据此追加同一条持久 notice(与
-		// 本地 Q3 一致;provider_key 不清除)。
+		// 本地 Q3 一致;provider_key 不清除)。wire 只带 key 不带展示名(远端不在本轮
+		// 范围内,见 spec Out of scope),notice 保持只显示 key。
 		if result.ProviderFallbackKey != "" {
 			finalBlocks = append(finalBlocks, blocks.NoticeBlock{
 				Level: "info",
-				Text:  encodeProviderFallback(result.ProviderFallbackKey),
+				Text:  encodeProviderFallback(result.ProviderFallbackKey, ""),
 			})
 		}
 	}

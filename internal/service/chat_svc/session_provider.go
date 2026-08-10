@@ -127,7 +127,10 @@ func (s *chatSvc) SetChatSessionProvider(ctx context.Context, req *SetSessionPro
 		return &SetSessionProviderResponse{ProviderKey: key, AgentProviderKey: be.LLMProviderKey}, nil
 	}
 	// 决策 11：与 validateNewSessionProvider 同一口径（空串跳过校验 = 跟随 agent 绑定）。
-	if _, err := s.validateNewSessionProvider(ctx, be, key); err != nil {
+	// 校验顺带解析出的实体留着给 notice 当展示名(2026-08-10 显示缺陷修复决策 1):
+	// 校验已经查过一次,不再为取名字重复查询。
+	prov, err := s.validateNewSessionProvider(ctx, be, key)
+	if err != nil {
 		return nil, err
 	}
 	if err := chat_repo.Session().UpdateProviderKey(ctx, sess.ID, key); err != nil {
@@ -139,7 +142,7 @@ func (s *chatSvc) SetChatSessionProvider(ctx context.Context, req *SetSessionPro
 		zap.String("providerKey", key),
 		zap.String("agentProviderKey", be.LLMProviderKey),
 		zap.String("backendType", be.Type))
-	s.appendProviderSwitchNotice(ctx, sess, be, key)
+	s.appendProviderSwitchNotice(ctx, sess, be, key, providerDisplayName(prov))
 	return &SetSessionProviderResponse{ProviderKey: key, AgentProviderKey: be.LLMProviderKey}, nil
 }
 
@@ -179,6 +182,7 @@ func (s *chatSvc) appendProviderSwitchNotice(
 	sess *chat_entity.Session,
 	be *agent_backend_entity.AgentBackend,
 	providerKey string,
+	providerName string,
 ) {
 	msg := &chat_entity.Message{
 		SessionID:  sess.ID,
@@ -188,7 +192,7 @@ func (s *chatSvc) appendProviderSwitchNotice(
 	}
 	if err := msg.SetBlocks([]blocks.ContentBlock{blocks.NoticeBlock{
 		Level: "info",
-		Text:  encodeProviderSwitch(providerKey),
+		Text:  encodeProviderSwitch(providerKey, providerName),
 	}}); err != nil {
 		logger.Ctx(ctx).Warn("chat_svc.appendProviderSwitchNotice: encode notice failed",
 			zap.Int64("sessionId", sess.ID), zap.Error(err))

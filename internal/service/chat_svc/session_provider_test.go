@@ -84,6 +84,37 @@ func TestSetChatSessionProvider_PersistsAndAppendsNotice(t *testing.T) {
 	assert.Equal(t, `{"providerKey":"session-key","kind":"switch"}`, noticeTextOf(t, created))
 }
 
+// TestSetChatSessionProvider_NoticeCarriesProviderDisplayName 钉死设计决策 1：切换
+// notice 负载带上供应商显示名（后端产出时已解析到的实体，非前端按 key 查表）——
+// transcript 要读得懂「改用了哪个供应商」，而不是一串 UUID。
+func TestSetChatSessionProvider_NoticeCarriesProviderDisplayName(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := context.Background()
+
+	sess := &chat_entity.Session{ID: 100, AgentID: 7, AgentStatus: "running", Status: consts.ACTIVE}
+	expectSwitchBackend(m, ctx, sess, agent_backend_entity.TypeClaudeCode, "agent-bound")
+	m.provider.EXPECT().FindByKey(ctx, "session-key").Return(&llm_provider_entity.LLMProvider{
+		ID: 33, ProviderKey: "session-key", Name: "中转 · GLM 5.2", Type: string(llm_provider_entity.TypeAnthropic),
+		Model: "claude-sonnet-4-6", Status: consts.ACTIVE,
+	}, nil)
+	m.session.EXPECT().UpdateProviderKey(ctx, int64(100), "session-key").Return(nil)
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(7, nil)
+	var created *chat_entity.Message
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, msg *chat_entity.Message) error {
+			created = msg
+			return nil
+		})
+
+	_, err := m.svc.SetChatSessionProvider(ctx, &chat_svc.SetSessionProviderRequest{
+		SessionID: 100, ProviderKey: "session-key",
+	})
+	require.NoError(t, err)
+	assert.Equal(t,
+		`{"providerKey":"session-key","providerName":"中转 · GLM 5.2","kind":"switch"}`,
+		noticeTextOf(t, created))
+}
+
 // TestSetChatSessionProvider_ClearsBackToAgentBinding：空串 = 改回跟随 agent 绑定
 // （CLI 登录态双向可切，决策 7）；不查供应商，notice 说明的是「跟随绑定」。
 func TestSetChatSessionProvider_ClearsBackToAgentBinding(t *testing.T) {

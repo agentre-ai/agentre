@@ -290,6 +290,11 @@ type ChatBlock struct {
 	// 持久化时编码进 cago blocks.NoticeBlock.Text 的小 JSON,投影(noticeBlockToChatBlock)
 	// 解回这里;非结构化旧 notice 无此字段,前端回退到 Text 原样渲染。
 	ProviderKey string `json:"providerKey,omitempty"`
+	// ProviderName 是 ProviderKey 对应供应商的展示名(2026-08-10 显示缺陷修复决策 1/2):
+	// 后端产出 notice 时按当前解析到的供应商实体填入,查不到(供应商已删)时留空。前端
+	// 渲染时优先用它,空则回退到 ProviderKey —— transcript 要读得懂"改用了哪个供应商"
+	// 而不是一串 UUID。
+	ProviderName string `json:"providerName,omitempty"`
 	// NoticeKind 区分 notice 的来源:""=供应商回退提示(含全部旧数据),"switch"=用户
 	// 切换了会话供应商。前端据它选 t() 文案 —— 切回「跟随 agent 绑定」时 ProviderKey
 	// 为空,只有这个字段能把它与「无结构化负载的旧 notice」区分开。
