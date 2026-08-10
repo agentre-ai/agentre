@@ -18,7 +18,7 @@ func TestBuildClaudeCodeEnv_DelegatesToAgentruntime(t *testing.T) {
 		LLMProviderKey: "key-11",
 		ModelRoutes:    `{"OPUS": "key-2"}`,
 	}
-	env, err := BuildClaudeCodeEnv(b, CLIDeps{Token: "tok-abc", GatewayURL: "http://gateway.local"})
+	env, err := BuildClaudeCodeEnv(b, CLIDeps{Token: "tok-abc", GatewayURL: "http://gateway.local", ProviderKey: "key-11"})
 	require.NoError(t, err)
 
 	// 绑 provider + 给 gateway → AUTH_TOKEN + BASE_URL 都出现;

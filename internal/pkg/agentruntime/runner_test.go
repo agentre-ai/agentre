@@ -9,8 +9,24 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
 )
+
+// TestRunRequest_EffectiveProviderKey 钉死 claudecode/codex 复用的唯一 provider key
+// 取值口径(spec 2026-08-10 决策 4/6 的 interfaces 说明):Provider==nil(CLI 自身登录态)
+// 返回空串,否则返回 Provider.ProviderKey —— env/config 网关门控与 evict 比对键都应读
+// 这同一个值,不各自解析一遍。
+func TestRunRequest_EffectiveProviderKey(t *testing.T) {
+	t.Run("Provider 为 nil 返回空串", func(t *testing.T) {
+		req := RunRequest{}
+		assert.Equal(t, "", req.EffectiveProviderKey())
+	})
+	t.Run("Provider 非 nil 返回其 ProviderKey", func(t *testing.T) {
+		req := RunRequest{Provider: &llm_provider_entity.LLMProvider{ProviderKey: "session-picked"}}
+		assert.Equal(t, "session-picked", req.EffectiveProviderKey())
+	})
+}
 
 type stubRuntime struct{ name string }
 

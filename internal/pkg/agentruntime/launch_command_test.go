@@ -34,9 +34,10 @@ func TestBuildLaunchCommand_ClaudeCodeWithTokenAndModel(t *testing.T) {
 			LLMProviderKey: "key-9", // 绑了 provider → 命令里也该带 ANTHROPIC_*
 		},
 		Provider: &llm_provider_entity.LLMProvider{
-			ID:    9,
-			Type:  string(llm_provider_entity.TypeAnthropic),
-			Model: "claude-sonnet-4-6",
+			ID:          9,
+			ProviderKey: "key-9",
+			Type:        string(llm_provider_entity.TypeAnthropic),
+			Model:       "claude-sonnet-4-6",
 		},
 		AgentID:           42,
 		ProviderSessionID: "sess-uuid",
@@ -79,6 +80,7 @@ func TestBuildLaunchCommand_ClaudeCodePlaceholderToken(t *testing.T) {
 			Name:           "cc",
 			LLMProviderKey: "key-1",
 		},
+		Provider:   &llm_provider_entity.LLMProvider{ProviderKey: "key-1"},
 		AgentID:    12,
 		GatewayURL: "http://127.0.0.1:60080",
 	})
@@ -327,6 +329,7 @@ func TestBuildLaunchCommand_ShellEscapes(t *testing.T) {
 			LLMProviderKey: "key-1", // 让 ANTHROPIC_* 入 env，覆盖单引号转义
 			EnvJSON:        `{"WEIRD":"a'b c"}`,
 		},
+		Provider:   &llm_provider_entity.LLMProvider{ProviderKey: "key-1"},
 		AgentID:    11,
 		GatewayURL: "http://127.0.0.1:60080",
 		Token:      "tok",

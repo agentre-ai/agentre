@@ -2471,6 +2471,73 @@ func TestSend_CodexLocalDoesNotInjectGatewayDeps(t *testing.T) {
 	}
 }
 
+// TestSend_CodexLoginStateWithSessionProviderInjectsGatewayDeps 钉死 spec 2026-08-10
+// 决策 6/问题 3:CLI 登录态 codex 后端(agent 未绑 LLM provider)上,会话选了一个
+// agentre 供应商(sess.ProviderKey)时也要签网关 token、把 GatewayURL/Token 装进
+// RunRequest —— shouldSignChatGateway 的门控必须看本轮 effective provider(prov),
+// 不能只看 be.LLMProviderKey,否则决策 7(登录态双向可切)在 codex 上从未兑现。
+// 与 TestSend_CodexLocalDoesNotInjectGatewayDeps(无 effective provider 时不装配)
+// 互为正反例。
+func TestSend_CodexLoginStateWithSessionProviderInjectsGatewayDeps(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+	chat_svc.RegisterGateway(&fakeChatGateway{
+		status: httpgateway.GatewayStatus{State: "running", URL: "http://127.0.0.1:60080"},
+		token:  "chat-token",
+	})
+	t.Cleanup(func() { chat_svc.RegisterGateway(nil) })
+
+	runner := &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeCodex, runner)
+	t.Cleanup(restore)
+
+	sess := &chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE, ProviderKey: "session-picked",
+	}
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Codex Local", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "session-picked").
+		Return(newActiveProvider("session-picked", string(llm_provider_entity.TypeOpenAIResponse)), nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(3, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				msg.ID = 1000
+			} else {
+				msg.ID = 1001
+			}
+			return nil
+		}).Times(2)
+	m.dbMock.ExpectCommit()
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{
+		SessionID: 100,
+		AgentID:   7,
+		Text:      "hi",
+	})
+	assert.NoError(t, err)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	select {
+	case req := <-runner.requests:
+		assert.NotEmpty(t, req.GatewayURL, "登录态后端上会话选了供应商也要装配网关 URL")
+		assert.NotEmpty(t, req.GatewayToken, "登录态后端上会话选了供应商也要签网关 token")
+		require.NotNil(t, req.Provider)
+		assert.Equal(t, "session-picked", req.Provider.ProviderKey)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for runtime request")
+	}
+}
+
 func TestCompact_CodexStartsCompactTurnWithoutUserMessage(t *testing.T) {
 	m := setupChatTest(t)
 	ctx := m.ctx

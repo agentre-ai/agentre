@@ -338,8 +338,13 @@ type codexLaunchSpec struct {
 	providerSessionID string // codex thread/provider session —— 同上
 }
 
+// gatewayDeps 装配 codex 网关门控(spec 2026-08-10 决策 6):是否给子进程带
+// gateway token/URL 看本轮有没有 effective provider(req.EffectiveProviderKey()，
+// 会话 provider_key 覆盖 agent 绑定后的那家)，不再单看 backend 是否绑定——CLI 登录态
+// 后端(req.Backend.LLMProviderKey=="")上会话选了 agentre 供应商时(req.Provider 非空)
+// 也要装配，否则 chat_svc 签的 token 永远传不到 BuildCodexConfig，登录态无法被接管。
 func gatewayDeps(req agentruntime.RunRequest) CLIDeps {
-	if req.Backend == nil || req.Backend.LLMProviderKey == "" {
+	if req.Backend == nil || req.EffectiveProviderKey() == "" {
 		return CLIDeps{}
 	}
 	return CLIDeps{Token: req.GatewayToken, GatewayURL: req.GatewayURL}

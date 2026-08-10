@@ -3751,9 +3751,10 @@ func (s *chatSvc) prepareTurnRun(
 		// 决策 9），daemon 按它从自己的配置解析；无会话 key 时回落 agent 绑定。
 		req.LLMProviderKey = effectiveProviderKey(sess, be)
 		req.Provider = nil
-	} else if shouldSignChatGateway(be) {
+	} else if shouldSignChatGateway(be, prov) {
 		// Claude Code local 需要 gateway token 给 PostToolUse hook；Codex local
-		// 没有 hook，不能覆盖其原生 login 并误打到本地 gateway。
+		// 没有 hook，只有本轮存在 effective provider 时才该走 gateway（决策 6），
+		// 否则会覆盖其原生 login 并误打到本地 gateway。
 		//
 		// 按 prov 路由而不是 be.LLMProviderKey：prov 是 turn 入口按会话 provider_key
 		// 覆盖解析出来的那家（缺失/停用已回退过），也正是本轮 `--model` 用的那家 ——
@@ -4536,14 +4537,21 @@ func chatMessageForEvent(sess *chat_entity.Session, msg *chat_entity.Message) *C
 	return &final
 }
 
-func shouldSignChatGateway(be *agent_backend_entity.AgentBackend) bool {
+// shouldSignChatGateway 决定本轮要不要给 CLI 子进程签一个 gateway token（spec
+// 2026-08-10 决策 6）。Claude Code local 无论是否有 provider 都要签——PostToolUse
+// hook 子进程访问 /hook/v1/inbox 靠它，与 LLM 是否走网关无关（网关路由那半独立由
+// BuildClaudeCodeEnv 按 effective provider 门控）。Codex local 没有 hook，只有本轮
+// 存在 effective provider（prov 非 nil：会话 provider_key 覆盖 agent 绑定后解析出的
+// 那家，已过缺失/停用回退）时才该签，否则会把它自身的 CLI 登录态误打到本地网关
+// ——门控看 prov 而不是 be.LLMProviderKey，是登录态会话能双向切换供应商的前提。
+func shouldSignChatGateway(be *agent_backend_entity.AgentBackend, prov *llm_provider_entity.LLMProvider) bool {
 	if be == nil || be.IsBuiltin() {
 		return false
 	}
 	if be.IsClaudeCode() {
 		return true
 	}
-	return be.LLMProviderKey != ""
+	return prov != nil
 }
 
 // remoteProviderKnownMissing returns true only when the watcher cache has a

@@ -52,6 +52,12 @@ type claudeActive struct {
 	// DefaultModel)变化时,acquireSession 镜像 launchedEffort 先例强制 evict 重
 	// spawn,否则 LRU 复用的 CLI 子进程一直跑旧模型(镜像 codex 的 modelChanged)。
 	launchedModel string
+	// launchedProviderKey 记录 spawn 时下发给 claude CLI 的 effectiveProviderKey
+	// (RunRequest.EffectiveProviderKey())。ANTHROPIC_BASE_URL/AUTH_TOKEN 同是启动期
+	// env,运行时改不掉;两个不同供应商可以配同一个 model id,只比 launchedModel 会漏掉
+	// 换供应商 —— 下一轮 effectiveProviderKey 变化时同样强制 evict 重 spawn(spec
+	// 2026-08-10 决策 4)。
+	launchedProviderKey string
 
 	// askWaiters 记录当前阻塞中的 AskUserQuestion control_request。
 	askMu      sync.Mutex

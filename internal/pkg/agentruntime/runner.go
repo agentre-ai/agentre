@@ -448,6 +448,20 @@ type RunRequest struct {
 	LLMProviderKey string
 }
 
+// EffectiveProviderKey 返回本轮 Provider 的 key：Provider==nil（CLI 自身登录态,
+// 无任何 effective provider）返回空串,否则返回 Provider.ProviderKey。
+//
+// 这是 chat_svc.providerKeyOf(prov) 在 runtime 层的同源取值 —— turn 入口已把
+// 「会话 provider_key > agent 绑定」的解析结果（含缺失/停用回退）装进 req.Provider,
+// claudecode / codex 的 CLI env/config 网关门控与 evict 比对键（spec 2026-08-10
+// 决策 4/6）都应读这同一个值,不各自解析一遍导致漂移。
+func (req RunRequest) EffectiveProviderKey() string {
+	if req.Provider == nil {
+		return ""
+	}
+	return req.Provider.ProviderKey
+}
+
 // RunResult 由 runner 在事件流 close 后填充；chat_svc 在 drain 完 channel 后读。
 type RunResult struct {
 	ProviderSessionID string

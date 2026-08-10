@@ -10,6 +10,38 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 )
 
+// TestGatewayDeps 锁住 codex 网关门控的唯一口径(spec 2026-08-10 决策 6):是否装配
+// gateway CLIDeps 看本轮有没有 effective provider(req.EffectiveProviderKey()),不再
+// 看 backend 是否绑定(req.Backend.LLMProviderKey)——CLI 登录态后端上会话选了 agentre
+// 供应商时(backend 未绑定但 req.Provider 非空)也要装配,否则 shouldSignChatGateway
+// 签的 token 永远传不到 BuildCodexConfig。
+func TestGatewayDeps(t *testing.T) {
+	Convey("Given backend 未绑定 provider(LLMProviderKey==\"\")", t, func() {
+		backend := &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeCodex)}
+
+		Convey("When 会话没有 effective provider(req.Provider==nil), Then deps 为空(CLI 登录态不装配)", func() {
+			deps := gatewayDeps(agentruntime.RunRequest{
+				Backend: backend, GatewayToken: "tok", GatewayURL: "http://127.0.0.1:60080",
+			})
+			So(deps, ShouldResemble, CLIDeps{})
+		})
+
+		Convey("When 会话选了 agentre 供应商(req.Provider 非空), Then deps 装配 token/url(登录态可被接管)", func() {
+			deps := gatewayDeps(agentruntime.RunRequest{
+				Backend: backend, GatewayToken: "tok", GatewayURL: "http://127.0.0.1:60080",
+				Provider: &llm_provider_entity.LLMProvider{ProviderKey: "session-picked", Model: "gpt-5.5"},
+			})
+			So(deps.Token, ShouldEqual, "tok")
+			So(deps.GatewayURL, ShouldEqual, "http://127.0.0.1:60080")
+		})
+	})
+
+	Convey("Given backend nil, Then deps 为空", t, func() {
+		deps := gatewayDeps(agentruntime.RunRequest{GatewayToken: "tok", GatewayURL: "http://127.0.0.1:60080"})
+		So(deps, ShouldResemble, CLIDeps{})
+	})
+}
+
 func TestBuildLaunchSpec_MCPServers(t *testing.T) {
 	Convey("Given RunRequest 带一个 http MCP server", t, func() {
 		spec := buildLaunchSpec(agentruntime.RunRequest{
