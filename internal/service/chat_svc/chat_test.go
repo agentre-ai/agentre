@@ -88,6 +88,16 @@ func (f *fakeChatGateway) IssueToken(context.Context, *agent_backend_entity.Agen
 	return "chat-token", nil
 }
 
+func (f *fakeChatGateway) IssueTokenFor(
+	ctx context.Context, be *agent_backend_entity.AgentBackend, _ string, ttl time.Duration,
+) (string, error) {
+	return f.IssueToken(ctx, be, ttl)
+}
+
+func (f *fakeChatGateway) SetTokenProvider(_, providerKey string) (string, bool) {
+	return providerKey, true
+}
+
 func (f *fakeChatGateway) RevokeToken(string) {}
 
 func (f *fakeChatGateway) URL() string {

@@ -69,12 +69,17 @@ var ErrInvalidBackend = errors.New("httpgateway: invalid backend for token issue
 // Issue 把 backend 转成 TokenEntry 并存入表，返回随机 token 字符串。
 // ttl <= 0 时视为永久（chat flow 长 token 用；TestAgentBackend 传 60s）。
 //
-// LLMProviderKey == ""（CLI 登录模式，没绑 provider）也允许发 token：
+// providerKey 是这条 token 的**主供应商**，由调用方按自己的口径给出：chat flow 传本轮
+// 的 effective provider（会话 provider_key > agent 绑定，spec 决策 2/3），backend 自测 /
+// 探针传 backend 自身绑定。registry 不再自己从 backend 派生 —— 各处各读各的正是「会话
+// 选了供应商却打到 agent 绑定那家」的成因。
+//
+// providerKey == ""（CLI 登录模式，没绑 provider）也允许发 token：
 // 这种 token 在 /hook/v1/inbox 上正常用（gateway handler 只 Resolve 不看
 // provider），LLM 转发端点会因 ResolveModel→"" 找不到 provider 自然 502，
 // 互不干扰。**不允许**会让 hook 子进程在 CLI 登录模式下永远拿不到 token，
 // 排队消息没法 mid-turn 注入。
-func (r *TokenRegistry) Issue(b *agent_backend_entity.AgentBackend, ttl time.Duration) (string, error) {
+func (r *TokenRegistry) Issue(b *agent_backend_entity.AgentBackend, providerKey string, ttl time.Duration) (string, error) {
 	if b == nil {
 		return "", ErrInvalidBackend
 	}
@@ -94,7 +99,7 @@ func (r *TokenRegistry) Issue(b *agent_backend_entity.AgentBackend, ttl time.Dur
 	entry := TokenEntry{
 		BackendID:       b.ID,
 		BackendType:     agent_backend_entity.BackendType(b.Type),
-		MainProviderKey: b.LLMProviderKey,
+		MainProviderKey: providerKey,
 		Routes:          upper,
 	}
 	if ttl > 0 {
@@ -125,6 +130,25 @@ func (r *TokenRegistry) Resolve(token string) (TokenEntry, bool) {
 		return TokenEntry{}, false
 	}
 	return entry, true
+}
+
+// SetProviderKey 把既有 token 的主供应商改成 providerKey，**token 字符串不变**，
+// 返回它原来的主供应商与是否命中（未签发过 / 已过期 → ("", false)）。
+//
+// 会话中途换供应商走这里而不是重签：token 是会话级常驻、首轮就烤进 CLI 子进程 env 的，
+// 重签会让在跑的子进程手里那个立刻失效（曾经的 401 事故）。tier 路由（Routes）与 backend
+// 身份不动 —— 换的只是主供应商这一件事。
+func (r *TokenRegistry) SetProviderKey(token, providerKey string) (previous string, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, found := r.tokens[token]
+	if !found || entry.IsExpired(r.now()) {
+		return "", false
+	}
+	previous = entry.MainProviderKey
+	entry.MainProviderKey = providerKey
+	r.tokens[token] = entry
+	return previous, true
 }
 
 // Revoke 删除 token；找不到忽略。

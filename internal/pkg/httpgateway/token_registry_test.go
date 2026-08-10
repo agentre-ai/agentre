@@ -18,7 +18,7 @@ func TestTokenRegistry_IssueResolveRevoke(t *testing.T) {
 		LLMProviderKey: "key-3",
 		ModelRoutes:    `{"OPUS":"key-5","sonnet":"key-6"}`,
 	}
-	tok, err := r.Issue(b, 60*time.Second)
+	tok, err := r.Issue(b, b.LLMProviderKey, 60*time.Second)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, tok)
 	assert.Equal(t, 1, r.Size())
@@ -50,7 +50,7 @@ func TestTokenRegistry_RejectInvalidBackend(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := r.Issue(tc.b, time.Minute)
+			_, err := r.Issue(tc.b, "key-2", time.Minute)
 			assert.Error(t, err)
 		})
 	}
@@ -66,7 +66,7 @@ func TestTokenRegistry_IssueWithoutProvider(t *testing.T) {
 		ID:             42,
 		Type:           string(agent_backend_entity.TypeClaudeCode),
 		LLMProviderKey: "",
-	}, time.Minute)
+	}, "", time.Minute)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, tok)
 
@@ -83,7 +83,7 @@ func TestTokenRegistry_ExpireOnResolve(t *testing.T) {
 	frozen := time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC)
 	r.now = func() time.Time { return frozen }
 
-	tok, err := r.Issue(&agent_backend_entity.AgentBackend{ID: 1, LLMProviderKey: "key-1"}, 30*time.Second)
+	tok, err := r.Issue(&agent_backend_entity.AgentBackend{ID: 1}, "key-1", 30*time.Second)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, r.Size())
 
@@ -100,12 +100,77 @@ func TestTokenRegistry_ExpireOnResolve(t *testing.T) {
 
 func TestTokenRegistry_ZeroTTLNeverExpires(t *testing.T) {
 	r := NewTokenRegistry()
-	tok, err := r.Issue(&agent_backend_entity.AgentBackend{ID: 1, LLMProviderKey: "key-1"}, 0)
+	tok, err := r.Issue(&agent_backend_entity.AgentBackend{ID: 1}, "key-1", 0)
 	assert.NoError(t, err)
 	// 模拟未来：仍命中
 	r.now = func() time.Time { return time.Now().Add(24 * time.Hour) }
 	_, ok := r.Resolve(tok)
 	assert.True(t, ok)
+}
+
+// TestTokenRegistry_IssueUsesEffectiveProviderKey 钉死决策 3 的签发侧：token 的主供应商
+// 来源是**签发时传入的 effective key**（会话 provider_key > agent 绑定），不再由 backend
+// 实体自己派生 —— 会话切了供应商之后，同一条 backend 签出来的 token 必须打到会话选的
+// 那家，否则 `--model` 换了、请求还打在 agent 绑定那家上。
+func TestTokenRegistry_IssueUsesEffectiveProviderKey(t *testing.T) {
+	r := NewTokenRegistry()
+	b := &agent_backend_entity.AgentBackend{
+		ID: 7, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "agent-bound",
+	}
+
+	tok, err := r.Issue(b, "session-picked", time.Minute)
+	assert.NoError(t, err)
+
+	entry, ok := r.Resolve(tok)
+	if assert.True(t, ok) {
+		assert.Equal(t, "session-picked", entry.MainProviderKey, "签发时传入的 effective key 说了算")
+		assert.Equal(t, int64(7), entry.BackendID, "身份仍来自 backend")
+		key, hit := entry.ResolveModel("")
+		assert.Equal(t, "session-picked", key)
+		assert.False(t, hit)
+	}
+}
+
+// TestTokenRegistry_SetProviderKeyKeepsTokenString 钉死决策 3 的切换侧：token 字符串是
+// **会话级常驻**、首轮就烤进 CLI 子进程 env 的，切换供应商只改它在网关里的路由目标，
+// 绝不重签（重签 = 在跑的子进程手里那个立刻失效，正是被修过的 401 事故）。
+func TestTokenRegistry_SetProviderKeyKeepsTokenString(t *testing.T) {
+	r := NewTokenRegistry()
+	b := &agent_backend_entity.AgentBackend{
+		ID: 7, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "agent-bound",
+		ModelRoutes: `{"OPUS":"tier-key"}`,
+	}
+	tok, err := r.Issue(b, "agent-bound", 0)
+	assert.NoError(t, err)
+
+	prev, ok := r.SetProviderKey(tok, "switched")
+	assert.True(t, ok)
+	assert.Equal(t, "agent-bound", prev, "返回旧 key，调用方据此判断是否真的换了")
+	assert.Equal(t, 1, r.Size(), "不得多出一条 token")
+
+	entry, found := r.Resolve(tok)
+	if assert.True(t, found, "token 字符串不变，仍能解出来") {
+		assert.Equal(t, "switched", entry.MainProviderKey)
+		assert.Equal(t, int64(7), entry.BackendID, "身份不变")
+		assert.Equal(t, "tier-key", entry.Routes["OPUS"], "tier 路由来自 backend 配置，不受切换影响")
+	}
+}
+
+// TestTokenRegistry_SetProviderKeyUnknownToken 未知 / 已过期 token 一律 (,,false)：
+// 调用方（会话切换）据此知道这条 token 已经不在表里，不去伪造一条路由记录。
+func TestTokenRegistry_SetProviderKeyUnknownToken(t *testing.T) {
+	r := NewTokenRegistry()
+	_, ok := r.SetProviderKey("never-issued", "x")
+	assert.False(t, ok)
+	assert.Equal(t, 0, r.Size())
+
+	frozen := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+	r.now = func() time.Time { return frozen }
+	tok, err := r.Issue(&agent_backend_entity.AgentBackend{ID: 1}, "key-1", 30*time.Second)
+	assert.NoError(t, err)
+	r.now = func() time.Time { return frozen.Add(31 * time.Second) }
+	_, ok = r.SetProviderKey(tok, "key-2")
+	assert.False(t, ok, "过期 token 不可再改路由")
 }
 
 func TestTokenEntry_ResolveModel(t *testing.T) {

@@ -40,6 +40,17 @@ func effectiveProviderKey(sess *chat_entity.Session, be *agent_backend_entity.Ag
 	return firstNonEmpty(sessKey, agentKey)
 }
 
+// providerKeyOf 是「本轮解析出来的这家供应商的 key」，nil（CLI 自身登录态，没有任何
+// 供应商）返回空串。turn 侧把它交给网关 token 用：解析后的 prov 才是真正会被请求打到的
+// 那家（会话所选缺失/停用时已回退过），拿 effectiveProviderKey 的原始值反而会让回退的
+// 那一轮在网关上 502。
+func providerKeyOf(prov *llm_provider_entity.LLMProvider) string {
+	if prov == nil {
+		return ""
+	}
+	return prov.ProviderKey
+}
+
 // resolveEffectiveProvider 把 effectiveProviderKey 解析成 provider 实体，供**展示侧**
 // 消费点（LoadSession 的供应商类型/上下文窗口、复制启动命令）使用。
 //

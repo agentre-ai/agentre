@@ -156,7 +156,7 @@ type ChatSvc interface {
 
 var defaultChat ChatSvc
 
-var defaultGateway httpgateway.TokenIssuer
+var defaultGateway httpgateway.TokenRouter
 
 func Chat() ChatSvc { return defaultChat }
 
@@ -186,7 +186,10 @@ func NewChat(emitter Emitter) ChatSvc {
 
 // RegisterGateway 由 bootstrap 注入 httpgateway 单例；
 // 没有注入时（早期单测、headless 启动）走 CLI 自身 login 路径。
-func RegisterGateway(g httpgateway.TokenIssuer) {
+//
+// 要的是 TokenRouter 而不是 TokenIssuer：chat flow 的 token 按会话 effective provider
+// 路由，且会话中途换供应商时要能在**不换 token 字符串**的前提下改它的路由目标（决策 3）。
+func RegisterGateway(g httpgateway.TokenRouter) {
 	defaultGateway = g
 	if s, ok := defaultChat.(*chatSvc); ok {
 		s.gateway = g
@@ -263,7 +266,7 @@ type chatSvc struct {
 	// tool_use_id 集合」。集合非空 = 该会话有后台 subagent 在跑。后台 subagent 易失
 	// (随 CLI 子进程/重启消失)，故不落库；重启后 map 空 = 0 天然正确。见 bg_running.go。
 	bgRunning sync.Map
-	gateway   httpgateway.TokenIssuer
+	gateway   httpgateway.TokenRouter
 	// chatTokens 缓存每个 chat session 的常驻 gateway token(sessionID int64 → token string)。
 	// 该 token 在 spawn 时烤进 claude 子进程 env 给 PostToolUse hook 用,子进程跨轮复用
 	// 时 env 不重建 —— 所以 token 必须签成永久(ttl=0)并跨轮稳定复用,否则长会话(>15min)
@@ -693,7 +696,8 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	gatewayURL, gatewayToken := "", ""
 	if prov != nil && s.gateway != nil {
 		gatewayURL = s.gateway.URL()
-		if tok, terr := s.gateway.IssueToken(ctx, be, 0); terr == nil {
+		// 按 effective provider 签：复制出去的命令要打到这条会话实际用的那家。
+		if tok, terr := s.gateway.IssueTokenFor(ctx, be, prov.ProviderKey, 0); terr == nil {
 			gatewayToken = tok
 		}
 	}
@@ -3750,7 +3754,11 @@ func (s *chatSvc) prepareTurnRun(
 	} else if shouldSignChatGateway(be) {
 		// Claude Code local 需要 gateway token 给 PostToolUse hook；Codex local
 		// 没有 hook，不能覆盖其原生 login 并误打到本地 gateway。
-		req.GatewayURL, req.GatewayToken = s.signChatTokenFor(ctx, be, sess.ID)
+		//
+		// 按 prov 路由而不是 be.LLMProviderKey：prov 是 turn 入口按会话 provider_key
+		// 覆盖解析出来的那家（缺失/停用已回退过），也正是本轮 `--model` 用的那家 ——
+		// 会话换了供应商，token 的上游随之改变，字符串不变（决策 3）。
+		req.GatewayURL, req.GatewayToken = s.signChatTokenFor(ctx, be, sess.ID, providerKeyOf(prov))
 	}
 	switch agent_backend_entity.BackendType(be.Type) {
 	case agent_backend_entity.TypeClaudeCode:
@@ -4586,7 +4594,14 @@ func remoteProviderNotConfiguredError(ctx context.Context, providerKey string) e
 // 子进程手里的 token 过期、PostToolUse hook 撞 401、SteerInbox 整轮 drain 不到、
 // steer 被压到轮末 DrainPending。改成 ttl=0 永久 + 跨轮复用,寿命跟随子进程,
 // session 删除时由 Delete→revokeChatToken 撤销。
-func (s *chatSvc) signChatTokenFor(ctx context.Context, be *agent_backend_entity.AgentBackend, sessionID int64) (string, string) {
+//
+// providerKey 是**本轮真正要跑的那家供应商**(turn 入口按会话 provider_key 覆盖解析后的
+// prov;回退过的话就是回退目标),token 按它路由。会话中途换了供应商时,下一轮走
+// SetTokenProvider 改既有 token 的路由目标而**不重签** —— 见上面那条不变量,重签等于
+// 让在跑的子进程手里那个立刻失效。空串 = CLI 自身登录态(token 只用于 hook inbox)。
+func (s *chatSvc) signChatTokenFor(
+	ctx context.Context, be *agent_backend_entity.AgentBackend, sessionID int64, providerKey string,
+) (string, string) {
 	if be == nil || s.gateway == nil {
 		return "", ""
 	}
@@ -4595,10 +4610,12 @@ func (s *chatSvc) signChatTokenFor(ctx context.Context, be *agent_backend_entity
 	}
 	if sessionID > 0 {
 		if v, ok := s.chatTokens.Load(sessionID); ok {
-			return s.gateway.URL(), v.(string)
+			tok := v.(string)
+			s.routeChatTokenTo(ctx, sessionID, tok, providerKey)
+			return s.gateway.URL(), tok
 		}
 	}
-	tok, err := s.gateway.IssueToken(ctx, be, 0)
+	tok, err := s.gateway.IssueTokenFor(ctx, be, providerKey, 0)
 	if err != nil {
 		return "", ""
 	}
@@ -4610,6 +4627,26 @@ func (s *chatSvc) signChatTokenFor(ctx context.Context, be *agent_backend_entity
 		}
 	}
 	return s.gateway.URL(), tok
+}
+
+// routeChatTokenTo 把会话常驻 token 的路由目标对齐到本轮的供应商(决策 3)。
+// token 字符串不变,所以已经烤进子进程 env 的那份继续可用;真的换了才记一条日志。
+// 找不到 entry = gateway 重启过(token 表只在内存里),此时子进程手里那个也已失效,
+// 记 warn 供排查,不在这里重签 —— 重签也救不回已 spawn 的子进程。
+func (s *chatSvc) routeChatTokenTo(ctx context.Context, sessionID int64, token, providerKey string) {
+	previous, ok := s.gateway.SetTokenProvider(token, providerKey)
+	if !ok {
+		logger.Ctx(ctx).Warn("chat_svc.routeChatTokenTo: session token missing from gateway",
+			zap.Int64("sessionId", sessionID),
+			zap.String("providerKey", providerKey))
+		return
+	}
+	if previous != providerKey {
+		logger.Ctx(ctx).Info("chat_svc.routeChatTokenTo: gateway token rerouted to new provider",
+			zap.Int64("sessionId", sessionID),
+			zap.String("previousProviderKey", previous),
+			zap.String("providerKey", providerKey))
+	}
 }
 
 // revokeChatToken 撤销并清掉某 session 的常驻 token。Delete 关闭常驻子进程后调用,
