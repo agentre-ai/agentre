@@ -88,7 +88,12 @@ func (h *SessionCatchupHandlers) List(ctx context.Context) (wire.SessionListResu
 			return wire.SessionListResult{}, fmt.Errorf("read latest seq: %w", err)
 		}
 	}
-	out := wire.SessionListResult{Sessions: make([]wire.SessionSummary, 0, len(rows))}
+	// 这台 daemon 认识 R7 / 决策 8 的那几列(它就是落库方),如实声明 —— 未升级的
+	// agentred 不认识这个字段,客户端解出来是 false,据此说明该机器需要升级。
+	out := wire.SessionListResult{
+		Sessions:                make([]wire.SessionSummary, 0, len(rows)),
+		SupportsSessionMetadata: true,
+	}
 	for _, row := range rows {
 		sid, err := strconv.ParseInt(row.PeerSessionID, 10, 64)
 		if err != nil {
@@ -114,6 +119,7 @@ func (h *SessionCatchupHandlers) List(ctx context.Context) (wire.SessionListResu
 			LifecycleState:    row.LifecycleState,
 			WaitingForInput:   h.waitingForInput(ctx, row, sid),
 			LatestSeq:         latestSeq,
+			UpdatedAt:         row.UpdatedAt,
 		}
 		// Origin 只标在**别的对端**发起的那些会话上。空 origin 的语义是
 		// ResolveSessionPeer 的入口约定 ——「省略 = 调用方自己的对端」—— 而清单是客户端

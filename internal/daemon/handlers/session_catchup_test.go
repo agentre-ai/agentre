@@ -98,6 +98,41 @@ func TestSessionCatchup_List_ReturnsTitleAgentSyncIDAndProviderSessionID(t *test
 	assert.Empty(t, got.Sessions[1].ProviderSessionID, "老会话缺 provider_session_id 时 session.list 如实留空")
 }
 
+// TestSessionCatchup_List_ReportsLastActivity 覆盖 R5 的「最后活动时间」:会话行的
+// updated_at 随 session.list 回传,客户端据此在列表行上显示最后活动时间。没有它,
+// R5 要求的四项里就少一项,而 R13 的「机器 · 时间」只能退回到别的时间来源。
+func TestSessionCatchup_List_ReportsLastActivity(t *testing.T) {
+	ctx, sessions, journal, h := setupCatchupTest(t, bareRT{})
+	sessions.EXPECT().List(gomock.Any(), "").Return([]handlers.SessionRecord{
+		{PeerSessionID: "1", BackendType: "claudecode", LifecycleState: wire.SessionLifecycleRunning,
+			UpdatedAt: 1754800000000},
+		// 老会话:daemon 没记过活动时间,如实留 0,由客户端表达为「未知」而不是猜一个。
+		{PeerSessionID: "2", BackendType: "codex", LifecycleState: wire.SessionLifecycleIdle},
+	}, nil)
+	journal.EXPECT().LatestSeqByPeer(gomock.Any(), "").Return(nil, nil)
+
+	got, err := h.List(ctx)
+	require.NoError(t, err)
+	require.Len(t, got.Sessions, 2)
+	assert.Equal(t, int64(1754800000000), got.Sessions[0].UpdatedAt)
+	assert.Zero(t, got.Sessions[1].UpdatedAt, "没有活动时间的会话如实留 0")
+}
+
+// TestSessionCatchup_List_AnnouncesSessionMetadataSupport 覆盖「老 agentred 兼容」:
+// 升级过的 daemon 在应答里如实声明自己落库并回传 R7 / 决策 8 的那几列,未升级的
+// agentred 不认识这个字段、解出来恒为 false。浏览器据此如实说明「该机器需要升级」,
+// 而不是把发消息静默发出去、上下文却续不上(规格「安全、隐私与兼容性」:不得静默失败)。
+func TestSessionCatchup_List_AnnouncesSessionMetadataSupport(t *testing.T) {
+	ctx, sessions, journal, h := setupCatchupTest(t, bareRT{})
+	sessions.EXPECT().List(gomock.Any(), "").Return(nil, nil)
+	journal.EXPECT().LatestSeqByPeer(gomock.Any(), "").Return(nil, nil)
+
+	got, err := h.List(ctx)
+	require.NoError(t, err)
+	assert.True(t, got.SupportsSessionMetadata,
+		"升级过的 daemon 必须声明支持,否则浏览器无法把它与未升级的 agentred 区分开")
+}
+
 // TestSessionCatchup_List_WaitingForInputIsOverlaidLive 覆盖 R11:「是否正在等待
 // 输入」由实时 waiter 状态叠加计算,永不落库 —— 落库的标志会活过 daemon 重启,变成
 // 一个没人能回答的问题。同一份会话行,backend 有阻塞 waiter 时为真,没有时为假。

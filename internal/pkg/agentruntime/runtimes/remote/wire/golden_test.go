@@ -87,11 +87,12 @@ func buildGoldenFrames(t *testing.T) []goldenFrame {
 		LifecycleState:    SessionLifecycleRunning,
 		WaitingForInput:   true,
 		LatestSeq:         12,
+		UpdatedAt:         1754800000000,
 	}
 	// 一条老会话:R7 未到达,标题 / Agent 标识 / provider_session_id 如实留空
 	// (omitempty 直接省略键,不填占位名)。
 	legacySummary := SessionSummary{
-		SessionID:      8,
+		SessionID:       8,
 		PeerFingerprint: "fp-desktop",
 		AgentID:         3,
 		Cwd:             "/var/proj",
@@ -156,16 +157,24 @@ func buildGoldenFrames(t *testing.T) []goldenFrame {
 						Tools:   []string{"mcp__org__list"},
 					},
 				},
-				EnabledPlugins: map[string]bool{"auto-continue": true, "dangerous": false},
-				LLMProviderKey: "11111111-2222-3333-4444-555555555555",
-				SourceDevice:   "fp-web-1",
+				EnabledPlugins:   map[string]bool{"auto-continue": true, "dangerous": false},
+				LLMProviderKey:   "11111111-2222-3333-4444-555555555555",
+				SourceDevice:     "fp-web-1",
 				SourceDeviceName: "Chrome · macOS",
 			},
 		},
 		{name: "run-ack", body: runAck},
 		{name: "session-summary", body: newSummary},
 		{name: "session-summary-legacy", body: legacySummary},
-		{name: "session-list-result", body: SessionListResult{Sessions: []SessionSummary{newSummary, legacySummary}}},
+		{name: "session-list-result", body: SessionListResult{
+			Sessions:                []SessionSummary{newSummary, legacySummary},
+			SupportsSessionMetadata: true,
+		}},
+		// 未升级的 agentred 的应答:它不认识 SupportsSessionMetadata,omitempty 因此
+		// 直接省略这个键,客户端解出 false 并据此说明该机器需要升级(兼容性)。
+		{name: "session-list-result-legacy", body: SessionListResult{
+			Sessions: []SessionSummary{legacySummary},
+		}},
 		{name: "session-pull-params", body: SessionPullParams{SessionID: sid, Cursor: 0, Limit: DefaultSessionPullLimit}},
 		{
 			name: "session-pull-result",
@@ -228,12 +237,12 @@ func buildGoldenFrames(t *testing.T) []goldenFrame {
 		{name: "autonomous-turn-started", body: AutonomousTurnStartedFrame{SessionID: sid, Trigger: "auto", TurnToken: 9, Seq: 13}},
 		// 带未知字段的帧:验证 TS 解码不丢弃。
 		injectUnknown(t, "run-params-extra", RunParams{
-			Backend:         json.RawMessage(`{"backendType":"claudecode"}`),
-			AgentID:         agentID,
-			SessionID:       sid,
-			Title:           title,
-			AgentSyncID:     agentSync,
-			SourceDevice:    "fp-web-1",
+			Backend:          json.RawMessage(`{"backendType":"claudecode"}`),
+			AgentID:          agentID,
+			SessionID:        sid,
+			Title:            title,
+			AgentSyncID:      agentSync,
+			SourceDevice:     "fp-web-1",
 			SourceDeviceName: "Chrome · macOS",
 		}, map[string]any{"futureField": map[string]any{"nested": true}, "clientNote": "来自浏览器的自定义字段"}),
 		injectUnknown(t, "session-pull-result-extra", SessionPullResult{
@@ -260,7 +269,10 @@ func buildGoldenFrames(t *testing.T) []goldenFrame {
 			body: map[string]any{
 				"jsonrpc": "2.0",
 				"id":      1,
-				"result":  mustJSON(t, SessionListResult{Sessions: []SessionSummary{newSummary}}),
+				"result": mustJSON(t, SessionListResult{
+					Sessions:                []SessionSummary{newSummary},
+					SupportsSessionMetadata: true,
+				}),
 			},
 		},
 		{

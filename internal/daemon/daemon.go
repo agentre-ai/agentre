@@ -1837,6 +1837,7 @@ func sessionRecordOf(row *session_repo.DaemonSession) handlers.SessionRecord {
 		Title:             row.Title,
 		AgentSyncID:       row.AgentSyncID,
 		ProviderSessionID: row.ProviderSessionID,
+		UpdatedAt:         row.UpdatedAt,
 	}
 }
 

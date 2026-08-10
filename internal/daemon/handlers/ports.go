@@ -90,6 +90,8 @@ type SessionRecord struct {
 	Title             string
 	AgentSyncID       string
 	ProviderSessionID string
+	// UpdatedAt 是这条会话最后一次活动的时刻(Unix 毫秒),R5 的「最后活动时间」。
+	UpdatedAt int64
 }
 
 // SessionLifecyclePort 记录会话生命周期的推进,由跑一轮执行的一侧调用。

@@ -413,6 +413,11 @@ type SessionSummary struct {
 	LifecycleState    string `json:"lifecycleState"`
 	WaitingForInput   bool   `json:"waitingForInput,omitempty"`
 	LatestSeq         int64  `json:"latestSeq"`
+	// UpdatedAt 是这条会话最后一次活动的时刻(Unix 毫秒),取自 daemon_sessions 的
+	// updated_at —— 每轮起手幂等覆盖时一并推进。会话清单要显示「最后活动时间」
+	// (R5),而它的唯一真相源在执行端这台机器上。没记过活动时间的老会话报 0,由
+	// 客户端如实表达为「未知」而不是猜一个时刻。
+	UpdatedAt int64 `json:"updatedAt,omitempty"`
 }
 
 // SessionListResult 是 MethodSessionList 的应答:这台 daemon 上的会话。调用方自己的
@@ -420,6 +425,12 @@ type SessionSummary struct {
 // 性,见 handlers/session_catchup.go 的 List),范围不再只有「调用这条连接的对端」。
 type SessionListResult struct {
 	Sessions []SessionSummary `json:"sessions"`
+	// SupportsSessionMetadata 声明这台 daemon 落库并回传 R7 的标题 / Agent 同步标识
+	// 与决策 8 的 provider_session_id。**未升级的 agentred 不认识这个字段**,它的应答
+	// 里解出来恒为 false —— 这是客户端区分「这台机器上的老会话」与「这台机器本身没
+	// 升级」的唯一信号。后者上头,会话只能按 R5 退化显示、发新消息也续不上上下文,
+	// 客户端必须如实说明该机器需要升级而不是静默失败(规格「安全、隐私与兼容性」)。
+	SupportsSessionMetadata bool `json:"supportsSessionMetadata,omitempty"`
 }
 
 // SessionPullParams 是 MethodSessionPull 的请求:给定会话与起始游标,取其后的通知。
