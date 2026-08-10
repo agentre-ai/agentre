@@ -110,6 +110,9 @@ type ChatSvc interface {
 	Stop(ctx context.Context, req *StopRequest) (*StopResponse, error)
 	StopBackgroundTask(ctx context.Context, req *StopBackgroundTaskRequest) (*StopBackgroundTaskResponse, error)
 	SetPermissionMode(ctx context.Context, req *SetPermissionModeRequest) (*SetPermissionModeResponse, error)
+	// SetChatSessionProvider 切换已有会话的 LLM 供应商（空串 = 跟随 agent 绑定）。
+	// 只写 provider_key 一列，自下一轮生效，不打断正在进行的轮。
+	SetChatSessionProvider(ctx context.Context, req *SetSessionProviderRequest) (*SetSessionProviderResponse, error)
 	Regenerate(ctx context.Context, req *RegenerateRequest) (*SendResponse, error)
 	Edit(ctx context.Context, req *EditRequest) (*SendResponse, error)
 	Rename(ctx context.Context, req *RenameRequest) (*RenameResponse, error)
@@ -520,6 +523,7 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 			Createtime:             sess.Createtime,
 			PermissionMode:         sess.PermissionMode,
 			PermissionModeAtLaunch: sess.PermissionModeAtLaunch,
+			ProviderKey:            sess.ProviderKey,
 			ProjectID:              sess.ProjectID,
 		},
 		Messages: make([]ChatMessage, 0, len(msgs)),
@@ -570,9 +574,11 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		if displayBackendID > 0 {
 			if be, _ = agent_backend_repo.AgentBackend().Find(ctx, displayBackendID); be != nil {
 				resp.Session.BackendType = be.Type
-				if be.LLMProviderKey != "" {
-					prov, _ = llm_provider_repo.LLMProvider().FindByKey(ctx, be.LLMProviderKey)
-				}
+				// 展示口径（spec 2026-08-10）：按 effective provider（会话 provider_key >
+				// agent 绑定）解析，与这条会话下一轮真正会用的那家一致；agent 绑定 key
+				// 一并回传，供 composer 的供应商 pill 渲染「跟随绑定」时的标签。
+				prov, _ = s.resolveEffectiveProvider(ctx, sess, be)
+				resp.Session.AgentProviderKey = be.LLMProviderKey
 			}
 		}
 		// ExecTargetCount 给前端聊天头 chip 守卫用（R15 / R20）：多档 Agent 的会话
@@ -671,12 +677,12 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 		return nil, i18n.NewError(ctx, code.ChatLaunchCommandNotAvailable)
 	}
 
-	var prov *llm_provider_entity.LLMProvider
-	if be.LLMProviderKey != "" {
-		prov, err = llm_provider_repo.LLMProvider().FindByKey(ctx, be.LLMProviderKey)
-		if err != nil {
-			return nil, operationFailedWithCause(ctx, err)
-		}
+	// 按 effective provider 解析（会话 provider_key > agent 绑定，spec 2026-08-10）：
+	// 复制出去的命令要与这条会话实际执行的那家供应商一致，否则用户拿到的是 agent
+	// 绑定那家的 BASE_URL / model。
+	prov, err := s.resolveEffectiveProvider(ctx, sess, be)
+	if err != nil {
+		return nil, operationFailedWithCause(ctx, err)
 	}
 
 	// 关联 provider 时拼 gateway URL 并签一个"进程内永久"的 token 内联进命令；
@@ -712,32 +718,51 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	return &LaunchCommandResponse{Command: cmd, BackendType: be.Type}, nil
 }
 
-// providerFallbackPayload 是供应商回退提示持久化时写进 blocks.NoticeBlock.Text 的小 JSON
-// （spec 决策 8）。NoticeBlock 是 cago 库的 UI-only 块,只有 Level/Text 两个字段(库类型,
-// 不能加字段),所以把会话所选 provider_key 编码进 Text;前端投影(noticeBlockToChatBlock)
-// 解回 ChatBlock.ProviderKey 再用 t() 渲染。该块从不发给 LLM。
+// providerNoticePayload 是供应商相关的持久 notice 写进 blocks.NoticeBlock.Text 的小 JSON。
+// NoticeBlock 是 cago 库的 UI-only 块,只有 Level/Text 两个字段(库类型,不能加字段),所以
+// 把结构化信息编码进 Text;前端投影(noticeBlockToChatBlock)解回 ChatBlock 的
+// ProviderKey / NoticeKind 再用 t() 渲染。该块从不发给 LLM。
 // 旧数据 / 非结构化文本的 NoticeBlock 走 Text 原样渲染兜底。
-type providerFallbackPayload struct {
-	ProviderKey string `json:"providerKey"`
+//
+// 两种 kind:
+//   - ""（无 kind 字段,含全部旧数据）= 供应商回退提示(2026-08-09 决策 8):会话所选
+//     供应商缺失/停用/不兼容,本轮回退 agent 绑定,ProviderKey 是被回退掉的那个 key;
+//   - "switch" = 用户在会话里切换了供应商(2026-08-10 决策 9):ProviderKey 是切换后的
+//     会话级 key,**空串表示改回跟随 agent 绑定 / CLI 登录态** —— 所以这一种不能靠
+//     "ProviderKey 非空" 判定负载有效,kind 字段本身才是判据。
+type providerNoticePayload struct {
+	ProviderKey string `json:"providerKey,omitempty"`
+	Kind        string `json:"kind,omitempty"`
 }
 
+// providerNoticeKindSwitch 见 providerNoticePayload 的 kind 说明。回退提示不写 kind,
+// 与旧数据同形。
+const providerNoticeKindSwitch = "switch"
+
 func encodeProviderFallback(providerKey string) string {
-	b, _ := json.Marshal(providerFallbackPayload{ProviderKey: providerKey})
+	b, _ := json.Marshal(providerNoticePayload{ProviderKey: providerKey})
 	return string(b)
 }
 
-// decodeProviderFallback 把 NoticeBlock.Text 还原成会话所选 provider_key。
+// encodeProviderSwitch 编码「本会话自此改用某供应商」的持久 notice(2026-08-10 决策 9)。
+// providerKey 为空 = 改回跟随 agent 绑定。
+func encodeProviderSwitch(providerKey string) string {
+	b, _ := json.Marshal(providerNoticePayload{ProviderKey: providerKey, Kind: providerNoticeKindSwitch})
+	return string(b)
+}
+
+// decodeProviderNotice 把 NoticeBlock.Text 还原成结构化负载。
 // ok=false 表示文本不是本功能产出的结构化负载(旧数据/其它来源的 notice),调用方应
 // 原样渲染 Text。
-func decodeProviderFallback(text string) (providerKey string, ok bool) {
-	var p providerFallbackPayload
+func decodeProviderNotice(text string) (payload providerNoticePayload, ok bool) {
+	var p providerNoticePayload
 	if err := json.Unmarshal([]byte(text), &p); err != nil {
-		return "", false
+		return providerNoticePayload{}, false
 	}
-	if p.ProviderKey == "" {
-		return "", false
+	if p.ProviderKey == "" && p.Kind == "" {
+		return providerNoticePayload{}, false
 	}
-	return p.ProviderKey, true
+	return p, true
 }
 
 // firstNonEmpty 返回第一个非空白参数(全空白 → "")。会话级 provider_key 优先于
@@ -752,14 +777,15 @@ func firstNonEmpty(values ...string) string {
 }
 
 // noticeBlockToChatBlock 把持久化的 blocks.NoticeBlock 投影成前端 ChatBlock。
-// 供应商回退提示(本功能产出的 {"providerKey":..} 小 JSON)解回 ProviderKey、Text 置空
-// —— 前端走 t() 渲染;非结构化旧数据原样透传 Text。
+// 供应商回退/切换提示(本功能产出的结构化小 JSON)解回 ProviderKey + NoticeKind、
+// Text 置空 —— 前端走 t() 渲染;非结构化旧数据原样透传 Text。
 func noticeBlockToChatBlock(tb blocks.NoticeBlock) ChatBlock {
-	if key, ok := decodeProviderFallback(tb.Text); ok {
+	if p, ok := decodeProviderNotice(tb.Text); ok {
 		return ChatBlock{
 			Type:        "notice",
 			Level:       tb.Level,
-			ProviderKey: key,
+			ProviderKey: p.ProviderKey,
+			NoticeKind:  p.Kind,
 		}
 	}
 	return ChatBlock{Type: "notice", Level: tb.Level, Text: tb.Text}
@@ -3719,7 +3745,7 @@ func (s *chatSvc) prepareTurnRun(
 		// GatewayURL/Token 是 desktop 的 127.0.0.1，Provider 又含明文 APIKey，
 		// 都不跨机器；wire 透传 effectiveProviderKey（会话 provider_key 优先，
 		// 决策 9），daemon 按它从自己的配置解析；无会话 key 时回落 agent 绑定。
-		req.LLMProviderKey = firstNonEmpty(sess.ProviderKey, be.LLMProviderKey)
+		req.LLMProviderKey = effectiveProviderKey(sess, be)
 		req.Provider = nil
 	} else if shouldSignChatGateway(be) {
 		// Claude Code local 需要 gateway token 给 PostToolUse hook；Codex local

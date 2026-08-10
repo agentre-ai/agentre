@@ -466,3 +466,17 @@ func (mr *MockSessionRepoMockRecorder) UpdatePermissionModeAtLaunch(ctx, session
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdatePermissionModeAtLaunch", reflect.TypeOf((*MockSessionRepo)(nil).UpdatePermissionModeAtLaunch), ctx, sessionID, mode)
 }
+
+// UpdateProviderKey mocks base method.
+func (m *MockSessionRepo) UpdateProviderKey(ctx context.Context, sessionID int64, providerKey string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateProviderKey", ctx, sessionID, providerKey)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateProviderKey indicates an expected call of UpdateProviderKey.
+func (mr *MockSessionRepoMockRecorder) UpdateProviderKey(ctx, sessionID, providerKey any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateProviderKey", reflect.TypeOf((*MockSessionRepo)(nil).UpdateProviderKey), ctx, sessionID, providerKey)
+}

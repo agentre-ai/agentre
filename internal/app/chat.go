@@ -129,6 +129,13 @@ func (a *App) SetChatPermissionMode(req *chat_svc.SetPermissionModeRequest) (*ch
 	return chat_svc.Chat().SetPermissionMode(a.ctx, req)
 }
 
+// SetChatSessionProvider 切换已有会话的 LLM 供应商（providerKey 空串 = 跟随 agent
+// 绑定，CLI 后端即回到自身登录态）。自下一轮生效，不打断正在进行的轮；所选供应商
+// 缺失 / 停用 / 与后端类型不兼容时拒绝写入并报错，会话保持原供应商。
+func (a *App) SetChatSessionProvider(req *chat_svc.SetSessionProviderRequest) (*chat_svc.SetSessionProviderResponse, error) {
+	return chat_svc.Chat().SetChatSessionProvider(a.ctx, req)
+}
+
 // RegenerateChatMessage 截掉指定 assistant 消息之前的 user 锚点后，用同一段
 // user 文本重新走一遍 turn。Step 1：仅 builtin 后端实际工作；CLI 后端在 runner
 // 接入 Rewinder 之前返回 ChatRegenerateUnsupported。

@@ -334,6 +334,52 @@ func TestToChatMessage_NoticeBlockProjectionDecodesStructuredPayload(t *testing.
 	assert.Empty(t, cm.Blocks[0].Text)
 }
 
+// TestToChatMessage_NoticeBlockProjectionDecodesProviderSwitch 钉死切换 notice 的投影
+// (2026-08-10 决策 9):切回「跟随 agent 绑定」时负载里没有 providerKey,只有 kind ——
+// 投影必须靠 kind 认出它是结构化负载,否则会掉进「原样渲染 Text」的兜底分支,把原始
+// JSON 直接泄漏到界面上。
+func TestToChatMessage_NoticeBlockProjectionDecodesProviderSwitch(t *testing.T) {
+	cases := []struct {
+		name        string
+		text        string
+		providerKey string
+	}{
+		{name: "切到某个供应商", text: encodeProviderSwitch("key-99"), providerKey: "key-99"},
+		{name: "切回跟随 agent 绑定", text: encodeProviderSwitch(""), providerKey: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &chat_entity.Message{ID: 1, SessionID: 9, Role: "assistant"}
+			require.NoError(t, m.SetBlocks([]blocks.ContentBlock{
+				blocks.NoticeBlock{Level: "info", Text: tc.text},
+			}))
+
+			cm, err := toChatMessage(m)
+			require.NoError(t, err)
+			require.Len(t, cm.Blocks, 1)
+			assert.Equal(t, "notice", cm.Blocks[0].Type)
+			assert.Equal(t, "switch", cm.Blocks[0].NoticeKind, "前端据此选切换文案而非回退文案")
+			assert.Equal(t, tc.providerKey, cm.Blocks[0].ProviderKey)
+			assert.Empty(t, cm.Blocks[0].Text, "结构化负载不把原始 JSON 泄漏给前端")
+		})
+	}
+}
+
+// TestToChatMessage_NoticeBlockProjectionKeepsFallbackKindEmpty 既有回退 notice(含全部
+// 旧数据)不带 kind:前端按空 kind 走回退文案,这一路不能被切换 notice 的新字段带偏。
+func TestToChatMessage_NoticeBlockProjectionKeepsFallbackKindEmpty(t *testing.T) {
+	m := &chat_entity.Message{ID: 1, SessionID: 9, Role: "assistant"}
+	require.NoError(t, m.SetBlocks([]blocks.ContentBlock{
+		blocks.NoticeBlock{Level: "info", Text: encodeProviderFallback("gone-provider")},
+	}))
+
+	cm, err := toChatMessage(m)
+	require.NoError(t, err)
+	require.Len(t, cm.Blocks, 1)
+	assert.Equal(t, "gone-provider", cm.Blocks[0].ProviderKey)
+	assert.Empty(t, cm.Blocks[0].NoticeKind)
+}
+
 func TestAskQuestionsToDTO_PreservesRequestUserInputMetadata(t *testing.T) {
 	got := chatblocks.QuestionsFromRuntime([]agentruntime.AskQuestion{{
 		ID:          "target",

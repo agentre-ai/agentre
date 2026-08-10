@@ -653,6 +653,76 @@ func TestSessionRepo_UpdateKeepsExecAgentBackendID(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestSessionRepo_UpdateProviderKey 钉死会话级供应商切换的写入 SQL(2026-08-10 决策 1):
+// 只动 provider_key(+ updatetime),不能顺带把并发轮次正在写的状态列一起盖掉 ——
+// 切换允许在轮中发生,整行 Save 在这里是错的。
+func TestSessionRepo_UpdateProviderKey(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	repo := chat_repo.NewSession()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions` SET `provider_key`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
+		WithArgs("anthropic-main", sqlmock.AnyArg(), int64(42), consts.ACTIVE).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.UpdateProviderKey(ctx, 42, "anthropic-main"))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSessionRepo_UpdateProviderKeyClears 空串 = 改回「跟随 agent 绑定」,同一条语句
+// 照常写入(不是 no-op,也不走 gorm 的零值跳过)。
+func TestSessionRepo_UpdateProviderKeyClears(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	repo := chat_repo.NewSession()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions` SET `provider_key`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
+		WithArgs("", sqlmock.AnyArg(), int64(42), consts.ACTIVE).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.UpdateProviderKey(ctx, 42, ""))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSessionRepo_UpdateKeepsProviderKey 回归(2026-08-10 决策 1/8):供应商切换允许
+// 发生在轮中,而轮次收尾的整行 Save 用的是**轮次开始时**读出的那份实体 —— 那会儿
+// provider_key 还是旧值。provider_key 若不在 Update 的 Omit 清单里,收尾就会把用户
+// 刚切好的供应商悄悄冲回去,下一轮又打回旧供应商(症状与 R12 的执行位置被抹平同形)。
+//
+// 断言落在「这一行最后是什么」,而不是某条语句长什么样:缺陷出在两次写之间的相互作用。
+func TestSessionRepo_UpdateKeepsProviderKey(t *testing.T) {
+	ctx, gdb, mock := testutils.Database(t)
+	repo := chat_repo.NewSession()
+
+	row := map[string]any{
+		"agent_status": "running",
+		"provider_key": "old-provider",
+	}
+	captureUpdatedRow(t, gdb, row)
+
+	// 轮次开始时读出来的实体:带的是切换前的供应商。
+	sess := &chat_entity.Session{ID: 42, AgentStatus: "running", Status: consts.ACTIVE, ProviderKey: "old-provider"}
+
+	// 写 1:轮中用户切到另一个供应商(chat_svc.SetChatSessionProvider)。
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions`").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	require.NoError(t, repo.UpdateProviderKey(ctx, 42, "new-provider"))
+
+	// 写 2:running → idle 收尾,用的是上面那份**没跟着变**的内存实体。
+	sess.AgentStatus = "idle"
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions`").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	require.NoError(t, repo.Update(ctx, sess))
+
+	assert.Equal(t, "new-provider", row["provider_key"], "收尾不得把轮中切好的会话供应商冲回旧值")
+	assert.Equal(t, "idle", row["agent_status"], "收尾本来要写的状态照常落库")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 // captureUpdatedRow 把仓储实际发出的 UPDATE 语句应用到 row 上,补出 sqlmock 没有的
 // 行状态。取的是 GORM 生成的 SET 子句本身,不预设哪条语句该写哪些列。
 func captureUpdatedRow(t *testing.T, gdb *gorm.DB, row map[string]any) {
