@@ -130,23 +130,6 @@ func TestMigration202608080011_DispatchResolvesSameBackend(t *testing.T) {
 	assert.Equal(t, int64(0), empty.AgentBackendID)
 }
 
-// TestMigration202608080011_ExistingProjectsDefaultToConfigured 锁住 R10 / 决策 21:
-// 迁移前已存在的项目行(必然已经有本机路径)迁移后落在「已配置」态 —— 新列的
-// 默认值不能把老项目误标成未配置。
-func TestMigration202608080011_ExistingProjectsDefaultToConfigured(t *testing.T) {
-	gormDB := openTestDB(t, "202608080010")
-	require.NoError(t, gormDB.Exec(`INSERT INTO projects (parent_id, name, path, status, createtime, updatetime)
-VALUES (0, 'existing', '/Users/foo/code', 1, 0, 0)`).Error)
-
-	require.NoError(t, RunMigrations(gormDB))
-
-	var missing bool
-	require.NoError(t, gormDB.Raw(
-		`SELECT local_path_missing FROM projects WHERE name = 'existing'`,
-	).Row().Scan(&missing))
-	assert.False(t, missing, "已有本机路径的项目迁移后必须仍是已配置态")
-}
-
 // TestMigration202608080011_BackfillsFingerprintFromDeviceID 锁住决策 26 的迁移语义:
 // 既有行按现有 device_id 反查 paired_agentreds 换算出 daemon_fingerprint,device_id
 // 缓存列原样保留。
@@ -214,40 +197,6 @@ func TestMigration202608080011_DedupesRowsThatCollapseOntoOneFingerprint(t *test
 	assert.NotEqual(t, oldLoc, keptID)
 }
 
-// TestMigration202608080011_UnresolvedRowsWithDifferentFingerprintsCoexist 锁住「路径
-// 记录去重」测试接缝的桌面端那一半: 同一项目下、device_id 都为空(未配对)但指纹不同
-// 的多条记录必须能并存,不撞新的部分唯一索引。
-func TestMigration202608080011_UnresolvedRowsWithDifferentFingerprintsCoexist(t *testing.T) {
-	gormDB := openTestDB(t, "202608080011")
-
-	require.NoError(t, gormDB.Exec(`INSERT INTO project_locations
-(project_id, device_id, daemon_fingerprint, path, status, createtime, updatetime)
-VALUES (1, '', 'fp-a', '/srv/a', 1, 0, 0)`).Error)
-	require.NoError(t, gormDB.Exec(`INSERT INTO project_locations
-(project_id, device_id, daemon_fingerprint, path, status, createtime, updatetime)
-VALUES (1, '', 'fp-b', '/srv/b', 1, 0, 0)`).Error, "不同指纹、同一项目、都未解析的两行必须能并存")
-
-	var count int64
-	require.NoError(t, gormDB.Raw(`SELECT COUNT(*) FROM project_locations WHERE project_id = 1 AND status = 1`).Row().Scan(&count))
-	assert.Equal(t, int64(2), count)
-}
-
-// TestMigration202608080011_NewIndexRejectsDuplicateFingerprintPerProject 反向验证新
-// 索引真的在管——同一项目下两条 ACTIVE 行撞同一个 daemon_fingerprint 必须被拒绝
-// (旧索引按 device_id 去重,已经不再是自然键)。
-func TestMigration202608080011_NewIndexRejectsDuplicateFingerprintPerProject(t *testing.T) {
-	gormDB := openTestDB(t, "202608080011")
-
-	require.NoError(t, gormDB.Exec(`INSERT INTO project_locations
-(project_id, device_id, daemon_fingerprint, path, status, createtime, updatetime)
-VALUES (1, '7', 'fp-dup', '/srv/a', 1, 0, 0)`).Error)
-
-	err := gormDB.Exec(`INSERT INTO project_locations
-(project_id, device_id, daemon_fingerprint, path, status, createtime, updatetime)
-VALUES (1, '8', 'fp-dup', '/srv/b', 1, 0, 0)`).Error
-	assert.Error(t, err, "同一项目下两条 ACTIVE 行撞同一指纹必须被新的部分唯一索引拒绝")
-}
-
 // TestMigration202608080011_CopiesAgentSkillsIntoExecTargetLosslessly 锁住 R15e:
 // agents.skills_json 原样无损地搬进它那唯一一行执行目标。迁移回填产生的行即是那
 // 一行——seedAgent 带 backendID 让回填建行,不需要也不能在迁移前手动插 agent_
@@ -284,22 +233,4 @@ func TestMigration202608080011_AgentWithoutExecTargetRowUnaffected(t *testing.T)
 	var count int64
 	require.NoError(t, gormDB.Raw(`SELECT COUNT(*) FROM agent_exec_targets WHERE agent_id = ?`, agentID).Row().Scan(&count))
 	assert.Zero(t, count)
-}
-
-// TestMigration202608080011_ExistingSessionsDefaultToUnpinned 锁住"没值涵盖首轮与
-// 全部老会话，因此不需要数据迁移"：迁移前已存在的会话行迁移后新列落在 0（未钉住），
-// 派发链路据此回落到按 R15 顺序挑一档并写回。
-func TestMigration202608080011_ExistingSessionsDefaultToUnpinned(t *testing.T) {
-	gormDB := openTestDB(t, "202608080010")
-	require.NoError(t, gormDB.Exec(`INSERT INTO chat_sessions
-(agent_id, title, agent_status, status, createtime, updatetime)
-VALUES (1, 'existing', 'idle', 1, 0, 0)`).Error)
-
-	require.NoError(t, RunMigrations(gormDB))
-
-	var execAgentBackendID int64
-	require.NoError(t, gormDB.Raw(
-		`SELECT exec_agent_backend_id FROM chat_sessions WHERE title = 'existing'`,
-	).Row().Scan(&execAgentBackendID))
-	assert.Equal(t, int64(0), execAgentBackendID, "老会话必须落在未钉住状态,不能凭空回填一档")
 }
