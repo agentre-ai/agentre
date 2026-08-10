@@ -15,11 +15,14 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/project_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/syncmeta_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/pkg/procattr"
+	"github.com/agentre-ai/agentre/internal/pkg/syncwire"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_repo"
+	"github.com/agentre-ai/agentre/internal/service/sync_svc"
 )
 
 // ProjectSvc Project 模块的应用服务。
@@ -30,6 +33,14 @@ type ProjectSvc interface {
 	Delete(ctx context.Context, id int64) error
 	Get(ctx context.Context, id int64) (*ProjectDetail, error)
 	ListTree(ctx context.Context) ([]*ProjectNode, error)
+	// SetLocalPath 就地指定「本机未配置路径」（R10）项目的本机路径，解除该状态；
+	// 路径必须存在。指定之后这个项目与本机创建的项目无任何差别（R10 末段）。
+	SetLocalPath(ctx context.Context, id int64, path string) (*project_entity.Project, error)
+	// Merge 把 sourceID / targetID 两个本地项目行合并成一个（R11a）：沿用账号侧的
+	// 同步标识（两边都没有时沿用先创建的那个的），保留本机项目的本机路径；
+	// chat_sessions / project_agents / projects.parent_id / issues /
+	// project_locations 五类引用全部改挂到保留下来的那一行，另一行随后被软删。
+	Merge(ctx context.Context, req *MergeProjectsRequest) (*project_entity.Project, error)
 	AddMember(ctx context.Context, projectID, agentID int64) error
 	RemoveMember(ctx context.Context, projectID, agentID int64) error
 	ListSessions(ctx context.Context, projectID int64) ([]*chat_entity.Session, error)
@@ -77,9 +88,13 @@ func (s *projectSvc) Create(ctx context.Context, req *CreateProjectRequest) (*pr
 	if err := p.Check(ctx); err != nil {
 		return nil, err
 	}
-	// 路径必须存在 —— 避免用户填错路径后 cwd 解析时才发现。
-	if _, err := os.Stat(p.Path); err != nil {
-		return nil, i18n.NewError(ctx, code.ProjectPathNotExist)
+	// 路径必须存在 —— 避免用户填错路径后 cwd 解析时才发现。「本机未配置路径」
+	// (LocalPathMissing，R10)的项目行没有路径可校验，跳过这一步(R11 读取点)；
+	// Check() 已保证此时 Path 非空，两者互斥。
+	if !p.LocalPathMissing {
+		if _, err := os.Stat(p.Path); err != nil {
+			return nil, i18n.NewError(ctx, code.ProjectPathNotExist)
+		}
 	}
 	// 父项目存在且 active。
 	if p.ParentID > 0 {
@@ -111,6 +126,7 @@ func (s *projectSvc) Create(ctx context.Context, req *CreateProjectRequest) (*pr
 	if err := project_repo.Project().Create(ctx, p); err != nil {
 		return nil, err
 	}
+	sync_svc.NotifyCreate(ctx, syncwire.KindProject, p.ID, p.SyncMeta)
 
 	// 初始成员 —— 失败不回滚（用户可以在设置里再加），但记日志。
 	for _, agentID := range req.InitialAgentIDs {
@@ -121,7 +137,9 @@ func (s *projectSvc) Create(ctx context.Context, req *CreateProjectRequest) (*pr
 			logger.Ctx(ctx).Warn("project_svc.Create: initial agent add failed",
 				zap.Int64("projectId", p.ID),
 				zap.Int64("agentId", agentID), zap.Error(err))
+			continue
 		}
+		notifyMemberChange(ctx, p.ID, agentID, sync_svc.OpCreate)
 	}
 	return p, nil
 }
@@ -151,6 +169,35 @@ func (s *projectSvc) Update(ctx context.Context, req *UpdateProjectRequest) (*pr
 	if err := existing.Check(ctx); err != nil {
 		return nil, err
 	}
+	if err := project_repo.Project().Update(ctx, existing); err != nil {
+		return nil, err
+	}
+	sync_svc.NotifyUpdate(ctx, syncwire.KindProject, existing.ID, existing.SyncMeta)
+	return existing, nil
+}
+
+// SetLocalPath 见 ProjectSvc 接口注释（R10）。
+//
+// 校验与 Create 的路径守卫一致：非空 + 目录存在。不调用 sync_svc.NotifyUpdate——
+// 本机路径本就不参与同步载荷（决策 6），指定/更换它是纯本地事件，不应该让这一行
+// 在账号侧显得「又改了」。
+func (s *projectSvc) SetLocalPath(ctx context.Context, id int64, path string) (*project_entity.Project, error) {
+	existing, err := project_repo.Project().Find(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, i18n.NewError(ctx, code.ProjectNotFound)
+	}
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return nil, i18n.NewError(ctx, code.ProjectInvalidPath)
+	}
+	if _, err := os.Stat(trimmed); err != nil {
+		return nil, i18n.NewError(ctx, code.ProjectPathNotExist)
+	}
+	existing.Path = trimmed
+	existing.LocalPathMissing = false
 	if err := project_repo.Project().Update(ctx, existing); err != nil {
 		return nil, err
 	}
@@ -185,7 +232,13 @@ func (s *projectSvc) Reorder(ctx context.Context, req *ReorderProjectsRequest) e
 		}
 		seen[id] = struct{}{}
 	}
-	return project_repo.Project().ReorderSiblings(ctx, req.ParentID, req.OrderedIDs)
+	if err := project_repo.Project().ReorderSiblings(ctx, req.ParentID, req.OrderedIDs); err != nil {
+		return err
+	}
+	for _, sibling := range siblings {
+		sync_svc.NotifyUpdate(ctx, syncwire.KindProject, sibling.ID, sibling.SyncMeta)
+	}
+	return nil
 }
 
 func (s *projectSvc) Delete(ctx context.Context, id int64) error {
@@ -211,7 +264,12 @@ func (s *projectSvc) Delete(ctx context.Context, id int64) error {
 	if n > 0 {
 		return i18n.NewError(ctx, code.ProjectHasActiveSessions)
 	}
-	return project_repo.Project().Delete(ctx, id)
+	if err := project_repo.Project().Delete(ctx, id); err != nil {
+		return err
+	}
+	// 名下的路径记录与成员关系随它一并落墓碑，级联在同步层展开（R6）。
+	sync_svc.NotifyDelete(ctx, syncwire.KindProject, existing.ID, existing.SyncMeta)
+	return nil
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -292,14 +350,54 @@ func (s *projectSvc) AddMember(ctx context.Context, projectID, agentID int64) er
 	if a == nil {
 		return i18n.NewError(ctx, code.ProjectAgentNotFound)
 	}
-	return project_repo.ProjectAgent().Add(ctx, projectID, agentID)
+	if err := project_repo.ProjectAgent().Add(ctx, projectID, agentID); err != nil {
+		return err
+	}
+	notifyMemberChange(ctx, projectID, agentID, sync_svc.OpCreate)
+	return nil
 }
 
 func (s *projectSvc) RemoveMember(ctx context.Context, projectID, agentID int64) error {
 	if projectID <= 0 || agentID <= 0 {
 		return i18n.NewError(ctx, code.InvalidParameter)
 	}
-	return project_repo.ProjectAgent().Remove(ctx, projectID, agentID)
+	// 成员关系是硬删：同步标识必须在行消失之前读出来（R6 的墓碑靠它上行）。
+	meta := memberSyncMeta(ctx, projectID, agentID)
+	if err := project_repo.ProjectAgent().Remove(ctx, projectID, agentID); err != nil {
+		return err
+	}
+	sync_svc.NotifyDelete(ctx, syncwire.KindProjectAgent, 0, meta)
+	return nil
+}
+
+// notifyMemberChange / memberSyncMeta 把成员关系那一行的同步元数据交给同步层。
+// 同步未装配时一次库都不查（Add 不回传落库后的行，只能反查一次）。
+func notifyMemberChange(ctx context.Context, projectID, agentID int64, op string) {
+	if !sync_svc.Active() {
+		return
+	}
+	sync_svc.Notify(ctx, sync_svc.LocalChange{
+		Kind: syncwire.KindProjectAgent, Op: op,
+		Meta: memberSyncMeta(ctx, projectID, agentID),
+	})
+}
+
+func memberSyncMeta(ctx context.Context, projectID, agentID int64) syncmeta_entity.SyncMeta {
+	if !sync_svc.Active() {
+		return syncmeta_entity.SyncMeta{}
+	}
+	rows, err := project_repo.ProjectAgent().ListByProject(ctx, projectID)
+	if err != nil {
+		logger.Ctx(ctx).Warn("project_svc.memberSyncMeta: read membership failed",
+			zap.Int64("projectId", projectID), zap.Error(err))
+		return syncmeta_entity.SyncMeta{}
+	}
+	for _, row := range rows {
+		if row.AgentID == agentID {
+			return row.SyncMeta
+		}
+	}
+	return syncmeta_entity.SyncMeta{}
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

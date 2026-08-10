@@ -100,6 +100,10 @@ import {
   useProviderPill,
   isProviderSelectableBackend,
 } from "./model-pill";
+import {
+  NewSessionExecTargetLine,
+  SessionOfflineBanner,
+} from "./session-exec-target";
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
 import { AgentAvatar, DeviceTag, StatusDot } from "./primitives";
 import { QueuedMessagesBar } from "./queued-messages-bar";
@@ -702,6 +706,13 @@ function ChatPanel({
     editingMessage && editingMessage.sessionId === sessionId
       ? editingMessage
       : null;
+  // R15a 手动指定执行目标：只在空会话态（showNewSessionPrompt）生效的瞬态选择，
+  // 随首发 Send 透传给后端（SendRequest.ExecTargetOverride，与 ModelOverride 同一
+  // 条规则）。每个 tab 独立的 ChatPanel 实例天然随 tab 切换重新挂载，不需要额外
+  // 按 agent/session 手动重置。
+  const [execTargetOverride, setExecTargetOverride] = React.useState<
+    number | null
+  >(null);
 
   const {
     session,
@@ -1639,6 +1650,11 @@ function ChatPanel({
         ...(targetSessionId === 0 && providerPill.providerKey
           ? { providerKey: providerPill.providerKey }
           : {}),
+        // R15a 手动指定执行目标：同一条规则，仅新建会话生效；0/未选时不传，
+        // 后端按 R15 顺序自动挑第一个可用的档。
+        ...(targetSessionId === 0 && execTargetOverride
+          ? { execTargetOverride }
+          : {}),
       };
       if (images.length > 0) {
         sendPayload.images = images.map((image) => ({
@@ -2498,7 +2514,12 @@ function ChatPanel({
                             <span className="shrink-0">
                               {relativeTime(session.lastMessageAt)}
                             </span>
-                            {session.deviceID ? (
+                            {/* 机器 chip 守卫（R15/R20）：远端会话今天就显示；
+                                多档 Agent（execTargetCount > 1）的本机会话也总是
+                                显示——本机走 DeviceTag 既有的 deviceId === "" 分支
+                                （组件本来就实现了这一支，只是这里以前没调用）。
+                                单档 Agent 的本机会话维持今天"什么都不显示"的行为。 */}
+                            {session.deviceID || session.execTargetCount > 1 ? (
                               <>
                                 <span className="text-border-strong">·</span>
                                 {session.cwd ? (
@@ -2671,6 +2692,15 @@ function ChatPanel({
                         ? t("chatPanel.newProjectSession.description")
                         : t("chatPanel.newSession.description")}
                     </div>
+                    {newSessionAgent ? (
+                      <NewSessionExecTargetLine
+                        agentId={newSessionAgent.id}
+                        agentName={newSessionAgent.name}
+                        projectId={newSessionContext?.projectId ?? 0}
+                        overrideBackendId={execTargetOverride}
+                        onOverride={setExecTargetOverride}
+                      />
+                    ) : null}
                   </div>
                 </div>
               ) : (
@@ -2758,6 +2788,23 @@ function ChatPanel({
                     </AlertDescription>
                   </Alert>
                 </div>
+              ) : null}
+
+              {/* 会话所在机器离线（R15b）：钉住的档在远端且当前离线，续轮不会改派——
+                  给一条走得通的路，而不是让用户对着卡死的输入框干等。 */}
+              {session && session.deviceID && session.online === false ? (
+                <SessionOfflineBanner
+                  deviceName={session.deviceName || session.deviceID}
+                  onCreateNewSession={() =>
+                    useChatTabsStore
+                      .getState()
+                      .openNewSession(
+                        session.projectId ?? 0,
+                        session.agentId,
+                        "",
+                      )
+                  }
+                />
               ) : null}
 
               {/* ── Composer ── */}
@@ -2941,6 +2988,9 @@ function ChatPanel({
                 activeMessageId={activeMessageId}
                 cwd={session?.cwd ?? ""}
                 remote={Boolean(session?.deviceID)}
+                cwdUnavailableReason={session?.cwdUnavailableReason}
+                projectId={session?.projectId}
+                onCwdSpecified={() => void reloadSession()}
                 onJumpToMessage={(mid) => {
                   transcriptHandleRef.current?.scrollToMessage(mid);
                 }}

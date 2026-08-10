@@ -20,10 +20,12 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
 	"github.com/agentre-ai/agentre/internal/pkg/keychain"
 	"github.com/agentre-ai/agentre/internal/pkg/openclawgateway"
+	"github.com/agentre-ai/agentre/internal/pkg/syncwire"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/service/sync_svc"
 )
 
 const (
@@ -203,6 +205,7 @@ func (s *agentBackendSvc) create(ctx context.Context, req *CreateBackendRequest,
 			return nil, errors.Join(err, rollbackErr)
 		}
 	}
+	sync_svc.NotifyCreate(ctx, syncwire.KindAgentBackend, b.ID, b.SyncMeta)
 	return &CreateBackendResponse{Item: s.toItem(ctx, b, provider)}, nil
 }
 
@@ -308,6 +311,7 @@ func (s *agentBackendSvc) update(ctx context.Context, req *UpdateBackendRequest,
 			return nil, errors.Join(secretErr, rollbackErr)
 		}
 	}
+	sync_svc.NotifyUpdate(ctx, syncwire.KindAgentBackend, existing.ID, existing.SyncMeta)
 	return &UpdateBackendResponse{Item: s.toItem(ctx, existing, provider)}, nil
 }
 
@@ -801,6 +805,8 @@ func (s *agentBackendSvc) Delete(ctx context.Context, req *DeleteBackendRequest)
 		}
 		return nil, err
 	}
+	// 引用它的执行目标项一并落墓碑，Agent 本身不删（R6）。
+	sync_svc.NotifyDelete(ctx, syncwire.KindAgentBackend, existing.ID, existing.SyncMeta)
 	return &DeleteBackendResponse{}, nil
 }
 

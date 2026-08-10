@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	. "github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,7 +29,9 @@ func TestAgentCheck(t *testing.T) {
 		{"system with department rejected", &Agent{Name: "CEO", SystemBadge: "DEFAULT", DepartmentID: 1, PromptJSON: "[]", SkillsJSON: "[]"}, true},
 		{"system with parent rejected", &Agent{Name: "CEO", SystemBadge: "DEFAULT", ParentAgentID: 1, PromptJSON: "[]", SkillsJSON: "[]"}, true},
 		{"bad prompt json", &Agent{Name: "Eva", DepartmentID: 1, AgentBackendID: 1, PromptJSON: "{", SkillsJSON: "[]"}, true},
-		{"bad skills json", &Agent{Name: "Eva", DepartmentID: 1, AgentBackendID: 1, PromptJSON: "[]", SkillsJSON: "x"}, true},
+		// SkillsJSON 不再被 Check 校验（R15e：授权与校验职责下沉到 AgentExecTarget），
+		// 即便这一列存了坏 JSON，Agent 行本身也不因此判无效。
+		{"bad skills json on legacy column does not fail Check", &Agent{Name: "Eva", DepartmentID: 1, AgentBackendID: 1, PromptJSON: "[]", SkillsJSON: "x"}, false},
 	}
 
 	for _, tc := range cases {
@@ -53,13 +54,6 @@ func TestAgentPromptRoundtrip(t *testing.T) {
 
 	empty := &Agent{}
 	assert.Equal(t, []string{}, empty.GetPrompt())
-}
-
-func TestAgentSkillsRoundtrip(t *testing.T) {
-	a := &Agent{}
-	in := []AgentSkillItem{{ID: "read_file", Enabled: true}, {ID: "send_email", Enabled: false}}
-	a.SetSkills(in)
-	assert.Equal(t, in, a.GetSkills())
 }
 
 func TestAgentHelpers(t *testing.T) {
@@ -96,29 +90,5 @@ func TestAgentTools(t *testing.T) {
 	t.Run("Check 校验 ToolsJSON 必须是 JSON 数组", func(t *testing.T) {
 		a := &Agent{Name: "x", DepartmentID: 1, AgentBackendID: 1, ToolsJSON: "{bad"}
 		require.Error(t, a.Check(context.Background()))
-	})
-}
-
-func TestAgentSkillPack(t *testing.T) {
-	Convey("skill pack 序列化与查询", t, func() {
-		a := &Agent{}
-		a.SetSkills([]AgentSkillItem{
-			{ID: "superpowers@claude-plugins-official", Enabled: true},
-			{ID: "opsctl@opskat", Enabled: false},
-		})
-
-		Convey("GetEnabledPackIDs 只回 enabled 的 id", func() {
-			So(a.GetEnabledPackIDs(), ShouldResemble, []string{"superpowers@claude-plugins-official"})
-		})
-		Convey("SkillPackEnabled 命中", func() {
-			So(a.SkillPackEnabled("superpowers@claude-plugins-official"), ShouldBeTrue)
-			So(a.SkillPackEnabled("opsctl@opskat"), ShouldBeFalse)
-			So(a.SkillPackEnabled("missing@x"), ShouldBeFalse)
-		})
-		Convey("坏 JSON / 空串 → 空", func() {
-			b := &Agent{SkillsJSON: "not json"}
-			So(b.GetSkills(), ShouldResemble, []AgentSkillItem{})
-			So(b.GetEnabledPackIDs(), ShouldResemble, []string{})
-		})
 	})
 }

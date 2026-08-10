@@ -18,6 +18,12 @@ func (a *App) ListChatAgentSessions(req *chat_svc.ListAgentSessionsRequest) (*ch
 	return chat_svc.Chat().ListAgentSessions(a.ctx, req)
 }
 
+// ListAgentExecTargetAvailability 逐档判定 R15 执行目标列表的可用性，供组织架构页
+// Agent 详情展示（任务 12）。projectID<=0 表示自由会话，不做项目路径判定。
+func (a *App) ListAgentExecTargetAvailability(agentID int64, projectID int64) ([]chat_svc.ExecTargetAvailabilityView, error) {
+	return chat_svc.Chat().ListExecTargetAvailability(a.ctx, agentID, projectID)
+}
+
 // EnsureChatSession 为某 agent 建一个普通用户会话并返回 sessionId（不发消息、不起 turn）。
 // 供前端 ! 命令在「新会话占位态」(还没 sessionId)先坐实一个真实会话，之后命令才有
 // cwd 可解析、卡片有 transcript 可渲染。projectID 可为 0(自由会话)。

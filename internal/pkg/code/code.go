@@ -118,25 +118,28 @@ const (
 
 // Chat 会话 / 消息 17000~17999
 const (
-	ChatSessionNotFound             = iota + 17000 // 会话不存在
-	ChatAgentNotChattable                          // Agent 未绑定可对话的内置后端
-	ChatBlocksMalformed                            // 消息内容块解码失败
-	ChatSendInFlight                               // 该会话已有进行中的对话
-	ChatProviderFailed                             // LLM 供应商调用失败
-	ChatInvalidRole                                // 消息 role 不合法
-	ChatTextTooLong                                // 单条消息文本过长
-	ChatTitleTooLong                               // 会话标题过长
-	ChatBackendGatewayUnavailable                  // claudecode / codex 后端关联了 LLM 供应商但本地网关未就绪
-	ChatMessageNotFound                            // 消息不存在
-	ChatRegenerateNotAssistant                     // 重新生成只能作用于 assistant 消息
-	ChatRegenerateNoUserAnchor                     // 目标 assistant 之前找不到 user 消息（不可恢复的脏数据）
-	ChatRegenerateUnsupported                      // 该后端尚未支持中段重新生成（Step 1 仅 builtin）
-	ChatEditNotUser                                // 编辑只能作用于 user 消息
-	ChatProviderSessionGone                        // CLI 的 provider 原生 Session 已不存在，本会话已重置
-	ChatRemoteProviderNotConfigured                // 远端 agentred 未配置该 provider key
-	ChatAgentNoBackend                             // Agent 还没配置后端，对话前请先选择
-	ChatRemoteRunInterrupted                       // 远端 agentred 重启/会话已中断，本轮被打断（不是运行失败）
-	ChatRemoteDaemonUnreachable                    // 与远端 agentred 断连且重连未成功，本轮到此为止
+	ChatSessionNotFound               = iota + 17000 // 会话不存在
+	ChatAgentNotChattable                            // Agent 未绑定可对话的内置后端
+	ChatBlocksMalformed                              // 消息内容块解码失败
+	ChatSendInFlight                                 // 该会话已有进行中的对话
+	ChatProviderFailed                               // LLM 供应商调用失败
+	ChatInvalidRole                                  // 消息 role 不合法
+	ChatTextTooLong                                  // 单条消息文本过长
+	ChatTitleTooLong                                 // 会话标题过长
+	ChatBackendGatewayUnavailable                    // claudecode / codex 后端关联了 LLM 供应商但本地网关未就绪
+	ChatMessageNotFound                              // 消息不存在
+	ChatRegenerateNotAssistant                       // 重新生成只能作用于 assistant 消息
+	ChatRegenerateNoUserAnchor                       // 目标 assistant 之前找不到 user 消息（不可恢复的脏数据）
+	ChatRegenerateUnsupported                        // 该后端尚未支持中段重新生成（Step 1 仅 builtin）
+	ChatEditNotUser                                  // 编辑只能作用于 user 消息
+	ChatProviderSessionGone                          // CLI 的 provider 原生 Session 已不存在，本会话已重置
+	ChatRemoteProviderNotConfigured                  // 远端 agentred 未配置该 provider key
+	ChatAgentNoBackend                               // Agent 还没配置后端，对话前请先选择
+	ChatRemoteRunInterrupted                         // 远端 agentred 重启/会话已中断，本轮被打断（不是运行失败）
+	ChatRemoteDaemonUnreachable                      // 与远端 agentred 断连且重连未成功，本轮到此为止
+	ChatAgentNoAvailableExecTarget                   // Agent 的有序执行目标列表非空，但逐档判定全部不可用（R15）
+	ChatExecTargetOverrideUnavailable                // 手动指定的执行目标此刻不可用，拒绝钉住（R15a）
+	ChatExecTargetOverrideNotInList                  // 手动指定的 agentBackendID 不在这个 Agent 的执行目标列表里
 )
 
 // Chat 排队消息（Enqueue / Steer / Cancel）17050~ 留段
@@ -181,6 +184,30 @@ const (
 	ChatStopBgTaskUnknown                // 该后台任务缺少 CLI task_id（老会话）/ 已不在运行,无法停止
 )
 
+// Chat 执行目标逐档不可用说明 17120~（R15：全部不可用时逐档告诉用户为什么）
+//
+// 这一段是**用户可见的正文**，不是错误码：它经 PickExecTarget 渲染进
+// ExecTargetNoneAvailableError.Error()、经 ListAgents / ListExecTargetAvailability
+// 落进 ChattableHint / Hint 字段透到前端。因此和其它文案一样必须两份语言都有。
+const (
+	ChatExecTargetLineFormat             = iota + 17120 // 逐档原因的行格式：序号 / backend id / 机器 / 原因
+	ChatExecTargetDeviceLocal                           // 逐档原因里指代「当前这台桌面端」的机器名
+	ChatExecTargetDeviceRemote                          // 逐档原因里指代某台 agentred 的机器名（参数为 device id）
+	ChatExecTargetHintBackendGone                       // 这一档引用的 backend 已不存在
+	ChatExecTargetHintUnpaired                          // 本机没配对这台 agentred（R2b）
+	ChatExecTargetHintOffline                           // 已配对但这台 agentred 当前离线
+	ChatExecTargetHintLocalPathMissing                  // 本机没配这个项目的路径（决策 34）
+	ChatExecTargetHintRemotePathMissing                 // 那台 agentred 上没配这个项目的路径（决策 34）
+	ChatBackendHintActivateProvider                     // 后端关联的 LLM 供应商缺失 / 未激活
+	ChatBackendHintProviderTypeMismatch                 // 后端类型与激活的供应商类型不匹配
+	ChatBackendHintRemoteProviderMissing                // 远端 agentred 未配置该供应商
+	ChatBackendHintGatewayNotRunning                    // 本地网关未启动，CLI 后端暂不可用
+	ChatBackendHintRemoteOpenClaw                       // 远端 OpenClaw 暂不可用
+	ChatBackendHintUnknownType                          // 未知 Agent 后端类型
+	ChatAgentNoBackendHint                              // 这个 Agent 还没有任何执行目标
+	ChatSystemAgentNoBackendHint                        // CEO 助手还没有任何执行目标
+)
+
 // Project 18000~18999
 const (
 	ProjectNotFound          = iota + 18000 // 项目不存在
@@ -201,6 +228,7 @@ const (
 	_                                       // (removed) ProjectWorktreeNotImplemented
 	_                                       // (removed) ProjectMergeStrategyInvalid
 	_                                       // (removed) ProjectAtLeastOneWorkMode
+	ProjectLocalPathMissing                 // 本机未配置该项目的路径(R10,与 ProjectLocationMissing/WorkspaceFsNoCwd 均可区分)
 )
 
 // Project Location 18100~ (远端 device 路径子表)

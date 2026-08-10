@@ -15,10 +15,12 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/department_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agenttool"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/syncwire"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/department_repo"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/service/sync_svc"
 )
 
 const (
@@ -60,6 +62,14 @@ func (s *departmentSvc) Load(ctx context.Context, _ *LoadOrgRequest) (*LoadOrgRe
 		return nil, err
 	}
 	providers, err := llm_provider_repo.LLMProvider().List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	agentIDs := make([]int64, 0, len(agents))
+	for _, a := range agents {
+		agentIDs = append(agentIDs, a.ID)
+	}
+	execTargetsByAgent, err := agent_repo.AgentExecTarget().ListByAgents(ctx, agentIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -149,6 +159,7 @@ func (s *departmentSvc) Load(ctx context.Context, _ *LoadOrgRequest) (*LoadOrgRe
 		))
 	}
 	for _, a := range agents {
+		execTargets := toAgentExecTargetItems(execTargetsByAgent[a.ID])
 		item := &AgentItem{
 			ID:             a.ID,
 			Name:           a.Name,
@@ -162,10 +173,13 @@ func (s *departmentSvc) Load(ctx context.Context, _ *LoadOrgRequest) (*LoadOrgRe
 			ParentAgentID:  a.ParentAgentID,
 			SortOrder:      a.SortOrder,
 			Prompt:         a.GetPrompt(),
-			Skills:         toAgentSkillDTO(a.GetSkills()),
-			Tools:          toAgentToolDTO(a.GetTools()),
-			Createtime:     a.Createtime,
-			Updatetime:     a.Updatetime,
+			// 技能授权已下沉到执行目标行（R15e / 决策 33），agents.skills_json 不再被
+			// 读取；Skills 是执行目标列表的历史兼容视图（= ①），见 primaryTargetSkills。
+			Skills:      primaryTargetSkills(execTargets),
+			ExecTargets: execTargets,
+			Tools:       toAgentToolDTO(a.GetTools()),
+			Createtime:  a.Createtime,
+			Updatetime:  a.Updatetime,
 		}
 		if d := deptByID[a.DepartmentID]; d != nil {
 			item.DepartmentName = d.Name
@@ -180,6 +194,31 @@ func (s *departmentSvc) Load(ctx context.Context, _ *LoadOrgRequest) (*LoadOrgRe
 	}
 	resp.AvailableTools = agenttool.Keys()
 	return resp, nil
+}
+
+// toAgentExecTargetItems 把一个 Agent 的执行目标行（已按 sort_order 升序，见
+// AgentExecTargetRepo.ListByAgents 的接口注释）投影成前端 DTO。
+func toAgentExecTargetItems(rows []*agent_entity.AgentExecTarget) []AgentExecTargetItem {
+	out := make([]AgentExecTargetItem, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, AgentExecTargetItem{
+			ID:             row.ID,
+			AgentBackendID: row.AgentBackendID,
+			Skills:         toAgentSkillDTO(row.GetSkills()),
+		})
+	}
+	return out
+}
+
+// primaryTargetSkills 取 ①（sort_order 最小的那一档）的技能授权。AgentItem.Skills
+// 与 AgentItem.AgentBackendID 是同一个视图的两半——列表页那一行的「后端」列已经只
+// 展示 ①（AgentBackendID 由 agent_repo 的 hydrate 取自 ①），技能列跟着它走；多档的
+// 逐档授权在详情页一档一块地呈现，这里不做跨档并集（决策 33）。列表为空时为空。
+func primaryTargetSkills(targets []AgentExecTargetItem) []AgentSkillDTO {
+	if len(targets) == 0 {
+		return []AgentSkillDTO{}
+	}
+	return targets[0].Skills
 }
 
 func toAgentSkillDTO(items []agent_entity.AgentSkillItem) []AgentSkillDTO {
@@ -241,6 +280,7 @@ func (s *departmentSvc) Create(ctx context.Context, req *CreateDepartmentRequest
 	if err := department_repo.Department().Create(ctx, d); err != nil {
 		return nil, err
 	}
+	sync_svc.NotifyCreate(ctx, syncwire.KindDepartment, d.ID, d.SyncMeta)
 	return &CreateDepartmentResponse{Item: toDepartmentItem(d, nil, 0, 0, 0)}, nil
 }
 
@@ -284,6 +324,7 @@ func (s *departmentSvc) Update(ctx context.Context, req *UpdateDepartmentRequest
 	if err := department_repo.Department().Update(ctx, existing); err != nil {
 		return nil, err
 	}
+	sync_svc.NotifyUpdate(ctx, syncwire.KindDepartment, existing.ID, existing.SyncMeta)
 	return &UpdateDepartmentResponse{Item: toDepartmentItem(existing, nil, 0, 0, 0)}, nil
 }
 
@@ -329,6 +370,7 @@ func (s *departmentSvc) Move(ctx context.Context, req *MoveDepartmentRequest) (*
 	if err := department_repo.Department().Update(ctx, existing); err != nil {
 		return nil, err
 	}
+	sync_svc.NotifyUpdate(ctx, syncwire.KindDepartment, existing.ID, existing.SyncMeta)
 	return &MoveDepartmentResponse{Item: toDepartmentItem(existing, nil, 0, 0, 0)}, nil
 }
 
@@ -361,7 +403,13 @@ func (s *departmentSvc) Reorder(ctx context.Context, req *ReorderDepartmentsRequ
 		}
 		seen[id] = struct{}{}
 	}
-	return department_repo.Department().ReorderSiblings(ctx, req.ParentID, req.OrderedIDs)
+	if err := department_repo.Department().ReorderSiblings(ctx, req.ParentID, req.OrderedIDs); err != nil {
+		return err
+	}
+	for _, sibling := range siblings {
+		sync_svc.NotifyUpdate(ctx, syncwire.KindDepartment, sibling.ID, sibling.SyncMeta)
+	}
+	return nil
 }
 
 // Delete 软删部门，支持 reparent / cascade。
@@ -377,6 +425,11 @@ func (s *departmentSvc) Delete(ctx context.Context, req *DeleteDepartmentRequest
 	if strategy == "" {
 		strategy = StrategyReparent
 	}
+	var (
+		movedAgents   []*agent_entity.Agent
+		deletedAgents []*agent_entity.Agent
+		deletedDepts  []*department_entity.Department
+	)
 	err = db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
 		txCtx := db.WithContextDB(ctx, tx)
 		switch strategy {
@@ -410,6 +463,7 @@ func (s *departmentSvc) Delete(ctx context.Context, req *DeleteDepartmentRequest
 					return err
 				}
 			}
+			movedAgents = agents
 		case StrategyCascade:
 			all, err := department_repo.Department().List(txCtx)
 			if err != nil {
@@ -420,14 +474,29 @@ func (s *departmentSvc) Delete(ctx context.Context, req *DeleteDepartmentRequest
 			if err != nil {
 				return err
 			}
-			for _, agentID := range collectAgentsInDepartments(allAgents, subtree) {
+			inSubtree := collectAgentsInDepartments(allAgents, subtree)
+			byID := make(map[int64]*agent_entity.Agent, len(allAgents))
+			for _, a := range allAgents {
+				byID[a.ID] = a
+			}
+			for _, agentID := range inSubtree {
 				if err := agent_repo.Agent().Delete(txCtx, agentID); err != nil {
 					return err
 				}
+				if a := byID[agentID]; a != nil {
+					deletedAgents = append(deletedAgents, a)
+				}
+			}
+			deptByID := make(map[int64]*department_entity.Department, len(all))
+			for _, d := range all {
+				deptByID[d.ID] = d
 			}
 			for _, id := range subtree {
 				if err := department_repo.Department().Delete(txCtx, id); err != nil {
 					return err
+				}
+				if d := deptByID[id]; d != nil {
+					deletedDepts = append(deletedDepts, d)
 				}
 			}
 			return nil
@@ -438,6 +507,18 @@ func (s *departmentSvc) Delete(ctx context.Context, req *DeleteDepartmentRequest
 	})
 	if err != nil {
 		return nil, err
+	}
+	for _, a := range movedAgents {
+		sync_svc.NotifyUpdate(ctx, syncwire.KindAgent, a.ID, a.SyncMeta)
+	}
+	for _, a := range deletedAgents {
+		sync_svc.NotifyDelete(ctx, syncwire.KindAgent, a.ID, a.SyncMeta)
+	}
+	for _, d := range deletedDepts {
+		sync_svc.NotifyDelete(ctx, syncwire.KindDepartment, d.ID, d.SyncMeta)
+	}
+	if !containsDepartment(deletedDepts, existing.ID) {
+		sync_svc.NotifyDelete(ctx, syncwire.KindDepartment, existing.ID, existing.SyncMeta)
 	}
 	return &DeleteDepartmentResponse{}, nil
 }
@@ -537,4 +618,15 @@ func toDepartmentItem(
 		item.LeadAgentName = lead.Name
 	}
 	return item
+}
+
+// containsDepartment 报告某个部门是否已经在列表里（级联删除时它自己也在 subtree 中，
+// 避免同一行入两次队）。
+func containsDepartment(rows []*department_entity.Department, id int64) bool {
+	for _, row := range rows {
+		if row != nil && row.ID == id {
+			return true
+		}
+	}
+	return false
 }

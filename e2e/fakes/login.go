@@ -1,0 +1,176 @@
+//go:build e2e
+
+package fakes
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
+
+	"github.com/agentre-ai/agentre/internal/model/entity/server_state_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/keychain"
+	"github.com/agentre-ai/agentre/internal/repository/server_state_repo"
+	"github.com/agentre-ai/agentre/internal/service/server_svc"
+	"github.com/agentre-ai/agentre/internal/service/sync_svc"
+)
+
+// The local end-to-end sync suite needs this app to come up already connected to
+// a server. Login normally goes through RFC 8628 Device Flow whose terminus is
+// GitHub OAuth — nobody can click that in an e2e — so the runner seeds the
+// account, the device row and one refresh token straight into the server's
+// PostgreSQL and hands the resulting identity to this process through env.
+//
+// What is seeded here is exactly what a completed login leaves behind: the
+// single server_state row plus the two keychain entries. The access token is NOT
+// seeded — bootstrap.ServerBoot trades the refresh token for one over real HTTP
+// at startup, so a bad credential fails loudly instead of yielding a half-logged-in
+// app.
+const (
+	e2eServerURLEnv    = "AGENTRE_E2E_SERVER_URL"
+	e2eServerUserIDEnv = "AGENTRE_E2E_SERVER_USER_ID"
+	e2eDeviceIDEnv     = "AGENTRE_E2E_DEVICE_ID"
+	e2eDeviceFPEnv     = "AGENTRE_E2E_DEVICE_FINGERPRINT"
+	e2eRefreshTokenEnv = "AGENTRE_E2E_REFRESH_TOKEN"
+)
+
+// keychainAccountRefreshToken / keychainAccountFingerprint mirror the constants
+// server_svc/login.go keeps unexported (keychainAccountName,
+// accountForDeviceFingerprint). They are part of the on-disk login shape, so a
+// drift between the two would show up as "the seeded app is not logged in" on
+// the very first spec.
+const (
+	keychainAccountRefreshToken = "agentre.server.refresh_token"
+	keychainAccountFingerprint  = "agentre-device-fingerprint"
+)
+
+// installE2ELoggedInAccount makes this app instance a logged-in desktop of the
+// account the runner seeded. Absent env (every other e2e suite) it is a no-op,
+// so the committed core-flow suite keeps running fully offline.
+func installE2ELoggedInAccount(ctx context.Context) {
+	baseURL := strings.TrimSpace(os.Getenv(e2eServerURLEnv))
+	if baseURL == "" {
+		return
+	}
+	userID, err := strconv.ParseInt(strings.TrimSpace(os.Getenv(e2eServerUserIDEnv)), 10, 64)
+	if err != nil || userID == 0 {
+		logger.Ctx(ctx).Error("e2efakes.login: bad server user id", zap.Error(err))
+		return
+	}
+	deviceID, err := strconv.ParseInt(strings.TrimSpace(os.Getenv(e2eDeviceIDEnv)), 10, 64)
+	if err != nil || deviceID == 0 {
+		logger.Ctx(ctx).Error("e2efakes.login: bad device id", zap.Error(err))
+		return
+	}
+	fingerprint := strings.TrimSpace(os.Getenv(e2eDeviceFPEnv))
+	refreshToken := strings.TrimSpace(os.Getenv(e2eRefreshTokenEnv))
+	if fingerprint == "" || refreshToken == "" {
+		logger.Ctx(ctx).Error("e2efakes.login: missing fingerprint or refresh token")
+		return
+	}
+
+	kc := keychain.Default()
+	if kc == nil {
+		logger.Ctx(ctx).Error("e2efakes.login: no keychain backend installed")
+		return
+	}
+	// Prefer whatever is already in the keychain over the seeded env value.
+	// `wails dev` runs this same binary a second time to generate the frontend
+	// bindings, so Install executes twice per run; refresh tokens rotate on use,
+	// and replaying the spent env token in the second process is "refresh token
+	// reuse detected". The keychain dir is shared by both processes, so the last
+	// rotation always wins — exactly how a real desktop behaves across restarts.
+	if stored, kerr := kc.Get(keychainAccountRefreshToken); kerr == nil && stored != "" {
+		refreshToken = stored
+	}
+
+	// Trade the refresh token for an access token before anything else can touch
+	// the network. Doing it here — rather than leaving it to bootstrap.ServerBoot
+	// — means a bad seeded credential fails loudly with the server's own status
+	// and body, and the rest of Install (which seeds org objects, each firing a
+	// background upload) runs with a token already in hand.
+	access, rotated, err := exchangeRefreshToken(ctx, baseURL, refreshToken)
+	if err != nil {
+		logger.Ctx(ctx).Error("e2efakes.login: initial token exchange failed", zap.Error(err))
+		return
+	}
+	// Refresh tokens rotate on every use: persist the NEW one, or the next
+	// refresh (ServerBoot's) would replay a spent token and log this desktop out.
+	if err := kc.Set(keychainAccountRefreshToken, rotated); err != nil {
+		logger.Ctx(ctx).Error("e2efakes.login: store refresh token failed", zap.Error(err))
+		return
+	}
+	// server_svc.login asserts server_state.device_fingerprint equals this entry.
+	if err := kc.Set(keychainAccountFingerprint, fingerprint); err != nil {
+		logger.Ctx(ctx).Error("e2efakes.login: store device fingerprint failed", zap.Error(err))
+		return
+	}
+
+	if err := server_state_repo.ServerState().Save(ctx, &server_state_entity.ServerState{
+		ID:                1,
+		ServerURL:         baseURL,
+		DeviceID:          deviceID,
+		DeviceFingerprint: fingerprint,
+		ServerUserID:      userID,
+		KeychainAccount:   keychainAccountRefreshToken,
+	}); err != nil {
+		logger.Ctx(ctx).Error("e2efakes.login: persist server state failed", zap.Error(err))
+		return
+	}
+
+	// bootstrap.InitServer already built server_svc from the (then empty)
+	// server_url, and sync_svc on top of it. Rebuild both now that the row points
+	// somewhere: the http client caches its base URL at construction time.
+	svc := server_svc.New(server_svc.NewHTTPClient(baseURL, access), nil)
+	server_svc.SetDefault(svc)
+	sync_svc.SetDefault(sync_svc.New(svc))
+
+	logger.Ctx(ctx).Info("e2efakes.login: seeded a logged-in desktop",
+		zap.String("serverURL", baseURL), zap.Int64("deviceId", deviceID))
+}
+
+// exchangeRefreshToken performs the same POST /v1/oauth/token/refresh the desktop
+// does, but reports the server's status and body verbatim — a seeded credential
+// that the server rejects must say why, not surface later as "sync is broken".
+func exchangeRefreshToken(ctx context.Context, baseURL, refreshToken string) (access, rotated string, err error) {
+	body, err := json.Marshal(map[string]string{"refresh_token": refreshToken})
+	if err != nil {
+		return "", "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(baseURL, "/")+"/v1/oauth/token/refresh", bytes.NewReader(body))
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", err
+	}
+	var envelope struct {
+		Code int `json:"code"`
+		Data struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+		} `json:"data"`
+	}
+	if jerr := json.Unmarshal(raw, &envelope); jerr != nil || envelope.Code != 0 ||
+		envelope.Data.AccessToken == "" {
+		return "", "", fmt.Errorf("refresh rejected: status %d body %s", resp.StatusCode, string(raw))
+	}
+	return envelope.Data.AccessToken, envelope.Data.RefreshToken, nil
+}

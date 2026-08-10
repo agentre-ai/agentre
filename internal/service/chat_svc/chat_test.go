@@ -17,6 +17,7 @@ import (
 	"github.com/cago-frame/agents/provider/providertest"
 	"github.com/cago-frame/cago/database/db"
 	"github.com/cago-frame/cago/pkg/consts"
+	"github.com/cago-frame/cago/pkg/i18n"
 	"github.com/cago-frame/cago/pkg/logger"
 	"github.com/cago-frame/cago/pkg/utils/httputils"
 	"github.com/cago-frame/cago/pkg/utils/testutils"
@@ -57,15 +58,16 @@ import (
 )
 
 type chatMocks struct {
-	agent    *mock_agent_repo.MockAgentRepo
-	backend  *mock_agent_backend_repo.MockAgentBackendRepo
-	provider *mock_llm_provider_repo.MockLLMProviderRepo
-	session  *mock_chat_repo.MockSessionRepo
-	message  *mock_chat_repo.MockMessageRepo
-	dbMock   sqlmock.Sqlmock
-	ctx      context.Context
-	events   []recorded
-	svc      chat_svc.ChatSvc
+	agent      *mock_agent_repo.MockAgentRepo
+	backend    *mock_agent_backend_repo.MockAgentBackendRepo
+	provider   *mock_llm_provider_repo.MockLLMProviderRepo
+	session    *mock_chat_repo.MockSessionRepo
+	message    *mock_chat_repo.MockMessageRepo
+	execTarget *mock_agent_repo.MockAgentExecTargetRepo
+	dbMock     sqlmock.Sqlmock
+	ctx        context.Context
+	events     []recorded
+	svc        chat_svc.ChatSvc
 }
 
 type recorded struct {
@@ -105,19 +107,36 @@ func setupChatTest(t *testing.T) *chatMocks {
 	dbCtx, _, dbMock := testutils.Database(t)
 
 	m := &chatMocks{
-		agent:    mock_agent_repo.NewMockAgentRepo(ctrl),
-		backend:  mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl),
-		provider: mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl),
-		session:  mock_chat_repo.NewMockSessionRepo(ctrl),
-		message:  mock_chat_repo.NewMockMessageRepo(ctrl),
-		dbMock:   dbMock,
-		ctx:      dbCtx,
+		agent:      mock_agent_repo.NewMockAgentRepo(ctrl),
+		backend:    mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl),
+		provider:   mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl),
+		session:    mock_chat_repo.NewMockSessionRepo(ctrl),
+		message:    mock_chat_repo.NewMockMessageRepo(ctrl),
+		execTarget: mock_agent_repo.NewMockAgentExecTargetRepo(ctrl),
+		dbMock:     dbMock,
+		ctx:        dbCtx,
 	}
 	agent_repo.RegisterAgent(m.agent)
 	agent_backend_repo.RegisterAgentBackend(m.backend)
 	llm_provider_repo.RegisterLLMProvider(m.provider)
 	chat_repo.RegisterSession(m.session)
 	chat_repo.RegisterMessage(m.message)
+	agent_repo.RegisterAgentExecTarget(m.execTarget)
+
+	// 默认宽松桩：这批既有测试全部模拟"Agent 只有一个（隐式）执行目标"的场景
+	// (m.agent 直接给 AgentBackendID，不途经真实的 agent_exec_targets 表)。
+	// resolveAgentBackend 在会话没有钉住任何一档时，先看这个 Agent 的执行目标
+	// 列表是否为空——为空就直接退化用 a.AgentBackendID，语义与
+	// agent_repo.hydrateExecTargets 一致，不必每个测试都单独搭一份执行目标行
+	// mock。真正要验证 R15 多档挑选 / 会话粘性写回的用例在
+	// exec_target_pin_test.go 里用专门搭的、非空的执行目标列表覆盖这条默认。
+	m.execTarget.EXPECT().ListByAgent(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+	// 默认宽松桩：会话粘性钉住写回（R15b / 决策36）对这批既有测试是一个新增的
+	// 无关副作用——它们都不关心"钉在哪一档"这件事本身。gomock 按注册顺序匹配,
+	// 这条 AnyTimes() 注册在最前会拦掉这个方法的全部调用,因此不要在具体测试里
+	// 对同一方法再叠加精确期望(永远匹配不到);真正要验证写回参数的用例改用
+	// exec_target_pin_test.go 里独立搭建、不含这条宽松桩的专用 mock 环境。
+	m.session.EXPECT().UpdateExecDaemon(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	emitter := chat_svc.EmitterFunc(func(_ context.Context, name string, payload any) {
 		m.events = append(m.events, recorded{Name: name, Payload: payload})
@@ -1013,6 +1032,112 @@ func TestLoadSession_PopulatesDeviceFields(t *testing.T) {
 			assert.Equal(t, "9", resp.Session.DeviceID, "DeviceID 应填入即使 device 查询失败")
 			assert.Equal(t, "", resp.Session.DeviceName)
 			assert.False(t, resp.Session.Online)
+		})
+
+		convey.Convey("会话钉在非默认档(sess.ExecAgentBackendID) → 聊天头解析那一档而不是 Agent 的默认档(R15b)", func() {
+			m.session.EXPECT().Find(ctx, int64(103)).Return(&chat_entity.Session{
+				ID: 103, AgentID: 53, Status: consts.ACTIVE, ExecAgentBackendID: 72,
+			}, nil)
+			m.agent.EXPECT().Find(ctx, int64(53)).Return(&agent_entity.Agent{
+				// Agent 的默认档是 71，会话却钉在 72 上——聊天头必须展示 72 的设备信息。
+				ID: 53, Name: "多档 Agent", AgentBackendID: 71, Status: consts.ACTIVE,
+			}, nil)
+			m.backend.EXPECT().Find(ctx, int64(72)).Return(&agent_backend_entity.AgentBackend{
+				ID: 72, Type: string(agent_backend_entity.TypeClaudeCode), DeviceID: "9", Status: consts.ACTIVE,
+			}, nil)
+			mockRDS.EXPECT().Get(ctx, int64(9)).Return(&remote_device_svc.DeviceView{
+				ID: 9, Name: "pinned-device", Online: true,
+			}, nil)
+			m.message.EXPECT().List(ctx, int64(103)).Return(nil, nil)
+
+			resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 103})
+			assert.NoError(t, err)
+			assert.Equal(t, "9", resp.Session.DeviceID, "必须解析钉住的档(72→设备9)，不是 Agent 默认档(71)")
+			assert.Equal(t, "pinned-device", resp.Session.DeviceName)
+		})
+	})
+}
+
+// TestLoadSession_PopulatesCwdUnavailableReason 锁住 R10 的最后一环：会话文件
+// 面板要能区分"本机未配置路径"和其它没有 cwd 的情形，靠的就是这个字段——Wails
+// 边界只过 Error() 字符串，没有它前端只能拿到空 cwd，猜不出具体原因。
+func TestLoadSession_PopulatesCwdUnavailableReason(t *testing.T) {
+	convey.Convey("LoadSession 把 resolveSessionCwd 的错误分类成 CwdUnavailableReason（R10）", t, func() {
+		m := setupChatTest(t)
+		ctx := context.Background()
+
+		convey.Convey("本机未配置路径 → local-path-missing，Cwd 留空", func() {
+			chat_svc.RegisterCwdResolver(func(_ context.Context, _ *chat_entity.Session) (string, error) {
+				return "", i18n.NewError(context.Background(), code.ProjectLocalPathMissing)
+			})
+			t.Cleanup(func() { chat_svc.RegisterCwdResolver(nil) })
+
+			m.session.EXPECT().Find(ctx, int64(200)).Return(&chat_entity.Session{
+				ID: 200, AgentID: 60, Status: consts.ACTIVE,
+			}, nil)
+			m.agent.EXPECT().Find(ctx, int64(60)).Return(&agent_entity.Agent{
+				ID: 60, Name: "本机未配置", AgentBackendID: 80, Status: consts.ACTIVE,
+			}, nil)
+			m.backend.EXPECT().Find(ctx, int64(80)).Return(&agent_backend_entity.AgentBackend{
+				ID: 80, Type: string(agent_backend_entity.TypeClaudeCode), DeviceID: "", Status: consts.ACTIVE,
+			}, nil)
+			m.message.EXPECT().List(ctx, int64(200)).Return(nil, nil)
+
+			resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 200})
+			assert.NoError(t, err)
+			assert.Equal(t, "", resp.Session.Cwd)
+			assert.Equal(t, "local-path-missing", resp.Session.CwdUnavailableReason)
+		})
+
+		convey.Convey("cwd 正常解析 → CwdUnavailableReason 留空", func() {
+			chat_svc.RegisterCwdResolver(func(_ context.Context, _ *chat_entity.Session) (string, error) {
+				return "/Users/me/proj", nil
+			})
+			t.Cleanup(func() { chat_svc.RegisterCwdResolver(nil) })
+
+			m.session.EXPECT().Find(ctx, int64(201)).Return(&chat_entity.Session{
+				ID: 201, AgentID: 61, Status: consts.ACTIVE,
+			}, nil)
+			m.agent.EXPECT().Find(ctx, int64(61)).Return(&agent_entity.Agent{
+				ID: 61, Name: "正常", AgentBackendID: 81, Status: consts.ACTIVE,
+			}, nil)
+			m.backend.EXPECT().Find(ctx, int64(81)).Return(&agent_backend_entity.AgentBackend{
+				ID: 81, Type: string(agent_backend_entity.TypeClaudeCode), DeviceID: "", Status: consts.ACTIVE,
+			}, nil)
+			m.message.EXPECT().List(ctx, int64(201)).Return(nil, nil)
+
+			resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 201})
+			assert.NoError(t, err)
+			assert.Equal(t, "/Users/me/proj", resp.Session.Cwd)
+			assert.Equal(t, "", resp.Session.CwdUnavailableReason)
+		})
+	})
+}
+
+func TestLoadSession_PopulatesExecTargetCount(t *testing.T) {
+	convey.Convey("LoadSession 填充 ExecTargetCount 给聊天头 chip 守卫用（R15/R20）", t, func() {
+		m := setupChatTest(t)
+		ctx := context.Background()
+		chat_svc.RegisterCwdResolver(func(_ context.Context, _ *chat_entity.Session) (string, error) {
+			return "", nil
+		})
+		t.Cleanup(func() { chat_svc.RegisterCwdResolver(nil) })
+
+		convey.Convey("单档/未设置执行目标列表的老 Agent → ExecTargetCount 为 0（走默认宽松桩）", func() {
+			m.session.EXPECT().Find(ctx, int64(111)).Return(&chat_entity.Session{
+				ID: 111, AgentID: 55, Status: consts.ACTIVE,
+			}, nil)
+			m.agent.EXPECT().Find(ctx, int64(55)).Return(&agent_entity.Agent{
+				ID: 55, Name: "单档", AgentBackendID: 91, Status: consts.ACTIVE,
+			}, nil)
+			m.backend.EXPECT().Find(ctx, int64(91)).Return(&agent_backend_entity.AgentBackend{
+				ID: 91, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE,
+			}, nil)
+			m.message.EXPECT().List(ctx, int64(111)).Return(nil, nil)
+
+			resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 111})
+			assert.NoError(t, err)
+			assert.Equal(t, 0, resp.Session.ExecTargetCount)
 		})
 	})
 }
@@ -2064,6 +2189,110 @@ func TestSend_NewSession(t *testing.T) {
 		}
 		assert.Equal(t, "helloworld", got)
 	})
+}
+
+// TestSend_NewSessionWithExecTargetOverride_GivenNotInAgentsList_ThenRejects 用
+// setupChatTest 的既有宽松桩（ListByAgent 恒返回空列表）证明 R15a 的校验闸门真的
+// 挂在 Send 的新建会话路径上：指定一个不在(空)列表里的 agentBackendID 必须在
+// 建会话之前就被拒绝——不设 session.Create 期望，一旦校验被跳过误建了会话，
+// gomock 会因未预期调用直接判这条用例失败。
+func TestSend_NewSessionWithExecTargetOverride_GivenNotInAgentsList_ThenRejects(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+
+	_, err := m.svc.Send(ctx, &chat_svc.SendRequest{
+		AgentID: 7, Text: "hi", ExecTargetOverride: 999,
+	})
+	require.Error(t, err, "指定的档不在这个 Agent 的执行目标列表里，必须拒绝")
+}
+
+// TestSend_NewSessionWithExecTargetOverride_GivenValidNonFirstTarget_ThenResolvesToIt
+// 证明手动指定生效且不受 Agent 默认档影响：Agent 的执行目标列表把 backend 51 排
+// 最前，手动指定排第二的 52；新建会话必须实际跑在 52 上（recordingRunner 收到的
+// RunRequest.Backend.ID）且钉住的也是 52（UpdateExecDaemon 的 agentBackendID 参数）。
+// 不复用 setupChatTest——它对 ListByAgent 的默认宽松桩恒返回空列表，测试内再叠加
+// 的精确期望永远匹配不到（exec_target_pin_test.go 顶部注释踩过的同一个坑），这里
+// 用一套不带默认桩的干净 mock。
+func TestSend_NewSessionWithExecTargetOverride_GivenValidNonFirstTarget_ThenResolvesToIt(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	dbCtx, _, dbMock := testutils.Database(t)
+
+	agentMock := mock_agent_repo.NewMockAgentRepo(ctrl)
+	execTargetMock := mock_agent_repo.NewMockAgentExecTargetRepo(ctrl)
+	backendMock := mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl)
+	sessionMock := mock_chat_repo.NewMockSessionRepo(ctrl)
+	messageMock := mock_chat_repo.NewMockMessageRepo(ctrl)
+
+	prevAgent, prevExecTarget := agent_repo.Agent(), agent_repo.AgentExecTarget()
+	prevBackend := agent_backend_repo.AgentBackend()
+	prevSession, prevMessage := chat_repo.Session(), chat_repo.Message()
+	agent_repo.RegisterAgent(agentMock)
+	agent_repo.RegisterAgentExecTarget(execTargetMock)
+	agent_backend_repo.RegisterAgentBackend(backendMock)
+	chat_repo.RegisterSession(sessionMock)
+	chat_repo.RegisterMessage(messageMock)
+	t.Cleanup(func() {
+		agent_repo.RegisterAgent(prevAgent)
+		agent_repo.RegisterAgentExecTarget(prevExecTarget)
+		agent_backend_repo.RegisterAgentBackend(prevBackend)
+		chat_repo.RegisterSession(prevSession)
+		chat_repo.RegisterMessage(prevMessage)
+	})
+
+	svc := chat_svc.NewChat(chat_svc.NoopEmitter{})
+	chat_svc.RegisterChat(svc)
+
+	runner := &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, runner)
+	t.Cleanup(restore)
+
+	agentMock.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "多档", AgentBackendID: 51, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	execTargetMock.EXPECT().ListByAgent(gomock.Any(), int64(7)).Return([]*agent_entity.AgentExecTarget{
+		{ID: 1, AgentID: 7, AgentBackendID: 51, SortOrder: 0},
+		{ID: 2, AgentID: 7, AgentBackendID: 52, SortOrder: 1},
+	}, nil).AnyTimes()
+	backendMock.EXPECT().Find(gomock.Any(), int64(52)).Return(&agent_backend_entity.AgentBackend{
+		ID: 52, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE,
+	}, nil).AnyTimes()
+
+	sessionMock.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, s *chat_entity.Session) error {
+			s.ID = 100
+			return nil
+		})
+	sessionMock.EXPECT().UpdateExecDaemon(gomock.Any(), int64(100), int64(0), "", int64(52)).
+		Return(nil)
+	sessionMock.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	dbMock.ExpectBegin()
+	messageMock.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	messageMock.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				msg.ID = 1000
+			} else {
+				msg.ID = 1001
+			}
+			return nil
+		}).Times(2)
+	dbMock.ExpectCommit()
+	messageMock.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	resp, err := svc.Send(dbCtx, &chat_svc.SendRequest{
+		AgentID: 7, Text: "hi", ExecTargetOverride: 52,
+	})
+	require.NoError(t, err)
+	chat_svc.WaitForStreamForTest(svc, resp.AssistantMessageID)
+
+	select {
+	case req := <-runner.requests:
+		assert.Equal(t, int64(52), req.Backend.ID, "手动指定的第二档必须真的跑起来，不是 Agent 默认的第一档")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for runtime request")
+	}
 }
 
 func TestSend_ExistingSessionUsesSessionAgentBackend(t *testing.T) {

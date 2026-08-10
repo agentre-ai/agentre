@@ -539,6 +539,19 @@ type ChatSessionDetail struct {
 	// ProjectID = 0 表示自由会话；> 0 时受 project_svc 管控。
 	// 前端 ChatPanel 用它派生 breadcrumb 路径。
 	ProjectID int64 `json:"projectId,omitempty"`
+	// ExecTargetCount 是这个会话所属 Agent 的有序执行目标列表长度（R15）。前端聊天头
+	// 用它放宽 chip 显示守卫：多档 Agent 的会话总是显示机器 chip（含本机），单档维持
+	// 今天「只有远端会话才显示」的行为（R20）。0/1 与「未绑执行目标列表」（老 Agent）
+	// 在这里不做区分——两者都不该显示 chip。
+	ExecTargetCount int `json:"execTargetCount"`
+	// CwdUnavailableReason 在 Cwd 为空时给出结构化原因（R10）：Wails 边界只过
+	// Error() 字符串，没有结构化通道，前端因此没法从一个失败的 RPC 反推出"是本机
+	// 未配置路径,还是远端没配,还是自由会话压根没有 cwd"——这个字段把
+	// resolveSessionCwd 的错误分类透出来，供会话文件面板据此展示 R10 专用的
+	// 空态文案而不是一律笼统的"没有工作目录"。取值：""(Cwd 非空，或没有可归类的
+	// 原因) / "local-path-missing"（本机未配置路径，ProjectLocalPathMissing）/
+	// "location-missing"（远端机器未配置路径，ProjectLocationMissing）。
+	CwdUnavailableReason string `json:"cwdUnavailableReason,omitempty"`
 }
 
 // BlockReason 是不可对话 Agent 的结构化原因枚举；空串 = 可对话（与 Chattable=true 一致）。
@@ -562,6 +575,18 @@ const (
 	BlockReasonRemoteOpenClawUnavailable BlockReason = "remote-openclaw-unavailable"
 	// BlockReasonUnknownBackend 未知 Agent 后端类型。
 	BlockReasonUnknownBackend BlockReason = "unknown-backend"
+
+	// 以下三个是 R15 执行目标挑选专用的原因，与上面几个「backend 自身不可用」的判据
+	// 正交：它们描述的是这一档所在的机器 / 项目路径，不是 backend 配置本身。
+
+	// BlockReasonExecTargetUnpaired 本机没有配对这一档指向的那台 agentred（R2b：判据
+	// 是本地配对表里有没有这一行，不是有没有配对令牌）。
+	BlockReasonExecTargetUnpaired BlockReason = "exec-target-unpaired"
+	// BlockReasonExecTargetOffline 已配对，但该 agentred 当前不在线。
+	BlockReasonExecTargetOffline BlockReason = "exec-target-offline"
+	// BlockReasonExecTargetProjectPathMissing 会话绑定了项目，但这一档所在的机器上
+	// 没有配置这个项目的路径（决策 34）。不绑项目的会话不受这一项约束。
+	BlockReasonExecTargetProjectPathMissing BlockReason = "exec-target-project-path-missing"
 )
 
 type ChatAgentItem struct {
@@ -702,6 +727,12 @@ type SendRequest struct {
 	//   - codex: default / plan
 	// 空串表示不改已有会话；新建 codex 会话空串按 default 落库。
 	PermissionMode string `json:"permissionMode,omitempty"`
+	// ExecTargetOverride 是 R15a 的手动指定：仅新建会话时生效（与 ProviderKey 同一条
+	// 规则），值是用户在空会话态「改选」浮层里选中的 agentBackendID。0 = 不指定，按
+	// R15 顺序自动挑第一个可用的档。非零时必须在该 Agent 的执行目标列表里且此刻可用，
+	// 否则整个 Send 失败（不静默回落自动挑选）——拒绝指定一个不可用的档。已有会话
+	// （SessionID>0）忽略这个字段：会话早已按 R15b 钉在它落到的那一档上，不可能再改。
+	ExecTargetOverride int64 `json:"execTargetOverride,omitempty"`
 	// ProviderKey 仅新建会话（SessionID=0）生效：所选 LLM 供应商 key，随首条消息与
 	// Session 一同 Create 落库（spec 决策 2）。空串 = 跟随 agent 绑定。已有会话忽略
 	// （B 不允许事后改，无 Setter）。非空时校验：供应商必须存在、IsActive 且与后端

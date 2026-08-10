@@ -131,8 +131,8 @@ func TestBorrowRemoteRuntime_CacheHit_StillRecordsExecDaemon(t *testing.T) {
 	prevRepo := chat_repo.Session()
 	chat_repo.RegisterSession(sessRepo)
 	t.Cleanup(func() { chat_repo.RegisterSession(prevRepo) })
-	sessRepo.EXPECT().UpdateExecDaemon(gomock.Any(), int64(100), int64(7), "sha256:beef").Return(nil)
-	sessRepo.EXPECT().UpdateExecDaemon(gomock.Any(), int64(101), int64(7), "sha256:beef").Return(nil)
+	sessRepo.EXPECT().UpdateExecDaemon(gomock.Any(), int64(100), int64(7), "sha256:beef", int64(0)).Return(nil)
+	sessRepo.EXPECT().UpdateExecDaemon(gomock.Any(), int64(101), int64(7), "sha256:beef", int64(0)).Return(nil)
 
 	svc := &chatSvc{emitter: NoopEmitter{}}
 	svc.setConnPoolForTest(pool)

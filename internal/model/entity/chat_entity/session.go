@@ -85,9 +85,19 @@ type Session struct {
 	// EventCursor 桌面端已消费到的 daemon 通知 seq(daemon 侧 journal 里单调递增)。
 	// 0 = 尚未消费。只有配合 ExecDaemonFingerprint 一起看才有意义，见 CursorValidFor。
 	EventCursor int64 `gorm:"column:event_cursor;type:bigint;not null;default:0"`
-	Status      int   `gorm:"column:status;type:int;not null;default:1"`
-	Createtime  int64 `gorm:"column:createtime;type:bigint;not null;default:0"`
-	Updatetime  int64 `gorm:"column:updatetime;type:bigint;not null;default:0"`
+	// ExecAgentBackendID 是这条会话钉住的执行目标档（R15b / 决策36）：Agent 有序
+	// 执行目标列表（agent_exec_targets）里被选中的那一行的 agent_backend_id。
+	// 0 = 尚未钉住 —— 首轮与全部老会话的默认值；"落到"发生在第一轮实际起在哪台，
+	// 此后续轮一律回到这一档，不因排序里有更靠前的档现在可用而改派。
+	//
+	// 与 ExecDeviceID / ExecDaemonFingerprint 语义正交：那两列回答"哪台机器 /
+	// 哪个 daemon 实例"，这一列回答"哪一档"——同一台机器上可以有多档，钉住的是档
+	// 本身（连带它的 backend 配置与技能授权），不是机器。三列由同一条专用单列
+	// 更新 UpdateExecDaemon 一并写入、一并加进 Update 的 Omit 清单，同生共死。
+	ExecAgentBackendID int64 `gorm:"column:exec_agent_backend_id;type:bigint;not null;default:0"`
+	Status             int   `gorm:"column:status;type:int;not null;default:1"`
+	Createtime         int64 `gorm:"column:createtime;type:bigint;not null;default:0"`
+	Updatetime         int64 `gorm:"column:updatetime;type:bigint;not null;default:0"`
 }
 
 func (*Session) TableName() string { return "chat_sessions" }

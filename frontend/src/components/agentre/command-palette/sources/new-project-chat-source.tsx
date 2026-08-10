@@ -372,28 +372,11 @@ function onSelect(item: NewProjectChatItem, ctx: OnSelectCtx): void {
     return;
   }
 
-  // Remote-device guards: check before the handler dispatch so we do not
-  // silently start a session for an offline or unconfigured remote agent.
-  const a = item.agent;
-  const offline = !!a.deviceID && a.online === false;
-  if (offline) {
-    console.warn(
-      i18n.t("commandPalette.newProjectChat.offlineWarning", {
-        agentName: a.name,
-        deviceName: a.deviceName ?? a.deviceID,
-      }),
-    );
-    return;
-  }
-  // Remote agent + no configured location → cannot start.
-  if (a.deviceID && !item.locationPath) {
-    console.warn(
-      i18n.t("commandPalette.newProjectChat.missingRemotePathWarning", {
-        agentName: a.name,
-      }),
-    );
-    return;
-  }
+  // R15：这一行的 chip 只展示 Agent 有序执行目标列表里"第一档"的设备/路径，不再是
+  // 唯一能跑的地方——离线或没配路径的档现在会被 chat_svc.PickExecTarget 自动跳过、
+  // 落到列表里下一个可用的档（全部不可用时 Send 明确报错，不是静默失败）。这里
+  // 因此不再拿"第一档的离线/无路径"当硬性拦截：命令面板只负责起会话，真正跑在
+  // 哪一档由后端在首发 Send 时按 R15 顺序解析。
 
   // 项目内成员 + handler 已注册 → 让 project-page 把 selection 翻成 {kind:"new"}。
   // 此处 item 必为成员（非成员已被开头 isDisabled 守卫拦截）。

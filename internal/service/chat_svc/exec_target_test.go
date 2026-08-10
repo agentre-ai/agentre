@@ -85,6 +85,28 @@ func TestResolveLocalCommandScope_GivenExistingLocalSession_WhenResolved_ThenRet
 	assert.Equal(t, &LocalCommandScope{DeviceID: "", Cwd: "/workspace/current-local"}, scope)
 }
 
+// TestResolveLocalCommandScope_GivenSessionWithStickyExecTarget_ThenScopeFollowsPinnedBackendNotAgentPrimary
+// 锁住 R15b / 决策36 在 "!" 命令范围解析这条旁路上的一致性:会话已经钉住某一档时,
+// "!" 命令必须跟着那一档跑,不能各算各的——否则续轮实际用的是钉住的远端 backend,
+// 而"!"命令却按 Agent 当前主档(本机)算出一份不同的执行范围。
+func TestResolveLocalCommandScope_GivenSessionWithStickyExecTarget_ThenScopeFollowsPinnedBackendNotAgentPrimary(t *testing.T) {
+	ctx, m, svc := setupExecTargetTest(t)
+	sess := &chat_entity.Session{ID: 74, AgentID: 40, ProjectID: 0, ExecAgentBackendID: 59}
+	agent := &agent_entity.Agent{ID: 40, AgentBackendID: 50}
+	pinnedBackend := &agent_backend_entity.AgentBackend{
+		ID:       59,
+		Type:     string(agent_backend_entity.TypeClaudeCode),
+		DeviceID: "12",
+	}
+	m.session.EXPECT().Find(ctx, int64(74)).Return(sess, nil)
+	m.agent.EXPECT().Find(ctx, int64(40)).Return(agent, nil)
+	m.backend.EXPECT().Find(ctx, int64(59)).Return(pinnedBackend, nil)
+
+	scope, err := svc.ResolveLocalCommandScope(ctx, &ResolveLocalCommandScopeRequest{SessionID: 74})
+	require.NoError(t, err)
+	assert.Equal(t, "12", scope.DeviceID, "范围必须跟着会话钉住的档(59/设备12),不是 Agent 当前主档(50/本机)")
+}
+
 func TestResolveLocalCommandScope_GivenExistingRemoteSession_WhenLocationChanges_ThenRereadsCurrentLocation(t *testing.T) {
 	ctx, m, svc := setupExecTargetTest(t)
 	sess := &chat_entity.Session{ID: 72, AgentID: 32, ProjectID: 42}

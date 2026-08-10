@@ -1,0 +1,263 @@
+// Package sync_svc 是桌面端工作区多端同步的引擎：编辑当场上行、30 秒轮询下行、
+// 按基版本判冲突、墓碑、乱序暂缓、离线队列、超窗口重同步
+// （docs/specs/2026-08-07-workspace-sync.md「双向同步的行为」）。
+//
+// 三条贯穿全包的约束：
+//
+//   - **同步不阻塞本地写（R8）。** 域服务只在改动落库成功之后交出一条 LocalChange，
+//     入队之外的一切都在后台；同步层的任何失败都不回传、更不回滚本地写入。
+//   - **未登录 = 什么都没有（R12）。** 没有账号（或本地行属于另一个账号，R13a）时
+//     不入队、不发请求、不写任何同步侧的表。
+//   - **载荷、路径、prompt 与 EnvJSON 一律不进日志。** 日志里只有对象类型、同步
+//     标识、版本号与条数。
+package sync_svc
+
+import (
+	"context"
+	"sync"
+	"time"
+
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
+
+	"github.com/agentre-ai/agentre/internal/model/entity/syncmeta_entity"
+	"github.com/agentre-ai/agentre/internal/repository/server_state_repo"
+)
+
+// SyncSvc 桌面端同步引擎。
+type SyncSvc interface {
+	// NotifyLocalChange 由域服务在改动落库成功后调用：入队并当场触发一次上行（R3）。
+	// 永不返回错误，也永不阻塞调用方（R8）。
+	NotifyLocalChange(ctx context.Context, ch LocalChange)
+	// SyncOnce 跑一次完整来回：先把出站队列推上去，再按游标拉下来。
+	SyncOnce(ctx context.Context) error
+	// Start 起 30 秒周期的轮询（R3）；重复调用只起一次。
+	Start(ctx context.Context)
+	// Stop 停掉轮询。
+	Stop()
+	// Status 设置里同步区要展示的状态。
+	Status(ctx context.Context) (*Status, error)
+	// ListLostChanges 「没能同步的改动」列表（R5）。
+	ListLostChanges(ctx context.Context) ([]*LostChangeView, error)
+	// RestoreLostChange 把某一版恢复成当前值；目标已被删除时明确失败（R5a）。
+	RestoreLostChange(ctx context.Context, id int64) (*RestoreOutcome, error)
+	// RecreateFromLostChange 按这份内容新建一个对象：分配新的同步标识，正常上行（R5a）。
+	RecreateFromLostChange(ctx context.Context, id int64) error
+	// DiscardLostChange 丢掉一条「没能同步的改动」。
+	DiscardLostChange(ctx context.Context, id int64) error
+}
+
+var defaultSvc SyncSvc
+
+// Default 取默认实现；未装配时返回 nil —— 调用方用包级 Notify 兜底。
+func Default() SyncSvc { return defaultSvc }
+
+// SetDefault 由 bootstrap 注入实现。
+func SetDefault(s SyncSvc) { defaultSvc = s }
+
+// Notify 是域服务侧的调用入口：同步未装配（单机构建 / 单元测试）时是空操作，
+// 本地写入路径因此不需要知道同步存不存在（R8/R12）。
+func Notify(ctx context.Context, ch LocalChange) {
+	if s := defaultSvc; s != nil {
+		s.NotifyLocalChange(ctx, ch)
+	}
+}
+
+// NotifyCreate / NotifyUpdate / NotifyDelete 是三个调用点糖：域服务在改动落库
+// **成功之后**交出这一行的同步元数据（同步标识由仓储层的 EnsureSyncID 生成）。
+func NotifyCreate(ctx context.Context, kind string, localID int64, meta syncmeta_entity.SyncMeta) {
+	Notify(ctx, LocalChange{Kind: kind, LocalID: localID, Op: OpCreate, Meta: meta})
+}
+
+func NotifyUpdate(ctx context.Context, kind string, localID int64, meta syncmeta_entity.SyncMeta) {
+	Notify(ctx, LocalChange{Kind: kind, LocalID: localID, Op: OpUpdate, Meta: meta})
+}
+
+func NotifyDelete(ctx context.Context, kind string, localID int64, meta syncmeta_entity.SyncMeta) {
+	Notify(ctx, LocalChange{Kind: kind, LocalID: localID, Op: OpDelete, Meta: meta})
+}
+
+type service struct {
+	adapters map[string]adapter
+	now      func() int64
+	// background 跑一次后台同步；默认 go f()，测试注入同步执行让断言可判。
+	background func(func())
+
+	mu        sync.Mutex
+	transport Transport
+	lastErr   string
+	stopCh    chan struct{}
+	// syncing 串行化上行/下行：轮询与「编辑当场上行」可能同时发生。
+	syncing sync.Mutex
+}
+
+// New 构造引擎。transport 为 nil = 单机模式：入队照旧（未登录时连队都不入），
+// 但一行也不会发出去。
+func New(transport Transport) SyncSvc {
+	return &service{
+		adapters:   defaultAdapters(transport),
+		now:        func() int64 { return time.Now().UnixMilli() },
+		background: func(f func()) { go f() },
+		transport:  transport,
+	}
+}
+
+func (s *service) getTransport() Transport {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transport
+}
+
+func (s *service) setLastErr(err error) {
+	s.mu.Lock()
+	if err == nil {
+		s.lastErr = ""
+	} else {
+		s.lastErr = err.Error()
+	}
+	s.mu.Unlock()
+}
+
+func (s *service) getLastErr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastErr
+}
+
+// account 取当前登录账号与本机设备 ID；未登录返回 (0, 0, false)（R12）。
+func (s *service) account(ctx context.Context) (accountID, deviceID int64, ok bool) {
+	row, err := server_state_repo.ServerState().Get(ctx)
+	if err != nil {
+		logger.Ctx(ctx).Warn("sync_svc.account: read server state failed", zap.Error(err))
+		return 0, 0, false
+	}
+	if row == nil || !row.IsLoggedIn() {
+		return 0, 0, false
+	}
+	return row.ServerUserID, row.DeviceID, true
+}
+
+// Start 起 30 秒周期的轮询（R3），同一个节奏也驱动本机路径的整份快照上报（R16）。
+// 轮询失败只记状态，不打断循环。
+//
+// reportLocalPathsOnce 刻意只挂在这个 ticker 上，绝不并进 SyncOnce：
+// NotifyLocalChange 会在账号级对象的编辑当场触发 SyncOnce（R3），如果上报也挂在
+// SyncOnce 里，编辑一个项目名字就会连带触发一次本机路径上报——这与 R16「本地编辑
+// 不即时触发上报，30 秒一轮」的刻意区分矛盾。
+func (s *service) Start(ctx context.Context) {
+	s.mu.Lock()
+	if s.stopCh != nil {
+		s.mu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	s.stopCh = stop
+	s.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(PollInterval)
+		defer ticker.Stop()
+		// 两条链路各退各的（R7/R16）：下行不通不该连带把本机路径上报也拖慢，反之亦然。
+		var syncOff, reportOff backoff
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if syncOff.due() {
+					if err := s.SyncOnce(ctx); err != nil {
+						syncOff.fail()
+						logger.Ctx(ctx).Debug("sync_svc.Start: poll failed, backing off",
+							zap.Int("failStreak", syncOff.streak), zap.Error(err))
+					} else {
+						syncOff.succeed()
+					}
+				}
+				if reportOff.due() {
+					if err := s.reportLocalPathsOnce(ctx); err != nil {
+						reportOff.fail()
+						logger.Ctx(ctx).Debug("sync_svc.Start: local path report failed, backing off",
+							zap.Int("failStreak", reportOff.streak), zap.Error(err))
+					} else {
+						reportOff.succeed()
+					}
+				}
+			}
+		}
+	}()
+}
+
+// maxBackoffTicks 是退让的上限，按轮询周期计：30s × 60 = 30 分钟。有上限是必须的
+// ——退到「永不重试」等于把 R7 的「联网后补齐」变成「联网后也不补」。
+const maxBackoffTicks = 60
+
+// backoff 落实「同步失败按退避重试」（R7、R16）。轮询的**周期不变**，退让体现在
+// 「失败后跳过几个周期」上：连续失败一次跳 1 个、两次跳 2 个、三次跳 4 个……封顶
+// 30 分钟，任何一次成功立即复位。
+//
+// 编辑当场触发的那一次上行（R3）不看它：用户刚做的改动该立刻试一次，退让只约束
+// 后台轮询。
+type backoff struct {
+	// streak 连续失败次数。
+	streak int
+	// pending 还要跳过几个周期。
+	pending int
+}
+
+// due 报告这一个周期该不该跑，并消耗掉一次退让额度。
+func (b *backoff) due() bool {
+	if b.pending > 0 {
+		b.pending--
+		return false
+	}
+	return true
+}
+
+func (b *backoff) fail() {
+	b.streak++
+	skip := 1 << min(b.streak-1, 30)
+	b.pending = min(skip, maxBackoffTicks)
+}
+
+func (b *backoff) succeed() { b.streak, b.pending = 0, 0 }
+
+func (s *service) Stop() {
+	s.mu.Lock()
+	if s.stopCh != nil {
+		close(s.stopCh)
+		s.stopCh = nil
+	}
+	s.mu.Unlock()
+}
+
+// SyncOnce 跑一次完整来回。上行在前：本端刚做的改动先出去，再拉别人的回来，
+// 少一个轮询周期的往返。
+func (s *service) SyncOnce(ctx context.Context) error {
+	s.syncing.Lock()
+	defer s.syncing.Unlock()
+
+	accountID, deviceID, ok := s.account(ctx)
+	if !ok || s.getTransport() == nil {
+		return nil
+	}
+	if err := s.claimUnowned(ctx, accountID); err != nil {
+		s.setLastErr(err)
+		return err
+	}
+	if err := s.flush(ctx, accountID, deviceID); err != nil {
+		s.setLastErr(err)
+		return err
+	}
+	if err := s.pull(ctx, accountID); err != nil {
+		s.setLastErr(err)
+		return err
+	}
+	s.setLastErr(nil)
+	return nil
+}
+
+// Active 报告同步引擎是否已装配。域服务用它避开「只为拿同步标识而多查一次库」的
+// 开销——单机构建与单元测试里这些查询一次都不该发生。
+func Active() bool { return defaultSvc != nil }

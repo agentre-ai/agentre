@@ -34,6 +34,18 @@ type ProjectReorderRequest struct {
 	OrderedIDs []int64 `json:"orderedIDs"`
 }
 
+// ProjectSetLocalPathRequest 就地指定「本机未配置路径」项目的本机路径（R10）。
+type ProjectSetLocalPathRequest struct {
+	ID   int64  `json:"id"`
+	Path string `json:"path"`
+}
+
+// ProjectMergeRequest 合并两个本地项目行（R11a）。
+type ProjectMergeRequest struct {
+	SourceID int64 `json:"sourceID"`
+	TargetID int64 `json:"targetID"`
+}
+
 // ProjectItem 项目摘要 —— 树节点 / 列表 / 详情共用。
 type ProjectItem struct {
 	ID          int64  `json:"id"`
@@ -47,6 +59,10 @@ type ProjectItem struct {
 	SortOrder   int    `json:"sortOrder"`
 	Createtime  int64  `json:"createtime"`
 	Updatetime  int64  `json:"updatetime"`
+	// LocalPathMissing 为 true 表示"本机未配置路径"（R10）：项目行照常存在，只是
+	// 这台设备还没有可用的本机工作目录。前端项目树据此挂「未配置」角标，基本页签
+	// 据此把只读路径字段换成「指定…」入口。
+	LocalPathMissing bool `json:"localPathMissing"`
 }
 
 // ProjectTreeNode 项目树节点；前端递归渲染。
@@ -198,6 +214,33 @@ func (a *App) ProjectListSessions(projectID int64) ([]*ProjectSessionItem, error
 	return toProjectSessionItems(rows), nil
 }
 
+// ProjectSetLocalPath 就地指定本机路径，解除「本机未配置路径」状态（R10）。
+func (a *App) ProjectSetLocalPath(req *ProjectSetLocalPathRequest) (*ProjectItem, error) {
+	var id int64
+	var path string
+	if req != nil {
+		id, path = req.ID, req.Path
+	}
+	p, err := project_svc.Default().SetLocalPath(a.ctx, id, path)
+	if err != nil {
+		return nil, err
+	}
+	return toProjectItem(p), nil
+}
+
+// ProjectMerge 把两个本地项目行合并成一个（R11a）。
+func (a *App) ProjectMerge(req *ProjectMergeRequest) (*ProjectItem, error) {
+	var svcReq *project_svc.MergeProjectsRequest
+	if req != nil {
+		svcReq = &project_svc.MergeProjectsRequest{SourceID: req.SourceID, TargetID: req.TargetID}
+	}
+	p, err := project_svc.Default().Merge(a.ctx, svcReq)
+	if err != nil {
+		return nil, err
+	}
+	return toProjectItem(p), nil
+}
+
 // ProjectDetectGitRepo 新建项目模态用：选完目录后探测一次 git 仓库状态。
 func (a *App) ProjectDetectGitRepo(path string) (*ProjectGitRepoInfo, error) {
 	info, err := project_svc.Default().DetectGitRepo(a.ctx, path)
@@ -217,17 +260,18 @@ func toProjectItem(p *project_entity.Project) *ProjectItem {
 		return nil
 	}
 	return &ProjectItem{
-		ID:          p.ID,
-		ParentID:    p.ParentID,
-		Name:        p.Name,
-		Icon:        p.Icon,
-		Color:       p.Color,
-		Description: p.Description,
-		Path:        p.Path,
-		IsGitRepo:   p.IsGitRepo(),
-		SortOrder:   p.SortOrder,
-		Createtime:  p.Createtime,
-		Updatetime:  p.Updatetime,
+		ID:               p.ID,
+		ParentID:         p.ParentID,
+		Name:             p.Name,
+		Icon:             p.Icon,
+		Color:            p.Color,
+		Description:      p.Description,
+		Path:             p.Path,
+		IsGitRepo:        p.IsGitRepo(),
+		SortOrder:        p.SortOrder,
+		Createtime:       p.Createtime,
+		Updatetime:       p.Updatetime,
+		LocalPathMissing: p.LocalPathMissing,
 	}
 }
 

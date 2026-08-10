@@ -6,6 +6,7 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/daemon/client"
 	"github.com/agentre-ai/agentre/internal/model/entity/server_state_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/syncwire"
 )
 
 // ServerSvc 桌面端接入 Hub 的服务接口。
@@ -29,6 +30,16 @@ type ServerSvc interface {
 	// presenting peerFingerprint (the desktop's own device fingerprint) to
 	// auth.account — the same identity the LAN path presents (R5/R6).
 	DialDaemonRelay(ctx context.Context, daemonFingerprint, peerFingerprint string) (*client.Client, error)
+	// SyncPush 上行一批本地改动；超窗口设备返回 syncwire.ErrResyncRequired（R6a）。
+	SyncPush(ctx context.Context, items []syncwire.PushItem) ([]syncwire.PushResult, error)
+	// SyncPull 按版本游标增量下行；cursor = 0 拉全量快照。
+	SyncPull(ctx context.Context, cursor int64, limit int) (*syncwire.PullPage, error)
+	// ReportLocalPaths 上报本机路径整份快照（R16）。
+	ReportLocalPaths(ctx context.Context, items []syncwire.LocalPathReportItem) error
+	// PutAvatar 把本机持有的头像正文按内容哈希推给对端（R16a）。
+	PutAvatar(ctx context.Context, contentHash, contentType, content string) error
+	// GetAvatar 取一份尚未持有的头像正文（R16a）。
+	GetAvatar(ctx context.Context, contentHash string) (content, contentType string, err error)
 }
 
 var defaultSvc ServerSvc

@@ -38,6 +38,14 @@ type AgentSkillDTO struct {
 	Enabled bool   `json:"enabled"`
 }
 
+// AgentExecTargetItem 单条执行目标（R15）：backend 摘要 + 这一档自己的技能授权
+// （R15e / 决策 33，存放位置已下沉到执行目标行）。列表顺序即 sort_order。
+type AgentExecTargetItem struct {
+	ID             int64           `json:"id"`
+	AgentBackendID int64           `json:"agentBackendId"`
+	Skills         []AgentSkillDTO `json:"skills"`
+}
+
 // AgentToolDTO 与 agent_entity.AgentToolItem 同结构，避免前端引用 entity 包。
 type AgentToolDTO struct {
 	Key     string `json:"key"`
@@ -62,9 +70,14 @@ type AgentItem struct {
 	SortOrder       int             `json:"sortOrder"`
 	Prompt          []string        `json:"prompt"`
 	Skills          []AgentSkillDTO `json:"skills"`
-	Tools           []AgentToolDTO  `json:"tools"`
-	Createtime      int64           `json:"createtime"`
-	Updatetime      int64           `json:"updatetime"`
+	// ExecTargets 是 R15 的有序执行目标列表（任务 12：组织架构页展示/编辑用）。
+	// AgentBackendID/Skills 两个字段是它派生出的历史兼容视图（= ExecTargets[0]，
+	// 空列表时为零值），仍被别处只读代码路径消费，不重复维护两份真相——写口只信
+	// ExecTargets（agent_svc.UpdateAgentRequest）。
+	ExecTargets []AgentExecTargetItem `json:"execTargets"`
+	Tools       []AgentToolDTO        `json:"tools"`
+	Createtime  int64                 `json:"createtime"`
+	Updatetime  int64                 `json:"updatetime"`
 }
 
 // LoadOrgRequest 占位。

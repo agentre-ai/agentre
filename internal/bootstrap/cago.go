@@ -34,6 +34,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_repo"
+	"github.com/agentre-ai/agentre/internal/repository/syncqueue_repo"
 	"github.com/agentre-ai/agentre/internal/service/agent_backend_svc"
 	"github.com/agentre-ai/agentre/internal/service/app_settings_svc"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
@@ -117,6 +118,7 @@ func Init(ctx context.Context) (*Runtime, error) {
 	app_setting_repo.RegisterAppSetting(app_setting_repo.NewAppSetting())
 	department_repo.RegisterDepartment(department_repo.NewDepartment())
 	agent_repo.RegisterAgent(agent_repo.NewAgent())
+	agent_repo.RegisterAgentExecTarget(agent_repo.NewAgentExecTarget())
 	hook_repo.RegisterHook(hook_repo.NewHook())
 	hook_repo.RegisterHookEvent(hook_repo.NewHookEvent())
 	chat_repo.RegisterSession(chat_repo.NewSession())
@@ -124,6 +126,11 @@ func Init(ctx context.Context) (*Runtime, error) {
 	project_repo.RegisterProject(project_repo.NewProject())
 	project_repo.RegisterProjectAgent(project_repo.NewProjectAgent())
 	project_location_repo.RegisterProjectLocation(project_location_repo.NewProjectLocation())
+	// 本地同步骨架三张表（387-390 行）：真正的入队/出队/上行/下行是后续任务，
+	// 这里只注册仓储读写口，让它们有地方落脚。
+	syncqueue_repo.RegisterLostChange(syncqueue_repo.NewLostChange())
+	syncqueue_repo.RegisterOutboundQueue(syncqueue_repo.NewOutboundQueue())
+	syncqueue_repo.RegisterInboundQueue(syncqueue_repo.NewInboundQueue())
 	project_svc.SetDefault(project_svc.New())
 	issue_repo.RegisterIssue(issue_repo.NewIssue())
 	issue_repo.RegisterLabel(issue_repo.NewLabel())
@@ -204,9 +211,11 @@ func Init(ctx context.Context) (*Runtime, error) {
 
 	// 技能包(skill pack)注入:skill_svc 组合 agent 授权 + 发现,chat_svc 按 CapSkills
 	// 在 runTurn 注入 RunRequest.EnabledPlugins(runtime 各自渲染到 CLI 配置)。
-	skill_svc.Register(agent_repo.Agent(), agent_backend_repo.AgentBackend(), agent_backend_svc.NewRemoteSkillDiscoverer())
-	chat_svc.RegisterEnabledPluginsProvider(func(ctx context.Context, a *agent_entity.Agent) map[string]bool {
-		m, err := skill_svc.Default().EnabledPluginsMap(ctx, a.ID)
+	skill_svc.Register(agent_repo.Agent(), agent_backend_repo.AgentBackend(), agent_repo.AgentExecTarget(), agent_backend_svc.NewRemoteSkillDiscoverer())
+	chat_svc.RegisterEnabledPluginsProvider(func(ctx context.Context, a *agent_entity.Agent, agentBackendID int64) map[string]bool {
+		// agentBackendID = 这一轮实际落到的那一档(R15b/R15e);0 = 老会话未钉档,
+		// skill_svc 自行回落到主档。
+		m, err := skill_svc.Default().EnabledPluginsMapForTarget(ctx, a.ID, agentBackendID)
 		if err != nil {
 			return nil // 发现/查询失败 → 软降级(本轮不约束技能集),不阻断对话
 		}

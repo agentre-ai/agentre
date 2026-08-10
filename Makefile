@@ -148,6 +148,11 @@ e2e:
 e2e-scratch:
 	cd e2e && pnpm run test:scratch
 
+# 工作区多端同步的本地端到端:真桌面端 + 真 agentre-server + Go 模拟对端。
+# 需要 agentre-server 的 PostgreSQL / Redis 可达(不跑容器),不进 CI。见 e2e/README.md §10。
+e2e-sync:
+	cd e2e && pnpm run test:sync
+
 # 测试覆盖率
 test-cover:
 	go test -coverprofile=coverage.out $(BACKEND_PKGS)

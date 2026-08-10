@@ -645,6 +645,9 @@
       "noCwd": "这个会话没有工作目录",
       "readFailed": "读取目录失败",
       "retry": "重试",
+      "localPathMissingTitle": "这台电脑还没有为这个项目配置路径",
+      "localPathMissingHint": "这个项目是从账号里同步来的，文件面板需要一个本机工作目录才能列出内容。",
+      "localPathMissingAction": "指定本机路径",
       "treeAria": "工作目录文件",
       "subtreeChanges": "{{count}} 个文件有变动",
       "subtreeChanges_one": "{{count}} 个文件有变动",
@@ -774,6 +777,32 @@
       "send": "发送失败：{{msg}}",
       "stop": "停止失败：{{msg}}",
       "stopBackgroundTask": "停止后台任务失败：{{msg}}"
+    },
+    "execTarget": {
+      "willRunPrefix": "将在",
+      "willRunSuffix": "上运行",
+      "droppedPrefix": "{{name}}不可用，将在",
+      "reselect": "改选",
+      "pickerTitle": "在哪台机器上跑",
+      "pickerScope": "只影响这一次",
+      "stickyHint": "总是想用它？拖到第一位。",
+      "goAdjust": "去调整",
+      "allUnavailableTitle": "「{{name}}」现在没有可用的执行机器",
+      "offlineTitle": "{{name}} 当前离线",
+      "offlineHint": "上下文都在那台机器上，不会改派。等它上线，或用同样的开头新建一个会话。",
+      "offlineNewSession": "新建一个会话",
+      "reasons": {
+        "orphanBackend": "该执行目标引用的后端已不存在",
+        "backendRequiresProvider": "需指定 LLM Provider",
+        "providerInactive": "LLM 供应商未激活",
+        "remoteProviderMissing": "远端缺少 LLM 供应商",
+        "gatewayNotRunning": "本地网关未启动",
+        "remoteOpenclawUnavailable": "远端 OpenClaw 暂不可用",
+        "unknownBackend": "未知后端类型",
+        "unpaired": "这台电脑未配对它",
+        "offline": "离线",
+        "projectPathMissing": "这台机器上没有配置这个项目的路径"
+      }
     },
     "launchCommand": {
       "copy": "复制启动命令",
@@ -1055,8 +1084,6 @@
       "itemPrefix": "在项目中新建对话：",
       "itemTitle": "在项目中新建对话：{{agentName}}",
       "memberHeading": "在 {{projectName}} 中新建 chat",
-      "missingRemotePathWarning": "[command-palette] 「{{agentName}}」在该项目的远端机器上没有配置路径，请到「项目设置 · 成员」补齐",
-      "offlineWarning": "[command-palette] 「{{agentName}}」所在的设备「{{deviceName}}」当前离线，无法启动会话",
       "otherHeading": "其它 Agent",
       "notInProject": "不在该项目"
     },
@@ -1717,6 +1744,17 @@
       "loadFailed": "加载失败：{{error}}",
       "reorderFailed": "项目顺序保存失败：{{error}}"
     },
+    "localPath": {
+      "badge": "未配置",
+      "allMissingTitle": "这台设备还没有为任何项目配置路径",
+      "allMissingDescription": "账号里的 {{count}} 个项目都在，指定各自的目录后就能在本机开会话。",
+      "specifyPath": "指定路径…",
+      "mergeIntoExisting": "合并到已有项目…",
+      "specifyFailed": "指定路径失败：{{error}}",
+      "unconfiguredInline": "这台设备还没有配置",
+      "unconfiguredHint": "这个项目从账号同步而来，指定目录后才能在本机开会话。",
+      "specifyShort": "指定…"
+    },
     "search": {
       "aria": "搜索项目 / 会话",
       "clear": "清空筛选",
@@ -1763,6 +1801,21 @@
     "insertAfterAI": "AI 完成后插入",
     "notCancellable": "不可撤回（codex 后端）",
     "notCancellableTitle": "codex turn/steer 协议一发即不可撤"
+  },
+  "projectMerge": {
+    "title": "合并到已有项目",
+    "description": "两个项目会变成一个。这个动作不能一键撤销。",
+    "pickTargetLabel": "合并到",
+    "pickTargetPlaceholder": "选择要合并到的项目…",
+    "noCandidates": "没有其它项目可以合并",
+    "keepPathNote": "保留本机项目的本机路径，会话照常能起。",
+    "reassignNote": "两边的会话、成员 Agent、子项目与远端路径记录都会归到合并后的项目下。",
+    "identityNote": "以账号里那一个为准：名称、图标、颜色、描述取账号侧的值。",
+    "confirm": "合并",
+    "cancel": "取消",
+    "errors": {
+      "mergeFailed": "合并失败：{{error}}"
+    }
   },
   "quitConfirm": {
     "title": "退出 Agentre？",
@@ -2039,11 +2092,42 @@
         "title": "AGENT 后端",
         "unlinkedProvider": "未绑定 LLM 供应商"
       },
-      "backendHints": {
-        "builtin": "走内置 SDK 调用 LLM 供应商，工具内嵌执行。",
-        "claudeCode": "通过 Claude Code CLI 执行任务，工具调用经 CLI 中转。",
-        "codex": "通过 Codex CLI 执行任务，工具调用经 CLI 中转。",
-        "default": "选择一个 Agent 后端来执行任务。"
+      "execTargets": {
+        "title": "执行目标",
+        "add": "添加",
+        "addFull": "添加执行目标",
+        "replace": "更换",
+        "remove": "移除",
+        "moveUp": "上移执行目标",
+        "moveDown": "下移执行目标",
+        "dragHandle": "拖拽排序（也可按 ↑ / ↓ 方向键）",
+        "moved": "已移到第 {{position}} 位，共 {{total}} 位。",
+        "currentlyActive": "当前生效",
+        "online": "在线",
+        "offline": "离线",
+        "localMachine": "本机",
+        "hint": "按顺序尝试，第一个可用的胜出。可以混用不同后端。",
+        "emptyTitle": "还没有执行目标",
+        "emptyHint": "至少要有一项，这个 Agent 才能起会话。",
+        "saveRejected": "保存被拒：请至少添加一个执行目标。",
+        "allUnavailableTitle": "「{{name}}」现在没有可用的执行机器",
+        "addPanel": {
+          "searchPlaceholder": "搜索机器或后端…",
+          "alreadyInList": "已在列表中",
+          "unpaired": "未配对"
+        },
+        "reasons": {
+          "orphanBackend": "该执行目标引用的后端已不存在",
+          "backendRequiresProvider": "需指定 LLM Provider",
+          "providerInactive": "LLM 供应商未激活",
+          "remoteProviderMissing": "远端缺少 LLM 供应商",
+          "gatewayNotRunning": "本地网关未启动",
+          "remoteOpenclawUnavailable": "远端 OpenClaw 暂不可用",
+          "unknownBackend": "未知后端类型",
+          "unpaired": "这台电脑未配对它",
+          "offline": "离线",
+          "projectPathMissing": "这台机器上没有配置这个项目的路径"
+        }
       },
       "basicInfo": "基本信息",
       "charCount": "{{count}} 字",
@@ -2067,20 +2151,25 @@
         "sectionTitle": "技能 · SKILL PACKS",
         "manage": "管理技能",
         "count": "继承 {{inherit}} · 强制开 {{on}} · 强制关 {{off}}",
+        "countCompact": "继承 {{inherit}} · 开 {{on}} · 关 {{off}}",
         "inheritNote": "灰=继承全局已启用 · 蓝=仅此 agent 强制开 · 红=仅此 agent 强制关(不动全局)。改动下次起新会话生效。",
         "empty": "未授予技能包",
         "personalNote": "始终可用 · 个人技能（~/.claude/skills）不可单独开关",
         "summary": "{{enabled}} 启用 · {{disabled}} 禁用",
-        "title": "技能"
+        "title": "技能",
+        "copyFrom": "复制自",
+        "copyFromDisabledHint": "后端类型不同，包 ID 对不上",
+        "offlineNote": "机器离线，列不出可添加的包 · 已授权的仍可移除"
       },
       "skillsGate": {
         "pill": "backend 不支持",
         "title": "当前 backend 不支持技能",
-        "description": "技能是 Claude Code 原生能力 · 切换到 Claude Code 后端即可启用并配置"
+        "description": "技能是 Claude Code 原生能力 · 添加一档 Claude Code 类型的执行目标即可为它单独启用并配置"
       },
       "skillPicker": {
         "title": "添加技能 · Skill Packs",
         "subtitle": "一个包 = 一组 skill，按 agent 授权",
+        "subtitleForTarget": "第 {{index}} 档 · {{machine}} · {{backend}} —— 只影响这一档",
         "searchPlaceholder": "搜索技能包 / 描述…",
         "personalNote": "个人技能（~/.claude/skills）始终可用，CLI 不支持单独开关"
       },
@@ -2263,6 +2352,69 @@
       "piDescription": "调用 Pi Skill"
     }
   },
+  "sync": {
+    "title": "同步",
+    "description": "你的 Agent、部门、项目和项目路径，在所有已登录的桌面端之间保持一致。",
+    "status": {
+      "title": "同步状态",
+      "description": "改动会在 30 秒内送到你的其他桌面端。",
+      "badge": {
+        "upToDate": "已是最新",
+        "pending": "{{count}} 项待同步",
+        "unreachable": "连不上"
+      },
+      "lastSuccess": "上次成功同步",
+      "pending": "待同步",
+      "pendingCount": "{{count}} 项",
+      "unreachableTitle": "连不上账号服务器",
+      "unreachableDetail": "本地改动照常保存，连上后会自动补上去。正在按退避重试。",
+      "errorTitle": "同步失败",
+      "retry": "立即重试",
+      "retrying": "重试中…"
+    },
+    "lostChanges": {
+      "title": "没能同步的改动",
+      "description": "本地改动没能生效时，那个版本保留在这里 30 天，可随时恢复。",
+      "count": "{{count}} 条",
+      "empty": "所有改动都同步成功了。",
+      "reason": {
+        "overwritten": "被覆盖",
+        "discarded": "引用丢失",
+        "rejected": "超时未上传"
+      },
+      "overwrittenFrom": "来自「{{device}}」",
+      "discardedDetail": "依赖的对象超期未到达本机",
+      "rejectedDetail": "设备离线超过 30 天，已按服务端为准",
+      "entity": {
+        "project": "项目",
+        "department": "部门",
+        "agent": "Agent",
+        "agentBackend": "Agent 后端",
+        "execTarget": "执行目标",
+        "projectMember": "项目成员",
+        "projectLocation": "项目路径"
+      },
+      "content": "内容",
+      "restore": "恢复为我的版本",
+      "restoreHint": "恢复是一次普通修改，会照常同步到其他机器。",
+      "restoring": "恢复中…",
+      "restoreSucceeded": "已恢复",
+      "restoreFailed": "恢复失败",
+      "deletedBadge": "已被删除",
+      "deletedTitle": "这个 {{entity}} 已在「{{device}}」上被删除，恢复不会让它回来。",
+      "deletedTitleUnknownDevice": "这个 {{entity}} 已被删除，恢复不会让它回来。",
+      "deletedDescription": "恢复会把已删除的对象重新推上去，其他设备上它会无缘无故重新出现。你可以按下面这份内容新建一个——内容一模一样，但它是一个新对象。",
+      "recreate": "按这份内容新建",
+      "recreating": "新建中…",
+      "recreateSucceeded": "已新建",
+      "recreateFailed": "新建失败",
+      "discard": "丢弃这条记录",
+      "discarding": "丢弃中…",
+      "discardFailed": "丢弃失败",
+      "toggleExpand": "展开查看",
+      "toggleCollapse": "收起"
+    }
+  },
   "settings": {
     "agentBackend": {
       "description": "配置 Agent 的执行引擎与对应模型。工作目录 / 权限模式等运行时参数下放到「组织架构 → Agent」单独配置。",
@@ -2333,6 +2485,7 @@
       "remoteDevices": "远端",
       "settings": "设置",
       "skillsTools": "技能 / 工具",
+      "sync": "同步",
       "versionLogs": "版本 & 更新"
     },
     "underConstruction": {

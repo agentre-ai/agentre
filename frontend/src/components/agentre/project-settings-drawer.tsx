@@ -41,8 +41,10 @@ import {
   ProjectLocationRemove,
   ProjectLocationUpsert,
   ProjectRemoveMember,
+  ProjectSetLocalPath,
   ProjectUpdate,
   RemoteDeviceList,
+  SelectDirectory,
 } from "../../../wailsjs/go/app/App";
 import type { chat_svc, app } from "../../../wailsjs/go/models";
 import { DeviceTag } from "./device-tag";
@@ -244,6 +246,9 @@ function BasicTab({
   const [description, setDescription] = React.useState(p.description);
   const [saving, setSaving] = React.useState(false);
   const [err, setErr] = React.useState<string | null>(null);
+  // R10：本机未配置路径的项目在这里就地指定，指定后与本机创建的项目无任何差别。
+  const [specifying, setSpecifying] = React.useState(false);
+  const [specifyErr, setSpecifyErr] = React.useState<string | null>(null);
 
   const dirty =
     name.trim() !== p.name ||
@@ -267,6 +272,21 @@ function BasicTab({
       setErr(String(e));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSpecifyPath = async () => {
+    setSpecifyErr(null);
+    setSpecifying(true);
+    try {
+      const picked = await SelectDirectory(t("projectNew.selectDirectory"));
+      if (!picked) return;
+      await ProjectSetLocalPath({ id: p.id, path: picked });
+      onSaved();
+    } catch (e) {
+      setSpecifyErr(String(e));
+    } finally {
+      setSpecifying(false);
     }
   };
 
@@ -313,11 +333,39 @@ function BasicTab({
         />
       </Field>
       <Field label={t("projectSettings.basic.localPathReadonly")}>
-        <Input
-          value={p.path}
-          readOnly
-          className="h-9 cursor-default bg-secondary/50 font-mono text-xs text-muted-foreground"
-        />
+        {p.localPathMissing ? (
+          <div className="flex flex-col gap-1">
+            <div className="flex h-9 items-center justify-between gap-2 rounded-md border border-input bg-secondary/50 px-2.5">
+              <span className="font-mono text-xs text-muted-foreground">
+                {t("projects.localPath.unconfiguredInline")}
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                className="h-6 px-2 text-2xs"
+                disabled={specifying}
+                onClick={() => void handleSpecifyPath()}
+              >
+                {specifying ? (
+                  <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+                ) : null}
+                {t("projects.localPath.specifyShort")}
+              </Button>
+            </div>
+            <p className="text-2xs text-muted-foreground">
+              {t("projects.localPath.unconfiguredHint")}
+            </p>
+            {specifyErr ? (
+              <p className="text-2xs text-destructive">{specifyErr}</p>
+            ) : null}
+          </div>
+        ) : (
+          <Input
+            value={p.path}
+            readOnly
+            className="h-9 cursor-default bg-secondary/50 font-mono text-xs text-muted-foreground"
+          />
+        )}
       </Field>
       {err ? (
         <div className="rounded-md border border-destructive bg-destructive-soft px-3 py-2 text-2xs text-destructive">

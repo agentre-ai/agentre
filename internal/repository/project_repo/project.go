@@ -26,6 +26,10 @@ type ProjectRepo interface {
 	ListByParent(ctx context.Context, parentID int64) ([]*project_entity.Project, error)
 	NextSortOrder(ctx context.Context, parentID int64) (int, error)
 	ReorderSiblings(ctx context.Context, parentID int64, orderedIDs []int64) error
+	// ReassignParent 把 parent_id 从 fromParentID 整批改挂到 toParentID（R11a 的
+	// 合并）。WHERE 里**只有 parent_id**，刻意不带 status —— 合并后不允许留下任何
+	// 指向已消失项目的引用，软删的子项目也算。
+	ReassignParent(ctx context.Context, fromParentID, toParentID int64) error
 	HasActiveChildren(ctx context.Context, id int64) (bool, error)
 	Delete(ctx context.Context, id int64) error
 }
@@ -49,11 +53,16 @@ func (r *projectRepo) Create(ctx context.Context, p *project_entity.Project) err
 		p.Createtime = now
 	}
 	p.Updatetime = now
+	// 同步标识在行创建时就地生成，未登录期间也照常写入（R1/R12a）。
+	p.EnsureSyncID()
 	return db.Ctx(ctx).Create(p).Error
 }
 
 func (r *projectRepo) Update(ctx context.Context, p *project_entity.Project) error {
 	p.Updatetime = time.Now().UnixMilli()
+	// 迁移前已存在、还没有标识的历史行在下一次落库时补齐（JIT），已有标识的行
+	// 原样保留（R1：终身不变）。
+	p.EnsureSyncID()
 	return db.Ctx(ctx).Save(p).Error
 }
 
@@ -101,6 +110,16 @@ func (r *projectRepo) ListByParent(ctx context.Context, parentID int64) ([]*proj
 		Order("sort_order ASC, id ASC").
 		Find(&rows).Error
 	return rows, err
+}
+
+// ReassignParent 见接口注释：WHERE 里只有 parent_id，没有 status。
+func (r *projectRepo) ReassignParent(ctx context.Context, fromParentID, toParentID int64) error {
+	return db.Ctx(ctx).Model(&project_entity.Project{}).
+		Where("parent_id = ?", fromParentID).
+		Updates(map[string]any{
+			"parent_id":  toParentID,
+			"updatetime": time.Now().UnixMilli(),
+		}).Error
 }
 
 func (r *projectRepo) NextSortOrder(ctx context.Context, parentID int64) (int, error) {

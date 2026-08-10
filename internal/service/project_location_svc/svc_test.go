@@ -32,9 +32,9 @@ func TestUpsert(t *testing.T) {
 		Convey("新建：no existing row → repo.Create", func() {
 			ctx, repo, rd, svc := setupSvc(t)
 			rd.EXPECT().Get(ctx, int64(7)).Return(
-				&remote_device_svc.DeviceView{ID: 7, Name: "linux-srv", Online: true}, nil,
+				&remote_device_svc.DeviceView{ID: 7, Name: "linux-srv", Online: true, DaemonFingerprint: "fp-7"}, nil,
 			).AnyTimes()
-			repo.EXPECT().FindByProjectAndDevice(ctx, int64(1), "7").Return(nil, gorm.ErrRecordNotFound)
+			repo.EXPECT().FindByProjectAndFingerprint(ctx, int64(1), "fp-7").Return(nil, gorm.ErrRecordNotFound)
 			repo.EXPECT().Create(ctx, gomock.Any()).DoAndReturn(
 				func(_ context.Context, p *project_location_entity.ProjectLocation) error {
 					p.ID = 42
@@ -48,17 +48,30 @@ func TestUpsert(t *testing.T) {
 			So(v.DeviceName, ShouldEqual, "linux-srv")
 			So(v.Online, ShouldBeTrue)
 		})
-		Convey("更新：existing row → repo.UpdatePath", func() {
+		Convey("更新：existing row（同一指纹，device_id 缓存未过期）→ repo.UpdatePath，不动缓存", func() {
 			ctx, repo, rd, svc := setupSvc(t)
 			rd.EXPECT().Get(ctx, int64(7)).Return(
-				&remote_device_svc.DeviceView{ID: 7, Name: "linux-srv", Online: true}, nil,
+				&remote_device_svc.DeviceView{ID: 7, Name: "linux-srv", Online: true, DaemonFingerprint: "fp-7"}, nil,
 			).AnyTimes()
-			existing := &project_location_entity.ProjectLocation{ID: 42, ProjectID: 1, DeviceID: "7", Path: "/old", Status: consts.ACTIVE}
-			repo.EXPECT().FindByProjectAndDevice(ctx, int64(1), "7").Return(existing, nil)
+			existing := &project_location_entity.ProjectLocation{ID: 42, ProjectID: 1, DeviceID: "7", DaemonFingerprint: "fp-7", Path: "/old", Status: consts.ACTIVE}
+			repo.EXPECT().FindByProjectAndFingerprint(ctx, int64(1), "fp-7").Return(existing, nil)
 			repo.EXPECT().UpdatePath(ctx, int64(42), "/new").Return(nil)
 			v, err := svc.Upsert(ctx, 1, "7", "/new")
 			So(err, ShouldBeNil)
 			So(v.Path, ShouldEqual, "/new")
+		})
+		Convey("更新：existing row 的 device_id 缓存过期（重新配对换了本地 id）→ 一并回填缓存", func() {
+			ctx, repo, rd, svc := setupSvc(t)
+			rd.EXPECT().Get(ctx, int64(9)).Return(
+				&remote_device_svc.DeviceView{ID: 9, Name: "linux-srv", Online: true, DaemonFingerprint: "fp-7"}, nil,
+			).AnyTimes()
+			existing := &project_location_entity.ProjectLocation{ID: 42, ProjectID: 1, DeviceID: "7", DaemonFingerprint: "fp-7", Path: "/old", Status: consts.ACTIVE}
+			repo.EXPECT().FindByProjectAndFingerprint(ctx, int64(1), "fp-7").Return(existing, nil)
+			repo.EXPECT().UpdatePath(ctx, int64(42), "/new").Return(nil)
+			repo.EXPECT().UpdateDeviceID(ctx, int64(42), "9").Return(nil)
+			v, err := svc.Upsert(ctx, 1, "9", "/new")
+			So(err, ShouldBeNil)
+			So(v.DeviceID, ShouldEqual, "9")
 		})
 		Convey("远端 device 不存在 → AgentBackendInvalidDevice", func() {
 			ctx, _, rd, svc := setupSvc(t)
@@ -69,7 +82,7 @@ func TestUpsert(t *testing.T) {
 		Convey("路径校验失败 → ProjectLocationInvalidPath", func() {
 			ctx, _, rd, svc := setupSvc(t)
 			rd.EXPECT().Get(ctx, int64(7)).Return(
-				&remote_device_svc.DeviceView{ID: 7, Name: "linux-srv", Online: true}, nil,
+				&remote_device_svc.DeviceView{ID: 7, Name: "linux-srv", Online: true, DaemonFingerprint: "fp-7"}, nil,
 			).AnyTimes()
 			_, err := svc.Upsert(ctx, 1, "7", "relative/path")
 			So(err, ShouldNotBeNil)
@@ -81,14 +94,60 @@ func TestListByProject(t *testing.T) {
 	Convey("ListByProject 包含 device 状态", t, func() {
 		ctx, repo, rd, svc := setupSvc(t)
 		repo.EXPECT().ListByProject(ctx, int64(1)).Return([]*project_location_entity.ProjectLocation{
-			{ID: 42, ProjectID: 1, DeviceID: "7", Path: "/home/me/foo", Status: consts.ACTIVE},
+			{ID: 42, ProjectID: 1, DeviceID: "7", DaemonFingerprint: "fp-7", Path: "/home/me/foo", Status: consts.ACTIVE},
 		}, nil)
-		rd.EXPECT().Get(ctx, int64(7)).Return(&remote_device_svc.DeviceView{ID: 7, Name: "linux-srv", Online: true}, nil)
+		rd.EXPECT().List(ctx).Return([]*remote_device_svc.DeviceView{
+			{ID: 7, Name: "linux-srv", Online: true, DaemonFingerprint: "fp-7"},
+		}, nil)
 		list, err := svc.ListByProject(ctx, 1)
 		So(err, ShouldBeNil)
 		So(len(list), ShouldEqual, 1)
+		So(list[0].DeviceID, ShouldEqual, "7")
 		So(list[0].DeviceName, ShouldEqual, "linux-srv")
 		So(list[0].Online, ShouldBeTrue)
+	})
+
+	Convey("R2b：本机配对表里查不到该指纹 → 该行不呈现，且清空已缓存的 device_id（数据不丢，行还在）", t, func() {
+		ctx, repo, rd, svc := setupSvc(t)
+		repo.EXPECT().ListByProject(ctx, int64(1)).Return([]*project_location_entity.ProjectLocation{
+			{ID: 43, ProjectID: 1, DeviceID: "9", DaemonFingerprint: "fp-unpaired", Path: "/srv/app", Status: consts.ACTIVE},
+		}, nil)
+		rd.EXPECT().List(ctx).Return([]*remote_device_svc.DeviceView{}, nil)
+		repo.EXPECT().UpdateDeviceID(ctx, int64(43), "").Return(nil)
+
+		list, err := svc.ListByProject(ctx, 1)
+		So(err, ShouldBeNil)
+		So(list, ShouldBeEmpty)
+	})
+
+	Convey("R2b：取得配对行后自动生效 → 回填 device_id 并呈现，用户不需要再做第二件事", t, func() {
+		ctx, repo, rd, svc := setupSvc(t)
+		repo.EXPECT().ListByProject(ctx, int64(1)).Return([]*project_location_entity.ProjectLocation{
+			{ID: 44, ProjectID: 1, DeviceID: "", DaemonFingerprint: "fp-newly-paired", Path: "/srv/app2", Status: consts.ACTIVE},
+		}, nil)
+		rd.EXPECT().List(ctx).Return([]*remote_device_svc.DeviceView{
+			{ID: 11, Name: "new-box", Online: true, DaemonFingerprint: "fp-newly-paired"},
+		}, nil)
+		repo.EXPECT().UpdateDeviceID(ctx, int64(44), "11").Return(nil)
+
+		list, err := svc.ListByProject(ctx, 1)
+		So(err, ShouldBeNil)
+		So(len(list), ShouldEqual, 1)
+		So(list[0].DeviceID, ShouldEqual, "11")
+		So(list[0].DeviceName, ShouldEqual, "new-box")
+	})
+
+	Convey("多条未解析记录（不同指纹、同一项目）可并存：各自独立清空缓存，都不呈现", t, func() {
+		ctx, repo, rd, svc := setupSvc(t)
+		repo.EXPECT().ListByProject(ctx, int64(1)).Return([]*project_location_entity.ProjectLocation{
+			{ID: 45, ProjectID: 1, DeviceID: "", DaemonFingerprint: "fp-a", Path: "/srv/a", Status: consts.ACTIVE},
+			{ID: 46, ProjectID: 1, DeviceID: "", DaemonFingerprint: "fp-b", Path: "/srv/b", Status: consts.ACTIVE},
+		}, nil)
+		rd.EXPECT().List(ctx).Return([]*remote_device_svc.DeviceView{}, nil)
+
+		list, err := svc.ListByProject(ctx, 1)
+		So(err, ShouldBeNil)
+		So(list, ShouldBeEmpty)
 	})
 }
 

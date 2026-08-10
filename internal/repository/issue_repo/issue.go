@@ -30,6 +30,10 @@ type IssueRepo interface {
 	Update(ctx context.Context, i *issue_entity.Issue) error
 	Find(ctx context.Context, id int64) (*issue_entity.Issue, error)
 	List(ctx context.Context, filter ListFilter) ([]*issue_entity.Issue, error)
+	// ReassignProject 把 project_id 从 fromProjectID 整批改挂到 toProjectID（R11a
+	// 的项目合并）。刻意**不带 status 过滤**：软删的 issue 在 List 里看不见，逐行
+	// 改挂会把它们留在原地指向一个已消失的项目。
+	ReassignProject(ctx context.Context, fromProjectID, toProjectID int64) error
 	CountByState(ctx context.Context, projectID int64) (open int64, closed int64, err error)
 	StageCounts(ctx context.Context, filter ListFilter) (map[string]int64, error)
 	Delete(ctx context.Context, id int64) error
@@ -106,6 +110,16 @@ func (r *issueRepo) List(ctx context.Context, filter ListFilter) ([]*issue_entit
 	var rows []*issue_entity.Issue
 	err := q.Order(order).Find(&rows).Error
 	return rows, err
+}
+
+// ReassignProject 见接口注释：WHERE 里只有 project_id，没有 status。
+func (r *issueRepo) ReassignProject(ctx context.Context, fromProjectID, toProjectID int64) error {
+	return db.Ctx(ctx).Model(&issue_entity.Issue{}).
+		Where("project_id = ?", fromProjectID).
+		Updates(map[string]any{
+			"project_id": toProjectID,
+			"updatetime": time.Now().UnixMilli(),
+		}).Error
 }
 
 func (r *issueRepo) CountByState(ctx context.Context, projectID int64) (int64, int64, error) {

@@ -9,6 +9,7 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/cago-frame/cago/pkg/i18n"
 
+	"github.com/agentre-ai/agentre/internal/model/entity/syncmeta_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 )
 
@@ -29,24 +30,32 @@ type AgentToolItem struct {
 
 // Agent 一条 Agent 记录。
 type Agent struct {
-	ID             int64  `gorm:"column:id;primaryKey;autoIncrement"`
-	Name           string `gorm:"column:name;type:text;not null"`
-	Description    string `gorm:"column:description;type:text;not null;default:''"`
-	AvatarColor    string `gorm:"column:avatar_color;type:text;not null;default:''"`
-	AvatarIcon     string `gorm:"column:avatar_icon;type:text;not null;default:''"`
-	AvatarDataURL  string `gorm:"column:avatar_data_url;type:text;not null;default:''"`
-	SystemBadge    string `gorm:"column:system_badge;type:text;not null;default:''"`
-	DepartmentID   int64  `gorm:"column:department_id;type:bigint;not null;default:0"`
-	ParentAgentID  int64  `gorm:"column:parent_agent_id;type:bigint;not null;default:0"`
+	ID            int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	Name          string `gorm:"column:name;type:text;not null"`
+	Description   string `gorm:"column:description;type:text;not null;default:''"`
+	AvatarColor   string `gorm:"column:avatar_color;type:text;not null;default:''"`
+	AvatarIcon    string `gorm:"column:avatar_icon;type:text;not null;default:''"`
+	AvatarDataURL string `gorm:"column:avatar_data_url;type:text;not null;default:''"`
+	SystemBadge   string `gorm:"column:system_badge;type:text;not null;default:''"`
+	DepartmentID  int64  `gorm:"column:department_id;type:bigint;not null;default:0"`
+	ParentAgentID int64  `gorm:"column:parent_agent_id;type:bigint;not null;default:0"`
+	// AgentBackendID 是 Agent 执行目标列表的**派生值**：sort_order 最小的那一档，
+	// 没有目标行则为 0。仓储读取时一律由 agent_exec_targets 补齐；agents 表的
+	// agent_backend_id 列只保留写入供回滚窗口用，不再被读取（R15）。
 	AgentBackendID int64  `gorm:"column:agent_backend_id;type:bigint;not null;default:0"`
 	SortOrder      int    `gorm:"column:sort_order;type:int;not null;default:0"`
 	PromptJSON     string `gorm:"column:prompt_json;type:text;not null;default:'[]'"`
-	SkillsJSON     string `gorm:"column:skills_json;type:text;not null;default:'[]'"`
-	ToolsJSON      string `gorm:"column:tools_json;type:text;not null;default:'[]'"`
-	Status         int    `gorm:"column:status;type:int;not null;default:1"`
-	Pinned         bool   `gorm:"column:pinned;type:boolean;not null;default:0"`
-	Createtime     int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
-	Updatetime     int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
+	// SkillsJSON 保留列，只为迁移前的回滚窗口与仓储写入兼容而留在结构体上；技能
+	// 授权的读取与富方法（GetSkills 等）已下沉到 AgentExecTarget（R15e）。业务代码
+	// 不应再直接消费这个字段的语义，只应把它当成传给仓储层的原始载荷。
+	SkillsJSON string `gorm:"column:skills_json;type:text;not null;default:'[]'"`
+	ToolsJSON  string `gorm:"column:tools_json;type:text;not null;default:'[]'"`
+	Status     int    `gorm:"column:status;type:int;not null;default:1"`
+	Pinned     bool   `gorm:"column:pinned;type:boolean;not null;default:0"`
+	Createtime int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
+	Updatetime int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
+	// SyncMeta 账号级同步元数据（R1，366 行）。
+	syncmeta_entity.SyncMeta `gorm:"embedded"`
 }
 
 func (*Agent) TableName() string { return "agents" }
@@ -72,47 +81,6 @@ func (a *Agent) SetPrompt(lines []string) {
 	}
 	b, _ := json.Marshal(lines)
 	a.PromptJSON = string(b)
-}
-
-func (a *Agent) GetSkills() []AgentSkillItem {
-	out := []AgentSkillItem{}
-	if a == nil || a.SkillsJSON == "" {
-		return out
-	}
-	_ = json.Unmarshal([]byte(a.SkillsJSON), &out)
-	if out == nil {
-		out = []AgentSkillItem{}
-	}
-	return out
-}
-
-func (a *Agent) SetSkills(items []AgentSkillItem) {
-	if items == nil {
-		items = []AgentSkillItem{}
-	}
-	b, _ := json.Marshal(items)
-	a.SkillsJSON = string(b)
-}
-
-// GetEnabledPackIDs 返回 enabled 的技能包 id。
-func (a *Agent) GetEnabledPackIDs() []string {
-	out := []string{}
-	for _, it := range a.GetSkills() {
-		if it.Enabled {
-			out = append(out, it.ID)
-		}
-	}
-	return out
-}
-
-// SkillPackEnabled 报告某技能包是否开启。
-func (a *Agent) SkillPackEnabled(id string) bool {
-	for _, it := range a.GetSkills() {
-		if it.ID == id {
-			return it.Enabled
-		}
-	}
-	return false
 }
 
 func (a *Agent) GetTools() []AgentToolItem {
@@ -200,9 +168,8 @@ func (a *Agent) Check(ctx context.Context) error {
 	if !isValidJSONArray(a.PromptJSON) {
 		return i18n.NewError(ctx, code.AgentInvalidPayload)
 	}
-	if !isValidJSONArray(a.SkillsJSON) {
-		return i18n.NewError(ctx, code.AgentInvalidPayload)
-	}
+	// SkillsJSON 不再在这里校验：技能授权的存放位置与校验职责已下沉到
+	// AgentExecTarget（R15e），Agent 行上的这一列只是遗留写入载荷。
 	if !isValidJSONArray(a.ToolsJSON) {
 		return i18n.NewError(ctx, code.AgentInvalidPayload)
 	}

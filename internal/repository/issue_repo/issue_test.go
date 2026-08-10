@@ -190,3 +190,17 @@ func TestIssueUpdate_WritesStagePosition(t *testing.T) {
 	require.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+// TestIssueReassignProject 见 SessionRepo.ReassignProject 的同名用例：WHERE 里
+// 只能有 project_id，软删的 issue 也得跟着改挂（R11a）。
+func TestIssueReassignProject(t *testing.T) {
+	ctx, mock, repo := setupIssueRepo(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `issues` SET `project_id`=\\?,`updatetime`=\\? WHERE project_id = \\?$").
+		WithArgs(int64(9), sqlmock.AnyArg(), int64(4)).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.ReassignProject(ctx, 4, 9))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

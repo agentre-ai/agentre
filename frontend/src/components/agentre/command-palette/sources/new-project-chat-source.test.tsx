@@ -428,4 +428,52 @@ describe("newProjectChatSource.onSelect — 项目作用域分发", () => {
     );
     expect(handler).toHaveBeenCalledWith(42, agent);
   });
+
+  // R15: 这一行的 chip 只反映 Agent 有序执行目标列表第一档的设备/路径；离线或
+  // 没配路径的档现在由 chat_svc.PickExecTarget 在首发 Send 时自动跳过、落到下一个
+  // 可用的档，不再由命令面板静默拦截。之前这里 offline / 无 locationPath 会
+  // console.warn 后直接 return，用户点了完全没反应；改成始终照常派发。
+  it("member agent whose first target is offline still dispatches (R15 falls through to the next target, no silent return)", () => {
+    const handler = vi.fn();
+    useNewChatContextStore.getState().setContext({
+      projectID: 42,
+      projectName: "后端重构",
+    });
+    useNewChatContextStore.getState().setNewSelectionHandler(handler);
+
+    const agent = mkAgent({
+      id: 7,
+      deviceID: "3",
+      deviceName: "构建机",
+      online: false,
+    });
+    const item = mkItem({ agent, isMember: true });
+    const ctx = mkCtx("/projects");
+    newProjectChatSource.onSelect(item, ctx);
+
+    expect(handler).toHaveBeenCalledWith(42, agent);
+    expect(readLastAgentId()).toBe(7);
+  });
+
+  it("member agent whose first (remote) target has no configured location still dispatches (R15 falls through)", () => {
+    const handler = vi.fn();
+    useNewChatContextStore.getState().setContext({
+      projectID: 42,
+      projectName: "后端重构",
+    });
+    useNewChatContextStore.getState().setNewSelectionHandler(handler);
+
+    const agent = mkAgent({
+      id: 7,
+      deviceID: "3",
+      deviceName: "构建机",
+      online: true,
+    });
+    // locationPath 缺失 = 这台机器没配这个项目的路径。
+    const item = mkItem({ agent, isMember: true, locationPath: undefined });
+    const ctx = mkCtx("/projects");
+    newProjectChatSource.onSelect(item, ctx);
+
+    expect(handler).toHaveBeenCalledWith(42, agent);
+  });
 });

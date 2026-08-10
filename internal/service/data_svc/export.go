@@ -116,6 +116,17 @@ func (s *dataSvc) Export(ctx context.Context, req *ExportRequest) (*ExportResult
 		if err != nil {
 			return nil, err
 		}
+		agentIDs := make([]int64, 0, len(agents))
+		for _, a := range agents {
+			agentIDs = append(agentIDs, a.ID)
+		}
+		// 每个 Agent 的完整有序执行目标列表（R15f）：AgentBackendID / SkillsJSON
+		// 只是 sort_order 最小那一档的派生值,老 bundle 兼容字段继续靠它们撑,但
+		// 真正的往返载荷是这里取到的整张列表。
+		targetsByAgent, err := agent_repo.AgentExecTarget().ListByAgents(ctx, agentIDs)
+		if err != nil {
+			return nil, err
+		}
 
 		deptKey := make(map[int64]string, len(depts))
 		agentKey := make(map[int64]string, len(agents))
@@ -132,7 +143,7 @@ func (s *dataSvc) Export(ctx context.Context, req *ExportRequest) (*ExportResult
 		}
 		bundle.Items.Agents = make([]BundleAgent, 0, len(agents))
 		for _, a := range agents {
-			bundle.Items.Agents = append(bundle.Items.Agents, toBundleAgent(a, deptKey, agentKey, backendKey))
+			bundle.Items.Agents = append(bundle.Items.Agents, toBundleAgent(a, deptKey, agentKey, backendKey, targetsByAgent[a.ID]))
 		}
 		summary[string(ScopeOrganization)] = len(bundle.Items.Departments) + len(bundle.Items.Agents)
 	}
@@ -219,7 +230,7 @@ func toBundleDept(d *department_entity.Department, deptKey, agentKey map[int64]s
 	return out
 }
 
-func toBundleAgent(a *agent_entity.Agent, deptKey, agentKey, backendKey map[int64]string) BundleAgent {
+func toBundleAgent(a *agent_entity.Agent, deptKey, agentKey, backendKey map[int64]string, targets []*agent_entity.AgentExecTarget) BundleAgent {
 	out := BundleAgent{
 		ExportKey: agentKey[a.ID],
 		Name:      a.Name, Description: a.Description,
@@ -235,6 +246,17 @@ func toBundleAgent(a *agent_entity.Agent, deptKey, agentKey, backendKey map[int6
 	}
 	if a.AgentBackendID > 0 {
 		out.AgentBackendKey = backendKey[a.AgentBackendID]
+	}
+	// ExecTargets 一律写(哪怕是空数组):非 nil 是"新 bundle"的标记,导入侧据此
+	// 不再回落到上面的 AgentBackendKey / SkillsJSON（R15f）。targets 已经按
+	// sort_order 升序给出（agent_repo.AgentExecTarget().ListByAgents 的约定）。
+	out.ExecTargets = make([]BundleExecTarget, 0, len(targets))
+	for _, t := range targets {
+		out.ExecTargets = append(out.ExecTargets, BundleExecTarget{
+			BackendKey: backendKey[t.AgentBackendID],
+			SortOrder:  t.SortOrder,
+			SkillsJSON: t.SkillsJSON,
+		})
 	}
 	return out
 }

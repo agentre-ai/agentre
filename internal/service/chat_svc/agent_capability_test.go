@@ -18,8 +18,11 @@ import (
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 )
 
-// registerCapabilityRepos 注册 agent_repo + agent_backend_repo mock(并在测试后还原),
-// 让 resolveAgentBackend 可以走通 agent → backend 解析。
+// registerCapabilityRepos 注册 agent_repo + agent_backend_repo + AgentExecTarget mock
+// (并在测试后还原),让 resolveAgentBackend 可以走通 agent → backend 解析。
+// AgentBackendHasCapability 是无 session 的探针(resolveAgentBackend 传 sess=nil,
+// 见 chat.go),没有档可粘；执行目标列表桩为空,resolveAgentBackend 据此退化直接用
+// a.AgentBackendID(与 agent_repo.hydrateExecTargets 语义一致),不必单独搭执行目标行。
 func registerCapabilityRepos(t *testing.T, ctrl *gomock.Controller) (
 	*mock_agent_repo.MockAgentRepo,
 	*mock_agent_backend_repo.MockAgentBackendRepo,
@@ -27,14 +30,19 @@ func registerCapabilityRepos(t *testing.T, ctrl *gomock.Controller) (
 	t.Helper()
 	agentMock := mock_agent_repo.NewMockAgentRepo(ctrl)
 	backendMock := mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl)
+	execTargetMock := mock_agent_repo.NewMockAgentExecTargetRepo(ctrl)
+	execTargetMock.EXPECT().ListByAgent(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 
 	prevAgent := agent_repo.Agent()
 	prevBackend := agent_backend_repo.AgentBackend()
+	prevExecTarget := agent_repo.AgentExecTarget()
 	agent_repo.RegisterAgent(agentMock)
 	agent_backend_repo.RegisterAgentBackend(backendMock)
+	agent_repo.RegisterAgentExecTarget(execTargetMock)
 	t.Cleanup(func() {
 		agent_repo.RegisterAgent(prevAgent)
 		agent_backend_repo.RegisterAgentBackend(prevBackend)
+		agent_repo.RegisterAgentExecTarget(prevExecTarget)
 	})
 	return agentMock, backendMock
 }

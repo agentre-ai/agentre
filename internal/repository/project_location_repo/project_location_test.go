@@ -54,6 +54,48 @@ func TestProjectLocationRepo_FindByProjectAndDevice_Found(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestProjectLocationRepo_FindByProjectAndFingerprint_Found(t *testing.T) {
+	ctx, mock, repo := setupProjectLocationRepo(t)
+	mock.ExpectQuery("SELECT \\* FROM `project_locations` WHERE project_id = \\? AND daemon_fingerprint = \\? AND status = \\? LIMIT \\?").
+		WithArgs(int64(1), "fp-7", consts.ACTIVE, 1).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "device_id", "daemon_fingerprint", "path", "status"}).
+			AddRow(int64(10), int64(1), "7", "fp-7", "/home/me/foo", consts.ACTIVE))
+
+	got, err := repo.FindByProjectAndFingerprint(ctx, 1, "fp-7")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, int64(10), got.ID)
+	assert.Equal(t, "fp-7", got.DaemonFingerprint)
+	assert.Equal(t, "7", got.DeviceID)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestProjectLocationRepo_UpdateDeviceID_Backfill(t *testing.T) {
+	ctx, mock, repo := setupProjectLocationRepo(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `project_locations` SET").
+		WithArgs("9", sqlmock.AnyArg(), int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	err := repo.UpdateDeviceID(ctx, 42, "9")
+	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestProjectLocationRepo_UpdateDeviceID_Clear(t *testing.T) {
+	ctx, mock, repo := setupProjectLocationRepo(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `project_locations` SET").
+		WithArgs("", sqlmock.AnyArg(), int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	err := repo.UpdateDeviceID(ctx, 42, "")
+	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestProjectLocationRepo_ListByProject(t *testing.T) {
 	ctx, mock, repo := setupProjectLocationRepo(t)
 	mock.ExpectQuery("SELECT \\* FROM `project_locations` WHERE project_id = \\? AND status = \\?").
@@ -91,5 +133,19 @@ func TestProjectLocationRepo_Delete(t *testing.T) {
 
 	err := repo.Delete(ctx, 42)
 	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestProjectLocationRepo_ReassignProject 见 SessionRepo.ReassignProject 的同名
+// 用例：WHERE 里只能有 project_id，软删的路径记录也得跟着改挂（R11a）。
+func TestProjectLocationRepo_ReassignProject(t *testing.T) {
+	ctx, mock, repo := setupProjectLocationRepo(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `project_locations` SET `project_id`=\\?,`updatetime`=\\? WHERE project_id = \\?$").
+		WithArgs(int64(9), sqlmock.AnyArg(), int64(4)).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.ReassignProject(ctx, 4, 9))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

@@ -160,6 +160,22 @@ func TestWorkspaceResolution_Degrades(t *testing.T) {
 			assert.ErrorIs(t, err, sentinel)
 		})
 
+		// R10: 「本机未配置路径」在文件面板上必须是一个专用、可与
+		// WorkspaceFsNoCwd 区分的错误 —— resolver 返回该错误时(chat_svc 的
+		// ResolveSessionWorkspace 经 resolveSessionCwd 传上来)必须原样透出,
+		// 不能落进「cwd 为空」那个通用分支被吞成 WorkspaceFsNoCwd(三种「没有
+		// cwd」混成同一提示,用户看不出该去哪里修)。
+		convey.Convey("resolver 报本机未配置路径 → 原样透出,不被折叠成 WorkspaceFsNoCwd", func() {
+			r := newRig(t, 0, "/tmp")
+			r.svc.resolver = func(context.Context, int64) (int64, string, error) {
+				return 0, "", i18n.NewError(r.ctx, code.ProjectLocalPathMissing)
+			}
+			_, err := r.svc.GitBranches(r.ctx, 42)
+			require.Error(t, err)
+			assert.Equal(t, i18n.NewError(r.ctx, code.ProjectLocalPathMissing).Error(), err.Error())
+			assert.NotEqual(t, i18n.NewError(r.ctx, code.WorkspaceFsNoCwd).Error(), err.Error())
+		})
+
 		convey.Convey("sessionID 非法 → 不调 resolver", func() {
 			r := newRig(t, 0, "/tmp")
 			r.svc.resolver = func(context.Context, int64) (int64, string, error) {

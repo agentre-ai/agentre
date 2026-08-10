@@ -112,6 +112,35 @@ func TestAnswerUserQuestion(t *testing.T) {
 			answerAndAssertSubmitted(t, m, fake, agent_backend_entity.TypeCodex, 43, 8, 13, "ask-001", []string{"backend"})
 		})
 
+		// 会话已经钉住某一档时(R15b / 决策36),正在等待应答的这一轮已经跑在那一档
+		// 上——答案必须投回同一个 backend/runner,不能按 Agent 当前主档重新解析
+		// (那可能已经被改成别的 backend,导致投递方向与实际运行的进程对不上)。
+		convey.Convey("会话钉住某一档时答案投回那一档,不是 Agent 当前主档", func() {
+			fake := &fakeAskRunner{}
+			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, fake)
+			defer restore()
+
+			m.session.EXPECT().Find(m.ctx, int64(44)).Return(&chat_entity.Session{
+				ID: 44, AgentID: 9, Status: consts.ACTIVE, ExecAgentBackendID: 15,
+			}, nil)
+			m.agent.EXPECT().Find(m.ctx, int64(9)).Return(&agent_entity.Agent{
+				ID: 9, AgentBackendID: 14, Status: consts.ACTIVE,
+			}, nil)
+			m.backend.EXPECT().Find(m.ctx, int64(15)).Return(&agent_backend_entity.AgentBackend{
+				ID: 15, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE,
+			}, nil)
+
+			resp, err := m.svc.AnswerUserQuestion(m.ctx, &chat_svc.AnswerUserQuestionRequest{
+				SessionID: 44,
+				RequestID: "req-pinned",
+				Answers:   []blocks.AskAnswerDTO{{QuestionIndex: 0, Labels: []string{"x"}}},
+			})
+
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
+			assert.Equal(t, 1, fake.calls, "答案必须投给钉住的档(15),不能因为没解析到就静默丢弃")
+		})
+
 		convey.Convey("skipped 路径 Answers 可空", func() {
 			fake := &fakeAskRunner{}
 			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, fake)

@@ -54,6 +54,18 @@ func TestResolveProjectCwd(t *testing.T) {
 			convey.So(err, convey.ShouldBeNil)
 			convey.So(cwd, convey.ShouldEqual, "/repo")
 		})
+		convey.Convey("本地: 本机未配置路径 (R10) → ProjectLocalPathMissing,可与 ProjectLocationMissing 区分", func() {
+			ctx, mocks, svc := setupCwdTestFull(t)
+			mocks.proj.EXPECT().Find(ctx, int64(7)).Return(
+				&project_entity.Project{ID: 7, Path: "", Status: consts.ACTIVE, LocalPathMissing: true}, nil)
+			cwd, err := svc.ResolveProjectCwd(ctx, 7, "")
+			convey.So(cwd, convey.ShouldEqual, "")
+			convey.So(err, convey.ShouldNotBeNil)
+			var httpErr *httputils.Error
+			require.ErrorAs(t, err, &httpErr)
+			assert.Equal(t, code.ProjectLocalPathMissing, httpErr.Code)
+			assert.NotEqual(t, code.ProjectLocationMissing, httpErr.Code)
+		})
 		convey.Convey("本地: 项目不存在 → 报错", func() {
 			ctx, mocks, svc := setupCwdTestFull(t)
 			mocks.proj.EXPECT().Find(ctx, int64(7)).Return(nil, nil)

@@ -14,6 +14,9 @@ import (
 // ProjectAgentRepo Project ↔ Agent 成员关系仓储。
 type ProjectAgentRepo interface {
 	Add(ctx context.Context, projectID, agentID int64) error
+	// CreateFromSync 落一行下行来的成员关系，沿用它自己的同步标识（R1：跨机身份
+	// 终身不变，不能像 Add 那样就地铸一个新的）。
+	CreateFromSync(ctx context.Context, row *project_entity.ProjectAgent) error
 	Remove(ctx context.Context, projectID, agentID int64) error
 	ListByProject(ctx context.Context, projectID int64) ([]*project_entity.ProjectAgent, error)
 	ListByProjects(ctx context.Context, projectIDs []int64) (map[int64][]*project_entity.ProjectAgent, error)
@@ -34,7 +37,17 @@ func (r *projectAgentRepo) Add(ctx context.Context, projectID, agentID int64) er
 		AgentID:   agentID,
 		JoinedAt:  time.Now().UnixMilli(),
 	}
+	// 同步标识在行创建时就地生成，未登录期间也照常写入（R1/R12a）。
+	row.EnsureSyncID()
 	// 联合主键存在时报错 —— service 层用 ListByProject 预检或忽略；此 repo 不做 upsert。
+	return db.Ctx(ctx).Create(row).Error
+}
+
+func (r *projectAgentRepo) CreateFromSync(ctx context.Context, row *project_entity.ProjectAgent) error {
+	if row.JoinedAt == 0 {
+		row.JoinedAt = time.Now().UnixMilli()
+	}
+	row.EnsureSyncID()
 	return db.Ctx(ctx).Create(row).Error
 }
 

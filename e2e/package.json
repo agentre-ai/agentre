@@ -6,7 +6,8 @@
   "scripts": {
     "setup": "pnpm install && pnpm exec playwright install chromium",
     "test": "node run-e2e.mjs",
-    "test:scratch": "node run-e2e.mjs -c playwright.scratch.config.ts"
+    "test:scratch": "node run-e2e.mjs -c playwright.scratch.config.ts",
+    "test:sync": "node run-e2e-sync.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",

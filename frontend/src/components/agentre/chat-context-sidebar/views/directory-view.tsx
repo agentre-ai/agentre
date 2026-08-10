@@ -1,8 +1,12 @@
-import { ChevronDown, ChevronRight, Folder } from "lucide-react";
+import { ChevronDown, ChevronRight, Folder, FolderOpen } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
-import { WorkspaceFsListDir } from "@/../wailsjs/go/app/App";
+import {
+  ProjectSetLocalPath,
+  SelectDirectory,
+  WorkspaceFsListDir,
+} from "@/../wailsjs/go/app/App";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -45,6 +49,17 @@ type Props = {
   remote: boolean;
   showIgnored: boolean;
   /**
+   * cwd 为空时的结构化原因（R10，ChatSessionDetail.cwdUnavailableReason）。
+   * "local-path-missing" 时渲染专用空态（图标 + 指定入口），而不是复用
+   * WorkspaceFsNoCwd 那句笼统的"没有工作目录"——三种没有 cwd 的情形要能分清
+   * 该去哪里修。
+   */
+  cwdUnavailableReason?: string;
+  /** 会话绑定的项目 id；R10 空态的"指定本机路径"入口据此调用 ProjectSetLocalPath。 */
+  projectId?: number;
+  /** 指定路径成功后的回调——调用方据此重新 LoadSession，让 cwd 变成非空。 */
+  onCwdSpecified?: () => void;
+  /**
    * git 状态叠加数据（served requirement「目录模式的 git 状态叠加」）：与 Git
    * 页「未提交」档同一份数据，由调用方（ChatContextSidebar 的 useGitChanges）
    * 统一取数并下发，本组件不自己发起取数。非 git 仓库、读取失败或尚未加载时
@@ -77,6 +92,9 @@ export function DirectoryView({
   cwd,
   remote,
   showIgnored,
+  cwdUnavailableReason,
+  projectId,
+  onCwdSpecified,
   gitChanges = null,
   search = INACTIVE_DIRECTORY_SEARCH,
 }: Props) {
@@ -99,6 +117,25 @@ export function DirectoryView({
   const [expanded, setExpanded] = React.useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  // R10「本机未配置路径」空态专用：就地指定路径的忙碌态与错误信息。
+  const [specifying, setSpecifying] = React.useState(false);
+  const [specifyErr, setSpecifyErr] = React.useState<string | null>(null);
+
+  const handleSpecifyPath = async () => {
+    if (!projectId) return;
+    setSpecifyErr(null);
+    setSpecifying(true);
+    try {
+      const picked = await SelectDirectory(t("projectNew.selectDirectory"));
+      if (!picked) return;
+      await ProjectSetLocalPath({ id: projectId, path: picked });
+      onCwdSpecified?.();
+    } catch (e) {
+      setSpecifyErr(String(e));
+    } finally {
+      setSpecifying(false);
+    }
+  };
 
   // gen 是取数代际：会话 / 忽略开关变化后，先前在途的响应必须丢弃，否则慢的那
   // 一次会把新快照覆盖回旧数据。
@@ -205,6 +242,42 @@ export function DirectoryView({
   };
 
   if (cwd === "") {
+    // R10：本机未配置路径是一个专门的空态——不复用 WorkspaceFsNoCwd 那句笼统的
+    // "没有工作目录"，就地给出与项目设置基本页签同一套文案与动作。
+    if (cwdUnavailableReason === "local-path-missing") {
+      return (
+        <div
+          data-testid="directory-local-path-missing"
+          className="flex flex-col items-center gap-2 px-5 py-10 text-center"
+        >
+          <FolderOpen
+            className="size-6 text-muted-foreground"
+            aria-hidden="true"
+          />
+          <p className="text-sm font-semibold">
+            {t("chatContext.directory.localPathMissingTitle")}
+          </p>
+          <p className="max-w-[22rem] text-xs leading-relaxed text-muted-foreground">
+            {t("chatContext.directory.localPathMissingHint")}
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            className="mt-1 h-7 px-2 text-2xs"
+            disabled={specifying || !projectId}
+            onClick={() => void handleSpecifyPath()}
+          >
+            {specifying ? (
+              <Spinner className="size-3" aria-label={t("common.loading")} />
+            ) : null}
+            {t("chatContext.directory.localPathMissingAction")}
+          </Button>
+          {specifyErr ? (
+            <p className="text-2xs text-destructive">{specifyErr}</p>
+          ) : null}
+        </div>
+      );
+    }
     return <PanelNotice text={t("chatContext.directory.noCwd")} />;
   }
 

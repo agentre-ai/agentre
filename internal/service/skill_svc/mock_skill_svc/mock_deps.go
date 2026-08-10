@@ -97,6 +97,45 @@ func (mr *MockBackendLookupMockRecorder) Find(ctx, id any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Find", reflect.TypeOf((*MockBackendLookup)(nil).Find), ctx, id)
 }
 
+// MockExecTargetLookup is a mock of ExecTargetLookup interface.
+type MockExecTargetLookup struct {
+	ctrl     *gomock.Controller
+	recorder *MockExecTargetLookupMockRecorder
+	isgomock struct{}
+}
+
+// MockExecTargetLookupMockRecorder is the mock recorder for MockExecTargetLookup.
+type MockExecTargetLookupMockRecorder struct {
+	mock *MockExecTargetLookup
+}
+
+// NewMockExecTargetLookup creates a new mock instance.
+func NewMockExecTargetLookup(ctrl *gomock.Controller) *MockExecTargetLookup {
+	mock := &MockExecTargetLookup{ctrl: ctrl}
+	mock.recorder = &MockExecTargetLookupMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockExecTargetLookup) EXPECT() *MockExecTargetLookupMockRecorder {
+	return m.recorder
+}
+
+// ListByAgent mocks base method.
+func (m *MockExecTargetLookup) ListByAgent(ctx context.Context, agentID int64) ([]*agent_entity.AgentExecTarget, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListByAgent", ctx, agentID)
+	ret0, _ := ret[0].([]*agent_entity.AgentExecTarget)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListByAgent indicates an expected call of ListByAgent.
+func (mr *MockExecTargetLookupMockRecorder) ListByAgent(ctx, agentID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByAgent", reflect.TypeOf((*MockExecTargetLookup)(nil).ListByAgent), ctx, agentID)
+}
+
 // MockRemoteDiscoverer is a mock of RemoteDiscoverer interface.
 type MockRemoteDiscoverer struct {
 	ctrl     *gomock.Controller

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/cago-frame/agents/agent/blocks"
+	"github.com/cago-frame/cago/pkg/i18n"
 	"github.com/cago-frame/cago/pkg/utils/httputils"
 	"github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
@@ -537,6 +538,42 @@ func TestResolveSessionCwd_RemoteMissingLocation(t *testing.T) {
 	var httpErr *httputils.Error
 	require.ErrorAs(t, err, &httpErr)
 	assert.Equal(t, code.ProjectLocationMissing, httpErr.Code)
+}
+
+// TestResolveSessionCwd_LocalPropagatesLocalPathMissing 验证 R10:CwdResolver
+// (project_svc.ResolveSessionCwd)对「本机未配置路径」返回的确定错误经
+// resolveSessionCwd 原样透出 —— 不折叠成 ProjectLocationMissing / WorkspaceFsNoCwd,
+// 也不是 ("", nil)。chat_svc/chat.go 的全部读取点都经这条路径取 cwd,因此这里
+// 通过即代表它们随解析点自动生效(R11)。
+func TestResolveSessionCwd_LocalPropagatesLocalPathMissing(t *testing.T) {
+	prev := resolveCwdFn
+	t.Cleanup(func() { resolveCwdFn = prev })
+	resolveCwdFn = func(ctx context.Context, s *chat_entity.Session) (string, error) {
+		return "", i18n.NewError(ctx, code.ProjectLocalPathMissing)
+	}
+	sess := &chat_entity.Session{ID: 1, ProjectID: 10, AgentID: 7}
+	be := &agent_backend_entity.AgentBackend{DeviceID: ""} // local
+	cwd, err := resolveSessionCwd(context.Background(), sess, be)
+	require.Error(t, err)
+	assert.Equal(t, "", cwd)
+	var httpErr *httputils.Error
+	require.ErrorAs(t, err, &httpErr)
+	assert.Equal(t, code.ProjectLocalPathMissing, httpErr.Code)
+	assert.NotEqual(t, code.ProjectLocationMissing, httpErr.Code)
+	assert.NotEqual(t, code.WorkspaceFsNoCwd, httpErr.Code)
+}
+
+// TestCwdUnavailableReasonFor 锁住 R10 的分类表：三种"没有 cwd"必须映射到三个
+// 彼此可区分的取值，且未知/无归类原因的错误落空串兜底，不冒充第四种状态。
+func TestCwdUnavailableReasonFor(t *testing.T) {
+	ctx := context.Background()
+	assert.Equal(t, "local-path-missing",
+		cwdUnavailableReasonFor(i18n.NewError(ctx, code.ProjectLocalPathMissing)))
+	assert.Equal(t, "location-missing",
+		cwdUnavailableReasonFor(i18n.NewError(ctx, code.ProjectLocationMissing)))
+	assert.Equal(t, "", cwdUnavailableReasonFor(i18n.NewError(ctx, code.WorkspaceFsNoCwd)))
+	assert.Equal(t, "", cwdUnavailableReasonFor(errors.New("unrelated failure")))
+	assert.Equal(t, "", cwdUnavailableReasonFor(nil))
 }
 
 // ── noopDaemonClient ─────────────────────────────────────────────────────────

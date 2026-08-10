@@ -24,6 +24,7 @@ func TestCreate(t *testing.T) {
 	ctx, mock, repo := setupRepo(t)
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT INTO `agents`").WillReturnResult(sqlmock.NewResult(42, 1))
+	mock.ExpectExec("INSERT INTO `agent_exec_targets`").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	err := repo.Create(ctx, &agent_entity.Agent{Name: "Eva", DepartmentID: 1, AgentBackendID: 1, Status: consts.ACTIVE})
@@ -36,6 +37,7 @@ func TestFindByName(t *testing.T) {
 	mock.ExpectQuery("SELECT \\* FROM `agents` WHERE name = \\? AND status = \\? ORDER BY `agents`.`id` LIMIT \\?").
 		WithArgs("Eva", consts.ACTIVE, 1).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(int64(42), "Eva"))
+	expectExecTargetHydration(mock, int64(42))
 
 	got, err := repo.FindByName(ctx, "Eva")
 	require.NoError(t, err)
@@ -50,6 +52,7 @@ func TestFindSystem(t *testing.T) {
 		WithArgs("DEFAULT", consts.ACTIVE, 1).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "system_badge"}).
 			AddRow(int64(1), "CEO 助手", "DEFAULT"))
+	expectExecTargetHydration(mock, int64(1))
 
 	got, err := repo.FindSystem(ctx)
 	require.NoError(t, err)
@@ -63,6 +66,7 @@ func TestListByDepartment(t *testing.T) {
 	mock.ExpectQuery("SELECT \\* FROM `agents` WHERE department_id = \\? AND parent_agent_id = \\? AND status = \\? ORDER BY sort_order ASC, id ASC").
 		WithArgs(int64(7), int64(0), consts.ACTIVE).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(101)).AddRow(int64(102)))
+	expectExecTargetHydration(mock, int64(101), int64(102))
 
 	rows, err := repo.ListByDepartment(ctx, 7)
 	require.NoError(t, err)
@@ -75,6 +79,7 @@ func TestListByParent(t *testing.T) {
 	mock.ExpectQuery("SELECT \\* FROM `agents` WHERE parent_agent_id = \\? AND status = \\? ORDER BY sort_order ASC, id ASC").
 		WithArgs(int64(7), consts.ACTIVE).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(101)).AddRow(int64(102)))
+	expectExecTargetHydration(mock, int64(101), int64(102))
 
 	rows, err := repo.ListByParent(ctx, 7)
 	require.NoError(t, err)
@@ -84,9 +89,10 @@ func TestListByParent(t *testing.T) {
 
 func TestListByBackend(t *testing.T) {
 	ctx, mock, repo := setupRepo(t)
-	mock.ExpectQuery("SELECT \\* FROM `agents` WHERE agent_backend_id = \\? AND status = \\?").
+	mock.ExpectQuery("SELECT \\* FROM `agents` WHERE id IN \\(SELECT agent_id FROM agent_exec_targets WHERE agent_backend_id = \\?\\) AND status = \\?").
 		WithArgs(int64(3), consts.ACTIVE).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(11)))
+	expectExecTargetHydration(mock, int64(11))
 
 	rows, err := repo.ListByBackend(ctx, 3)
 	require.NoError(t, err)
@@ -96,7 +102,7 @@ func TestListByBackend(t *testing.T) {
 
 func TestCountByBackends(t *testing.T) {
 	ctx, mock, repo := setupRepo(t)
-	mock.ExpectQuery("SELECT agent_backend_id, COUNT\\(\\*\\) AS cnt FROM `agents` WHERE agent_backend_id IN \\(\\?,\\?\\) AND status = \\? GROUP BY `agent_backend_id`").
+	mock.ExpectQuery("SELECT agent_exec_targets.agent_backend_id AS agent_backend_id, COUNT\\(DISTINCT agent_exec_targets.agent_id\\) AS cnt FROM `agent_exec_targets` JOIN agents ON agents.id = agent_exec_targets.agent_id WHERE agent_exec_targets.agent_backend_id IN \\(\\?,\\?\\) AND agents.status = \\? GROUP BY `agent_exec_targets`.`agent_backend_id`").
 		WithArgs(int64(3), int64(7), consts.ACTIVE).
 		WillReturnRows(sqlmock.NewRows([]string{"agent_backend_id", "cnt"}).
 			AddRow(int64(3), int64(2)).

@@ -67,6 +67,31 @@ func TestResolveSessionWorkspace(t *testing.T) {
 		assert.Equal(t, "/local/project", cwd)
 	})
 
+	// R15b / 决策 36：会话钉住某一档之后，一切按会话解析 backend 的路径都必须回到
+	// **那一档**，不能回到 Agent 的主档。文件面板的 cwd 走的就是这条链：主档在本机、
+	// 钉住的那一档在某台 agentred 时，回到主档会拿本机路径去列远端机器的文件。
+	t.Run("会话已钉档 → 用钉住那一档的 backend，不是 Agent 主档", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+		ctx := context.Background()
+		sessionMock := registerWorkspaceRepos(t, ctrl)
+		agentMock, backendMock := registerCapabilityRepos(t, ctrl)
+		sessionMock.EXPECT().Find(ctx, int64(6)).Return(&chat_entity.Session{
+			ID: 6, AgentID: 11, ExecAgentBackendID: 13,
+		}, nil)
+		agentMock.EXPECT().Find(ctx, int64(11)).Return(&agent_entity.Agent{ID: 11, AgentBackendID: 12}, nil)
+		// 主档 12(本机)一次都不该被查；钉住的 13 才是这条会话的档。
+		backendMock.EXPECT().Find(ctx, int64(13)).Return(&agent_backend_entity.AgentBackend{
+			ID: 13, Type: string(agent_backend_entity.TypeClaudeCode), DeviceID: "4",
+		}, nil)
+
+		// deviceID 取自钉住那一档的 backend(device 4)；回到主档 12(本机)会得到 0，
+		// 文件面板就会拿本机路径去列远端机器的文件。
+		deviceID, _, err := chat_svc.NewChat(chat_svc.NoopEmitter{}).ResolveSessionWorkspace(ctx, 6)
+		require.NoError(t, err)
+		assert.Equal(t, int64(4), deviceID)
+	})
+
 	t.Run("会话不存在 → 报错", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)

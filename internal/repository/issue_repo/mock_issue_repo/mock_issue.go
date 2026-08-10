@@ -116,6 +116,20 @@ func (mr *MockIssueRepoMockRecorder) List(ctx, filter any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockIssueRepo)(nil).List), ctx, filter)
 }
 
+// ReassignProject mocks base method.
+func (m *MockIssueRepo) ReassignProject(ctx context.Context, fromProjectID, toProjectID int64) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReassignProject", ctx, fromProjectID, toProjectID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ReassignProject indicates an expected call of ReassignProject.
+func (mr *MockIssueRepoMockRecorder) ReassignProject(ctx, fromProjectID, toProjectID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReassignProject", reflect.TypeOf((*MockIssueRepo)(nil).ReassignProject), ctx, fromProjectID, toProjectID)
+}
+
 // StageCounts mocks base method.
 func (m *MockIssueRepo) StageCounts(ctx context.Context, filter issue_repo.ListFilter) (map[string]int64, error) {
 	m.ctrl.T.Helper()

@@ -6,12 +6,14 @@ import (
 	"os"
 	"testing"
 
+	"github.com/cago-frame/cago/pkg/utils/httputils"
 	"github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/project_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/repository/project_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_repo/mock_project_repo"
 	"github.com/agentre-ai/agentre/internal/service/project_svc"
@@ -72,6 +74,41 @@ func TestResolveSessionCwd(t *testing.T) {
 			})
 			require.NoError(t, err)
 			convey.So(cwd, convey.ShouldEqual, fmt.Sprintf("%s/agents/42", tmp))
+		})
+
+		// R10/R11: 本机未配置路径是显式状态位，解析点必须返回一个与
+		// ProjectLocationMissing、WorkspaceFsNoCwd 都可区分的确定错误，而不是
+		// ("", nil)（决策 21）。
+		convey.Convey("本机未配置路径 (R10) → 确定错误而不是空串加 nil", func() {
+			ctx, mockProj, svc := setupCwdTest(t)
+			mockProj.EXPECT().Find(ctx, int64(7)).Return(&project_entity.Project{
+				ID: 7, Path: "", LocalPathMissing: true,
+			}, nil)
+
+			cwd, err := svc.ResolveSessionCwd(ctx, &chat_entity.Session{
+				ID: 9, AgentID: 1, ProjectID: 7,
+			})
+			convey.So(cwd, convey.ShouldEqual, "")
+			convey.So(err, convey.ShouldNotBeNil)
+			var httpErr *httputils.Error
+			require.ErrorAs(t, err, &httpErr)
+			convey.So(httpErr.Code, convey.ShouldEqual, code.ProjectLocalPathMissing)
+			convey.So(httpErr.Code, convey.ShouldNotEqual, code.ProjectLocationMissing)
+			convey.So(httpErr.Code, convey.ShouldNotEqual, code.WorkspaceFsNoCwd)
+		})
+
+		// 用户指定路径后状态解除：同一解析点对「已配置」的项目行为不变。
+		convey.Convey("指定路径后状态解除 → 恢复正常解析", func() {
+			ctx, mockProj, svc := setupCwdTest(t)
+			mockProj.EXPECT().Find(ctx, int64(7)).Return(&project_entity.Project{
+				ID: 7, Path: "/Users/foo/Code/agentre", LocalPathMissing: false,
+			}, nil)
+
+			cwd, err := svc.ResolveSessionCwd(ctx, &chat_entity.Session{
+				ID: 9, AgentID: 1, ProjectID: 7,
+			})
+			require.NoError(t, err)
+			convey.So(cwd, convey.ShouldEqual, "/Users/foo/Code/agentre")
 		})
 	})
 }

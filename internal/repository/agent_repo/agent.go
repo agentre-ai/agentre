@@ -18,7 +18,15 @@ import (
 
 type AgentRepo interface {
 	Create(ctx context.Context, a *agent_entity.Agent) error
-	Update(ctx context.Context, a *agent_entity.Agent) error
+	// UpdateWithTargets 落 Agent 行，并把执行目标列表整表替换成 targets 给出的**完整
+	// 有序列表**（agent_svc，R15 多档编辑）。
+	//
+	// 没有「只给 Agent 行、让仓储自己折出执行目标」的那一档变体：它会把
+	// a.AgentBackendID/a.SkillsJSON 折成单元素列表，从而把对端配好的多档列表默默
+	// 截断成一档。要么给出完整列表（这里），要么明说不动列表（UpdateRow）。
+	UpdateWithTargets(ctx context.Context, a *agent_entity.Agent, targets []*agent_entity.AgentExecTarget) error
+	// UpdateRow 只落 Agent 这一行，不动它的执行目标列表（同步落地专用，见实现注释）。
+	UpdateRow(ctx context.Context, a *agent_entity.Agent) error
 	Find(ctx context.Context, id int64) (*agent_entity.Agent, error)
 	FindByName(ctx context.Context, name string) (*agent_entity.Agent, error)
 	FindSystem(ctx context.Context) (*agent_entity.Agent, error)
@@ -48,12 +56,42 @@ func NewAgent() AgentRepo          { return &agentRepo{} }
 
 type agentRepo struct{}
 
+// Create 落 Agent 行，并把它的 AgentBackendID + SkillsJSON 落成单元素执行目标列表
+// （0 = 空列表）。两张表必须同事务：只落一半会让 Agent 派发不到 backend。
+// a.SkillsJSON 是仓储写入载荷（agent_entity.Agent.SkillsJSON 字段注释）：技能授权
+// 的存放位置已下沉到执行目标行（R15e），这里只是把调用方给的值原样转落到那一行。
 func (r *agentRepo) Create(ctx context.Context, a *agent_entity.Agent) error {
-	return db.Ctx(ctx).Create(a).Error
+	// 同步标识在行创建时就地生成，未登录期间也照常写入（R1/R12a）。
+	a.EnsureSyncID()
+	return db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(a).Error; err != nil {
+			return err
+		}
+		return insertExecTargets(tx, a.ID, primaryTargetList(a.AgentBackendID, a.SkillsJSON))
+	})
 }
 
-func (r *agentRepo) Update(ctx context.Context, a *agent_entity.Agent) error {
+// UpdateRow 只落 Agent 这一行，**不动**它的执行目标列表。
+//
+// 同步落地（internal/service/sync_svc）走这条：执行目标是账号级的独立同步对象，
+// 各自带着自己的同步标识与版本，不能被 Agent 行上的派生字段 AgentBackendID 重写
+// 成单元素列表——那会把对端配好的多档列表冲掉。
+func (r *agentRepo) UpdateRow(ctx context.Context, a *agent_entity.Agent) error {
+	a.EnsureSyncID()
 	return db.Ctx(ctx).Save(a).Error
+}
+
+// UpdateWithTargets 见 AgentRepo 接口注释。
+func (r *agentRepo) UpdateWithTargets(ctx context.Context, a *agent_entity.Agent, targets []*agent_entity.AgentExecTarget) error {
+	// 迁移前已存在、还没有标识的历史行在下一次落库时补齐（JIT），已有标识的行
+	// 原样保留（R1：终身不变）。
+	a.EnsureSyncID()
+	return db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(a).Error; err != nil {
+			return err
+		}
+		return replaceExecTargets(tx, a.ID, targets)
+	})
 }
 
 func (r *agentRepo) Find(ctx context.Context, id int64) (*agent_entity.Agent, error) {
@@ -65,7 +103,7 @@ func (r *agentRepo) Find(ctx context.Context, id int64) (*agent_entity.Agent, er
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	return hydrateOne(ctx, out)
 }
 
 func (r *agentRepo) FindByName(ctx context.Context, name string) (*agent_entity.Agent, error) {
@@ -77,7 +115,7 @@ func (r *agentRepo) FindByName(ctx context.Context, name string) (*agent_entity.
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	return hydrateOne(ctx, out)
 }
 
 func (r *agentRepo) FindSystem(ctx context.Context) (*agent_entity.Agent, error) {
@@ -91,7 +129,7 @@ func (r *agentRepo) FindSystem(ctx context.Context) (*agent_entity.Agent, error)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	return hydrateOne(ctx, out)
 }
 
 func (r *agentRepo) List(ctx context.Context) ([]*agent_entity.Agent, error) {
@@ -100,7 +138,10 @@ func (r *agentRepo) List(ctx context.Context) ([]*agent_entity.Agent, error) {
 		Where("status = ?", consts.ACTIVE).
 		Order("department_id ASC, parent_agent_id ASC, sort_order ASC, id ASC").
 		Find(&rows).Error
-	return rows, err
+	if err != nil {
+		return rows, err
+	}
+	return rows, hydrateExecTargets(ctx, rows)
 }
 
 func (r *agentRepo) ListByDepartment(ctx context.Context, departmentID int64) ([]*agent_entity.Agent, error) {
@@ -109,7 +150,10 @@ func (r *agentRepo) ListByDepartment(ctx context.Context, departmentID int64) ([
 		Where("department_id = ? AND parent_agent_id = ? AND status = ?", departmentID, int64(0), consts.ACTIVE).
 		Order("sort_order ASC, id ASC").
 		Find(&rows).Error
-	return rows, err
+	if err != nil {
+		return rows, err
+	}
+	return rows, hydrateExecTargets(ctx, rows)
 }
 
 func (r *agentRepo) ListByParent(ctx context.Context, parentAgentID int64) ([]*agent_entity.Agent, error) {
@@ -118,17 +162,27 @@ func (r *agentRepo) ListByParent(ctx context.Context, parentAgentID int64) ([]*a
 		Where("parent_agent_id = ? AND status = ?", parentAgentID, consts.ACTIVE).
 		Order("sort_order ASC, id ASC").
 		Find(&rows).Error
-	return rows, err
+	if err != nil {
+		return rows, err
+	}
+	return rows, hydrateExecTargets(ctx, rows)
 }
 
+// ListByBackend 列出执行目标里引用了该 backend 的活跃 Agent。
 func (r *agentRepo) ListByBackend(ctx context.Context, backendID int64) ([]*agent_entity.Agent, error) {
 	var rows []*agent_entity.Agent
 	err := db.Ctx(ctx).
-		Where("agent_backend_id = ? AND status = ?", backendID, consts.ACTIVE).
+		Where("id IN (SELECT agent_id FROM agent_exec_targets WHERE agent_backend_id = ?) AND status = ?",
+			backendID, consts.ACTIVE).
 		Find(&rows).Error
-	return rows, err
+	if err != nil {
+		return rows, err
+	}
+	return rows, hydrateExecTargets(ctx, rows)
 }
 
+// CountByBackends 统计每个 backend 被多少个活跃 Agent 的执行目标引用。同一个 Agent
+// 即便把同一个 backend 排了两档也只算一次。
 func (r *agentRepo) CountByBackends(ctx context.Context, backendIDs []int64) (map[int64]int64, error) {
 	out := make(map[int64]int64, len(backendIDs))
 	if len(backendIDs) == 0 {
@@ -138,10 +192,11 @@ func (r *agentRepo) CountByBackends(ctx context.Context, backendIDs []int64) (ma
 		AgentBackendID int64 `gorm:"column:agent_backend_id"`
 		Cnt            int64 `gorm:"column:cnt"`
 	}
-	err := db.Ctx(ctx).Table("agents").
-		Select("agent_backend_id, COUNT(*) AS cnt").
-		Where("agent_backend_id IN ? AND status = ?", backendIDs, consts.ACTIVE).
-		Group("agent_backend_id").
+	err := db.Ctx(ctx).Table("agent_exec_targets").
+		Select("agent_exec_targets.agent_backend_id AS agent_backend_id, COUNT(DISTINCT agent_exec_targets.agent_id) AS cnt").
+		Joins("JOIN agents ON agents.id = agent_exec_targets.agent_id").
+		Where("agent_exec_targets.agent_backend_id IN ? AND agents.status = ?", backendIDs, consts.ACTIVE).
+		Group("agent_exec_targets.agent_backend_id").
 		Scan(&rows).Error
 	if err != nil {
 		return nil, err

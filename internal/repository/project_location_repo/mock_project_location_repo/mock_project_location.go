@@ -84,6 +84,21 @@ func (mr *MockProjectLocationRepoMockRecorder) FindByProjectAndDevice(ctx, proje
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindByProjectAndDevice", reflect.TypeOf((*MockProjectLocationRepo)(nil).FindByProjectAndDevice), ctx, projectID, deviceID)
 }
 
+// FindByProjectAndFingerprint mocks base method.
+func (m *MockProjectLocationRepo) FindByProjectAndFingerprint(ctx context.Context, projectID int64, fingerprint string) (*project_location_entity.ProjectLocation, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FindByProjectAndFingerprint", ctx, projectID, fingerprint)
+	ret0, _ := ret[0].(*project_location_entity.ProjectLocation)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FindByProjectAndFingerprint indicates an expected call of FindByProjectAndFingerprint.
+func (mr *MockProjectLocationRepoMockRecorder) FindByProjectAndFingerprint(ctx, projectID, fingerprint any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindByProjectAndFingerprint", reflect.TypeOf((*MockProjectLocationRepo)(nil).FindByProjectAndFingerprint), ctx, projectID, fingerprint)
+}
+
 // Get mocks base method.
 func (m *MockProjectLocationRepo) Get(ctx context.Context, id int64) (*project_location_entity.ProjectLocation, error) {
 	m.ctrl.T.Helper()
@@ -112,6 +127,48 @@ func (m *MockProjectLocationRepo) ListByProject(ctx context.Context, projectID i
 func (mr *MockProjectLocationRepoMockRecorder) ListByProject(ctx, projectID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByProject", reflect.TypeOf((*MockProjectLocationRepo)(nil).ListByProject), ctx, projectID)
+}
+
+// ReassignProject mocks base method.
+func (m *MockProjectLocationRepo) ReassignProject(ctx context.Context, fromProjectID, toProjectID int64) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReassignProject", ctx, fromProjectID, toProjectID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ReassignProject indicates an expected call of ReassignProject.
+func (mr *MockProjectLocationRepoMockRecorder) ReassignProject(ctx, fromProjectID, toProjectID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReassignProject", reflect.TypeOf((*MockProjectLocationRepo)(nil).ReassignProject), ctx, fromProjectID, toProjectID)
+}
+
+// Update mocks base method.
+func (m *MockProjectLocationRepo) Update(ctx context.Context, p *project_location_entity.ProjectLocation) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Update", ctx, p)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Update indicates an expected call of Update.
+func (mr *MockProjectLocationRepoMockRecorder) Update(ctx, p any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Update", reflect.TypeOf((*MockProjectLocationRepo)(nil).Update), ctx, p)
+}
+
+// UpdateDeviceID mocks base method.
+func (m *MockProjectLocationRepo) UpdateDeviceID(ctx context.Context, id int64, deviceID string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateDeviceID", ctx, id, deviceID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateDeviceID indicates an expected call of UpdateDeviceID.
+func (mr *MockProjectLocationRepoMockRecorder) UpdateDeviceID(ctx, id, deviceID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateDeviceID", reflect.TypeOf((*MockProjectLocationRepo)(nil).UpdateDeviceID), ctx, id, deviceID)
 }
 
 // UpdatePath mocks base method.

@@ -159,6 +159,20 @@ func (mr *MockProjectRepoMockRecorder) NextSortOrder(ctx, parentID any) *gomock.
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "NextSortOrder", reflect.TypeOf((*MockProjectRepo)(nil).NextSortOrder), ctx, parentID)
 }
 
+// ReassignParent mocks base method.
+func (m *MockProjectRepo) ReassignParent(ctx context.Context, fromParentID, toParentID int64) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReassignParent", ctx, fromParentID, toParentID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ReassignParent indicates an expected call of ReassignParent.
+func (mr *MockProjectRepoMockRecorder) ReassignParent(ctx, fromParentID, toParentID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReassignParent", reflect.TypeOf((*MockProjectRepo)(nil).ReassignParent), ctx, fromParentID, toParentID)
+}
+
 // ReorderSiblings mocks base method.
 func (m *MockProjectRepo) ReorderSiblings(ctx context.Context, parentID int64, orderedIDs []int64) error {
 	m.ctrl.T.Helper()

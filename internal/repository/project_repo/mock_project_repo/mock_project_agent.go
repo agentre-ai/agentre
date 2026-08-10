@@ -55,6 +55,20 @@ func (mr *MockProjectAgentRepoMockRecorder) Add(ctx, projectID, agentID any) *go
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Add", reflect.TypeOf((*MockProjectAgentRepo)(nil).Add), ctx, projectID, agentID)
 }
 
+// CreateFromSync mocks base method.
+func (m *MockProjectAgentRepo) CreateFromSync(ctx context.Context, row *project_entity.ProjectAgent) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CreateFromSync", ctx, row)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// CreateFromSync indicates an expected call of CreateFromSync.
+func (mr *MockProjectAgentRepoMockRecorder) CreateFromSync(ctx, row any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateFromSync", reflect.TypeOf((*MockProjectAgentRepo)(nil).CreateFromSync), ctx, row)
+}
+
 // ListByAgent mocks base method.
 func (m *MockProjectAgentRepo) ListByAgent(ctx context.Context, agentID int64) ([]*project_entity.ProjectAgent, error) {
 	m.ctrl.T.Helper()

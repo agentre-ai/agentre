@@ -82,6 +82,8 @@ func (a *App) Startup(ctx context.Context) {
 		wailsruntime.EventsEmit(a.ctx, "server.state", payload)
 	})
 	bootstrap.ServerBoot(context.Background())
+	// 工作区多端同步的下行轮询（R3：30 秒一轮）。未登录时每一轮都是空操作（R12）。
+	bootstrap.SyncBoot(context.Background())
 
 	// Remote device watcher：注入 wails 事件 emitter,Boot 拉起所有 ACTIVE 设备的 watcher。
 	// 顺带把 device online/offline 事件接到 cc_usage_svc(动态起/停 per-device 配额 ticker)。

@@ -12,7 +12,9 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/server_state_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/keychain"
 	"github.com/agentre-ai/agentre/internal/repository/server_state_repo"
+	"github.com/agentre-ai/agentre/internal/repository/syncstate_repo"
 	"github.com/agentre-ai/agentre/internal/service/server_svc"
+	"github.com/agentre-ai/agentre/internal/service/sync_svc"
 )
 
 // InitServer wires the desktop's keychain + server_state_repo + server_svc defaults.
@@ -33,7 +35,17 @@ func InitServer(ctx context.Context) error {
 	}
 	svc := server_svc.New(server_svc.NewHTTPClient(baseURL, ""), nil)
 	server_svc.SetDefault(svc)
+
+	// 工作区多端同步：server_svc 充当网络出入口，域服务通过 sync_svc.Notify 交出
+	// 改动。未登录时同步引擎自己就是空操作（R12），因此这里无条件装配。
+	syncstate_repo.RegisterSyncState(syncstate_repo.NewSyncState())
+	sync_svc.SetDefault(sync_svc.New(svc))
 	return nil
+}
+
+// SyncBoot 起 30 秒周期的下行轮询（R3）。与 ServerBoot 一样由 app.go.startup 调用。
+func SyncBoot(ctx context.Context) {
+	sync_svc.Default().Start(ctx)
 }
 
 // ServerBoot runs the per-startup server-side warm-up: ensures a device fingerprint

@@ -44,10 +44,15 @@ type departmentRepo struct{}
 func NewDepartment() DepartmentRepo { return &departmentRepo{} }
 
 func (r *departmentRepo) Create(ctx context.Context, d *department_entity.Department) error {
+	// 同步标识在行创建时就地生成，未登录期间也照常写入（R1/R12a）。
+	d.EnsureSyncID()
 	return db.Ctx(ctx).Create(d).Error
 }
 
 func (r *departmentRepo) Update(ctx context.Context, d *department_entity.Department) error {
+	// 迁移前已存在、还没有标识的历史行在下一次落库时补齐（JIT），已有标识的行
+	// 原样保留（R1：终身不变）。
+	d.EnsureSyncID()
 	return db.Ctx(ctx).Save(d).Error
 }
 

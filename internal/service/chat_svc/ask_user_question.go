@@ -93,12 +93,19 @@ func (s *chatSvc) AnswerUserQuestion(ctx context.Context, req *AnswerUserQuestio
 			zap.Int64("sessionId", req.SessionID), zap.String("requestId", req.RequestID), zap.Error(err))
 		return nil, i18n.NewError(ctx, code.AgentNotFound)
 	}
-	if a.AgentBackendID <= 0 {
+	// 会话已经钉住某一档时（R15b / 决策36）用那一档 —— 正在等待应答的这一轮已经在跑
+	// 在那一档上,答案必须投回同一个 backend/runner,不能重新按 Agent 的当前主档解析
+	// （那可能已经被改成别的 backend）。
+	backendID := a.AgentBackendID
+	if sess.ExecAgentBackendID > 0 {
+		backendID = sess.ExecAgentBackendID
+	}
+	if backendID <= 0 {
 		logger.Ctx(ctx).Warn("chat_svc.AnswerUserQuestion: agent backend required",
 			zap.Int64("sessionId", req.SessionID), zap.String("requestId", req.RequestID))
 		return nil, i18n.NewError(ctx, code.AgentBackendRequired)
 	}
-	be, err := agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
+	be, err := agent_backend_repo.AgentBackend().Find(ctx, backendID)
 	if err != nil || be == nil {
 		logger.Ctx(ctx).Warn("chat_svc.AnswerUserQuestion: agent backend not found",
 			zap.Int64("sessionId", req.SessionID), zap.String("requestId", req.RequestID), zap.Error(err))
