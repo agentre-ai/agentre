@@ -305,7 +305,6 @@ func TestGoldenSamples(t *testing.T) {
 	}
 
 	for _, gf := range buildGoldenFrames(t) {
-		gf := gf
 		t.Run(gf.name, func(t *testing.T) {
 			b, err := json.MarshalIndent(gf.body, "", "  ")
 			require.NoError(t, err)
@@ -333,8 +332,13 @@ func TestGoldenSamples(t *testing.T) {
 			}
 
 			if dir != "" {
-				require.NoError(t, os.MkdirAll(dir, 0o755), "创建黄金样本目录")
-				require.NoError(t, os.WriteFile(filepath.Join(dir, gf.name+".json"), append(b, '\n'), 0o644), "写黄金样本")
+				// G703(路径来自污点输入)在这里不成立:dir 是开发者自己在命令行给的
+				// WIRE_GOLDEN_DIR(生成器的输出目录),文件名是本文件里写死的样本名 ——
+				// 没有外部输入能操纵路径,整段也只在测试里、且只在显式带上这个环境变量
+				// 时执行。
+				require.NoError(t, os.MkdirAll(dir, 0o755), "创建黄金样本目录") //nolint:gosec // 见上
+				out := filepath.Join(dir, gf.name+".json")
+				require.NoError(t, os.WriteFile(out, append(b, '\n'), 0o644), "写黄金样本") //nolint:gosec // 见上
 			}
 		})
 	}

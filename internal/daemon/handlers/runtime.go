@@ -927,14 +927,10 @@ type sessionEmitter struct {
 	rid int64
 }
 
-// newEmitter 在 runtime.run 处理期间构造会话通知出口,捕获对端指纹并据此定下这一轮的
-// backend 会话键。
-func (h *RuntimeHandlers) newEmitter(ctx context.Context, sid int64) *sessionEmitter {
-	return h.newEmitterFor(ctx, sid, peerFingerprint(ctx))
-}
-
-// newEmitterFor 与 newEmitter 相同,但会话归属由调用方给定 —— runtime.run 用它把一轮
-// 落在**点名的 origin**名下(R9),而不是调用方自己名下那条同号会话。
+// newEmitterFor 在 runtime.run 处理期间构造会话通知出口,并据会话归属定下这一轮的
+// backend 会话键。归属由调用方给定 —— runtime.run 用它把一轮落在**点名的 origin**
+// 名下(R9),而不是调用方自己名下那条同号会话;省略 origin 时调用方传
+// peerFingerprint(ctx),即「调用方自己的对端」。
 func (h *RuntimeHandlers) newEmitterFor(ctx context.Context, sid int64, peer string) *sessionEmitter {
 	return &sessionEmitter{
 		ctx:           context.WithoutCancel(ctx),
