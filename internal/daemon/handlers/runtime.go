@@ -309,7 +309,16 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	// 通知出口必须在这里建:对端指纹只有请求 ctx 上有,而 fanout / forwardAutonomousTurn
 	// 跑在脱离 ctx 的 goroutine 里(见 sessionEmitter 注释)。它同时定下这一轮的 backend
 	// 会话键 em.rid —— 交给 backend 的一律是这个按对端隔离的键,不是客户端报的裸 id。
-	em := h.newEmitter(ctx, p.SessionID)
+	//
+	// R9:一轮可以由**别的同账号对端**在这条会话上开起来(浏览器给桌面端发起的会话发
+	// 新消息)。会话归属因此由点名的 origin 决定,而不是调用方自己的指纹 —— 与控制族
+	// 走同一条 ResolveSessionPeer 约定:省略 = 调用方自己的对端,点名别人是账号级能力
+	// (配对身份点名一律 ErrUnauthorized)。
+	runPeer, err := ResolveSessionPeer(ctx, p.PeerFingerprint, h.deps.ClaimedAccountID)
+	if err != nil {
+		return wire.RunAck{}, err
+	}
+	em := h.newEmitterFor(ctx, p.SessionID, runPeer)
 
 	// R18:「开新一轮」的发起方标记。浏览器在空闲会话上发消息时随 runtime.run 声明自己的
 	// 设备身份(SourceDevice 非空),daemon 据此在事件流开头注入一条 user_message 事件,
@@ -921,7 +930,12 @@ type sessionEmitter struct {
 // newEmitter 在 runtime.run 处理期间构造会话通知出口,捕获对端指纹并据此定下这一轮的
 // backend 会话键。
 func (h *RuntimeHandlers) newEmitter(ctx context.Context, sid int64) *sessionEmitter {
-	peer := peerFingerprint(ctx)
+	return h.newEmitterFor(ctx, sid, peerFingerprint(ctx))
+}
+
+// newEmitterFor 与 newEmitter 相同,但会话归属由调用方给定 —— runtime.run 用它把一轮
+// 落在**点名的 origin**名下(R9),而不是调用方自己名下那条同号会话。
+func (h *RuntimeHandlers) newEmitterFor(ctx context.Context, sid int64, peer string) *sessionEmitter {
 	return &sessionEmitter{
 		ctx:           context.WithoutCancel(ctx),
 		journal:       h.deps.Journal,

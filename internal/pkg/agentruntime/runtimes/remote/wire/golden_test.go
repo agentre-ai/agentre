@@ -133,9 +133,11 @@ func buildGoldenFrames(t *testing.T) []goldenFrame {
 		{
 			name: "run-params",
 			body: RunParams{
-				Backend:           json.RawMessage(`{"backendType":"claudecode"}`),
-				AgentID:           agentID,
-				SessionID:         sid,
+				Backend:   json.RawMessage(`{"backendType":"claudecode"}`),
+				AgentID:   agentID,
+				SessionID: sid,
+				// 别的对端发起的那条会话上开新一轮(R9):origin 原样带回。
+				PeerFingerprint:   "fp-desktop",
 				Cwd:               "/home/agent/proj",
 				Title:             title,
 				AgentSyncID:       agentSync,
