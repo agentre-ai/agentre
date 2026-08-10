@@ -36,6 +36,9 @@ async function emitDeviceStateChange() {
 // 测试环境默认英文 locale（既有约定，见 org/__tests__/exec-target-list.test.tsx），
 // 文案断言一律用 en/common.json 里的值；设备名/Agent 名是动态业务数据，测试里用
 // 中文只是模拟真实用户输入，不受 i18n 约束。
+//
+// 执行目标的可读标签（targetLabel）的规则：主位是 Agent 后端名字（name），本机档
+// 不带设备后缀；远端档追加"× 设备名"。测试里 name 为空的档回落到"Local"。
 
 type AvailabilityItem = {
   agentBackendId: number;
@@ -107,6 +110,12 @@ function renderLine(
   return { onOverride };
 }
 
+// 改选浮层由点击「将在 X 上运行」那一行的 chip 打开（不再有独立的"改选"按钮）。
+async function openPicker() {
+  await userEvent.click(screen.getByTestId("new-session-exec-target-chip"));
+  return await screen.findByTestId("exec-target-picker");
+}
+
 describe("NewSessionExecTargetLine", () => {
   it("single candidate: renders nothing", async () => {
     stubWails([{ agentBackendId: 51, available: true }], [{ id: 51 }]);
@@ -126,7 +135,7 @@ describe("NewSessionExecTargetLine", () => {
     });
   });
 
-  it("first candidate available: shows the plain 'will run on X · Change' line without highlight", async () => {
+  it("first candidate available: shows the plain 'will run on X' line without highlight", async () => {
     stubWails(
       [
         { agentBackendId: 51, available: true },
@@ -147,8 +156,12 @@ describe("NewSessionExecTargetLine", () => {
     renderLine();
     const line = await screen.findByTestId("new-session-exec-target-line");
     expect(line.className).not.toContain("bg-status-waiting-bg");
-    expect(within(line).getByText("Local")).toBeInTheDocument();
-    expect(screen.getByText("Change")).toBeInTheDocument();
+    // 主位是 Agent 后端名字（本机档不带设备后缀），不再渲染"本地/本机"。
+    expect(within(line).getByText("claude-fable-5")).toBeInTheDocument();
+    // 独立的"改选"按钮没有了——chip 本身可点。
+    expect(screen.queryByText("Change")).not.toBeInTheDocument();
+    await openPicker();
+    expect(await screen.findByTestId("exec-target-picker")).toBeInTheDocument();
   });
 
   it("first candidate unavailable, auto-picked second: highlights the dropped state with reason", async () => {
@@ -176,7 +189,11 @@ describe("NewSessionExecTargetLine", () => {
     renderLine();
     const line = await screen.findByTestId("new-session-exec-target-line");
     expect(line.className).toContain("bg-status-waiting-bg");
-    expect(screen.getByText(/Local is unavailable/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/claude-fable-5 is unavailable/),
+    ).toBeInTheDocument();
+    // 远端档 chip：后端名 + 弱化设备名（两个独立文本节点，不再用"×"拼接）。
+    expect(within(line).getByText("claude-opus-5")).toBeInTheDocument();
     expect(within(line).getByText("构建机")).toBeInTheDocument();
     expect(screen.getByText("LLM provider required")).toBeInTheDocument();
   });
@@ -221,20 +238,22 @@ describe("NewSessionExecTargetLine", () => {
         },
       ],
       [
-        { id: 51, deviceId: "" },
+        { id: 51, deviceId: "", name: "claude-fable-5" },
         { id: 52, deviceId: "3", deviceName: "构建机" },
       ],
     );
     const { onOverride } = renderLine();
     await screen.findByTestId("new-session-exec-target-line");
 
-    await userEvent.click(screen.getByText("Change"));
-    const disabledRow = await screen.findByRole("button", {
+    const picker = await openPicker();
+    // 浮层不再有 1、2 序号徽标（序号对选择无意义，已移除）。
+    expect(within(picker).queryByText(/^[12]$/)).toBeNull();
+    const disabledRow = within(picker).getByRole("button", {
       name: /构建机/,
     });
     expect(disabledRow).toBeDisabled();
 
-    const pickableRow = screen.getByRole("button", { name: /Local/ });
+    const pickableRow = within(picker).getByText("claude-fable-5");
     await userEvent.click(pickableRow);
     expect(onOverride).toHaveBeenCalledWith(51);
   });
@@ -262,51 +281,67 @@ describe("NewSessionExecTargetLine", () => {
     renderLine({ projectId: 900 });
     await screen.findByTestId("new-session-exec-target-line");
 
-    await userEvent.click(screen.getByText("Change"));
+    await openPicker();
     expect(await screen.findByText("/Users/me/app")).toBeInTheDocument();
     expect(screen.getByText("/srv/app")).toBeInTheDocument();
     // 没配路径的那一档不渲染一行空路径。
     expect(screen.getAllByTestId("exec-target-project-path")).toHaveLength(2);
   });
 
-  // (b) 空会话态的机器 chip 复用共享的 DeviceTag（本机 → MapPin，远端在线 →
-  //     Server），不自己再画一个 span。
-  it("空会话态的 chip 是共享的 DeviceTag：本机档带 MapPin", async () => {
+  // (b) 空会话态的 chip 主位显示 Agent 后端名字（不再是"本机/本地"机器措辞），
+  //     配色/图标沿用共享 DeviceTag 的机器归属语义：本机档 MapPin、远端档 Server。
+  it("空会话态的 chip 主位是 Agent 后端名字：本机档带 MapPin、无设备后缀", async () => {
     stubWails(
       [
         { agentBackendId: 51, available: true },
         { agentBackendId: 52, available: true },
       ],
       [
-        { id: 51, deviceId: "" },
-        { id: 52, deviceId: "3", deviceName: "构建机", online: true },
+        { id: 51, deviceId: "", type: "claudecode", name: "claude-fable-5" },
+        {
+          id: 52,
+          deviceId: "3",
+          deviceName: "构建机",
+          online: true,
+          type: "claudecode",
+          name: "claude-opus-5",
+        },
       ],
     );
     renderLine();
     const line = await screen.findByTestId("new-session-exec-target-line");
-    expect(within(line).getByText("Local")).toBeInTheDocument();
+    expect(within(line).getByText("claude-fable-5")).toBeInTheDocument();
+    expect(within(line).queryByText(/构建机/)).not.toBeInTheDocument();
     expect(line.querySelector(".lucide-map-pin")).not.toBeNull();
   });
 
-  it("空会话态的 chip 是共享的 DeviceTag：远端在线档带 Server", async () => {
+  it("空会话态的 chip 远端在线档：后端名 + 弱化设备名，带 Server", async () => {
     stubWails(
       [
         { agentBackendId: 52, available: true },
         { agentBackendId: 51, available: true },
       ],
       [
-        { id: 52, deviceId: "3", deviceName: "构建机", online: true },
-        { id: 51, deviceId: "" },
+        {
+          id: 52,
+          deviceId: "3",
+          deviceName: "构建机",
+          online: true,
+          type: "claudecode",
+          name: "claude-opus-5",
+        },
+        { id: 51, deviceId: "", type: "claudecode", name: "claude-fable-5" },
       ],
     );
     renderLine();
     const line = await screen.findByTestId("new-session-exec-target-line");
+    expect(within(line).getByText("claude-opus-5")).toBeInTheDocument();
     expect(within(line).getByText("构建机")).toBeInTheDocument();
     expect(line.querySelector(".lucide-server")).not.toBeNull();
   });
 
   // (c) 起轮前选中结果是活的：可用性变化重新算并改写措辞，否则用户看着「将在
-  //     构建机上运行」按下回车、实际跑到了本机。
+  //     X 上运行」按下回车、实际跑到了别的机器。
   it("起轮前可用性变化：重新挑选并从「将在 X 上运行」改写成掉档措辞", async () => {
     const { listAvailability } = stubWails(
       [
@@ -320,6 +355,7 @@ describe("NewSessionExecTargetLine", () => {
     );
     renderLine();
     const line = await screen.findByTestId("new-session-exec-target-line");
+    expect(within(line).getByText("Local")).toBeInTheDocument();
     expect(within(line).getByText("构建机")).toBeInTheDocument();
     expect(line.className).not.toContain("bg-status-waiting-bg");
 
@@ -394,6 +430,7 @@ describe("NewSessionExecTargetLine", () => {
     ]);
     await emitDeviceStateChange();
     const line = await screen.findByTestId("new-session-exec-target-line");
+    expect(within(line).getByText("Local")).toBeInTheDocument();
     expect(within(line).getByText("构建机")).toBeInTheDocument();
 
     // 旧请求现在才落地：必须被丢弃。
@@ -417,6 +454,7 @@ describe("NewSessionExecTargetLine", () => {
     });
 
     const after = screen.getByTestId("new-session-exec-target-line");
+    expect(within(after).getByText("Local")).toBeInTheDocument();
     expect(within(after).getByText("构建机")).toBeInTheDocument();
     expect(after.className).not.toContain("bg-status-waiting-bg");
     expect(screen.queryByText("Offline")).not.toBeInTheDocument();
@@ -474,9 +512,9 @@ describe("NewSessionExecTargetLine", () => {
     await screen.findByTestId("new-session-exec-target-line");
 
     // 手动改选到构建机。
-    await userEvent.click(screen.getByText("Change"));
+    const picker = await openPicker();
     await userEvent.click(
-      await screen.findByRole("button", { name: /构建机/ }),
+      within(picker).getByRole("button", { name: /构建机/ }),
     );
     expect(onOverride).toHaveBeenLastCalledWith(52);
 
@@ -489,6 +527,7 @@ describe("NewSessionExecTargetLine", () => {
     await emitDeviceStateChange();
     await waitFor(() => {
       const line = screen.getByTestId("new-session-exec-target-line");
+      expect(within(line).getByText("Local")).toBeInTheDocument();
       expect(within(line).getByText("构建机")).toBeInTheDocument();
     });
     expect(onOverride).not.toHaveBeenCalledWith(null);
@@ -509,8 +548,9 @@ describe("NewSessionExecTargetLine", () => {
     renderLine({ overrideBackendId: 52 });
     const line = await screen.findByTestId("new-session-exec-target-line");
     expect(line.className).not.toContain("bg-status-waiting-bg");
+    expect(within(line).getByText("Local")).toBeInTheDocument();
     expect(within(line).getByText("构建机")).toBeInTheDocument();
-    // chip 就是共享的 DeviceTag（远端在线 → Server 图标）。
+    // chip 配色/图标沿用共享 DeviceTag 的机器归属语义（远端在线 → Server 图标）。
     expect(line.querySelector(".lucide-server")).not.toBeNull();
   });
 });

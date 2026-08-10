@@ -9,6 +9,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { ChevronDown, MapPin, Server, ServerOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import {
@@ -18,7 +19,6 @@ import {
 import type { agent_backend_svc } from "../../../wailsjs/go/models";
 import { EventsOn } from "../../../wailsjs/runtime/runtime";
 
-import { DeviceTag } from "./device-tag";
 import { navigateToTarget } from "./not-chattable";
 
 // ── 数据：把 R15 的可用性判定(ListAgentExecTargetAvailability)与全量后端列表
@@ -147,13 +147,44 @@ function reasonLabel(reason: string, t: TFunction): string {
   return t(`chatPanel.execTarget.reasons.${key}`);
 }
 
-function candidateLabel(c: ExecTargetCandidate, t: TFunction): string {
+const BACKEND_TYPE_LABEL: Record<string, string> = {
+  claudecode: "Claude Code",
+  "claude-code": "Claude Code",
+  codex: "Codex",
+  builtin: "Built-in",
+  openclaw: "OpenClaw",
+  piagent: "Pi Agent",
+};
+
+function backendTypeLabel(type: string): string {
+  return BACKEND_TYPE_LABEL[type] ?? type;
+}
+
+// 后端主位名字：Agent 后端名字（用户在后端管理页起的名字）；缺名时回落到类型
+// 标签，再不行兜底"本机/本地"。
+function backendPrimaryName(c: ExecTargetCandidate, t: TFunction): string {
+  return (
+    c.backendName || backendTypeLabel(c.backendType) || t("deviceTag.local")
+  );
+}
+
+// 设备标签：本机档 → 本机（本地）；远端档 → 设备名（缺名用 id）。
+function deviceLabelOf(c: ExecTargetCandidate, t: TFunction): string {
   if (!c.deviceId) return t("deviceTag.local");
   return c.deviceName || c.deviceId;
 }
 
-// ── 空会话态「将在 X 上运行 · 改选」（R15a）。只有一个（可用性判定成功返回长度<=1）
-//    候选时整行不出现，视觉上等价于今天什么都不显示。────────────────────────────
+// 平铺文本（掉档措辞 / 全不可用面板用）：主位是 Agent 后端名字，远端档追加
+// "· 设备名"。chip 与改选浮层各自结构化渲染（后端名 + 设备分行/分块），不用它。
+function targetLabel(c: ExecTargetCandidate, t: TFunction): string {
+  const name = backendPrimaryName(c, t);
+  if (!c.deviceId) return name;
+  return `${name} · ${deviceLabelOf(c, t)}`;
+}
+
+// ── 空会话态「将在 X 上运行」（R15a），X 是可点击的 chip，按下打开改选浮层
+//    （不再有独立的"改选"按钮）。只有一个（可用性判定成功返回长度<=1）候选时
+//    整行不出现，视觉上等价于今天什么都不显示。──────────────────────────────
 
 export type NewSessionExecTargetLineProps = {
   agentId: number;
@@ -206,7 +237,7 @@ export function NewSessionExecTargetLine(props: NewSessionExecTargetLineProps) {
           <span className="text-2xs leading-relaxed text-muted-foreground">
             {candidates.map((c, i) => (
               <React.Fragment key={c.agentBackendId}>
-                {i + 1} · {candidateLabel(c, t)} —— {reasonLabel(c.reason, t)}
+                {i + 1} · {targetLabel(c, t)} —— {reasonLabel(c.reason, t)}
                 <br />
               </React.Fragment>
             ))}
@@ -233,7 +264,7 @@ export function NewSessionExecTargetLine(props: NewSessionExecTargetLineProps) {
       {dropped ? (
         <span className="text-2xs text-muted-foreground">
           {t("chatPanel.execTarget.droppedPrefix", {
-            name: candidateLabel(candidates[0], t),
+            name: targetLabel(candidates[0], t),
           })}
         </span>
       ) : (
@@ -241,26 +272,19 @@ export function NewSessionExecTargetLine(props: NewSessionExecTargetLineProps) {
           {t("chatPanel.execTarget.willRunPrefix")}
         </span>
       )}
-      {/* "会话跑在哪台机器"复用既有的 DeviceTag，不引入新组件：deviceId === "" 那
-          一支本来就渲染"本机"。掉档的加重由整行底色 + 措辞 + 原因承担，chip 的配色
-          仍按机器归属走，与命令面板/聊天头/成员页保持同一套视觉。 */}
-      <DeviceTag
-        deviceId={effective.deviceId}
-        deviceName={effective.deviceName || effective.deviceId}
-        online={effective.online}
-      />
-      <span className="text-2xs text-muted-foreground">
-        {t("chatPanel.execTarget.willRunSuffix")}
-      </span>
-      <span className="text-2xs text-muted-foreground">·</span>
+      {/* "会话跑在哪台机器"：chip 本身可点（打开改选浮层），不再另放一个
+          "改选"按钮。主位显示 Agent 后端名字（不再渲染"本机/本地"机器措辞），
+          远端档把设备名以弱化小字缀在后头（不再用"× 设备名"）。chip 的配色/图
+          标仍按机器归属走，与命令面板/聊天头/成员页保持同一套视觉；掉档的加重
+          由整行底色 + 措辞 + 原因承担。 */}
       <Popover>
         <PopoverTrigger asChild>
-          <button
-            type="button"
-            className="text-2xs text-muted-foreground underline-offset-2 hover:underline"
-          >
-            {t("chatPanel.execTarget.reselect")}
-          </button>
+          <ExecTargetChipButton
+            candidate={effective}
+            ariaLabel={t("chatPanel.execTarget.pickChipAria", {
+              label: targetLabel(effective, t),
+            })}
+          />
         </PopoverTrigger>
         <PopoverContent align="center" className="w-72 p-0">
           <ExecTargetReselectPopover
@@ -271,6 +295,9 @@ export function NewSessionExecTargetLine(props: NewSessionExecTargetLineProps) {
           />
         </PopoverContent>
       </Popover>
+      <span className="text-2xs text-muted-foreground">
+        {t("chatPanel.execTarget.willRunSuffix")}
+      </span>
       {dropped && candidates[0] && (
         <p className="w-full text-center text-2xs text-subtle-foreground">
           {reasonLabel(candidates[0].reason, t)}
@@ -279,6 +306,64 @@ export function NewSessionExecTargetLine(props: NewSessionExecTargetLineProps) {
     </div>
   );
 }
+
+// 空会话态「将在 X 上运行」的可点击 chip：按下打开改选浮层（不再有独立的"改选"
+// 按钮）。主位显示 Agent 后端名字，远端档把设备名以弱化的小字缀在后头（不再用
+// "× 设备名"）；配色/图标沿用共享 DeviceTag 的机器归属语义：本机 → MapPin/
+// primary，远端在线 → Server/running，远端离线 → ServerOff/muted。
+// Radix Slot 会把 PopoverTrigger 的 onClick/ref 等合并进 asChild 的子元素，所以
+// 这里必须 forwardRef 并把剩余 props 透传到 <button> 上，否则弹层永远打不开。
+const ExecTargetChipButton = React.forwardRef<
+  HTMLButtonElement,
+  {
+    candidate: ExecTargetCandidate;
+    ariaLabel: string;
+  } & React.ComponentProps<"button">
+>(function ExecTargetChipButton(
+  { candidate, ariaLabel, className, ...rest },
+  ref,
+) {
+  const { t } = useTranslation();
+  const c = candidate;
+  const remote = Boolean(c.deviceId);
+  const tone = !remote
+    ? "bg-primary-soft text-primary"
+    : c.online
+      ? "bg-status-running-bg text-status-running"
+      : "bg-muted text-muted-foreground";
+  return (
+    <button
+      ref={ref}
+      type="button"
+      data-testid="new-session-exec-target-chip"
+      aria-label={ariaLabel}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-2xs font-medium transition-colors underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+        tone,
+        className,
+      )}
+      {...rest}
+    >
+      {!remote ? (
+        <MapPin className="size-3" aria-hidden="true" />
+      ) : c.online ? (
+        <Server className="size-3" aria-hidden="true" />
+      ) : (
+        <ServerOff className="size-3" aria-hidden="true" />
+      )}
+      <span>{backendPrimaryName(c, t)}</span>
+      {remote && (
+        <>
+          <span className="opacity-60" aria-hidden="true">
+            ·
+          </span>
+          <span className="opacity-80">{deviceLabelOf(c, t)}</span>
+        </>
+      )}
+      <ChevronDown className="size-3 opacity-60" aria-hidden="true" />
+    </button>
+  );
+});
 
 // ExecTargetReselectPopover 只在弹层实际打开时挂载（Radix Popover 默认关闭态不
 // 渲染 content），useNavigate 因此放在这里而不是 NewSessionExecTargetLine
@@ -296,7 +381,7 @@ function ExecTargetReselectPopover(props: {
     navigateToTarget(navigate, "org-agent:<id>", props.agentId);
   };
   return (
-    <div>
+    <div data-testid="exec-target-picker">
       <div className="flex items-baseline justify-between gap-2 border-b border-border px-3 py-2">
         <span className="text-2xs font-semibold">
           {t("chatPanel.execTarget.pickerTitle")}
@@ -305,36 +390,47 @@ function ExecTargetReselectPopover(props: {
           {t("chatPanel.execTarget.pickerScope")}
         </span>
       </div>
-      {props.candidates.map((c, i) => (
+      {props.candidates.map((c) => (
         <button
           key={c.agentBackendId}
           type="button"
           disabled={!c.available}
           onClick={() => props.onPick(c.agentBackendId)}
           className={cn(
-            "flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left last:border-b-0",
+            "flex w-full items-start gap-2 border-b border-border px-3 py-2 text-left last:border-b-0",
             c.available ? "hover:bg-accent" : "cursor-not-allowed opacity-60",
           )}
         >
           <span
             className={cn(
-              "size-3.5 shrink-0 rounded-full border-[1.5px]",
+              "mt-1 size-3.5 shrink-0 rounded-full border-[1.5px]",
               c.agentBackendId === props.selectedId
                 ? "border-primary shadow-[inset_0_0_0_3px_var(--primary)]"
                 : "border-border-strong",
             )}
             aria-hidden="true"
           />
-          <span className="inline-flex size-5 shrink-0 items-center justify-center rounded-sm bg-secondary font-mono text-2xs text-muted-foreground">
-            {i + 1}
-          </span>
-          <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="text-xs font-semibold">
-              {candidateLabel(c, t)}
+              {backendPrimaryName(c, t)}
             </span>
-            {/* 那台机器上这个项目的路径：序号解释"为什么默认是它"，路径回答
-                "换过去在哪个目录干活"。没绑项目/那台机器上没配路径时整行不出现，
-                不留一行空的。 */}
+            {/* 这一档在哪台机器上跑：图标 + 设备名（本机/远端），比"名 × 设备"
+                一行平铺更易扫读。 */}
+            <span className="flex items-center gap-1 text-2xs text-muted-foreground">
+              {!c.deviceId ? (
+                <MapPin className="size-3" aria-hidden="true" />
+              ) : c.online ? (
+                <Server className="size-3" aria-hidden="true" />
+              ) : (
+                <ServerOff className="size-3" aria-hidden="true" />
+              )}
+              <span>{deviceLabelOf(c, t)}</span>
+            </span>
+            {!c.available && (
+              <span className="font-mono text-2xs text-muted-foreground">
+                {reasonLabel(c.reason, t)}
+              </span>
+            )}
             {c.projectPath ? (
               <span
                 data-testid="exec-target-project-path"
@@ -344,11 +440,6 @@ function ExecTargetReselectPopover(props: {
                 {c.projectPath}
               </span>
             ) : null}
-            {!c.available && (
-              <span className="font-mono text-2xs text-muted-foreground">
-                {reasonLabel(c.reason, t)}
-              </span>
-            )}
           </div>
         </button>
       ))}

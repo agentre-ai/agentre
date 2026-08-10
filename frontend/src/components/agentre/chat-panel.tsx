@@ -2687,11 +2687,6 @@ function ChatPanel({
                             name: newSessionAgent.name,
                           })}
                     </div>
-                    <div className="text-xs text-muted-foreground">
-                      {newSessionProjectName
-                        ? t("chatPanel.newProjectSession.description")
-                        : t("chatPanel.newSession.description")}
-                    </div>
                     {newSessionAgent ? (
                       <NewSessionExecTargetLine
                         agentId={newSessionAgent.id}

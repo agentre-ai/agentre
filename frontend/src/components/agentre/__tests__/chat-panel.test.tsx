@@ -2995,11 +2995,6 @@ describe("ChatPanel · 新对话空白态文案", () => {
     expect(
       screen.getByText("Start a project chat with Eng in Agentre / backend"),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "Your first message will start this session in the project workspace.",
-      ),
-    ).toBeInTheDocument();
   });
 
   it("Given a free chat is created, When it has no first message yet, Then the empty copy stays generic", () => {

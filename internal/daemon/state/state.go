@@ -108,12 +108,30 @@ func (s *State) Claim(accountID, verificationPublicKeyPEM string, credential Acc
 	})
 }
 
+// ClaimWithKeySet records the versioned verification-key set distributed by the
+// account server. The legacy single-key field remains populated for downgrade
+// compatibility with older agentred binaries reading the same state file.
+func (s *State) ClaimWithKeySet(accountID, currentKID string, publicKeys map[string]string,
+	maxTokenLifetimeSeconds int64, credential AccountCredential) {
+	s.Mutate(func(st *State) {
+		st.AccountID = accountID
+		st.VerificationCurrentKID = currentKID
+		st.VerificationPublicKeys = cloneStrings(publicKeys)
+		st.VerificationPublicKeyPEM = publicKeys[currentKID]
+		st.MaxTokenLifetimeSeconds = maxTokenLifetimeSeconds
+		st.Credential = credential
+	})
+}
+
 // Unclaim removes all account-bound material and returns the daemon to its
 // pairing-only state. It is intentionally a state-only operation.
 func (s *State) Unclaim() {
 	s.Mutate(func(st *State) {
 		st.AccountID = ""
 		st.VerificationPublicKeyPEM = ""
+		st.VerificationCurrentKID = ""
+		st.VerificationPublicKeys = nil
+		st.MaxTokenLifetimeSeconds = 0
 		st.Credential = AccountCredential{}
 		// The cached revocation list is pulled from the claimed account and
 		// only ever consulted for that account's credentials, so it is part of
@@ -145,6 +163,18 @@ func (s *State) Snapshot() State {
 		out.LLMProviders[k] = v
 	}
 	out.RevokedJTIs = append([]string(nil), s.RevokedJTIs...)
+	out.VerificationPublicKeys = cloneStrings(s.VerificationPublicKeys)
+	return out
+}
+
+func cloneStrings(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
 	return out
 }
 

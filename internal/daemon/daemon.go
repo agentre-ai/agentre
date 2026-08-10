@@ -1228,6 +1228,12 @@ type revocationsResponse struct {
 	AsOf       int64    `json:"as_of"`
 }
 
+type verificationKeysResponse struct {
+	CurrentKID              string            `json:"current_kid"`
+	Keys                    map[string]string `json:"keys"`
+	MaxTokenLifetimeSeconds int64             `json:"max_token_lifetime_seconds"`
+}
+
 // revocationPoller keeps the daemon's cached copy of that list fresh (R4
 // consumer). The account handshake is verified entirely from cached material
 // with zero network round trips (R3), so this loop is the only thing that can
@@ -1270,6 +1276,11 @@ func (p *revocationPoller) run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		if len(p.state.Snapshot().VerificationPublicKeys) != 0 {
+			if err := p.refreshVerificationKeys(ctx); err != nil {
+				p.logf("daemon.verificationKeys: refresh failed; keeping the last key set: err=%v", err)
+			}
+		}
 		list, err := p.pullOnce(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -1299,6 +1310,43 @@ func (p *revocationPoller) run(ctx context.Context) {
 			return
 		}
 	}
+}
+
+func (p *revocationPoller) refreshVerificationKeys(ctx context.Context) error {
+	endpoint := strings.TrimRight(p.serverURL, "/") + "/v1/keys"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("build verification keys request: %w", err)
+	}
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("verification keys request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read verification keys response: %w", err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("verification keys endpoint returned %s", resp.Status)
+	}
+	var keys verificationKeysResponse
+	if err := decodeServerEnvelope(payload, &keys); err != nil {
+		return fmt.Errorf("parse verification keys response: %w", err)
+	}
+	if keys.CurrentKID == "" || keys.Keys[keys.CurrentKID] == "" || keys.MaxTokenLifetimeSeconds <= 0 {
+		return errors.New("verification keys endpoint returned an invalid key set")
+	}
+	p.state.Mutate(func(s *state.State) {
+		s.VerificationCurrentKID = keys.CurrentKID
+		s.VerificationPublicKeys = keys.Keys
+		s.VerificationPublicKeyPEM = keys.Keys[keys.CurrentKID]
+		s.MaxTokenLifetimeSeconds = keys.MaxTokenLifetimeSeconds
+	})
+	if err := p.state.Save(); err != nil {
+		return fmt.Errorf("persist verification keys: %w", err)
+	}
+	return nil
 }
 
 // pullOnce fetches the account's revocation list with the daemon's device

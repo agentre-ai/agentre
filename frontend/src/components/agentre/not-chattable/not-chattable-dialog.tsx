@@ -3,7 +3,7 @@ import { ArrowRight, Info } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Alert, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -144,9 +144,6 @@ function NotChattableDialog({
             <Alert className="border-primary/30 bg-primary-soft/60">
               <Info aria-hidden="true" />
               <AlertTitle>{t("chatPage.notChattable.info.title")}</AlertTitle>
-              <AlertDescription>
-                {t("chatPage.notChattable.info.description")}
-              </AlertDescription>
             </Alert>
           ) : null}
         </DialogBody>

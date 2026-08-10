@@ -782,7 +782,7 @@
       "willRunPrefix": "将在",
       "willRunSuffix": "上运行",
       "droppedPrefix": "{{name}}不可用，将在",
-      "reselect": "改选",
+      "pickChipAria": "选择在哪台机器上跑：{{label}}",
       "pickerTitle": "在哪台机器上跑",
       "pickerScope": "只影响这一次",
       "stickyHint": "总是想用它？拖到第一位。",
@@ -822,7 +822,6 @@
     },
     "localDevice": "本机",
     "newSession": {
-      "description": "在下方输入框输入消息，按 Enter 发送，Shift+Enter 换行",
       "title": "和 {{name}} 开始对话",
       "guard": {
         "title": "配置完成后即可与 {{name}} 对话",
@@ -830,7 +829,6 @@
       }
     },
     "newProjectSession": {
-      "description": "首条消息会在该项目工作区中启动会话。",
       "title": "在 {{projectName}} 中和 {{agentName}} 开始项目对话"
     },
     "notice": {
@@ -918,8 +916,7 @@
       },
       "defaultHint": "该 Agent 还没配置后端，请在组织架构页选择一个 Agent 后端",
       "info": {
-        "title": "内置后端需要额外的 LLM 供应商",
-        "description": "点「去配置 Agent 后端」后，向导会提示你是否还需要配置供应商，一步步来，不用现在记。"
+        "title": "内置后端需要额外的 LLM 供应商"
       },
       "message": "暂不可对话 — {{hint}}",
       "reasons": {
@@ -997,7 +994,6 @@
       "title": "选一个 Agent 或项目下的会话开始",
       "setupGuide": {
         "title": "开始前，先完成两步配置",
-        "description": "每个 Agent 都要先绑定 Agent 后端，才能执行任务、开始对话。当前还没有可对话的 Agent。",
         "stepBackend": {
           "title": "配置 Agent 后端",
           "description": "给 Agent 选一个执行后端（内置 SDK / Claude Code / Codex…）",
@@ -1007,8 +1003,7 @@
           "title": "配置 LLM 供应商",
           "description": "内置后端需要一个已激活的供应商（API Key + 默认模型）",
           "action": "去设置 → LLM 供应商"
-        },
-        "doneNote": "配置完成后回来，就可以和 CEO 助手开始对话了。"
+        }
       },
       "unconfigured": {
         "count": "{{count}} 个 Agent 未配置后端",
@@ -1403,7 +1398,6 @@
     }
   },
   "language": {
-    "description": "选择界面显示语言。",
     "en": "English",
     "label": "语言",
     "zh-CN": "中文"
@@ -1551,8 +1545,8 @@
     },
     "fields": {
       "apiKey": "API Key",
-      "apiKeyEdit": "API Key（留空保留原值）",
-      "apiKeyEditPlaceholder": "********（不修改则留空）",
+      "apiKeyHint": "输入新值以更换，不改动则保留当前 Key",
+      "apiKeyMissingHint": "尚未配置 API Key，可填写以添加",
       "apiKeyPlaceholder": "sk-... 或自托管 token，留空走匿名",
       "baseUrl": "Base URL（可选）",
       "baseUrlHint": "留空走默认：{{url}}",
@@ -2107,7 +2101,6 @@
         "online": "在线",
         "offline": "离线",
         "localMachine": "本机",
-        "hint": "按顺序尝试，第一个可用的胜出。可以混用不同后端。",
         "emptyTitle": "还没有执行目标",
         "emptyHint": "至少要有一项，这个 Agent 才能起会话。",
         "saveRejected": "保存被拒：请至少添加一个执行目标。",
@@ -2427,12 +2420,10 @@
     },
     "appearance": {
       "colorMode": {
-        "description": "跟随系统或手动固定浅色 / 深色界面。",
         "title": "配色模式"
       },
-      "description": "调整 Agentre 的界面显示方式。主题偏好和语言会保存在当前设备。",
+      "description": "主题偏好和语言保存在当前设备。",
       "themeMode": {
-        "description": "选择界面外观偏好。",
         "label": "主题模式"
       },
       "title": "外观"

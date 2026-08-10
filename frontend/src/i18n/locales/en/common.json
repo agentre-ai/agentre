@@ -782,7 +782,7 @@
       "willRunPrefix": "Will run on",
       "willRunSuffix": "",
       "droppedPrefix": "{{name}} is unavailable — will run on",
-      "reselect": "Change",
+      "pickChipAria": "Choose where it runs: {{label}}",
       "pickerTitle": "Which machine to run on",
       "pickerScope": "Only affects this session",
       "stickyHint": "Always want to use it? Drag it to first.",
@@ -822,7 +822,6 @@
     },
     "localDevice": "Local",
     "newSession": {
-      "description": "Type a message below, press Enter to send, or Shift+Enter for a new line.",
       "title": "Start a chat with {{name}}",
       "guard": {
         "title": "You can start chatting with {{name}} once configured",
@@ -830,7 +829,6 @@
       }
     },
     "newProjectSession": {
-      "description": "Your first message will start this session in the project workspace.",
       "title": "Start a project chat with {{agentName}} in {{projectName}}"
     },
     "notice": {
@@ -918,8 +916,7 @@
       },
       "defaultHint": "Bind a built-in backend to this Agent on the org chart page first",
       "info": {
-        "title": "Built-in backends need an additional LLM provider",
-        "description": "After you choose Configure Agent backend, the guide will tell you whether a provider is also needed. You do not need to remember the next step."
+        "title": "Built-in backends need an additional LLM provider"
       },
       "message": "Not available for chat — {{hint}}",
       "reasons": {
@@ -997,7 +994,6 @@
       "title": "Choose an Agent or project session to start",
       "setupGuide": {
         "title": "Before you start, complete two setup steps",
-        "description": "Every Agent must have an Agent backend bound before it can run tasks and start chatting. There are no chat-ready Agents yet.",
         "stepBackend": {
           "title": "Configure Agent backend",
           "description": "Pick an execution backend for your Agent (Built-in SDK / Claude Code / Codex…)",
@@ -1007,8 +1003,7 @@
           "title": "Configure LLM provider",
           "description": "The built-in backend needs an active provider (API Key + default model)",
           "action": "Go to settings → LLM provider"
-        },
-        "doneNote": "Once configured, come back and start chatting with the CEO assistant."
+        }
       },
       "unconfigured": {
         "count": "{{count}} Agent(s) without a backend",
@@ -1403,7 +1398,6 @@
     }
   },
   "language": {
-    "description": "Choose the interface language.",
     "en": "English",
     "label": "Language",
     "zh-CN": "中文"
@@ -1551,8 +1545,8 @@
     },
     "fields": {
       "apiKey": "API Key",
-      "apiKeyEdit": "API Key (leave empty to keep current value)",
-      "apiKeyEditPlaceholder": "******** (leave empty to keep current value)",
+      "apiKeyHint": "Enter a new value to replace it. Leave unchanged to keep the current key.",
+      "apiKeyMissingHint": "No API Key configured yet. Fill it in to add one.",
       "apiKeyPlaceholder": "sk-... or self-hosted token. Leave empty for anonymous access.",
       "baseUrl": "Base URL (optional)",
       "baseUrlHint": "Leave empty to use default: {{url}}",
@@ -2107,7 +2101,6 @@
         "online": "Online",
         "offline": "Offline",
         "localMachine": "Local machine",
-        "hint": "Tried in order; the first available one wins. You can mix different backends.",
         "emptyTitle": "No execution targets yet",
         "emptyHint": "At least one is required before this agent can start a session.",
         "saveRejected": "Save rejected: add at least one execution target.",
@@ -2427,12 +2420,10 @@
     },
     "appearance": {
       "colorMode": {
-        "description": "Follow the system appearance or pin the interface to light or dark mode.",
         "title": "Color Mode"
       },
-      "description": "Adjust how Agentre is displayed. Theme and language preferences are saved on this device.",
+      "description": "Theme and language preferences are saved on this device.",
       "themeMode": {
-        "description": "Choose the interface appearance preference.",
         "label": "Theme Mode"
       },
       "title": "Appearance"

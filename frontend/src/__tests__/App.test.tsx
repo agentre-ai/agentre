@@ -553,11 +553,6 @@ describe("App", () => {
     expect(
       screen.getByRole("heading", { name: "Appearance" }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "Adjust how Agentre is displayed. Theme and language preferences are saved on this device.",
-      ),
-    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Appearance" })).toHaveAttribute(
       "aria-current",
       "page",

@@ -267,12 +267,6 @@ export function ExecTargetList(props: Props) {
         </div>
       )}
 
-      {props.targets.length > 1 && (
-        <p className="text-2xs text-muted-foreground">
-          {t("org.agent.execTargets.hint")}
-        </p>
-      )}
-
       {allUnavailable && (
         <div className="flex gap-2 rounded-md border border-destructive bg-destructive-soft p-3">
           <div className="flex min-w-0 flex-col gap-1">

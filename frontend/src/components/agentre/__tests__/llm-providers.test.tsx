@@ -11,7 +11,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const appMocks = vi.hoisted(() => ({
   CreateLLMProvider: vi.fn(),
   DeleteLLMProvider: vi.fn(),
-  ListLLMModels: vi.fn(),
   ListLLMProviders: vi.fn(),
   LookupLLMModel: vi.fn(),
   PreviewLLMModels: vi.fn(),
@@ -28,7 +27,6 @@ type AnyFn = (...args: unknown[]) => unknown;
 type AppMockShape = {
   CreateLLMProvider: AnyFn;
   DeleteLLMProvider: AnyFn;
-  ListLLMModels: AnyFn;
   ListLLMProviders: AnyFn;
   LookupLLMModel: AnyFn;
   PreviewLLMModels: AnyFn;
@@ -40,7 +38,6 @@ function installAppMock(overrides: Partial<AppMockShape> = {}) {
   const base: AppMockShape = {
     CreateLLMProvider: vi.fn(() => Promise.resolve({ item: { id: 1 } })),
     DeleteLLMProvider: vi.fn(() => Promise.resolve({})),
-    ListLLMModels: vi.fn(() => Promise.resolve({ items: [] })),
     ListLLMProviders: vi.fn(() => Promise.resolve({ items: [] })),
     LookupLLMModel: vi.fn(() =>
       Promise.resolve({
@@ -71,12 +68,33 @@ afterEach(() => {
 });
 
 describe("LlmProvidersPanel", () => {
-  it("shows providerKey row after save", async () => {
+  it("closes the dialog and shows a panel-level flash on successful create", async () => {
     const user = userEvent.setup();
-    const mocks = installAppMock({
+    installAppMock({
       CreateLLMProvider: vi.fn(() =>
         Promise.resolve({ item: { id: 1, providerKey: "9b1c-uuid" } }),
       ),
+      ListLLMProviders: vi
+        .fn()
+        .mockResolvedValueOnce({ items: [] })
+        .mockResolvedValueOnce({
+          items: [
+            {
+              id: 1,
+              type: "anthropic",
+              name: "Test",
+              providerKey: "9b1c-uuid",
+              baseUrl: "",
+              maskedApiKey: "sk-•••",
+              hasApiKey: true,
+              model: "",
+              maxOutput: 0,
+              contextWindow: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
     });
     render(<LlmProvidersPanel />);
 
@@ -84,6 +102,11 @@ describe("LlmProvidersPanel", () => {
     await user.click(screen.getByRole("button", { name: "New Provider" }));
 
     const dialog = await screen.findByRole("dialog");
+    // The create dialog no longer surfaces the generated Provider Key.
+    expect(
+      within(dialog).queryByRole("textbox", { name: "Provider Key" }),
+    ).not.toBeInTheDocument();
+
     fireEvent.change(
       screen.getByPlaceholderText("Example: production / local Ollama"),
       { target: { value: "Test" } },
@@ -97,21 +120,18 @@ describe("LlmProvidersPanel", () => {
 
     await user.click(screen.getByRole("button", { name: "Save" }));
 
+    // Success closes the dialog.
     await waitFor(() => {
-      expect(mocks.CreateLLMProvider).toHaveBeenCalled();
-      const keyInput = within(dialog).getByRole("textbox", {
-        name: "Provider Key",
-      }) as HTMLInputElement;
-      expect(keyInput.value).toBe("9b1c-uuid");
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
 
-    // Copy button should be present
-    expect(
-      within(dialog).getByRole("button", { name: /Copy Provider Key/ }),
-    ).toBeInTheDocument();
+    // Panel-level success flash appears.
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      'Provider "Test" added',
+    );
   });
 
-  it("shows create result inside the dialog instead of the provider table", async () => {
+  it("shows the created provider row in the table after the dialog closes", async () => {
     const user = userEvent.setup();
     installAppMock({
       CreateLLMProvider: vi.fn(() =>
@@ -144,7 +164,6 @@ describe("LlmProvidersPanel", () => {
     await screen.findByRole("table", { name: "LLM provider list" });
     await user.click(screen.getByRole("button", { name: "New Provider" }));
 
-    const dialog = await screen.findByRole("dialog");
     fireEvent.change(
       screen.getByPlaceholderText("Example: production / local Ollama"),
       { target: { value: "Created" } },
@@ -158,15 +177,14 @@ describe("LlmProvidersPanel", () => {
 
     await user.click(screen.getByRole("button", { name: "Save" }));
 
-    await waitFor(() => {
-      expect(within(dialog).getByRole("alert")).toHaveTextContent(
-        'Provider "Created" added',
-      );
+    // The new row appears in the provider table, not inside the dialog.
+    const table = await screen.findByRole("table", {
+      name: "LLM provider list",
     });
-
-    expect(
-      screen.getAllByRole("alert").filter((alert) => !dialog.contains(alert)),
-    ).toHaveLength(0);
+    await waitFor(() => {
+      expect(within(table).getByText("Created")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("shows create failures inside the dialog", async () => {
@@ -248,6 +266,267 @@ describe("LlmProvidersPanel", () => {
     await user.click(copyBtn);
 
     expect(writeText).toHaveBeenCalledWith("copy-uuid-test");
+  });
+
+  it("shows the masked API key when editing a configured provider", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 1,
+              type: "anthropic",
+              name: "Prod",
+              providerKey: "p-1",
+              baseUrl: "",
+              maskedApiKey: "sk-a••••••5678",
+              hasApiKey: true,
+              model: "",
+              maxOutput: 0,
+              contextWindow: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    await user.click(await screen.findByRole("button", { name: /Edit Prod/ }));
+    const dialog = await screen.findByRole("dialog");
+
+    const apiKeyInput = within(dialog).getByPlaceholderText(
+      "sk-... or self-hosted token. Leave empty for anonymous access.",
+    ) as HTMLInputElement;
+    expect(apiKeyInput).toHaveValue("sk-a••••••5678");
+    expect(
+      within(dialog).getByText(/Enter a new value to replace it/),
+    ).toBeInTheDocument();
+  });
+
+  it("sends apiKey:'' when saving an untouched masked API key", async () => {
+    const user = userEvent.setup();
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 1,
+              type: "anthropic",
+              name: "Prod",
+              providerKey: "p-1",
+              baseUrl: "",
+              maskedApiKey: "sk-a••••••5678",
+              hasApiKey: true,
+              model: "",
+              maxOutput: 0,
+              contextWindow: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    await user.click(await screen.findByRole("button", { name: /Edit Prod/ }));
+    const dialog = await screen.findByRole("dialog");
+
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(mocks.UpdateLLMProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ apiKey: "" }),
+      );
+    });
+  });
+
+  it("sends the newly typed API key when editing a configured provider", async () => {
+    const user = userEvent.setup();
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 1,
+              type: "anthropic",
+              name: "Prod",
+              providerKey: "p-1",
+              baseUrl: "",
+              maskedApiKey: "sk-a••••••5678",
+              hasApiKey: true,
+              model: "",
+              maxOutput: 0,
+              contextWindow: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    await user.click(await screen.findByRole("button", { name: /Edit Prod/ }));
+    const dialog = await screen.findByRole("dialog");
+
+    const apiKeyInput = within(dialog).getByPlaceholderText(
+      "sk-... or self-hosted token. Leave empty for anonymous access.",
+    ) as HTMLInputElement;
+    fireEvent.change(apiKeyInput, { target: { value: "sk-new-key" } });
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(mocks.UpdateLLMProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ apiKey: "sk-new-key" }),
+      );
+    });
+  });
+
+  it("preserves the saved API key when the masked value has surrounding whitespace", async () => {
+    const user = userEvent.setup();
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 1,
+              type: "anthropic",
+              name: "Prod",
+              providerKey: "p-1",
+              baseUrl: "",
+              maskedApiKey: "sk-a••••••5678",
+              hasApiKey: true,
+              model: "",
+              maxOutput: 0,
+              contextWindow: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    await user.click(await screen.findByRole("button", { name: /Edit Prod/ }));
+    const dialog = await screen.findByRole("dialog");
+    const apiKeyInput = within(dialog).getByPlaceholderText(
+      "sk-... or self-hosted token. Leave empty for anonymous access.",
+    ) as HTMLInputElement;
+    fireEvent.change(apiKeyInput, {
+      target: { value: "  sk-a••••••5678  " },
+    });
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(mocks.UpdateLLMProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ apiKey: "" }),
+      );
+    });
+  });
+
+  it("shows an empty API key with a hint when editing a provider without a key", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 2,
+              type: "anthropic",
+              name: "NoKey",
+              providerKey: "p-2",
+              baseUrl: "",
+              maskedApiKey: "",
+              hasApiKey: false,
+              model: "",
+              maxOutput: 0,
+              contextWindow: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    await user.click(await screen.findByRole("button", { name: /Edit NoKey/ }));
+    const dialog = await screen.findByRole("dialog");
+
+    const apiKeyInput = within(dialog).getByPlaceholderText(
+      "sk-... or self-hosted token. Leave empty for anonymous access.",
+    ) as HTMLInputElement;
+    expect(apiKeyInput).toHaveValue("");
+    expect(
+      within(dialog).getByText(/No API Key configured yet/),
+    ).toBeInTheDocument();
+  });
+
+  it("does not apply stale preview limits after the model changes", async () => {
+    const user = userEvent.setup();
+    let resolvePreview: (value: {
+      items: Array<{
+        contextWindow: number;
+        id: string;
+        maxOutput: number;
+      }>;
+    }) => void = () => undefined;
+    const preview = new Promise<{
+      items: Array<{
+        contextWindow: number;
+        id: string;
+        maxOutput: number;
+      }>;
+    }>((resolve) => {
+      resolvePreview = resolve;
+    });
+    installAppMock({
+      PreviewLLMModels: vi.fn(() => preview),
+    });
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("table", { name: "LLM provider list" });
+    await user.click(screen.getByRole("button", { name: "New Provider" }));
+    fireEvent.change(
+      screen.getByPlaceholderText("Example: production / local Ollama"),
+      { target: { value: "Claude" } },
+    );
+    fireEvent.change(
+      screen.getByPlaceholderText(
+        "sk-... or self-hosted token. Leave empty for anonymous access.",
+      ),
+      { target: { value: "sk-test" } },
+    );
+    const modelInput = screen.getByPlaceholderText(
+      "Example: claude-opus-4-7 / gpt-4o-mini",
+    );
+    fireEvent.change(modelInput, { target: { value: "old-model" } });
+    await user.click(screen.getByTitle("Fetch provider models"));
+
+    fireEvent.change(modelInput, { target: { value: "new-model" } });
+    resolvePreview({
+      items: [
+        {
+          id: "old-model",
+          contextWindow: 200000,
+          maxOutput: 64000,
+        },
+      ],
+    });
+
+    await waitFor(() => {
+      expect(
+        (screen.getByLabelText("Context Window") as HTMLInputElement).value,
+      ).toBe("");
+      expect(
+        (screen.getByLabelText("Max Output Tokens") as HTMLInputElement).value,
+      ).toBe("");
+    });
   });
 
   it("accepts real model token limits that are not multiples of 1024", async () => {
@@ -367,6 +646,5 @@ describe("LlmProvidersPanel", () => {
         }),
       );
     });
-    expect(mocks.ListLLMModels).not.toHaveBeenCalled();
   });
 });

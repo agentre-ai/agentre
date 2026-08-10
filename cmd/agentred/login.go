@@ -58,7 +58,10 @@ type deviceTokenResponse struct {
 }
 
 type publicKeyResponse struct {
-	PublicKey string `json:"public_key"`
+	CurrentKID              string            `json:"current_kid"`
+	Keys                    map[string]string `json:"keys"`
+	PublicKey               string            `json:"public_key"`
+	MaxTokenLifetimeSeconds int64             `json:"max_token_lifetime_seconds"`
 }
 
 type oauthErrorResponse struct {
@@ -191,11 +194,11 @@ func login(cmd *cobra.Command, deps loginDeps, st *state.State, serverURL string
 	if _, err := doLoginJSON(cmd, deps.http, http.MethodGet, serverURL+"/v1/keys", nil, &key); err != nil {
 		return fmt.Errorf("fetch verification public key: %w", err)
 	}
-	if key.PublicKey == "" {
+	if key.CurrentKID == "" || key.Keys[key.CurrentKID] == "" || key.MaxTokenLifetimeSeconds <= 0 {
 		return fmt.Errorf("fetch verification public key: invalid response")
 	}
 	now := time.Now()
-	st.Claim(accountID, key.PublicKey, state.AccountCredential{
+	st.ClaimWithKeySet(accountID, key.CurrentKID, key.Keys, key.MaxTokenLifetimeSeconds, state.AccountCredential{
 		DeviceID:              token.DeviceID,
 		AccessToken:           token.AccessToken,
 		AccessTokenExpiresAt:  now.Add(time.Duration(token.ExpiresIn) * time.Second).Unix(),

@@ -118,7 +118,6 @@ type FlashState =
 
 type ProviderSubmitResult = {
   flash?: FlashState;
-  providerKey?: string;
 };
 
 function errMessage(err: unknown): string {
@@ -209,7 +208,7 @@ export function LlmProvidersPanel({
     async (input: ProviderFormValues): Promise<ProviderSubmitResult> => {
       try {
         if (editor.kind === "create") {
-          const created = await CreateLLMProvider(
+          await CreateLLMProvider(
             new llm_provider_svc.CreateProviderRequest({
               type: input.type,
               name: input.name.trim(),
@@ -220,20 +219,14 @@ export function LlmProvidersPanel({
               contextWindow: input.contextWindow,
             }),
           );
+          setFlash({
+            kind: "ok",
+            text: t("llmProviders.flash.created", {
+              name: input.name.trim(),
+            }),
+          });
+          closeEditor();
           await refresh();
-          // Return key to form so it can display it; form stays open.
-          const key = (
-            created as unknown as { item?: { providerKey?: string } }
-          )?.item?.providerKey;
-          return {
-            providerKey: key,
-            flash: {
-              kind: "ok",
-              text: t("llmProviders.flash.created", {
-                name: input.name.trim(),
-              }),
-            },
-          };
         } else if (editor.kind === "edit") {
           await UpdateLLMProvider(
             new llm_provider_svc.UpdateProviderRequest({
@@ -755,7 +748,9 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
       return {
         type: (editor.provider.type as ProviderType) ?? "anthropic",
         name: editor.provider.name,
-        apiKey: "",
+        apiKey: editor.provider.hasApiKey
+          ? (editor.provider.maskedApiKey ?? "")
+          : "",
         baseUrl: editor.provider.baseUrl,
         model: editor.provider.model ?? "",
         maxOutput: editor.provider.maxOutput ?? 0,
@@ -777,22 +772,33 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
   const [showKey, setShowKey] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  // providerKey: for edit mode, initialized from existing provider; for create mode,
-  // updated after successful save with the server-generated UUID.
-  const [providerKey, setProviderKey] = React.useState<string>(
-    editor.kind === "edit" ? (editor.provider.providerKey ?? "") : "",
-  );
+  // The generated Provider Key is only surfaced in the edit dialog; it never
+  // changes while editing, so it is derived from the provider being edited.
+  const providerKey =
+    editor.kind === "edit" ? (editor.provider.providerKey ?? "") : "";
   const [keyCopied, setKeyCopied] = React.useState(false);
   const [modelOptions, setModelOptions] = React.useState<ModelInfo[]>([]);
   const [modelsLoading, setModelsLoading] = React.useState(false);
   const [modelsError, setModelsError] = React.useState<string | null>(null);
   const [fetchedOnce, setFetchedOnce] = React.useState(false);
+  const previewRequestRef = React.useRef(0);
   const [testingDraft, setTestingDraft] = React.useState(false);
   const [saveFlash, setSaveFlash] = React.useState<FlashState>(null);
   const [testFlash, setTestFlash] = React.useState<FlashState>(null);
 
   const meta = providerTypeMeta[values.type];
   const isEdit = editor.kind === "edit";
+  // In edit mode the API Key input shows the configured state: the masked key
+  // when one exists, otherwise an empty field. At the API boundary the masked
+  // value is normalized back to "" ("keep the saved key"), so only a genuinely
+  // new value is sent.
+  const maskedApiKey = isEdit ? (editor.provider.maskedApiKey ?? "") : "";
+  const trimmedApiKey = values.apiKey.trim();
+  const effectiveApiKey = isEdit
+    ? trimmedApiKey === maskedApiKey.trim()
+      ? ""
+      : trimmedApiKey
+    : trimmedApiKey;
   const providerTypeDescription = t(
     `llmProviders.providerType.${values.type}.description`,
   );
@@ -860,6 +866,7 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
   }, [values.model]);
 
   const fetchPreviewModels = React.useCallback(async () => {
+    const requestId = ++previewRequestRef.current;
     setModelsLoading(true);
     setModelsError(null);
     try {
@@ -869,11 +876,12 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
             new llm_provider_svc.PreviewModelsRequest({
               id: isEdit ? editor.provider.id : 0,
               type: values.type,
-              apiKey: values.apiKey.trim(),
+              apiKey: effectiveApiKey,
               baseUrl: values.baseUrl.trim(),
             }),
           )
         ).items ?? [];
+      if (requestId !== previewRequestRef.current) return;
       setModelOptions(items);
       setFetchedOnce(true);
       // 拉到列表后如果当前 model 命中且用户限额仍为 0，顺手填上 enriched 数据。
@@ -882,6 +890,7 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
         const hit = items.find((m) => m.id.toLowerCase() === currentId);
         if (hit && (hit.maxOutput > 0 || hit.contextWindow > 0)) {
           setValues((prev) => {
+            if (prev.model.trim().toLowerCase() !== currentId) return prev;
             const nextMax =
               prev.maxOutput === 0 && hit.maxOutput > 0
                 ? hit.maxOutput
@@ -898,14 +907,18 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
         }
       }
     } catch (err) {
-      setModelsError(errMessage(err));
+      if (requestId === previewRequestRef.current) {
+        setModelsError(errMessage(err));
+      }
     } finally {
-      setModelsLoading(false);
+      if (requestId === previewRequestRef.current) {
+        setModelsLoading(false);
+      }
     }
   }, [
     editor,
+    effectiveApiKey,
     isEdit,
-    values.apiKey,
     values.baseUrl,
     values.model,
     values.type,
@@ -927,10 +940,7 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
       }
       setSubmitting(true);
       try {
-        const result = await onSubmit(values);
-        if (result?.providerKey) {
-          setProviderKey(result.providerKey);
-        }
+        const result = await onSubmit({ ...values, apiKey: effectiveApiKey });
         if (result?.flash) {
           setSaveFlash(result.flash);
         }
@@ -940,7 +950,7 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
         setSubmitting(false);
       }
     },
-    [isEdit, onSubmit, t, values],
+    [effectiveApiKey, isEdit, onSubmit, t, values],
   );
 
   const testDraft = React.useCallback(async () => {
@@ -960,7 +970,7 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
           id: isEdit ? editor.provider.id : 0,
           useDraft: true,
           type: values.type,
-          apiKey: values.apiKey.trim(),
+          apiKey: effectiveApiKey,
           baseUrl: values.baseUrl.trim(),
           model: values.model.trim(),
         }),
@@ -978,7 +988,7 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
     } finally {
       setTestingDraft(false);
     }
-  }, [editor, isEdit, t, values]);
+  }, [editor, effectiveApiKey, isEdit, t, values]);
 
   const canFetchModels = isEdit || values.apiKey.trim() !== "";
 
@@ -1068,10 +1078,13 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
         </div>
 
         <FormField
-          label={
+          label={t("llmProviders.fields.apiKey")}
+          hint={
             isEdit
-              ? t("llmProviders.fields.apiKeyEdit")
-              : t("llmProviders.fields.apiKey")
+              ? editor.provider.hasApiKey
+                ? t("llmProviders.fields.apiKeyHint")
+                : t("llmProviders.fields.apiKeyMissingHint")
+              : undefined
           }
           icon={KeyRound}
         >
@@ -1079,11 +1092,7 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
             <Input
               type={showKey ? "text" : "password"}
               value={values.apiKey}
-              placeholder={
-                isEdit
-                  ? t("llmProviders.fields.apiKeyEditPlaceholder")
-                  : t("llmProviders.fields.apiKeyPlaceholder")
-              }
+              placeholder={t("llmProviders.fields.apiKeyPlaceholder")}
               onChange={(e) => update("apiKey", e.currentTarget.value)}
               className="h-9 pr-9 font-mono text-xs"
               autoComplete="off"
@@ -1181,57 +1190,57 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
           </FormField>
         </div>
 
-        <FormField
-          label={t("llmProviders.fields.providerKey")}
-          hint={t("llmProviders.fields.providerKeyHint")}
-        >
-          <div className="flex items-center gap-1.5">
-            <Input
-              value={providerKey || ""}
-              readOnly
-              disabled
-              placeholder={
-                providerKey
-                  ? undefined
-                  : isEdit
-                    ? "—"
-                    : t("llmProviders.fields.providerKeyPlaceholder")
-              }
-              className="h-9 flex-1 font-mono text-xs"
-              aria-label={t("llmProviders.fields.providerKey")}
-            />
-            {providerKey ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                aria-label={t("llmProviders.fields.copyProviderKey")}
-                title={
-                  keyCopied
-                    ? t("common.copied")
-                    : t("llmProviders.fields.copyProviderKey")
-                }
-                className="size-9 shrink-0 text-muted-foreground"
-                onClick={() => {
-                  void copyTextWithToast(providerKey, {
-                    errorTitle: t("llmProviders.fields.copyProviderKeyFailed"),
-                    successTitle: t("llmProviders.fields.copyProviderKeyDone"),
-                  }).then((copied) => {
-                    if (!copied) return;
-                    setKeyCopied(true);
-                    setTimeout(() => setKeyCopied(false), 2000);
-                  });
-                }}
-              >
-                {keyCopied ? (
-                  <CheckCircle2 className="size-3.5" aria-hidden="true" />
-                ) : (
-                  <Copy className="size-3.5" aria-hidden="true" />
-                )}
-              </Button>
-            ) : null}
-          </div>
-        </FormField>
+        {isEdit ? (
+          <FormField
+            label={t("llmProviders.fields.providerKey")}
+            hint={t("llmProviders.fields.providerKeyHint")}
+          >
+            <div className="flex items-center gap-1.5">
+              <Input
+                value={providerKey || ""}
+                readOnly
+                disabled
+                placeholder={providerKey ? undefined : "—"}
+                className="h-9 flex-1 font-mono text-xs"
+                aria-label={t("llmProviders.fields.providerKey")}
+              />
+              {providerKey ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={t("llmProviders.fields.copyProviderKey")}
+                  title={
+                    keyCopied
+                      ? t("common.copied")
+                      : t("llmProviders.fields.copyProviderKey")
+                  }
+                  className="size-9 shrink-0 text-muted-foreground"
+                  onClick={() => {
+                    void copyTextWithToast(providerKey, {
+                      errorTitle: t(
+                        "llmProviders.fields.copyProviderKeyFailed",
+                      ),
+                      successTitle: t(
+                        "llmProviders.fields.copyProviderKeyDone",
+                      ),
+                    }).then((copied) => {
+                      if (!copied) return;
+                      setKeyCopied(true);
+                      setTimeout(() => setKeyCopied(false), 2000);
+                    });
+                  }}
+                >
+                  {keyCopied ? (
+                    <CheckCircle2 className="size-3.5" aria-hidden="true" />
+                  ) : (
+                    <Copy className="size-3.5" aria-hidden="true" />
+                  )}
+                </Button>
+              ) : null}
+            </div>
+          </FormField>
+        ) : null}
 
         {error ? <p className="text-2xs text-status-error">{error}</p> : null}
         {saveFlash ? (

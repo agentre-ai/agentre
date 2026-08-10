@@ -1339,6 +1339,43 @@ func TestDaemon_RunCollectsTheJournal(t *testing.T) {
 	}, 3*time.Second, 20*time.Millisecond, "daemon 跑起来之后必须自己回收掉安静会话的日志前缀")
 }
 
+func TestDaemon_VerificationKeysGivenEmergencyRetirementWhenRefreshedThenDropsOldKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/devices/revocations" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		require.Equal(t, "/v1/keys", r.URL.Path)
+		_, _ = w.Write([]byte(`{"version":1,"current_kid":"current","keys":{"current":"current-pem"},"public_key":"current-pem","max_token_lifetime_seconds":900}`))
+	}))
+	t.Cleanup(server.Close)
+
+	st, err := state.Load(t.TempDir())
+	require.NoError(t, err)
+	st.ClaimWithKeySet("account-42", "current", map[string]string{
+		"old": "compromised-pem", "current": "current-pem",
+	}, 900, state.AccountCredential{AccessToken: "access-1"})
+	poller := newRevocationPoller(st, server.URL, func() string { return "access-1" })
+	poller.httpClient = server.Client()
+	poller.backoff = func(int) time.Duration { return time.Hour }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		poller.run(ctx)
+	}()
+	require.Eventually(t, func() bool {
+		_, stillPresent := st.Snapshot().VerificationPublicKeys["old"]
+		return !stillPresent
+	}, time.Second, 10*time.Millisecond, "key set must refresh even when the access token is rejected")
+	cancel()
+	<-done
+	got := st.Snapshot()
+	require.Equal(t, map[string]string{"current": "current-pem"}, got.VerificationPublicKeys)
+	require.NotContains(t, got.VerificationPublicKeys, "old")
+}
+
 // TestDaemon_RevocationPoll_GivenServerList_WhenPulled_ThenPersistedAndSurvivesRestart
 // 覆盖 R4 的 daemon 一半:在线时按固定间隔(须显著短于 15m 的 access TTL)拉取账号的
 // 吊销列表,列表与 as_of 经 state.Mutate/Save 落盘 —— 之后 daemon 离线重启,列表照样

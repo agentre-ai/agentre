@@ -49,6 +49,31 @@ func TestAuth_AccountCredential_GivenClaimedDaemon_WhenValidCredential_ThenAuthe
 	assert.Equal(t, &ConnectResult{OK: true, InstanceUUID: st.DaemonInstanceUUID}, result)
 }
 
+func TestAuth_AccountCredential_GivenVersionedKeySet_WhenVerifyingThenSelectsKIDAndEnforcesLifetime(t *testing.T) {
+	ah, st, _ := setupAuthTest(t)
+	oldPrivate, oldPublic := testRSAKeyPair(t)
+	_, currentPublic := testRSAKeyPair(t)
+	st.ClaimWithKeySet("42", "current", map[string]string{
+		"old": oldPublic, "current": currentPublic,
+	}, 900, state.AccountCredential{})
+
+	validOld := testVersionedAccountCredential(t, oldPrivate, "old", 42,
+		time.Now(), time.Now().Add(15*time.Minute))
+	result, err := ah.HandleAccount(context.Background(), AccountParams{Credential: validOld})
+	require.NoError(t, err)
+	assert.True(t, result.OK, "正常轮换窗口内应按 kid 使用旧公钥")
+
+	unknown := testVersionedAccountCredential(t, oldPrivate, "retired", 42,
+		time.Now(), time.Now().Add(15*time.Minute))
+	_, err = ah.HandleAccount(context.Background(), AccountParams{Credential: unknown})
+	assertAccountCredentialRejection(t, err, "account credential invalid")
+
+	overlong := testVersionedAccountCredential(t, oldPrivate, "old", 42,
+		time.Now(), time.Now().Add(16*time.Minute))
+	_, err = ah.HandleAccount(context.Background(), AccountParams{Credential: overlong})
+	assertAccountCredentialRejection(t, err, "account credential invalid")
+}
+
 func TestAuth_AccountCredential_GivenCredentialWithinClockSkew_WhenAuthenticating_ThenAuthenticates(t *testing.T) {
 	ah, st, _ := setupAuthTest(t)
 	privateKey, publicKeyPEM := testRSAKeyPair(t)
@@ -224,6 +249,24 @@ func testAccountCredentialWithJTI(t *testing.T, privateKey *rsa.PrivateKey, acco
 	claims, err := json.Marshal(payloadClaims)
 	require.NoError(t, err)
 	payload := base64.RawURLEncoding.EncodeToString(claims)
+	signingInput := header + "." + payload
+	digest := sha256.Sum256([]byte(signingInput))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
+	require.NoError(t, err)
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func testVersionedAccountCredential(t *testing.T, privateKey *rsa.PrivateKey, kid string, accountID any,
+	issuedAt, expiresAt time.Time) string {
+	t.Helper()
+	headerJSON, err := json.Marshal(map[string]any{"alg": "RS256", "typ": "JWT", "kid": kid})
+	require.NoError(t, err)
+	header := base64.RawURLEncoding.EncodeToString(headerJSON)
+	claimsJSON, err := json.Marshal(map[string]any{
+		"uid": accountID, "iat": issuedAt.Unix(), "exp": expiresAt.Unix(),
+	})
+	require.NoError(t, err)
+	payload := base64.RawURLEncoding.EncodeToString(claimsJSON)
 	signingInput := header + "." + payload
 	digest := sha256.Sum256([]byte(signingInput))
 	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])

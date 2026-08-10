@@ -422,13 +422,10 @@ function ThemePreferenceSelect({
   return (
     <div className="flex flex-col gap-2 p-4">
       <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 flex-col gap-0.5">
+        <div className="flex min-w-0 flex-col">
           <span id={labelId} className="text-sm font-medium">
             {t("settings.appearance.themeMode.label")}
           </span>
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            {t("settings.appearance.themeMode.description")}
-          </p>
         </div>
         <div className="w-full sm:w-[220px]">
           <Select
@@ -488,13 +485,10 @@ function AppearanceSettings({
       />
       <section className="overflow-hidden rounded-lg border border-border bg-card">
         <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <div className="flex min-w-0 flex-1 flex-col">
             <h2 className="text-sm font-semibold">
               {t("settings.appearance.colorMode.title")}
             </h2>
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              {t("settings.appearance.colorMode.description")}
-            </p>
           </div>
           <Badge
             variant="secondary"
@@ -513,11 +507,8 @@ function AppearanceSettings({
         />
         <div className="flex flex-col gap-2 border-t border-border p-4">
           <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex min-w-0 flex-col gap-0.5">
+            <div className="flex min-w-0 flex-col">
               <span className="text-sm font-medium">{t("language.label")}</span>
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                {t("language.description")}
-              </p>
             </div>
             <div className="w-full sm:w-[220px]">
               <Select value={language} onValueChange={handleLanguageChange}>

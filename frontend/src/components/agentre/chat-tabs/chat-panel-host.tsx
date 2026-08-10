@@ -114,9 +114,6 @@ function ChatEmptyState() {
         <div className="text-base font-semibold">
           {t("chatTabs.empty.setupGuide.title")}
         </div>
-        <div className="max-w-md text-xs text-muted-foreground">
-          {t("chatTabs.empty.setupGuide.description")}
-        </div>
         <div className="flex w-full max-w-lg flex-col gap-2.5 text-left">
           <SetupStepCard
             index={1}
@@ -142,9 +139,6 @@ function ChatEmptyState() {
               })
             }
           />
-        </div>
-        <div className="text-xs text-muted-foreground">
-          {t("chatTabs.empty.setupGuide.doneNote")}
         </div>
         <ChatShortcuts />
       </main>

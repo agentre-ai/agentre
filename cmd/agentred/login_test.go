@@ -56,7 +56,7 @@ func TestLoginCompletesDeviceFlowAndPersistsOpaqueAccountClaim(t *testing.T) {
 		case "/v1/keys":
 			assert.Equal(t, http.MethodGet, r.Method)
 			assert.Empty(t, r.Header.Get("Authorization"), "public key distribution is unauthenticated")
-			_, _ = io.WriteString(w, `{"public_key":"-----BEGIN PUBLIC KEY-----\ncached-key"}`)
+			_, _ = io.WriteString(w, `{"version":1,"current_kid":"current","keys":{"old":"old-key","current":"-----BEGIN PUBLIC KEY-----\ncached-key"},"public_key":"-----BEGIN PUBLIC KEY-----\ncached-key","max_token_lifetime_seconds":900}`)
 		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
@@ -91,6 +91,9 @@ func TestLoginCompletesDeviceFlowAndPersistsOpaqueAccountClaim(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "42", got.AccountID)
 	assert.Equal(t, "-----BEGIN PUBLIC KEY-----\ncached-key", got.VerificationPublicKeyPEM)
+	assert.Equal(t, "current", got.VerificationCurrentKID)
+	assert.Equal(t, map[string]string{"old": "old-key", "current": "-----BEGIN PUBLIC KEY-----\ncached-key"}, got.VerificationPublicKeys)
+	assert.Equal(t, int64(900), got.MaxTokenLifetimeSeconds)
 	assert.Equal(t, int64(9), got.Credential.DeviceID)
 	assert.Equal(t, accessToken, got.Credential.AccessToken)
 	assert.Equal(t, "refresh-token", got.Credential.RefreshToken)

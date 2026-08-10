@@ -151,11 +151,23 @@ func (a *AuthHandlers) HandleAccount(ctx context.Context, p AccountParams) (*Con
 	if snapshot.AccountID == "" || snapshot.VerificationPublicKeyPEM == "" {
 		return nil, accountCredentialError(accountCredentialKeyUnavailable)
 	}
-	publicKey, err := accountPublicKey(snapshot.VerificationPublicKeyPEM)
+	publicKeyPEM := snapshot.VerificationPublicKeyPEM
+	if len(snapshot.VerificationPublicKeys) != 0 {
+		kid, err := accountCredentialKID(p.Credential)
+		if err != nil {
+			return nil, err
+		}
+		publicKeyPEM = snapshot.VerificationPublicKeys[kid]
+		if publicKeyPEM == "" {
+			return nil, accountCredentialError(accountCredentialInvalid)
+		}
+	}
+	publicKey, err := accountPublicKey(publicKeyPEM)
 	if err != nil {
 		return nil, accountCredentialError(accountCredentialKeyUnavailable)
 	}
-	accountID, jti, err := verifyAccountCredential(p.Credential, publicKey)
+	accountID, jti, err := verifyAccountCredentialWithMaxLifetime(p.Credential, publicKey,
+		time.Duration(snapshot.MaxTokenLifetimeSeconds)*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +219,8 @@ func accountPublicKey(publicKeyPEM string) (*rsa.PublicKey, error) {
 // verifyAccountCredential returns the credential's account id and its jti (the
 // identity the account's revocation list refers to) once signature and expiry
 // hold. Verification is purely local — see HandleAccount.
-func verifyAccountCredential(credential string, publicKey *rsa.PublicKey) (string, string, error) {
+func verifyAccountCredentialWithMaxLifetime(credential string, publicKey *rsa.PublicKey,
+	maxLifetime time.Duration) (string, string, error) {
 	parts := strings.Split(credential, ".")
 	if len(parts) != 3 {
 		return "", "", accountCredentialError(accountCredentialInvalid)
@@ -244,11 +257,35 @@ func verifyAccountCredential(credential string, publicKey *rsa.PublicKey) (strin
 	if time.Now().After(expiresAt.Add(accountCredentialClockSkew)) {
 		return "", "", accountCredentialError(accountCredentialExpired)
 	}
+	if maxLifetime > 0 {
+		issuedAt, err := accountCredentialTime(claims, "iat")
+		if err != nil || expiresAt.Sub(issuedAt) > maxLifetime {
+			return "", "", accountCredentialError(accountCredentialInvalid)
+		}
+	}
 	accountID, err := accountIDFromCredentialClaims(claims)
 	if err != nil {
 		return "", "", err
 	}
 	return accountID, accountCredentialJTI(claims), nil
+}
+
+func accountCredentialKID(credential string) (string, error) {
+	parts := strings.Split(credential, ".")
+	if len(parts) != 3 {
+		return "", accountCredentialError(accountCredentialInvalid)
+	}
+	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return "", accountCredentialError(accountCredentialInvalid)
+	}
+	var header struct {
+		KID string `json:"kid"`
+	}
+	if json.Unmarshal(headerJSON, &header) != nil || header.KID == "" {
+		return "", accountCredentialError(accountCredentialInvalid)
+	}
+	return header.KID, nil
 }
 
 // accountCredentialJTI reads the standard JWT jti claim (agentre-server signs a
@@ -267,7 +304,11 @@ func accountCredentialJTI(claims map[string]json.RawMessage) string {
 }
 
 func accountCredentialExpiry(claims map[string]json.RawMessage) (time.Time, error) {
-	rawExpiry, ok := claims["exp"]
+	return accountCredentialTime(claims, "exp")
+}
+
+func accountCredentialTime(claims map[string]json.RawMessage, name string) (time.Time, error) {
+	rawExpiry, ok := claims[name]
 	if !ok {
 		return time.Time{}, accountCredentialError(accountCredentialInvalid)
 	}

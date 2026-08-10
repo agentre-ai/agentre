@@ -87,11 +87,6 @@ describe("ChatPanelHost empty chat state — setup guidance (task 5)", () => {
     expect(
       screen.getByRole("button", { name: "Go to settings → LLM provider" }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "Once configured, come back and start chatting with the CEO assistant.",
-      ),
-    ).toBeInTheDocument();
     // 保留快捷键提示 (文本节点与 kbd 混排, 用正则匹配)
     expect(screen.getByText(/Close Tab/)).toBeInTheDocument();
     expect(screen.getByText(/Switch Tab/)).toBeInTheDocument();

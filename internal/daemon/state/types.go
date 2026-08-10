@@ -14,6 +14,9 @@ type State struct {
 	Preferences              Preferences                `json:"preferences"`
 	AccountID                string                     `json:"accountId,omitempty"`
 	VerificationPublicKeyPEM string                     `json:"verificationPublicKeyPEM,omitempty"`
+	VerificationCurrentKID   string                     `json:"verificationCurrentKID,omitempty"`
+	VerificationPublicKeys   map[string]string          `json:"verificationPublicKeys,omitempty"`
+	MaxTokenLifetimeSeconds  int64                      `json:"maxTokenLifetimeSeconds,omitempty"`
 	Credential               AccountCredential          `json:"credential,omitempty"`
 
 	// RevokedJTIs is the account's revoked access-token jti list as last pulled
