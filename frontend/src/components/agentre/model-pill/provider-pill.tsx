@@ -15,31 +15,41 @@ export type ProviderPillProps = UseProviderPillReturn;
 
 /**
  * ProviderPill: composer 动作行里权限模式旁的 LLM 供应商选择器（规格「新建会话
- * 供应商选择器」+ 决策 4/5）。
+ * 供应商选择器」决策 4/5 + 「已有会话切换 LLM 供应商」决策 10）。
  *
  * 状态机:
  *  - 只列与后端兼容的供应商（isProviderCompatible 过滤,后端 ProviderTypeMatch 对齐）。
  *  - 未绑 agent（CLI 登录态）同样显示:弹层第一项「跟随 agent 绑定」语义为
  *    「不选,走 CLI 登录态」;选具体供应商可接管该会话。
  *  - 未选时 pill 标签:agent 已绑 → 绑定供应商名;未绑 → 「选择供应商」占位。
- *  - 列表加载中 → pill 禁用;拉取失败 → 弹层底部错误行。
- *  - 瞬态选择不发任何 IPC,首发 Send 时随 SendRequest.ProviderKey 透传落库。
+ *  - pill 在所有会话/后端状态下都渲染，不可切换时 disabled 而不是隐藏（决策 10）：
+ *    加载中沿用既有行为；后端不支持 agentre 供应商 / 加载成功但无兼容供应商都在
+ *    disabled 之外通过 title 说明原因；拉取失败保持可用，弹层底部报错（既有行为）。
+ *  - 弹层底部常显一行「自下一轮生效」说明，与轮是否进行中无关（决策 8/切换流程）。
+ *  - 新建会话瞬态选择不发任何 IPC，首发 Send 时随 SendRequest.ProviderKey 透传落库；
+ *    已有会话选中立即调 SetChatSessionProvider 持久化（hook 侧处理）。
  */
 export function ProviderPill({
   providerKey,
   setProviderKey,
   providers,
-  loading,
   error,
   unbound,
   effectiveKey,
+  disabled,
+  disabledReason,
 }: ProviderPillProps) {
   const { t } = useTranslation();
   const [open, setOpen] = React.useState(false);
 
   const selected = providers.find((p) => p.providerKey === effectiveKey);
   const label = selected?.name || effectiveKey || t("providerPill.unselected");
-  const disabled = loading;
+  const disabledTitle =
+    disabled && disabledReason === "unsupportedBackend"
+      ? t("providerPill.disabledUnsupportedBackend")
+      : disabled && disabledReason === "noCompatibleProviders"
+        ? t("providerPill.disabledNoCompatibleProviders")
+        : null;
 
   function handleSelect(key: string) {
     setOpen(false);
@@ -53,7 +63,7 @@ export function ProviderPill({
           type="button"
           disabled={disabled}
           aria-label={t("providerPill.aria", { provider: label })}
-          title={t("providerPill.title", { provider: label })}
+          title={disabledTitle ?? t("providerPill.title", { provider: label })}
           data-testid="provider-pill"
           className={cn(
             "inline-flex h-6 cursor-pointer items-center gap-1 rounded-md border px-2 text-2xs font-medium leading-none transition-colors",
@@ -174,6 +184,15 @@ export function ProviderPill({
             );
           })}
         </ul>
+
+        {/* 决策 8/切换流程：弹层底部常显一行说明，不随轮状态变化——轮中允许切、
+            当前轮不受影响。 */}
+        <div
+          data-testid="provider-pill-note"
+          className="border-t border-border px-3.5 py-1.5 text-2xs text-muted-foreground"
+        >
+          {t("providerPill.switchNote")}
+        </div>
 
         {error ? (
           <div

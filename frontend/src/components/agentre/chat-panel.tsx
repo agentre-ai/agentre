@@ -95,11 +95,7 @@ import {
 import { computeComposerContextUsage } from "./chat-panel-context-usage";
 import { blockReasonToCta, navigateToTarget } from "./not-chattable";
 import { PermissionModePill, usePermissionMode } from "./permission-mode";
-import {
-  ProviderPill,
-  useProviderPill,
-  isProviderSelectableBackend,
-} from "./model-pill";
+import { ProviderPill, useProviderPill } from "./model-pill";
 import {
   NewSessionExecTargetLine,
   SessionOfflineBanner,
@@ -1337,20 +1333,24 @@ function ChatPanel({
       session?.agentStatus === "running" ||
       session?.agentStatus === "waiting");
 
-  // ProviderPill:新建会话（sessionId===0）的 LLM 供应商选择器,替换原模型 pill。
-  // 只列与后端兼容的供应商（决策 4）,未绑 agent 也显示（决策 5）;已有会话无任何
-  // 切换器（决策 7）。openclaw 不消费 agentre provider,不渲染（决策 4）。
-  // 拉取按 sessionId===0 && 可选项后端 双重门控 —— 否则打开任意已有会话都会白打一次
-  // ListLLMProviders（对每个已绑供应商的真实 HTTP 请求,不是本地目录）。
-  // 可选项后端集合与 use-provider-pill 的 PROVIDER_SELECTABLE_BACKENDS 共用同一判定
-  // （isProviderSelectableBackend），避免两处各自维护一份后端名单漂移 —— 渲染门控与
-  // 拉取门控必须永远一致，否则新增可选项后端时 pill 会拉了列表却不渲染（或反之）。
-  const providerSelectableBackend =
-    isProviderSelectableBackend(activeBackendType);
+  // ProviderPill:composer 里的 LLM 供应商选择器。新建会话（sessionId===0）与已有
+  // 会话共用同一颗 pill（同一组件、同一弹层、同一位置），差异只在数据来源与禁用
+  // 条件（规格 2026-08-10「已有会话切换 LLM 供应商」决策 10，取代 2026-08-09 决策 7
+  // 的「已有会话不渲染任何切换器」）：不可切换（openclaw / 无兼容供应商 / 加载中）
+  // 时 pill 常显但 disabled + tooltip 说明原因，不再隐藏。
+  // 新建会话的绑定供应商来自 newSessionAgent（尚无 session 行）；已有会话来自
+  // ChatSessionDetail.agentProviderKey / providerKey（task 1 已产出）。已有会话选中
+  // 立即持久化（SetChatSessionProvider），成功后 reloadSession() 把新追加的切换
+  // notice 拉进 transcript。
   const providerPill = useProviderPill({
-    backendType:
-      sessionId === 0 && providerSelectableBackend ? activeBackendType : "",
-    boundProviderKey: newSessionAgent?.llmProviderKey,
+    backendType: activeBackendType,
+    boundProviderKey:
+      sessionId > 0
+        ? session?.agentProviderKey
+        : newSessionAgent?.llmProviderKey,
+    sessionId,
+    persistedProviderKey: sessionId > 0 ? session?.providerKey : undefined,
+    onSwitched: () => void reloadSession(),
   });
 
   // prop 优先，无 prop 时降级到内部派生值。
@@ -2845,9 +2845,7 @@ function ChatPanel({
                   ) : null
                 }
                 modelSlot={
-                  sessionId === 0 && providerSelectableBackend ? (
-                    <ProviderPill {...providerPill} />
-                  ) : null
+                  activeBackendType ? <ProviderPill {...providerPill} /> : null
                 }
                 onShiftTab={
                   isModeSwitchable && !modeSwitchingDisabled

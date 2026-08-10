@@ -702,22 +702,33 @@ function RenderItemView({
       );
     }
     case "notice": {
-      // notice 块:供应商回退 notice 由后端投影成结构化 providerKey(providerFallbackPayload),
-      // 文案走 t();其它来源/旧数据的非结构化 notice 原样渲染 Text。
+      // notice 块:供应商回退/切换 notice 由后端投影成结构化 providerKey + noticeKind
+      // (providerNoticePayload),文案走 t();其它来源/旧数据的非结构化 notice 原样渲染
+      // Text。noticeKind==="switch" 是用户主动切换（决策 9），其余（含旧数据的空
+      // noticeKind）沿用既有的供应商回退提示——两者共用 providerKey 字段，必须靠
+      // noticeKind 而不是「providerKey 是否非空」区分，因为切换回「跟随 agent 绑定」
+      // 时 providerKey 本就是空串。
       const providerKey = item.block.providerKey;
+      const noticeKind = item.block.noticeKind;
+      const content =
+        noticeKind === "switch"
+          ? providerKey
+            ? t("chat.notice.providerSwitch.sentence", {
+                provider: providerKey,
+              })
+            : t("chat.notice.providerSwitch.followAgentBinding")
+          : providerKey
+            ? t("chat.notice.providerFallback.sentence", {
+                provider: providerKey,
+              })
+            : (item.block.text ?? "");
       return (
         <section
           role="status"
           data-testid="transcript-notice"
           className="flex w-full max-w-measure items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-aux text-muted-foreground"
         >
-          <span className="min-w-0 flex-1 break-words">
-            {providerKey
-              ? t("chat.notice.providerFallback.sentence", {
-                  provider: providerKey,
-                })
-              : (item.block.text ?? "")}
-          </span>
+          <span className="min-w-0 flex-1 break-words">{content}</span>
         </section>
       );
     }
