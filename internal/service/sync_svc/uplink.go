@@ -109,7 +109,9 @@ func (s *service) pushBatch(
 			if rerr := s.resync(ctx, accountID); rerr != nil {
 				return rerr
 			}
-			survivors, serr := s.reevaluateAfterResync(ctx, accountID, kept)
+			// items 是**重同步之前**建好的那一份，必须原样传进去：快照刚刚把本地
+			// 行覆盖成了 server 的内容，此刻再去读本地行拿到的是覆盖它的那一份。
+			survivors, serr := s.reevaluateAfterResync(ctx, accountID, kept, items)
 			if serr != nil {
 				return serr
 			}
@@ -200,10 +202,22 @@ func (s *service) applyPushResult(
 		if res.Reason == syncwire.PushRejectReasonDeleted {
 			return s.acceptRemoteTombstone(ctx, accountID, p, item, res, now)
 		}
+		// 其它单条拒绝（对象类型不认、载荷过不了 server 的守卫）：这一条出队——
+		// 留着它只会每一轮再被拒一次，把整条上行队列堵死——并进 R5 的列表，
+		// 用户才知道这次改动没能同步上去，而不是以为它已经在别的机器上了。
 		logger.Ctx(ctx).Warn("sync_svc.applyPushResult: item rejected",
 			zap.String("kind", p.kind), zap.String("syncId", p.syncID),
 			zap.String("reason", res.Reason))
-		return nil
+		return s.recordLostChange(ctx, accountID, &syncqueue_entity.LostChange{
+			EntityType:          p.kind,
+			EntitySyncID:        p.syncID,
+			BaseVersion:         res.Version,
+			Reason:              syncqueue_entity.ReasonRejected,
+			PayloadJSON:         string(item.Payload),
+			ProjectSyncID:       item.ProjectSyncID,
+			AgentredFingerprint: item.AgentredFingerprint,
+			OccurredAt:          now,
+		})
 	}
 
 	meta := syncmeta_entity.SyncMeta{
@@ -222,11 +236,14 @@ func (s *service) applyPushResult(
 
 	if res.Status == syncwire.PushStatusConflict {
 		if err := s.recordLostChange(ctx, accountID, &syncqueue_entity.LostChange{
-			EntityType:          p.kind,
-			EntitySyncID:        p.syncID,
-			BaseVersion:         res.OverwrittenVersion,
-			Reason:              syncqueue_entity.ReasonOverwritten,
-			PayloadJSON:         string(item.Payload),
+			EntityType:   p.kind,
+			EntitySyncID: p.syncID,
+			BaseVersion:  res.OverwrittenVersion,
+			Reason:       syncqueue_entity.ReasonOverwritten,
+			// 记的是**被覆盖掉的那一版**，由 server 随应答带回来。本端手上那一份
+			// （item.Payload）是覆盖别人的那一份，它此刻正是 server 上的当前值——
+			// 把它记成「被覆盖」会让 R5 的「追回」变成「把刚生效的内容再推一遍」。
+			PayloadJSON:         string(res.OverwrittenPayload),
 			ProjectSyncID:       item.ProjectSyncID,
 			AgentredFingerprint: item.AgentredFingerprint,
 			OriginDevice:        strconv.FormatInt(res.OverwrittenDeviceID, 10),
@@ -282,11 +299,16 @@ func (s *service) acceptRemoteTombstone(
 //   - 基版本非空且与快照里该行的当前版本不符 → 拦下，以「超时未上传」进 R5 列表。
 //   - 基版本非空但该同步标识在快照里已不存在（墓碑都回收了）→ 同上。这一条正是
 //     复活风险本身。
+//
+// items 与 batch 同序，是**重同步之前**就建好的那一批上行项；被拦下的那一条要留住
+// 的正是它——用户自己那一版。重同步刚刚把本地行覆盖成了 server 的内容，此刻再去读
+// 本地行只会读回覆盖它的那一份，列表里那条「追回」点下去就变成把别人的内容再写
+// 一遍。
 func (s *service) reevaluateAfterResync(
-	ctx context.Context, accountID int64, batch []*pending,
+	ctx context.Context, accountID int64, batch []*pending, items []syncwire.PushItem,
 ) ([]*pending, error) {
 	survivors := make([]*pending, 0, len(batch))
-	for _, p := range batch {
+	for i, p := range batch {
 		if p.baseVersion == 0 {
 			survivors = append(survivors, p)
 			continue
@@ -306,9 +328,9 @@ func (s *service) reevaluateAfterResync(
 			Reason:       syncqueue_entity.ReasonRejected,
 			OccurredAt:   s.now(),
 		}
-		if item, ok, berr := s.buildPushItem(ctx, p); berr == nil && ok {
-			lost.PayloadJSON = string(item.Payload)
-			lost.ProjectSyncID, lost.AgentredFingerprint = item.ProjectSyncID, item.AgentredFingerprint
+		if i < len(items) {
+			lost.PayloadJSON = string(items[i].Payload)
+			lost.ProjectSyncID, lost.AgentredFingerprint = items[i].ProjectSyncID, items[i].AgentredFingerprint
 		}
 		if err := s.recordLostChange(ctx, accountID, lost); err != nil {
 			return nil, err

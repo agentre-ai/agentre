@@ -137,7 +137,7 @@ func TestListAgentSkillPacks_ReadsAuthorizationFromExecTargetNotAgentRow(t *test
 }
 
 // TestEnabledPluginsMap_DoesNotUnionAcrossTargets 锁住 R15e 的"不做并集":Agent 有
-// 两档、两份互不相干的技能授权时,EnabledPluginsMap(agentID) 只看最靠前那一档,
+// 两档、两份互不相干的技能授权时,EnabledPluginsMapForTarget(agentID, 0) 只看最靠前那一档,
 // 不把两档的授权合并展示 —— caps 按每一档判定,不按 Agent 判定。
 func TestEnabledPluginsMap_DoesNotUnionAcrossTargets(t *testing.T) {
 	Convey("Agent 挂两档,第二档独有的技能不出现在结果里", t, func() {
@@ -151,7 +151,7 @@ func TestEnabledPluginsMap_DoesNotUnionAcrossTargets(t *testing.T) {
 		}}
 		s := newForTest(al, nil, et)
 
-		m, err := s.EnabledPluginsMap(context.Background(), 6)
+		m, err := s.EnabledPluginsMapForTarget(context.Background(), 6, 0)
 		So(err, ShouldBeNil)
 		_, hasFirst := m["first-only@x"]
 		So(hasFirst, ShouldBeTrue)
@@ -334,7 +334,7 @@ func TestListAgentSkillPacks(t *testing.T) {
 				agent_entity.AgentSkillItem{ID: "superpowers@claude-plugins-official", Enabled: true},      // 强制开
 				agent_entity.AgentSkillItem{ID: "frontend-design@claude-plugins-official", Enabled: false}, // 强制关(全局开的也能关)
 			)}
-			m, err := s.EnabledPluginsMap(context.Background(), 1)
+			m, err := s.EnabledPluginsMapForTarget(context.Background(), 1, 0)
 			So(err, ShouldBeNil)
 			So(m["superpowers@claude-plugins-official"], ShouldBeTrue)
 			val, hasFD := m["frontend-design@claude-plugins-official"]

@@ -337,6 +337,7 @@ func TestProjectLocationAdapter_ApplyResolvesDeviceIDWhenPaired(t *testing.T) {
 	remote_device_repo.RegisterPairedAgentred(paired)
 
 	locations := mock_project_location_repo.NewMockProjectLocationRepo(ctrl)
+	locations.EXPECT().FindByProjectAndFingerprint(gomock.Any(), int64(4), "fp-builder").Return(nil, nil)
 	var created *project_location_entity.ProjectLocation
 	locations.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, row *project_location_entity.ProjectLocation) error {
@@ -369,6 +370,7 @@ func TestProjectLocationAdapter_ApplyLeavesDeviceIDEmptyWhenUnpaired(t *testing.
 	remote_device_repo.RegisterPairedAgentred(paired)
 
 	locations := mock_project_location_repo.NewMockProjectLocationRepo(ctrl)
+	locations.EXPECT().FindByProjectAndFingerprint(gomock.Any(), int64(4), "fp-unknown").Return(nil, nil)
 	var created *project_location_entity.ProjectLocation
 	locations.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, row *project_location_entity.ProjectLocation) error {
@@ -385,6 +387,52 @@ func TestProjectLocationAdapter_ApplyLeavesDeviceIDEmptyWhenUnpaired(t *testing.
 	require.NoError(t, err)
 	require.NotNil(t, created)
 	assert.Empty(t, created.DeviceID)
+}
+
+// TestProjectLocationAdapter_GivenNaturalKeyHeldLocally_TakesOverThatRow 两端各自为
+// 同一个（项目, agentred 指纹）建了一行，带着不同的同步标识落在同一个自然键上
+// （R4b）。本机那一行还占着 uniq_project_locations_proj_fingerprint，硬插会撞唯一
+// 索引，抛出一个原始的 SQLite 错误——而这正好发生在「合并落败方」这一类行上。
+//
+// 自然键就是身份：接管本机那一行（改写正文并让它跟随账号里胜出的那个同步标识），
+// 不为同一件事再插一行。兄弟适配器 projectAgentAdapter 早就这么处理同类冲突了。
+func TestProjectLocationAdapter_GivenNaturalKeyHeldLocally_TakesOverThatRow(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	state := mock_syncstate_repo.NewMockSyncStateRepo(ctrl)
+	state.EXPECT().FindRow(gomock.Any(), syncwire.KindProjectLocation, "loc-remote", gomock.Any()).
+		Return(false, nil)
+	syncstate_repo.RegisterSyncState(state)
+
+	paired := mock_remote_device_repo.NewMockPairedAgentredRepo(ctrl)
+	paired.EXPECT().List(gomock.Any()).Return(nil, nil).AnyTimes()
+	remote_device_repo.RegisterPairedAgentred(paired)
+
+	locations := mock_project_location_repo.NewMockProjectLocationRepo(ctrl)
+	locations.EXPECT().FindByProjectAndFingerprint(gomock.Any(), int64(4), "fp-builder").Return(
+		&project_location_entity.ProjectLocation{
+			ID: 11, ProjectID: 4, Path: "/old", DaemonFingerprint: "fp-builder",
+			SyncMeta: syncmeta_entity.SyncMeta{SyncID: "loc-local"},
+		}, nil)
+	var saved *project_location_entity.ProjectLocation
+	locations.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, row *project_location_entity.ProjectLocation) error {
+			saved = row
+			return nil
+		})
+	// Create 没有 EXPECT：再插一行就会撞唯一索引。
+	project_location_repo.RegisterProjectLocation(locations)
+
+	err := projectLocationAdapter{}.apply(context.Background(), &inbound{
+		Kind: syncwire.KindProjectLocation, SyncID: "loc-remote",
+		ProjectSyncID: "proj-1", AgentredFingerprint: "fp-builder",
+		Payload: []byte(`{"path":"/srv/repo"}`),
+	}, map[string]int64{ref{Kind: syncwire.KindProject, SyncID: "proj-1"}.key(): 4})
+
+	require.NoError(t, err)
+	require.NotNil(t, saved)
+	assert.Equal(t, int64(11), saved.ID, "接管本机那一行，不新插一行")
+	assert.Equal(t, "/srv/repo", saved.Path)
+	assert.Equal(t, "loc-remote", saved.SyncID, "自然键上的行跟随账号里胜出的同步标识")
 }
 
 // TestProjectAgentAdapter_GivenSamePairAlreadyLocal_KeepsLocalRow 两端各自把同一个

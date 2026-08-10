@@ -20,17 +20,29 @@ var ErrPayloadNotObject = errors.New("sync payload must be a json object")
 // ErrPayloadAvatarContent 表示载荷里出现了头像正文而不是内容哈希（R16a）。
 var ErrPayloadAvatarContent = errors.New("sync payload carries avatar content instead of a content hash")
 
-// GuardPayload 是上行前的载荷守卫，挡住两类不该过机的东西（R2、决策 6）：
+// GuardPayload 是上行前的载荷守卫。它按**键名**挡住三类东西（R2、R16a、决策 6）：
 //
-//   - 本地自增 ID。跨机引用一律用同步标识、agentred 指纹或 provider_key 表达，
-//     它们全是字符串；「键名以 id 结尾、取值是数字」这个形状只可能是本机主键，
-//     在别的机器上指向完全不同的对象。
-//   - 凭据与 provider 行正文。llm_providers 整表（含 APIKey）不出本机，跨机只传
-//     provider_key 这个字符串引用。
+//   - 本地自增 ID（键名以 id 结尾、取值是数字）。跨机引用一律用同步标识、agentred
+//     指纹或 provider_key 表达，它们全是字符串；这个形状只可能是本机主键，在别的
+//     机器上指向完全不同的对象。
+//   - `api_key` 这个键，以及整行 provider 正文（`provider` / `providers` 取值是对象
+//     或数组）。llm_providers 整表不出本机，跨机只传 provider_key 这个字符串引用。
+//   - `avatar_data_url`：头像正文按内容哈希单独传，不进同步载荷。
 //
-// server 侧有一份同样的守卫（sync_entity.ValidatePayload）。两边都要有：server 那份
-// 保护账号里的其它设备，这一份保证坏载荷根本发不出去——发出去再被拒，本端会把它
-// 当成一次同步失败反复重试。
+// **它挡不住、也没打算挡的：载荷里以 JSON 字符串形式携带的正文。** 最要紧的一处是
+// agentBackendPayload.EnvJSON——它是用户自填的透传环境变量表，是 backend 配置的一
+// 部分，按设计随 backend 上行，在账号下明文存放。里面不会有 App 自管的那 15 个保留
+// 键（ANTHROPIC_API_KEY / OPENAI_API_KEY 等，由 agent_backend_entity.Check 拒绝入
+// 库），但用户自己往里放的任何别的密钥都会原样过机。
+//
+// 换句话说：这条守卫保证的是「llm_providers 那一行不出本机」，不是「任何凭据都不
+// 出本机」。它不是凭据扫描器，别把它当成一个——要挡住 env_json 就得整个字段不上行，
+// 那是规格决定，不是守卫能顺手做掉的事。
+//
+// server 侧有一份同规则的守卫（sync_entity.ValidatePayload），两边规则必须一致：
+// 两个仓库不能互相 import，只能靠这两段注释与各自的共享测试向量对齐。server 那份
+// 保护账号里的其它设备，这一份保证坏载荷根本发不出去。规则不一致时坏的一边只会让
+// **单条**被拒（server 回 rejected，本端出队并进 R5 列表），不会堵住整条队列。
 //
 // 空载荷合法：墓碑不带正文。
 func GuardPayload(payload []byte) error {

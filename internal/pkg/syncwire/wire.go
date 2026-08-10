@@ -8,7 +8,10 @@
 // provider_key，全是字符串（R2）。GuardPayload 在上行前把这条守死。
 package syncwire
 
-import "errors"
+import (
+	"encoding/json"
+	"errors"
+)
 
 // 同步组承载的对象类型，与 server 的 sync_entity 逐字一致。
 const (
@@ -71,9 +74,14 @@ type PushResult struct {
 	Version int64  `json:"version"`
 	Status  string `json:"status"`
 	Reason  string `json:"reason"`
-	// OverwrittenVersion / OverwrittenDeviceID 只在 Status 为 conflict 时有值。
-	OverwrittenVersion  int64 `json:"overwritten_version"`
-	OverwrittenDeviceID int64 `json:"overwritten_device_id"`
+	// OverwrittenVersion / OverwrittenDeviceID / OverwrittenPayload 只在 Status 为
+	// conflict 时有值：被这次上行覆盖掉的是哪一版、来自哪台设备、正文是什么。
+	//
+	// 正文只有 server 有：本端手上那一份是**覆盖别人的**那一份。R5 承诺的「追回被
+	// 覆盖的那一版」靠它，落一条「被覆盖」记录时记的必须是这一份。
+	OverwrittenVersion  int64           `json:"overwritten_version"`
+	OverwrittenDeviceID int64           `json:"overwritten_device_id"`
+	OverwrittenPayload  json.RawMessage `json:"overwritten_payload"`
 	// MergedSyncID / MergedVersion / MergedDeviceID 只在 R4b 的自然键合并发生时有值：
 	// 落败那一份的同步标识、版本与来源设备，它已在 server 落墓碑。
 	MergedSyncID   string `json:"merged_sync_id"`

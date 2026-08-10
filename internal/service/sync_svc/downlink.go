@@ -46,7 +46,14 @@ func (s *service) pullFrom(ctx context.Context, accountID, cursor int64) error {
 				return err
 			}
 			if err := s.applyInbound(ctx, accountID, in); err != nil {
-				return err
+				// 单条隔离：一行落不了地不该把整页连同游标一起卡住，否则下一轮
+				// 从同一个游标拉回同一页、在同一行再断一次，那台机器从此收不到
+				// 任何下行。留进暂缓队列：下一轮照常重试，30 天等不到就按 R2a
+				// 进「没能同步的改动」，一行也不会被悄悄丢掉。
+				if derr := s.deferFailed(ctx, accountID, in, err); derr != nil {
+					return derr
+				}
+				continue
 			}
 			if loss != nil {
 				losses = append(losses, loss)
@@ -180,7 +187,7 @@ func (s *service) gcLostChanges(ctx context.Context, accountID int64) error {
 //
 // 两道闸：**版本守卫**（本机已有同版本或更新的版本就不再落——重复投递只应用一次，
 // 任意到达顺序下结果相同，R4/R7）与**引用守卫**（引用目标还没到就暂缓落地，绝不写
-// 悬空引用，R2a）。
+// 悬空引用，R2a）。引用守卫只管落地，不管删除——见下面 in.Deleted 那一段。
 func (s *service) applyInbound(ctx context.Context, accountID int64, in *inbound) error {
 	ad := s.adapters[in.Kind]
 	if ad == nil {
@@ -193,10 +200,32 @@ func (s *service) applyInbound(ctx context.Context, accountID int64, in *inbound
 	if found && version >= in.Version {
 		return nil
 	}
+	if in.Deleted {
+		// 墓碑一到，同一个同步标识压在暂缓队列里的旧副本立刻作废。
+		//
+		// 少了这一步就有一条永久的复活路径：成员关系与执行目标是硬删，行没了之后
+		// SaveMeta 那条 `UPDATE … WHERE sync_id = ?` 命中 0 行，同步元数据落不下去，
+		// 版本守卫对它们失忆；此后重放那份旧副本会把删掉的行原样建回来，而游标早已
+		// 越过这两版，谁也不会再纠正它（R6：删除不被复活）。
+		if err := s.dropDeferred(ctx, accountID, in.Kind, in.SyncID); err != nil {
+			return err
+		}
+	}
 	if in.Deleted && !found {
 		// 本机从来没有这一行：墓碑没有可删的东西，也不必为它等引用目标到达
 		// ——把删除挂进暂缓队列只会白等 30 天（R2a/R6）。
 		return nil
+	}
+
+	if in.Deleted {
+		// 删除不过引用守卫：adapter.remove 只按同步标识找本机那一行，一个引用也
+		// 不写（resolved 它根本不收）。让它等引用目标到达，等于本机没配对那台
+		// agentred 时一条 backend 的墓碑要在暂缓队列里空等 30 天再被当成「引用
+		// 丢失」丢掉——那一行在本机永远删不掉，而 R6 说删除必须到达各端。
+		if err := ad.remove(ctx, in); err != nil {
+			return err
+		}
+		return s.saveInboundMeta(ctx, accountID, in)
 	}
 
 	resolved, missing, err := resolveRefs(ctx, ad.refs(in))
@@ -207,18 +236,17 @@ func (s *service) applyInbound(ctx context.Context, accountID int64, in *inbound
 		return err
 	}
 
-	if in.Deleted {
-		err = ad.remove(ctx, in)
-	} else {
-		err = ad.apply(ctx, in, resolved)
-	}
-	if errors.Is(err, errRefMissing) {
-		return s.defer_(ctx, accountID, in, "")
-	}
-	if err != nil {
+	if err := ad.apply(ctx, in, resolved); err != nil {
+		if errors.Is(err, errRefMissing) {
+			return s.defer_(ctx, accountID, in, "")
+		}
 		return err
 	}
+	return s.saveInboundMeta(ctx, accountID, in)
+}
 
+// saveInboundMeta 记下这一行已经消费到哪一版（版本守卫下一次靠它）。
+func (s *service) saveInboundMeta(ctx context.Context, accountID int64, in *inbound) error {
 	return syncstate_repo.SyncState().SaveMeta(ctx, in.Kind, in.SyncID, syncmeta_entity.SyncMeta{
 		SyncID:        in.SyncID,
 		SyncAccountID: accountID,
@@ -274,6 +302,10 @@ func (s *service) defer_(ctx context.Context, accountID int64, in *inbound, miss
 
 // replayDeferred 重试暂缓落地的行：引用目标可能刚刚随这一轮下行到达。一轮里只要
 // 有一条落地成功，就再来一轮——A 依赖 B、B 依赖 C 的链条靠这个补齐。
+//
+// 它走的是与 applyInbound 同一条路（同样的版本守卫、同样的引用守卫、同样的删除
+// 例外），区别只在失败之后：暂缓的行**留在队列里**等下一轮，不往上抛——一条重试
+// 不成功的行不该把同一轮里其它行的重放也一起中断。
 func (s *service) replayDeferred(ctx context.Context, accountID int64) error {
 	for round := 0; round < 8; round++ {
 		rows, err := syncqueue_repo.InboundQueue().ListByAccount(ctx, accountID)
@@ -293,49 +325,76 @@ func (s *service) replayDeferred(ctx context.Context, accountID int64) error {
 				}
 				continue
 			}
-			ad := s.adapters[in.Kind]
-			if ad == nil {
+			if s.adapters[in.Kind] == nil {
 				continue
 			}
-			resolved, _, rerr := resolveRefs(ctx, ad.refs(in))
-			if errors.Is(rerr, errRefMissing) {
-				continue
-			}
-			if rerr != nil {
-				return rerr
-			}
-			var aerr error
-			if in.Deleted {
-				aerr = ad.remove(ctx, in)
-			} else {
-				aerr = ad.apply(ctx, in, resolved)
-			}
-			if errors.Is(aerr, errRefMissing) {
-				continue
-			}
+			// 走 applyInbound 而不是自己再解析一遍引用：版本守卫也因此对重放生效。
+			// 少了它，一次迟到的重放会把已经落地的更新版本盖回旧版本，而游标早已
+			// 越过那一版——被盖掉的内容再也不会被重新投递，回退是永久的。
+			aerr := s.applyInbound(ctx, accountID, in)
 			if aerr != nil {
-				return aerr
+				logger.Ctx(ctx).Error("sync_svc.replayDeferred: row still cannot land, keeping it queued",
+					zap.String("kind", in.Kind), zap.String("syncId", in.SyncID), zap.Error(aerr))
+				continue
 			}
-			if err := syncstate_repo.SyncState().SaveMeta(ctx, in.Kind, in.SyncID, syncmeta_entity.SyncMeta{
-				SyncID:        in.SyncID,
-				SyncAccountID: accountID,
-				SyncVersion:   in.Version,
-				SyncUpdatedAt: in.UpdatedAt,
-				SyncOrigin:    strconv.FormatInt(in.SourceDeviceID, 10),
-				SyncDeletedAt: deletedAtOf(in, s.now()),
-			}); err != nil {
-				return err
-			}
+			// applyInbound 把「还差引用」重新挂了一条暂缓行；那条替换掉这一行，
+			// 这一行照常删掉（defer_ 已经保留了最早那次的 ReceivedAt）。
 			if err := syncqueue_repo.InboundQueue().Delete(ctx, row.ID); err != nil {
 				return err
 			}
-			progressed = true
+			if !s.stillDeferred(ctx, accountID, in) {
+				progressed = true
+			}
 		}
 		if !progressed {
 			return nil
 		}
 	}
 	return nil
+}
+
+// dropDeferred 清掉某个同步标识在暂缓队列里的全部行。
+func (s *service) dropDeferred(ctx context.Context, accountID int64, kind, syncID string) error {
+	rows, err := syncqueue_repo.InboundQueue().ListByAccount(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.EntityType != kind || row.EntitySyncID != syncID {
+			continue
+		}
+		if err := syncqueue_repo.InboundQueue().Delete(ctx, row.ID); err != nil {
+			return err
+		}
+		logger.Ctx(ctx).Debug("sync_svc.dropDeferred: tombstone superseded a deferred row",
+			zap.String("kind", kind), zap.String("syncId", syncID))
+	}
+	return nil
+}
+
+// stillDeferred 报告这一行是不是又被挂回了暂缓队列（引用目标还是没到）。
+func (s *service) stillDeferred(ctx context.Context, accountID int64, in *inbound) bool {
+	rows, err := syncqueue_repo.InboundQueue().ListByAccount(ctx, accountID)
+	if err != nil {
+		return true
+	}
+	for _, row := range rows {
+		if row.EntityType == in.Kind && row.EntitySyncID == in.SyncID {
+			return true
+		}
+	}
+	return false
+}
+
+// deferFailed 把一条落不了地的下行行留进暂缓队列，让整页的其余部分继续。
+//
+// 不是「丢掉」：下一轮 replayDeferred 照常重试，30 天还落不了地就按 R2a 进
+// 「没能同步的改动」——用户看得见，一行也没有被悄悄吞掉。
+func (s *service) deferFailed(ctx context.Context, accountID int64, in *inbound, cause error) error {
+	logger.Ctx(ctx).Error("sync_svc.pullFrom: row failed to land, holding it and continuing the page",
+		zap.String("kind", in.Kind), zap.String("syncId", in.SyncID),
+		zap.Int64("version", in.Version), zap.Error(cause))
+	return s.defer_(ctx, accountID, in, "")
 }
 
 // gcDeferred 超过 30 天仍然等不到引用目标的行整行丢弃，并以「引用丢失」进 R5 的

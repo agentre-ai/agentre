@@ -422,11 +422,11 @@ test("a deletion made elsewhere lands here and survives a stale end pushing the 
 // R6 from this end: a delete made on the real desktop has to reach the peer.
 //
 // This is the spec that pins two separate whole-queue wedges, both of which were
-// live while it was written and are now fixed — a tombstone that the server
-// rejects is not just a missing delete, it fails the entire push batch, and
-// `pushBatch` dequeues nothing on error, so ONE delete stops every later upload
-// from that desktop forever (and the downlink with it, because `pull` runs only
-// after `flush` succeeds):
+// live while it was written and are now fixed. At the time, a tombstone the
+// server rejected was not just a missing delete: the rejection failed the entire
+// push batch, and `pushBatch` dequeues nothing on error, so ONE delete stopped
+// every later upload from that desktop forever (and the downlink with it, because
+// `pull` runs only after `flush` succeeds). The two triggers were:
 //
 //   1. the tombstone's nil payload was encoded as `"payload": null`, which the
 //      server's guard rejected as「not a json object」(fixed by `omitempty` on
@@ -435,6 +435,12 @@ test("a deletion made elsewhere lands here and survives a stale end pushing the 
 //      carry no `project_sync_id` (buildPushItem's delete branch does not read
 //      the local row) — the server's natural-key guard rejected the batch for
 //      that too, until it was scoped to non-deleted items.
+//
+// Neither can wedge the queue any more even if a third trigger turns up: the
+// server now reports a failed guard as a per-item `rejected` result instead of
+// failing the batch, and the desktop dequeues that item and files it under
+// "changes that didn't sync" (R5). This spec still pins the two triggers
+// themselves — the containment is the backstop, not the fix.
 //
 // `alpha` has a peer-pushed `project_location` (see ⑥), so this spec exercises
 // the cascade, not just the plain project tombstone.

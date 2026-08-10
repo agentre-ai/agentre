@@ -123,14 +123,20 @@ type fakeSyncState struct {
 	// claimedBy 记下它们被收进了哪个账号，供断言。
 	unowned   map[string][]syncstate_repo.ClaimedRow
 	claimedBy map[string]int64
+	// hardDeleted 标出「这一类对象是硬删」（成员关系、执行目标——它们没有 status
+	// 软删列）。真仓储的 SaveMeta 是一条 `UPDATE … WHERE sync_id = ?`：行被硬删之后
+	// 那条语句命中 0 行，**同步元数据根本落不下去**。替身以前无条件写，等于凭空给了
+	// 这两类一个真实环境里不存在的版本记忆——版本守卫的漏洞因此在测试里全都看不见。
+	hardDeleted map[string]bool
 }
 
 func newFakeSyncState() *fakeSyncState {
 	return &fakeSyncState{
-		meta:      map[string]syncmeta_entity.SyncMeta{},
-		ids:       map[string]int64{},
-		unowned:   map[string][]syncstate_repo.ClaimedRow{},
-		claimedBy: map[string]int64{},
+		meta:        map[string]syncmeta_entity.SyncMeta{},
+		ids:         map[string]int64{},
+		unowned:     map[string][]syncstate_repo.ClaimedRow{},
+		claimedBy:   map[string]int64{},
+		hardDeleted: map[string]bool{},
 	}
 }
 
@@ -165,6 +171,11 @@ func (f *fakeSyncState) FindRow(context.Context, string, string, any) (bool, err
 }
 
 func (f *fakeSyncState) SaveMeta(_ context.Context, kind, syncID string, meta syncmeta_entity.SyncMeta) error {
+	if f.hardDeleted[kind] && meta.SyncDeletedAt > 0 {
+		// 行已经被硬删，真仓储那条 UPDATE 命中 0 行：什么都没落下。
+		delete(f.meta, f.key(kind, syncID))
+		return nil
+	}
 	f.meta[f.key(kind, syncID)] = meta
 	return nil
 }

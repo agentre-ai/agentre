@@ -49,10 +49,20 @@ const REMOTE_DEVICE_STATE_EVENT = "remote.device.state";
 export function useExecTargetCandidates(agentId: number, projectId: number) {
   const [candidates, setCandidates] = React.useState<ExecTargetCandidate[]>([]);
   const [loading, setLoading] = React.useState(false);
+  // loaded 区分「候选真的是空的」与「还没拉到 / 这次拉失败了」——两种情况下
+  // candidates 都是 []，但只有前者能据以判断某一档确实没了。
+  const [loaded, setLoaded] = React.useState(false);
+  // 只有最新一次请求可以写状态：设备上下线推送与 agentId/projectId 变化都会让多次
+  // reload 重叠，先发的那次晚返回时不能把新快照盖回旧的（否则用户看着「将在 X 上
+  // 运行」按下回车、实际跑到了别处——正是这个订阅要防的那件事）。卸载时也把代次推
+  // 进一格，在飞的请求回来后不再写已卸载组件的状态。
+  const reqRef = React.useRef(0);
 
   const reload = React.useCallback(async () => {
+    const req = ++reqRef.current;
     if (!agentId) {
       setCandidates([]);
+      setLoaded(false);
       return;
     }
     setLoading(true);
@@ -61,6 +71,7 @@ export function useExecTargetCandidates(agentId: number, projectId: number) {
         ListAgentExecTargetAvailability(agentId, projectId),
         ListAgentBackends(),
       ]);
+      if (req !== reqRef.current) return;
       const backendById = new Map<number, agent_backend_svc.BackendItem>();
       for (const b of backends?.items ?? []) backendById.set(b.id, b);
       setCandidates(
@@ -80,11 +91,14 @@ export function useExecTargetCandidates(agentId: number, projectId: number) {
           };
         }),
       );
+      setLoaded(true);
     } catch (e) {
+      if (req !== reqRef.current) return;
       console.error("[chat] exec target candidates load failed", e);
       setCandidates([]);
+      setLoaded(false);
     } finally {
-      setLoading(false);
+      if (req === reqRef.current) setLoading(false);
     }
     // projectId 变化也要重新拉——"这台机器上有没有配这个项目的路径"这一项判据
     // 只在绑定项目时生效。
@@ -93,6 +107,13 @@ export function useExecTargetCandidates(agentId: number, projectId: number) {
   React.useEffect(() => {
     void reload();
   }, [reload]);
+
+  React.useEffect(
+    () => () => {
+      reqRef.current++;
+    },
+    [],
+  );
 
   // 选中结果在起轮前是活的(R15a)：空会话态期间可用性变了就重新算，否则用户看着
   // "将在 X 上运行"按下回车、实际跑到了别处。信号取既有的 remote.device.state
@@ -105,7 +126,7 @@ export function useExecTargetCandidates(agentId: number, projectId: number) {
     return () => off?.();
   }, [reload]);
 
-  return { candidates, loading, reload };
+  return { candidates, loading, loaded, reload };
 }
 
 const REASON_I18N_KEY: Record<string, string> = {
@@ -144,7 +165,7 @@ export type NewSessionExecTargetLineProps = {
 
 export function NewSessionExecTargetLine(props: NewSessionExecTargetLineProps) {
   const { t } = useTranslation();
-  const { candidates } = useExecTargetCandidates(
+  const { candidates, loaded } = useExecTargetCandidates(
     props.agentId,
     props.projectId,
   );
@@ -158,12 +179,15 @@ export function NewSessionExecTargetLine(props: NewSessionExecTargetLineProps) {
   const effective = overrideCandidate ?? defaultCandidate;
   // 手动指定的档一旦不再可用，回落到自动挑选——不留一个死指向。这个 effect 必须
   // 在任何 early return 之前调用（Rules of Hooks），所以放在整个组件的顶部。
+  // 只在候选列表真的成功加载过之后才判：还没拉到 / 这次拉失败时 candidates 同样是
+  // 空的，此时清掉手动指定，会把用户刚选的机器悄悄换回自动挑选的那一档。
   React.useEffect(() => {
+    if (!loaded) return;
     if (props.overrideBackendId && !overrideCandidate) {
       props.onOverride(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.overrideBackendId, overrideCandidate]);
+  }, [loaded, props.overrideBackendId, overrideCandidate]);
 
   if (candidates.length <= 1) return null;
 

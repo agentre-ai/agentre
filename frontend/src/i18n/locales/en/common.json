@@ -2050,12 +2050,6 @@
         "title": "Agent Backend",
         "unlinkedProvider": "No linked LLM provider"
       },
-      "backendHints": {
-        "builtin": "Uses the built-in SDK to call the LLM provider with embedded tools.",
-        "claudeCode": "Runs tasks through Claude Code CLI. Tool calls are routed through the CLI.",
-        "codex": "Runs tasks through Codex CLI. Tool calls are routed through the CLI.",
-        "default": "Choose an agent backend to execute tasks."
-      },
       "execTargets": {
         "title": "Execution Targets",
         "add": "Add",

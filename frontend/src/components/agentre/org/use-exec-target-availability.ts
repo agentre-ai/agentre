@@ -18,8 +18,13 @@ export function useExecTargetAvailability(agentId: number, targetsKey: string) {
     Map<number, chat_svc.ExecTargetAvailabilityView>
   >(new Map());
   const [loading, setLoading] = React.useState(false);
+  // 只有最新一次请求可以写状态：增删执行目标会连着触发多次拉取，先发的那次晚返回时
+  // 不能把新一批判定盖回旧的（徽标会一直停在删掉那一档还在的快照上）。卸载时把代次
+  // 推进一格，在飞的请求回来后不再写已卸载组件的状态。
+  const reqRef = React.useRef(0);
 
   const reload = React.useCallback(async () => {
+    const req = ++reqRef.current;
     if (!agentId) {
       setByBackendId(new Map());
       return;
@@ -27,11 +32,13 @@ export function useExecTargetAvailability(agentId: number, targetsKey: string) {
     setLoading(true);
     try {
       const resp = await ListAgentExecTargetAvailability(agentId, 0);
+      if (req !== reqRef.current) return;
       setByBackendId(new Map((resp ?? []).map((s) => [s.agentBackendId, s])));
     } catch (e) {
+      if (req !== reqRef.current) return;
       console.error("[org] exec target availability load failed", e);
     } finally {
-      setLoading(false);
+      if (req === reqRef.current) setLoading(false);
     }
     // targetsKey 只用来判断"这一批 backend id 是否变了"，值本身不进请求体。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -40,6 +47,13 @@ export function useExecTargetAvailability(agentId: number, targetsKey: string) {
   React.useEffect(() => {
     void reload();
   }, [reload]);
+
+  React.useEffect(
+    () => () => {
+      reqRef.current++;
+    },
+    [],
+  );
 
   return { byBackendId, loading, reload };
 }

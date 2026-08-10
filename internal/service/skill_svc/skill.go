@@ -180,6 +180,13 @@ func (s *Service) ListAgentSkillPacks(ctx context.Context, agentID int64, _ bool
 	if err != nil {
 		return SkillCatalogDTO{}, err
 	}
+	return catalogOf(discovered, authorized), nil
+}
+
+// catalogOf 把「发现到的包 + 这份授权」合并成目录 DTO。两个 List…Packs… 的出口
+// 逐字相同过，只有取包与取授权的来源不同——合并与映射只留这一份，免得两边各改
+// 各的又漂开。
+func catalogOf(discovered discoveryResult, authorized []agent_entity.AgentSkillItem) SkillCatalogDTO {
 	mr := merge(agentskill.RecommendedFor(discovered.backendType), discovered.packs, authorized)
 	dto := make([]SkillPackDTO, 0, len(mr.packs))
 	for i, p := range mr.packs {
@@ -196,7 +203,7 @@ func (s *Service) ListAgentSkillPacks(ctx context.Context, agentID int64, _ bool
 			EffectiveEnabled: mr.effectiveEnabled[i],
 		})
 	}
-	return SkillCatalogDTO{Packs: dto}, nil
+	return SkillCatalogDTO{Packs: dto}
 }
 
 // ListAgentSkillPacksForTarget 同 ListAgentSkillPacks，但发现来源与授权都钉死在
@@ -228,23 +235,7 @@ func (s *Service) ListAgentSkillPacksForTarget(ctx context.Context, agentID, age
 	if err != nil {
 		return SkillCatalogDTO{}, err
 	}
-	mr := merge(agentskill.RecommendedFor(discovered.backendType), discovered.packs, target.GetSkills())
-	dto := make([]SkillPackDTO, 0, len(mr.packs))
-	for i, p := range mr.packs {
-		dto = append(dto, SkillPackDTO{
-			ID:               p.ID,
-			Name:             p.Name,
-			Description:      p.Description,
-			Skills:           p.Skills,
-			Source:           string(p.Source),
-			Recommended:      p.Recommended,
-			Installed:        p.Installed,
-			Enabled:          mr.enabled[i],
-			GloballyEnabled:  p.GloballyEnabled,
-			EffectiveEnabled: mr.effectiveEnabled[i],
-		})
-	}
-	return SkillCatalogDTO{Packs: dto}, nil
+	return catalogOf(discovered, target.GetSkills()), nil
 }
 
 // ListAgentSkillCommands 返回当前 agent 在 cwd 中可调用的 Skill 命令。
@@ -325,12 +316,6 @@ func enabledPlugins(items []agent_entity.AgentSkillItem) map[string]bool {
 		out[item.ID] = item.Enabled
 	}
 	return out
-}
-
-// EnabledPluginsMap 返回该 agent 主档的显式覆盖(强制开=true / 强制关=false)。
-// 其余(含全局已开但未覆盖)不出现在 map → CLI 沿用全局 enabledPlugins,实现继承。
-func (s *Service) EnabledPluginsMap(ctx context.Context, agentID int64) (map[string]bool, error) {
-	return s.EnabledPluginsMapForTarget(ctx, agentID, 0)
 }
 
 // EnabledPluginsMapForTarget 同 EnabledPluginsMap,但授权取自 agentBackendID 指名的

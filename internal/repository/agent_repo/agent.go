@@ -18,10 +18,12 @@ import (
 
 type AgentRepo interface {
 	Create(ctx context.Context, a *agent_entity.Agent) error
-	Update(ctx context.Context, a *agent_entity.Agent) error
 	// UpdateWithTargets 落 Agent 行，并把执行目标列表整表替换成 targets 给出的**完整
-	// 有序列表**——与 Update 的区别是 Update 总把 a.AgentBackendID/a.SkillsJSON 折成
-	// 单元素列表，这里让调用方（agent_svc，R15 多档编辑）直接给出全部档。
+	// 有序列表**（agent_svc，R15 多档编辑）。
+	//
+	// 没有「只给 Agent 行、让仓储自己折出执行目标」的那一档变体：它会把
+	// a.AgentBackendID/a.SkillsJSON 折成单元素列表，从而把对端配好的多档列表默默
+	// 截断成一档。要么给出完整列表（这里），要么明说不动列表（UpdateRow）。
 	UpdateWithTargets(ctx context.Context, a *agent_entity.Agent, targets []*agent_entity.AgentExecTarget) error
 	// UpdateRow 只落 Agent 这一行，不动它的执行目标列表（同步落地专用，见实现注释）。
 	UpdateRow(ctx context.Context, a *agent_entity.Agent) error
@@ -79,22 +81,10 @@ func (r *agentRepo) UpdateRow(ctx context.Context, a *agent_entity.Agent) error 
 	return db.Ctx(ctx).Save(a).Error
 }
 
-// Update 落 Agent 行，并把执行目标列表整表替换成当前的单元素列表（带着
-// a.SkillsJSON，见 Create 的注释）。
-func (r *agentRepo) Update(ctx context.Context, a *agent_entity.Agent) error {
-	// 迁移前已存在、还没有标识的历史行在下一次落库时补齐（JIT），已有标识的行
-	// 原样保留（R1：终身不变）。
-	a.EnsureSyncID()
-	return db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Save(a).Error; err != nil {
-			return err
-		}
-		return replaceExecTargets(tx, a.ID, primaryTargetList(a.AgentBackendID, a.SkillsJSON))
-	})
-}
-
 // UpdateWithTargets 见 AgentRepo 接口注释。
 func (r *agentRepo) UpdateWithTargets(ctx context.Context, a *agent_entity.Agent, targets []*agent_entity.AgentExecTarget) error {
+	// 迁移前已存在、还没有标识的历史行在下一次落库时补齐（JIT），已有标识的行
+	// 原样保留（R1：终身不变）。
 	a.EnsureSyncID()
 	return db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(a).Error; err != nil {

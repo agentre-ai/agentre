@@ -2050,12 +2050,6 @@
         "title": "AGENT 后端",
         "unlinkedProvider": "未绑定 LLM 供应商"
       },
-      "backendHints": {
-        "builtin": "走内置 SDK 调用 LLM 供应商，工具内嵌执行。",
-        "claudeCode": "通过 Claude Code CLI 执行任务，工具调用经 CLI 中转。",
-        "codex": "通过 Codex CLI 执行任务，工具调用经 CLI 中转。",
-        "default": "选择一个 Agent 后端来执行任务。"
-      },
       "execTargets": {
         "title": "执行目标",
         "add": "添加",

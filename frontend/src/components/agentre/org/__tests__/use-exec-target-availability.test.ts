@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { useExecTargetAvailability } from "../use-exec-target-availability";
@@ -52,5 +52,31 @@ describe("useExecTargetAvailability", () => {
     const fn = stubBinding([]);
     renderHook(() => useExecTargetAvailability(0, ""));
     expect(fn).not.toHaveBeenCalled();
+  });
+
+  // 增删执行目标会连着触发多次拉取（targetsKey 变一次拉一次），先发的那次晚返回时
+  // 不能把新一批判定盖回旧的——列表上的徽标会一直停在删掉那一档还在的快照上。
+  it("ignores a stale response that lands after a newer request", async () => {
+    let resolveStale: (v: unknown) => void = () => {};
+    const fn = stubBinding([]);
+    fn.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveStale = resolve;
+      }),
+    );
+    fn.mockResolvedValue([{ agentBackendId: 52, available: true, reason: "" }]);
+
+    const { result, rerender } = renderHook(
+      ({ key }: { key: string }) => useExecTargetAvailability(7, key),
+      { initialProps: { key: "51" } },
+    );
+    rerender({ key: "52" });
+    await waitFor(() => expect(result.current.byBackendId.has(52)).toBe(true));
+
+    await act(async () => {
+      resolveStale([{ agentBackendId: 51, available: true, reason: "" }]);
+    });
+    expect(result.current.byBackendId.has(52)).toBe(true);
+    expect(result.current.byBackendId.has(51)).toBe(false);
   });
 });

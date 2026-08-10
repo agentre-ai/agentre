@@ -289,20 +289,6 @@ func (mr *MockAgentRepoMockRecorder) SetPinned(ctx, id, pinned any) *gomock.Call
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetPinned", reflect.TypeOf((*MockAgentRepo)(nil).SetPinned), ctx, id, pinned)
 }
 
-// Update mocks base method.
-func (m *MockAgentRepo) Update(ctx context.Context, a *agent_entity.Agent) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Update", ctx, a)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// Update indicates an expected call of Update.
-func (mr *MockAgentRepoMockRecorder) Update(ctx, a any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Update", reflect.TypeOf((*MockAgentRepo)(nil).Update), ctx, a)
-}
-
 // UpdateAvatar mocks base method.
 func (m *MockAgentRepo) UpdateAvatar(ctx context.Context, id int64, avatarDataURL string, updatetime int64) error {
 	m.ctrl.T.Helper()

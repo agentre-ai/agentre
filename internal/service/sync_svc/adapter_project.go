@@ -311,15 +311,50 @@ func (projectLocationAdapter) apply(ctx context.Context, in *inbound, resolved m
 	if localID > 0 {
 		deviceID = strconv.FormatInt(localID, 10)
 	}
+	if !found {
+		// 两端各自为同一个（项目, 指纹）建了一行，带着不同的同步标识落在同一个自然
+		// 键上（R4b）。本机那一行还占着 uniq_project_locations_proj_fingerprint，
+		// 硬插会撞唯一索引抛一个原始的 SQLite 错误——偏偏这正是合并落败方那一类行。
+		//
+		// 自然键就是身份：接管本机那一行，让它跟随账号里胜出的那个同步标识，不为
+		// 同一件事再插一行。兄弟适配器 projectAgentAdapter 早就这么处理同类冲突。
+		held, ferr := findLocationAtNaturalKey(ctx, projectID, in.AgentredFingerprint)
+		if ferr != nil {
+			return ferr
+		}
+		if held != nil {
+			row = held
+			found = true
+		}
+	}
 	row.ProjectID, row.Path = projectID, p.Path
 	row.DaemonFingerprint = in.AgentredFingerprint
 	row.DeviceID = deviceID
 	row.Status = consts.ACTIVE
+	row.SyncID = in.SyncID
 	if !found {
-		row.SyncID = in.SyncID
 		return project_location_repo.ProjectLocation().Create(ctx, row)
 	}
 	return project_location_repo.ProjectLocation().Update(ctx, row)
+}
+
+// findLocationAtNaturalKey 取（项目, 指纹）这个自然键上的活行；没有返回 (nil, nil)。
+// 仓储对「没有」既可能回 (nil, nil) 也可能回 gorm.ErrRecordNotFound，两种都归一。
+func findLocationAtNaturalKey(
+	ctx context.Context, projectID int64, fingerprint string,
+) (*project_location_entity.ProjectLocation, error) {
+	if projectID == 0 || fingerprint == "" {
+		return nil, nil
+	}
+	row, err := project_location_repo.ProjectLocation().
+		FindByProjectAndFingerprint(ctx, projectID, fingerprint)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return row, nil
 }
 
 // syncIDAtNaturalKey 报告（项目同步标识, agentred 指纹）这个自然键上现在站着的是
@@ -333,16 +368,9 @@ func (projectLocationAdapter) syncIDAtNaturalKey(ctx context.Context, in *inboun
 	if err != nil || projectID == 0 {
 		return "", err
 	}
-	row, err := project_location_repo.ProjectLocation().
-		FindByProjectAndFingerprint(ctx, projectID, in.AgentredFingerprint)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", nil
-		}
+	row, err := findLocationAtNaturalKey(ctx, projectID, in.AgentredFingerprint)
+	if err != nil || row == nil {
 		return "", err
-	}
-	if row == nil {
-		return "", nil
 	}
 	return row.SyncID, nil
 }

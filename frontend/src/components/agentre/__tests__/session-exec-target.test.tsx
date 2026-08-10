@@ -1,5 +1,6 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import * as React from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -348,6 +349,149 @@ describe("NewSessionExecTargetLine", () => {
     expect(updated.className).toContain("bg-status-waiting-bg");
     expect(within(updated).getByText("Local")).toBeInTheDocument();
     expect(screen.getByText("Offline")).toBeInTheDocument();
+  });
+
+  // (d) 重叠请求：设备上下线推送 + agentId/projectId 变化都会让多次 reload 同时在飞，
+  //     先发的那次晚返回时不能把新快照盖回旧的——那正是这个订阅要防的事。
+  it("重叠的可用性请求：先发后到的旧响应不能盖掉新快照", async () => {
+    const { listAvailability } = stubWails(
+      [
+        { agentBackendId: 52, available: true },
+        { agentBackendId: 51, available: true },
+      ],
+      [
+        { id: 52, deviceId: "3", deviceName: "构建机", online: true },
+        { id: 51, deviceId: "" },
+      ],
+    );
+
+    // 第一次（挂载）：构建机掉线的旧判定，故意拖到最后才返回。
+    let resolveStale: (v: unknown) => void = () => {};
+    listAvailability.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveStale = resolve;
+      }),
+    );
+    renderLine();
+    await act(async () => {});
+
+    // 第二次（设备重新上线的推送）：新判定立刻返回，构建机可用。
+    listAvailability.mockResolvedValue([
+      {
+        agentBackendId: 52,
+        available: true,
+        reason: "",
+        hint: "",
+        projectPath: "",
+      },
+      {
+        agentBackendId: 51,
+        available: true,
+        reason: "",
+        hint: "",
+        projectPath: "",
+      },
+    ]);
+    await emitDeviceStateChange();
+    const line = await screen.findByTestId("new-session-exec-target-line");
+    expect(within(line).getByText("构建机")).toBeInTheDocument();
+
+    // 旧请求现在才落地：必须被丢弃。
+    await act(async () => {
+      resolveStale([
+        {
+          agentBackendId: 52,
+          available: false,
+          reason: "exec-target-offline",
+          hint: "",
+          projectPath: "",
+        },
+        {
+          agentBackendId: 51,
+          available: true,
+          reason: "",
+          hint: "",
+          projectPath: "",
+        },
+      ]);
+    });
+
+    const after = screen.getByTestId("new-session-exec-target-line");
+    expect(within(after).getByText("构建机")).toBeInTheDocument();
+    expect(after.className).not.toContain("bg-status-waiting-bg");
+    expect(screen.queryByText("Offline")).not.toBeInTheDocument();
+  });
+
+  // (e) 候选列表为空分两种：还没加载出来 / 加载失败。两种都不代表「钉住的那一档
+  //     真的没了」，不能把用户刚手动选的机器悄悄换回自动挑选。
+  it("候选还没加载出来时不清掉手动指定的档", async () => {
+    const { listAvailability } = stubWails(
+      [{ agentBackendId: 51, available: true }],
+      [{ id: 51, deviceId: "" }],
+    );
+    listAvailability.mockReturnValue(new Promise(() => {}));
+
+    const onOverride = vi.fn();
+    renderLine({ overrideBackendId: 52, onOverride });
+    await act(async () => {});
+
+    expect(onOverride).not.toHaveBeenCalled();
+  });
+
+  it("一次失败的重新加载不清掉手动指定的档，成功后仍然钉在那台机器上", async () => {
+    const { listAvailability } = stubWails(
+      [
+        { agentBackendId: 51, available: true },
+        { agentBackendId: 52, available: true },
+      ],
+      [
+        { id: 51, deviceId: "" },
+        { id: 52, deviceId: "3", deviceName: "构建机", online: true },
+      ],
+    );
+
+    const onOverride = vi.fn();
+    function ControlledLine() {
+      const [id, setId] = React.useState<number | null>(null);
+      return (
+        <NewSessionExecTargetLine
+          agentId={7}
+          agentName="开发"
+          projectId={0}
+          overrideBackendId={id}
+          onOverride={(v) => {
+            onOverride(v);
+            setId(v);
+          }}
+        />
+      );
+    }
+    render(
+      <MemoryRouter>
+        <ControlledLine />
+      </MemoryRouter>,
+    );
+    await screen.findByTestId("new-session-exec-target-line");
+
+    // 手动改选到构建机。
+    await userEvent.click(screen.getByText("Change"));
+    await userEvent.click(
+      await screen.findByRole("button", { name: /构建机/ }),
+    );
+    expect(onOverride).toHaveBeenLastCalledWith(52);
+
+    // 设备状态推送触发重新加载，但这次 RPC 失败了 → 候选被清空。
+    listAvailability.mockRejectedValueOnce(new Error("rpc down"));
+    await emitDeviceStateChange();
+    expect(onOverride).not.toHaveBeenCalledWith(null);
+
+    // 下一次成功加载：列表回来了，钉住的那一档也还在。
+    await emitDeviceStateChange();
+    await waitFor(() => {
+      const line = screen.getByTestId("new-session-exec-target-line");
+      expect(within(line).getByText("构建机")).toBeInTheDocument();
+    });
+    expect(onOverride).not.toHaveBeenCalledWith(null);
   });
 
   it("manual override to a non-first available candidate: shown plainly, not flagged as dropped", async () => {
