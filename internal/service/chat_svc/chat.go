@@ -3765,7 +3765,8 @@ func (s *chatSvc) prepareTurnRun(
 		// 退回 CLI 自身登录态,把这段对话打到用户没选的那家上游。与 resolveAgentBackend
 		// 对「backend 已绑 provider」那半的判定同一口径 —— 那半只看 be.LLMProviderKey,
 		// 覆盖不到「登录态 backend 上会话自己选了供应商」这条新路径(决策 6/7)。
-		if prov != nil && (req.GatewayURL == "" || req.GatewayToken == "") {
+		// 只对真正经网关取 LLM 的后端成立,见 gatewayRoutesLLM。
+		if prov != nil && gatewayRoutesLLM(be) && (req.GatewayURL == "" || req.GatewayToken == "") {
 			return fail(i18n.NewError(ctx, code.ChatBackendGatewayUnavailable))
 		}
 	}
@@ -4560,6 +4561,16 @@ func shouldSignChatGateway(be *agent_backend_entity.AgentBackend, prov *llm_prov
 		return true
 	}
 	return prov != nil
+}
+
+// gatewayRoutesLLM 报告这个后端的 LLM 流量是否真的经本机网关：claudecode 靠
+// ANTHROPIC_BASE_URL、codex 靠 model_provider/base_url，两者都是 spawn 时从网关派生的
+// 启动期参数，拿不到网关就会静默退回 CLI 自身登录态。piagent 不在此列 —— 它把
+// provider.APIKey 直接注进子进程 env（agentruntime.BuildPiAgentProviderEnv），整个
+// piagent runtime 没有任何 GatewayURL/GatewayToken 消费点，网关没在跑照样打得到所选
+// 供应商。「有 effective provider 就必须有可用网关」这条门控只对前两者成立。
+func gatewayRoutesLLM(be *agent_backend_entity.AgentBackend) bool {
+	return be != nil && (be.IsClaudeCode() || be.IsCodex())
 }
 
 // remoteProviderKnownMissing returns true only when the watcher cache has a

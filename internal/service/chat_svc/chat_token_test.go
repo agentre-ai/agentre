@@ -258,7 +258,7 @@ func TestPrepareTurnRun_LocalTokenRoutesToTurnProvider(t *testing.T) {
 // 反向那一半是硬不变量 1：整轮压根没有 effective provider（真·CLI 登录态）时行为完全不变
 // —— 照常起轮，只是不带网关参数。
 func TestPrepareTurnRun_SessionProviderNeedsRunningGateway(t *testing.T) {
-	newTurn := func(t *testing.T, prov *llm_provider_entity.LLMProvider) (*chatSvc, *chat_entity.Session, *agent_entity.Agent, *agent_backend_entity.AgentBackend) {
+	newTurn := func(t *testing.T) (*chatSvc, *chat_entity.Session, *agent_entity.Agent, *agent_backend_entity.AgentBackend) {
 		t.Helper()
 		runner := &directRunRunner{request: make(chan agentruntime.RunRequest, 1)}
 		t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, runner))
@@ -279,7 +279,7 @@ func TestPrepareTurnRun_SessionProviderNeedsRunningGateway(t *testing.T) {
 			ProviderKey: "session-picked", Type: string(llm_provider_entity.TypeAnthropic),
 			Model: "claude-x", Status: consts.ACTIVE,
 		}
-		s, sess, a, be := newTurn(t, prov)
+		s, sess, a, be := newTurn(t)
 		sess.ProviderKey = "session-picked"
 
 		_, err := s.prepareTurnRun(context.Background(), sess, a, be, prov, nil, nil, "", false, false)
@@ -287,7 +287,7 @@ func TestPrepareTurnRun_SessionProviderNeedsRunningGateway(t *testing.T) {
 	})
 
 	t.Run("真·CLI 登录态（无任何供应商）不受影响：照常起轮、不带网关参数", func(t *testing.T) {
-		s, sess, a, be := newTurn(t, nil)
+		s, sess, a, be := newTurn(t)
 
 		prepared, err := s.prepareTurnRun(context.Background(), sess, a, be, nil, nil, nil, "", false, false)
 		require.NoError(t, err)
@@ -295,4 +295,37 @@ func TestPrepareTurnRun_SessionProviderNeedsRunningGateway(t *testing.T) {
 		assert.Empty(t, prepared.req.GatewayToken)
 		assert.Empty(t, prepared.req.GatewayURL)
 	})
+}
+
+// TestPrepareTurnRun_PiAgentSessionProviderRunsWithoutGateway 是上面那条门控的边界：
+// 「有 effective provider 就必须有网关」只对**把 LLM 流量指向本机网关**的后端成立
+// （claudecode 的 ANTHROPIC_BASE_URL / codex 的 model_provider 都是启动期从网关派生的）。
+// pi-agent 不走网关 —— 它把 provider.APIKey 直接注进子进程 env
+// （agentruntime.BuildPiAgentProviderEnv），GatewayURL/Token 在整个 piagent runtime 里
+// 没有任何消费点。所以网关没在跑时这一轮照样能正常执行，把它打成
+// ChatBackendGatewayUnavailable 等于凭空失败一条本来跑得通的会话。
+func TestPrepareTurnRun_PiAgentSessionProviderRunsWithoutGateway(t *testing.T) {
+	runner := &directRunRunner{request: make(chan agentruntime.RunRequest, 1)}
+	t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner))
+	prevCwd := resolveCwdFn
+	t.Cleanup(func() { resolveCwdFn = prevCwd })
+	dir := t.TempDir()
+	resolveCwdFn = func(context.Context, *chat_entity.Session) (string, error) { return dir, nil }
+
+	s := &chatSvc{gateway: newStoppedGateway()}
+	// 登录态 pi 后端（这一档没绑供应商）+ 会话自己选了一个 agentre 供应商。
+	sess := &chat_entity.Session{ID: 100, AgentID: 7, ProviderKey: "session-picked"}
+	a := &agent_entity.Agent{ID: 7, AgentBackendID: 12}
+	be := &agent_backend_entity.AgentBackend{ID: 12, Type: string(agent_backend_entity.TypePiAgent)}
+	prov := &llm_provider_entity.LLMProvider{
+		ProviderKey: "session-picked", Type: string(llm_provider_entity.TypeAnthropic),
+		Model: "claude-x", APIKey: "sk-x", Status: consts.ACTIVE,
+	}
+
+	prepared, err := s.prepareTurnRun(context.Background(), sess, a, be, prov, nil, nil, "", false, false)
+	require.NoError(t, err, "pi 不经网关取 LLM，网关没在跑不该把这一轮打成失败")
+	require.NotNil(t, prepared)
+	require.NotNil(t, prepared.req.Provider)
+	assert.Equal(t, "session-picked", prepared.req.Provider.ProviderKey,
+		"所选供应商仍随 RunRequest 下发 —— pi 从它取 APIKey")
 }
