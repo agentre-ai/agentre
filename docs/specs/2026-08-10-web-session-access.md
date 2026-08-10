@@ -38,7 +38,19 @@
 
 因此本轮在 daemon 侧的新增**只有问题 3 与问题 4 那几列**，其余全是浏览器侧与 server 侧。
 
-本轮基线（两个仓库的全量测试结果与既有抖动）在 worktree 建立后采集并补记，采集前视为未知。
+**本轮基线**（2026-08-10 采集于两个仓库的 `feat/2026-08-10-web-session-access` worktree；`agentre` 起点 `204b7e70`，`agentre-server` 起点 `78d0b48`）。工作区根的 `go.work` 不包含 worktree 路径，因此全部 Go 命令加 `GOWORK=off`：
+
+| 基线 | 命令 | 结果 |
+|---|---|---|
+| `agentre` 后端 | `GOWORK=off make test-backend` | EXIT=0，124 个包全过 |
+| `agentre` 前端 | `cd frontend && pnpm test` | EXIT=0，239 文件 / 2414 测试 |
+| `agentre-server` 后端 | `GOWORK=off make test-backend`（含 `-race`） | EXIT=0，36 个包全过 |
+| `agentre-server` 前端 | `GOWORK=off make test-frontend` | EXIT=0，19 文件 / 257 测试 |
+
+采集中发现两处**与本轮无关的既有问题**，按约定只记录不修改：
+
+- **既有抖动**：`agentre-server/internal/pkg/usercode` 的 `TestGenerate_Unique` 首跑失败（`collision at 4595: AZS-XQD`），随后连跑 5 次全绿。它从 32 字符的字母表抽 6 位码（空间 32⁶ ≈ 1.07×10⁹）连抽 10000 个并断言零重复，生日碰撞概率约 **4.6%**——约每 22 次跑必挂一次，是测试本身的设计问题，不是回归。本轮把它当已知抖动。
+- **`agentre` 新检出无法自举**：根包 `main.go:26` 的 `//go:embed all:frontend/dist` 与 `make generate` 互为前置（generate 要编译根包 → 根包要 dist → `pnpm build` 出 dist 又要 generate 产出的 `frontend/wailsjs/`），两者都是 gitignore 的产物，因此全新 worktree 里 `make test-backend` 与 `make generate` 都在 setup 阶段就挂。破环办法是先写一个占位 `frontend/dist/index.html`（`agentre-server` 的 `prepare-web-dist` 目标已经这么做，`agentre` 没有对应物）。本轮据此自举，不改 Makefile。
 
 ## 参与者与用户故事
 
