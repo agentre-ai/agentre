@@ -75,12 +75,21 @@ func (departmentAdapter) load(ctx context.Context, syncID string) (*outbound, er
 	}, nil
 }
 
+// refs 刻意**不**把部门负责人列为阻塞引用。
+//
+// 负责人必须是这个部门的成员（department_svc.Update 强制），所以那个 Agent 自己的
+// 落地正等着这个部门（agentAdapter.refs 依赖 department）。两边都阻塞就是死锁：
+// resolveRefs 让两行都进入站队列，replayDeferred 又只在「有一条落地成功」时才继续，
+// 于是八轮全空转、两行躺满 30 天后被当成「引用丢失」丢掉——接收端一个部门都收不到，
+// 连带收不到部门里的每个 Agent。守卫见 adapter_refcycle_test.go。
+//
+// 负责人改由 apply 自己解析：解析不出就先把部门落下去（打破环），再报 errRefMissing
+// 让这一行留在入站队列，等负责人到达后的重放补上 lead_agent_id。
 func (departmentAdapter) refs(in *inbound) []ref {
 	var p departmentPayload
 	_ = json.Unmarshal(in.Payload, &p)
 	return []ref{
 		{Kind: syncwire.KindDepartment, SyncID: p.ParentSyncID},
-		{Kind: syncwire.KindAgent, SyncID: p.LeadAgentSync},
 	}
 }
 
@@ -94,16 +103,32 @@ func (departmentAdapter) apply(ctx context.Context, in *inbound, resolved map[st
 	if err != nil {
 		return err
 	}
+	// 负责人是非阻塞引用（见 refs 的注释）：解析不出时这一轮先落 0，本行照常写下去。
+	leadID := int64(0)
+	if p.LeadAgentSync != "" {
+		if leadID, err = syncstate_repo.SyncState().FindLocalID(ctx, syncwire.KindAgent, p.LeadAgentSync); err != nil {
+			return err
+		}
+	}
 	row.Name, row.Description, row.Icon = p.Name, p.Description, p.Icon
 	row.AccentColor, row.SortOrder = p.AccentColor, p.SortOrder
 	row.ParentID = resolvedID(resolved, ref{Kind: syncwire.KindDepartment, SyncID: p.ParentSyncID})
-	row.LeadAgentID = resolvedID(resolved, ref{Kind: syncwire.KindAgent, SyncID: p.LeadAgentSync})
+	row.LeadAgentID = leadID
 	row.Status = consts.ACTIVE
 	if !found {
 		row.SyncID = in.SyncID
-		return department_repo.Department().Create(ctx, row)
+		if err := department_repo.Department().Create(ctx, row); err != nil {
+			return err
+		}
+	} else if err := department_repo.Department().Update(ctx, row); err != nil {
+		return err
 	}
-	return department_repo.Department().Update(ctx, row)
+	if p.LeadAgentSync != "" && leadID == 0 {
+		// 部门已经落地（环就此打破，负责人那一行这一轮即可落地），但 lead_agent_id
+		// 还空着：报 errRefMissing 把本行留在入站队列，由随后的重放补齐。
+		return errRefMissing
+	}
+	return nil
 }
 
 func (departmentAdapter) remove(ctx context.Context, in *inbound) error {
@@ -251,9 +276,13 @@ func (a *agentAdapter) apply(ctx context.Context, in *inbound, resolved map[stri
 // resolveAvatarDataURL 落实 R16a 的下行一侧：
 //   - 载荷没有哈希 → 没有自定义头像，清空。
 //   - 本机现有内容已经是这份哈希 → 已经持有，不重新取一次正文。
-//   - 否则调 avatar.GetAvatar 取一次；取不到（没装配 / 网络失败 / 超时）就留空，
-//     退回 AgentAvatar 的 initials 占位字母头像，不阻塞这一行落地，也不在这次
-//     apply 里反复重试——下一次这份哈希再出现时才会再试一次。
+//   - 否则调 avatar.GetAvatar 取一次；取不到（没装配 / 网络失败 / 超时）或者取回来的
+//     正文哈希对不上，就**保留本机已有的那份**，不阻塞这一行落地，也不在这次 apply 里
+//     反复重试——下一次这份哈希再出现时才会再试一次。本机原本就没有头像时留空，
+//     退回 AgentAvatar 的 initials 占位字母头像。
+//
+// 取不到时保留旧图而不是抹空：抹空是净损失（本机那张图是好的），而且 apply 成功后
+// SaveMeta 会把版本推到最新，这一条再也不会重投，用户从此看到占位字母头像。
 func (a *agentAdapter) resolveAvatarDataURL(ctx context.Context, syncID, existing, hash string) string {
 	if hash == "" {
 		return ""
@@ -262,13 +291,19 @@ func (a *agentAdapter) resolveAvatarDataURL(ctx context.Context, syncID, existin
 		return existing
 	}
 	if a.avatar == nil {
-		return ""
+		return existing
 	}
 	content, _, err := a.avatar.GetAvatar(ctx, hash)
 	if err != nil || content == "" {
-		logger.Ctx(ctx).Debug("sync_svc.agentAdapter: avatar fetch failed, falling back to initials",
+		logger.Ctx(ctx).Debug("sync_svc.agentAdapter: avatar fetch failed, keeping the avatar already held",
 			zap.String("syncId", syncID), zap.Error(err))
-		return ""
+		return existing
+	}
+	// 内容寻址的正文必须验哈希：不验就等于让服务端决定这个 Agent 的头像是什么。
+	if avatarHash(content) != hash {
+		logger.Ctx(ctx).Warn("sync_svc.agentAdapter: avatar content does not match its hash, discarded",
+			zap.String("syncId", syncID))
+		return existing
 	}
 	return content
 }

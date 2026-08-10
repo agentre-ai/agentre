@@ -98,7 +98,8 @@ func (s *agentSvc) Create(ctx context.Context, req *CreateAgentRequest) (*Create
 	}
 	// 执行目标行随 Agent 的写入路径一起变化，级联在同步层展开（R15/R15e）。
 	sync_svc.NotifyCreate(ctx, syncwire.KindAgent, a.ID, a.SyncMeta)
-	return &CreateAgentResponse{Item: toItem(a, execTargetSnapshot(ctx, a.ID))}, nil
+	targets, _ := execTargetSnapshot(ctx, a.ID)
+	return &CreateAgentResponse{Item: toItem(a, targets)}, nil
 }
 
 func (s *agentSvc) Update(ctx context.Context, req *UpdateAgentRequest) (*UpdateAgentResponse, error) {
@@ -140,12 +141,12 @@ func (s *agentSvc) Update(ctx context.Context, req *UpdateAgentRequest) (*Update
 	}
 	// 执行目标列表被这次写入重排/裁剪：被挤掉的档要各自落墓碑（R6），留下来的档
 	// 随 Agent 一起上行（同步层的 dependents）。快照必须在写之前取。
-	targetsBefore := execTargetSnapshot(ctx, existing.ID)
+	targetsBefore, beforeOK := execTargetSnapshot(ctx, existing.ID)
 	if err := agent_repo.Agent().UpdateWithTargets(ctx, existing, targets); err != nil {
 		return nil, err
 	}
-	targetsAfter := execTargetSnapshot(ctx, existing.ID)
-	notifyDroppedExecTargets(ctx, targetsBefore, targetsAfter)
+	targetsAfter, afterOK := execTargetSnapshot(ctx, existing.ID)
+	notifyDroppedExecTargets(ctx, targetsBefore, targetsAfter, beforeOK && afterOK)
 	sync_svc.NotifyUpdate(ctx, syncwire.KindAgent, existing.ID, existing.SyncMeta)
 	return &UpdateAgentResponse{Item: toItem(existing, targetsAfter)}, nil
 }
@@ -214,7 +215,8 @@ func (s *agentSvc) Move(ctx context.Context, req *MoveAgentRequest) (*MoveAgentR
 	existing.ParentAgentID = req.NewParentAgentID
 	existing.SortOrder = sortOrder
 	sync_svc.NotifyUpdate(ctx, syncwire.KindAgent, existing.ID, existing.SyncMeta)
-	return &MoveAgentResponse{Item: toItem(existing, execTargetSnapshot(ctx, existing.ID))}, nil
+	targets, _ := execTargetSnapshot(ctx, existing.ID)
+	return &MoveAgentResponse{Item: toItem(existing, targets)}, nil
 }
 
 func (s *agentSvc) Reorder(ctx context.Context, req *ReorderAgentsRequest) error {
@@ -312,7 +314,8 @@ func (s *agentSvc) UploadAvatar(ctx context.Context, req *UploadAvatarRequest) (
 	// R16a：头像正文按内容哈希单独传，但「换了头像」本身是 Agent 行的一次普通修改，
 	// 必须照常触发上行 —— 不发这条通知，新头像要等用户碰巧改了别的字段才到对端。
 	sync_svc.NotifyUpdate(ctx, syncwire.KindAgent, existing.ID, existing.SyncMeta)
-	return &UploadAvatarResponse{Item: toItem(existing, execTargetSnapshot(ctx, existing.ID))}, nil
+	targets, _ := execTargetSnapshot(ctx, existing.ID)
+	return &UploadAvatarResponse{Item: toItem(existing, targets)}, nil
 }
 
 func (s *agentSvc) DeleteAvatar(ctx context.Context, req *DeleteAvatarRequest) (*DeleteAvatarResponse, error) {
@@ -330,7 +333,8 @@ func (s *agentSvc) DeleteAvatar(ctx context.Context, req *DeleteAvatarRequest) (
 	}
 	// 同 UploadAvatar：清掉自定义头像也是一次内容变化（R16a）。
 	sync_svc.NotifyUpdate(ctx, syncwire.KindAgent, existing.ID, existing.SyncMeta)
-	return &DeleteAvatarResponse{Item: toItem(existing, execTargetSnapshot(ctx, existing.ID))}, nil
+	targets, _ := execTargetSnapshot(ctx, existing.ID)
+	return &DeleteAvatarResponse{Item: toItem(existing, targets)}, nil
 }
 
 // SetPinned 切换 Agent 用户置顶。系统 agent 也允许置顶（虽然恒置顶），不特判。
@@ -561,9 +565,10 @@ func toAgentExecTargetItems(rows []*agent_entity.AgentExecTarget) []department_s
 	return out
 }
 
-// execTargetSnapshot 取某个 Agent 当前的执行目标行；同步未装配时一次库都不查
-// ——单机构建与单元测试里这个查询一次都不该发生。
-func execTargetSnapshot(ctx context.Context, agentID int64) []*agent_entity.AgentExecTarget {
+// execTargetSnapshot 取某个 Agent 当前的执行目标行。第二个返回值报告这次读**是否
+// 成功**：读失败返回的空列表与「一档都没有」在类型上不可区分，而这两者对墓碑级联
+// 的含义正好相反（见 notifyDroppedExecTargets）。
+func execTargetSnapshot(ctx context.Context, agentID int64) ([]*agent_entity.AgentExecTarget, bool) {
 	// 刻意**不**按 sync_svc.Active() 短路：这份快照除了喂同步的墓碑级联，还是
 	// AgentItem 里 Skills 的真相来源（R15e）——未登录时短路掉会让写完之后回给前端
 	// 的那份 DTO 一个技能都没有。
@@ -571,15 +576,19 @@ func execTargetSnapshot(ctx context.Context, agentID int64) []*agent_entity.Agen
 	if err != nil {
 		logger.Ctx(ctx).Warn("agent_svc.execTargetSnapshot: read exec targets failed",
 			zap.Int64("agentId", agentID), zap.Error(err))
-		return nil
+		return nil, false
 	}
-	return rows
+	return rows, true
 }
 
 // notifyDroppedExecTargets 把「写入前有、写入后没了」的那些档报成删除：它们在别的
 // 端还活着，不落墓碑就会在下一次下行时被原样送回来（R6）。
-func notifyDroppedExecTargets(ctx context.Context, before, after []*agent_entity.AgentExecTarget) {
-	if len(before) == 0 {
+//
+// 两次快照里任何一次读失败，这个差集就不可信：写入本身已经提交，读失败时的空列表
+// 会让**每一档**都算成「被挤掉了」，墓碑一上行就把别的端上还活着的档全删了，而本机
+// 一档没少。宁可漏报（下一次下行会把该删的原样送回来，届时再收敛），不可错报。
+func notifyDroppedExecTargets(ctx context.Context, before, after []*agent_entity.AgentExecTarget, trustworthy bool) {
+	if !trustworthy || len(before) == 0 {
 		return
 	}
 	kept := make(map[string]struct{}, len(after))

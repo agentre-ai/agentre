@@ -293,7 +293,11 @@ Gotchas learned building it:
 - **The local-path report only rides the 30 s ticker** (R16, by design), so the
   spec that checks it legitimately waits ~half a minute; the suite timeout is
   raised accordingly.
-- **One spec is `test.fail()`** — a real product defect (a desktop's tombstone is
-  sent as `"payload": null` and the server's payload guard rejects it). It is
-  annotated, not hidden: when the defect is fixed the spec passes and the
-  annotation turns that into a build failure telling you to remove it.
+- **The delete spec pins two whole-queue wedges.** A tombstone the server rejects
+  fails the *entire* push batch, and `pushBatch` dequeues nothing on error — so one
+  delete stops every later upload from that desktop, and the downlink with it
+  (`pull` runs only after `flush` succeeds). Both known causes are fixed: the
+  tombstone's `"payload": null` (now `omitempty`) and the `project_location`
+  tombstone's absent `project_sync_id` (the server's natural-key guard now skips
+  deleted items). The spec deletes a project that has a path record, so it covers
+  the cascade rather than the plain project tombstone alone.

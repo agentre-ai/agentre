@@ -267,6 +267,67 @@ func TestAgentAdapter_ApplyFallsBackToInitialsWhenFetchFails(t *testing.T) {
 	assert.Equal(t, consts.ACTIVE, created.Status)
 }
 
+// applyOntoExistingAgent 跑一次「本机已有这个 Agent」的下行 apply，返回写回去的行。
+func applyOntoExistingAgent(t *testing.T, existing *agent_entity.Agent, avatar avatarTransport, payload string) *agent_entity.Agent {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	state := mock_syncstate_repo.NewMockSyncStateRepo(ctrl)
+	state.EXPECT().FindRow(gomock.Any(), syncwire.KindAgent, "agent-1", gomock.Any()).DoAndReturn(
+		func(_ context.Context, _, _ string, dest any) (bool, error) {
+			*(dest.(*agent_entity.Agent)) = *existing
+			return true, nil
+		})
+	syncstate_repo.RegisterSyncState(state)
+
+	agents := mock_agent_repo.NewMockAgentRepo(ctrl)
+	var updated *agent_entity.Agent
+	agents.EXPECT().UpdateRow(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, a *agent_entity.Agent) error { updated = a; return nil })
+	agent_repo.RegisterAgent(agents)
+
+	require.NoError(t, (&agentAdapter{avatar: avatar}).apply(context.Background(), &inbound{
+		Kind: syncwire.KindAgent, SyncID: "agent-1", Version: 2, Payload: []byte(payload),
+	}, map[string]int64{}))
+	require.NotNil(t, updated)
+	return updated
+}
+
+// TestAgentAdapter_ApplyGivenFetchFails_KeepsTheAvatarAlreadyHeld 取不到新头像正文时
+// 不能把本机**已经有的**那份抹掉。
+//
+// 载荷里的 avatar_hash 非空 = 对端有自定义头像，只是这一次取正文失败（网络抖动 /
+// 服务端还没落到这份内容）。此时把 AvatarDataURL 写空是净损失：本机原本那张图是好
+// 的，抹掉之后 SaveMeta 又把版本推到最新，这一条再也不会重投，用户从此看到占位字母
+// 头像，直到有人再编辑一次这个 Agent。留着旧图既不丢数据，也不会更错。
+func TestAgentAdapter_ApplyGivenFetchFails_KeepsTheAvatarAlreadyHeld(t *testing.T) {
+	existing := &agent_entity.Agent{ID: 9, Name: "Ava", AvatarDataURL: testAvatarDataURL}
+	newHash := avatarHash("data:image/png;base64,QkJCQg==")
+
+	updated := applyOntoExistingAgent(t, existing,
+		&stubAvatarTransport{getErr: errors.New("timeout")},
+		`{"name":"Ava","avatar_hash":"`+newHash+`"}`)
+
+	assert.Equal(t, testAvatarDataURL, updated.AvatarDataURL,
+		"取不到新正文时保留本机已有的头像，而不是抹成空")
+}
+
+// TestAgentAdapter_ApplyGivenContentHashMismatch_RejectsTheContent 内容寻址的正文
+// 必须验哈希：取回来的正文哈希对不上就不能落库。
+//
+// 不验等于把「这份正文是什么」的决定权完全交给服务端——服务端返回任意 data: URL，
+// 桌面端都会原样存进 agents.avatar_data_url 并渲染出来。验一次哈希是免费的，这正是
+// 内容寻址的意义。
+func TestAgentAdapter_ApplyGivenContentHashMismatch_RejectsTheContent(t *testing.T) {
+	existing := &agent_entity.Agent{ID: 9, Name: "Ava"}
+	askedHash := avatarHash(testAvatarDataURL)
+
+	updated := applyOntoExistingAgent(t, existing,
+		&stubAvatarTransport{getContent: "data:image/png;base64,ZXZpbA=="},
+		`{"name":"Ava","avatar_hash":"`+askedHash+`"}`)
+
+	assert.Empty(t, updated.AvatarDataURL, "正文哈希对不上就不落库")
+}
+
 // TestAgentAdapter_ApplyClearsAvatarWhenHashEmpty 对端删掉了自定义头像（载荷里
 // avatar_hash 为空）时，本机也跟着清空，而不是继续留着旧内容。
 func TestAgentAdapter_ApplyClearsAvatarWhenHashEmpty(t *testing.T) {

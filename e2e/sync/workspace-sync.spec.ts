@@ -419,29 +419,26 @@ test("a deletion made elsewhere lands here and survives a stale end pushing the 
   expect(projectByName(`${doomedName}-resurrected`)).toBeUndefined();
 });
 
-// KNOWN PRODUCT DEFECT — this spec is marked `test.fail()` on purpose and is NOT
-// evidence that the behaviour works.
+// R6 from this end: a delete made on the real desktop has to reach the peer.
 //
-// A delete made on a desktop never leaves it. `sync_svc.buildPushItem` builds a
-// tombstone with a nil payload (uplink.go: 「墓碑不带正文」), `server_svc`'s
-// syncPushReqItem.Payload carries no `omitempty`, so the wire body is
-// `"payload": null` — and the server's guard
-// (agentre-server sync_entity.ValidatePayload) accepts an EMPTY payload but
-// rejects `null` as「not a json object」, failing the whole batch with code 30501.
-// Reproduced standalone: `synce2e peer push --kind project --sync-id X --deleted
-// --payload null` → `code 30501`.
+// This is the spec that pins two separate whole-queue wedges, both of which were
+// live while it was written and are now fixed — a tombstone that the server
+// rejects is not just a missing delete, it fails the entire push batch, and
+// `pushBatch` dequeues nothing on error, so ONE delete stops every later upload
+// from that desktop forever (and the downlink with it, because `pull` runs only
+// after `flush` succeeds):
 //
-// Two consequences, both worse than a missing delete: the tombstone never
-// reaches any other end (R6), and because pushBatch returns an error nothing is
-// dequeued — one delete wedges that desktop's outbound queue, and every later
-// upload with it (R3/R7).
+//   1. the tombstone's nil payload was encoded as `"payload": null`, which the
+//      server's guard rejected as「not a json object」(fixed by `omitempty` on
+//      server_svc's syncPushReqItem.Payload);
+//   2. deleting this project cascades a `project_location` tombstone, and those
+//      carry no `project_sync_id` (buildPushItem's delete branch does not read
+//      the local row) — the server's natural-key guard rejected the batch for
+//      that too, until it was scoped to non-deleted items.
 //
-// One line on either side fixes it (`omitempty`, or treating `null` as empty in
-// the guard); it is deliberately NOT fixed here, because this task may not touch
-// product code. When it is fixed this spec starts passing, and `test.fail()`
-// turns that into a build failure telling you to drop the annotation.
+// `alpha` has a peer-pushed `project_location` (see ⑥), so this spec exercises
+// the cascade, not just the plain project tombstone.
 test("a delete made on the real desktop reaches the peer", async ({ page }) => {
-  test.fail();
   await deleteProject(page, alphaProjectID);
 
   const tombstone = await waitFor(

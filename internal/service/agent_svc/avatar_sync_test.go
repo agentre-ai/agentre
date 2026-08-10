@@ -2,8 +2,10 @@ package agent_svc
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -39,6 +41,57 @@ func registerRecordingSync(t *testing.T) *recordingSync {
 	et.EXPECT().ListByAgent(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	agent_repo.RegisterAgentExecTarget(et)
 	return rec
+}
+
+// TestUpdateAgent_GivenExecTargetReadFails_DoesNotTombstoneSurvivingTargets
+// 「写入后重读执行目标」失败时，绝不能把还活着的档全部报成删除。
+//
+// execTargetSnapshot 读失败时只记日志并返回 nil，与「一档都没有」在类型上不可区分；
+// notifyDroppedExecTargets 拿着 after=nil 去和 before 求差，就会把 before 里的每一
+// 档都当成「被这次写入挤掉了」。可是 UpdateWithTargets 已经提交成功，这些行在本机
+// 好好活着——墓碑一上行，别的端就会把三档全删掉，而本机还是三档。一次 SQLite
+// BUSY 就能触发（本仓有据可查的既有现象），且不可自愈。
+func TestUpdateAgent_GivenExecTargetReadFails_DoesNotTombstoneSurvivingTargets(t *testing.T) {
+	ctx, agentMock, _, backendMock, svc := setupSvc(t)
+	rec := &recordingSync{}
+	sync_svc.SetDefault(rec)
+	t.Cleanup(func() { sync_svc.SetDefault(nil) })
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	agentMock.EXPECT().Find(gomock.Any(), int64(42)).Return(&agent_entity.Agent{
+		ID: 42, Name: "Eva", Status: consts.ACTIVE, AvatarColor: "agent-2",
+		DepartmentID: 2, AgentBackendID: 5, PromptJSON: "[]",
+		SyncMeta: syncmeta_entity.SyncMeta{SyncID: "agent-42"},
+	}, nil)
+	backendMock.EXPECT().Find(gomock.Any(), int64(5)).Return(activeBackend(5), nil).AnyTimes()
+	backendMock.EXPECT().Find(gomock.Any(), int64(6)).Return(activeBackend(6), nil).AnyTimes()
+	agentMock.EXPECT().UpdateWithTargets(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
+
+	before := []*agent_entity.AgentExecTarget{
+		{ID: 1, AgentID: 42, AgentBackendID: 5, SortOrder: 0, SyncMeta: syncmeta_entity.SyncMeta{SyncID: "t-1"}},
+		{ID: 2, AgentID: 42, AgentBackendID: 6, SortOrder: 1, SyncMeta: syncmeta_entity.SyncMeta{SyncID: "t-2"}},
+	}
+	targetMock := mock_agent_repo.NewMockAgentExecTargetRepo(ctrl)
+	gomock.InOrder(
+		// 写之前读成功：两档都在。
+		targetMock.EXPECT().ListByAgent(gomock.Any(), int64(42)).Return(before, nil),
+		// 写之后重读失败（DB 忙）。
+		targetMock.EXPECT().ListByAgent(gomock.Any(), int64(42)).Return(nil, errors.New("database is locked")),
+	)
+	agent_repo.RegisterAgentExecTarget(targetMock)
+
+	_, err := svc.Update(ctx, &UpdateAgentRequest{
+		ID: 42, Name: "Eva", AvatarColor: "agent-2",
+		ExecTargets: []ExecTargetInputDTO{{AgentBackendID: 5}, {AgentBackendID: 6}},
+	})
+	require.NoError(t, err, "重读失败不该让这次写入报错——它已经提交了")
+
+	for _, ch := range rec.changes {
+		assert.NotEqual(t, syncwire.KindAgentExecTarget+"/"+sync_svc.OpDelete, ch.Kind+"/"+ch.Op,
+			"重读失败时不得对执行目标落墓碑：本机这些行还活着（多报的档=%s）", ch.Meta.SyncID)
+	}
 }
 
 func avatarAgent(id int64) *agent_entity.Agent {

@@ -193,6 +193,19 @@ func TestEnabledPluginsMapForTarget_UsesPinnedTargetNotPrimary(t *testing.T) {
 			_, hasSecond := m["second-only@x"]
 			So(hasSecond, ShouldBeFalse)
 		})
+
+		// 钉住的那一档被移出列表(用户在组织架构页删掉了这一档,backend 本身还在)后,
+		// 这一轮仍然跑在 backend 33 上。此时绝不能回落到主档那份授权:那会把用户在
+		// 别的档上授权(甚至显式关掉)的技能，注入到一个从没授权过它们的 backend。
+		// 回落只对「老会话没钉过档」(agentBackendID = 0)成立。
+		Convey("钉住的那一档已不在列表里时,拿到的是空授权而不是主档那份", func() {
+			m, err := s.EnabledPluginsMapForTarget(context.Background(), 7, 33)
+			So(err, ShouldBeNil)
+			_, hasFirst := m["first-only@x"]
+			So(hasFirst, ShouldBeFalse)
+			_, hasSecond := m["second-only@x"]
+			So(hasSecond, ShouldBeFalse)
+		})
 	})
 }
 

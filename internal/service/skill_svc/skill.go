@@ -72,8 +72,11 @@ func (s *Service) authorizedSkills(ctx context.Context, agentID int64) ([]agent_
 }
 
 // authorizedSkillsForTarget 取 agentID 名下**指定那一档**的技能授权(R15e)。
-// agentBackendID <= 0 或该档不在列表里时回落到主档 —— 老会话没钉过档,行为必须与
-// 钉档前一致。
+// agentBackendID <= 0 时回落到主档 —— 老会话没钉过档,行为必须与钉档前一致。
+//
+// 指定了一档、但它已经不在列表里(用户把这一档从组织架构页删了,backend 本身还在,
+// 会话仍钉在它上面)时返回空授权,**不**回落到主档:回落会把用户在别的档上授权、
+// 甚至显式关掉的技能,注入到一个从没授权过它们的 backend 上。
 func (s *Service) authorizedSkillsForTarget(
 	ctx context.Context, agentID, agentBackendID int64,
 ) ([]agent_entity.AgentSkillItem, error) {
@@ -90,6 +93,7 @@ func (s *Service) authorizedSkillsForTarget(
 				return t.GetSkills(), nil
 			}
 		}
+		return nil, nil
 	}
 	if targets[0] == nil {
 		return nil, nil
