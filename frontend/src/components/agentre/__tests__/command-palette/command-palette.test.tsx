@@ -1,5 +1,6 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import React from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -18,7 +19,12 @@ vi.mock("@/hooks/use-chat-agents", () => ({
 }));
 
 import { CommandPalette } from "../../command-palette";
-import { ShortcutsProvider } from "../../shortcuts/shortcuts-provider";
+import { CMD_NEW_CHAT_ID } from "../../shortcuts/registry";
+import {
+  ShortcutsProvider,
+  useShortcutsContext,
+} from "../../shortcuts/shortcuts-provider";
+import type { KeyChord } from "../../shortcuts/types";
 
 const MOCK_AGENTS = [
   {
@@ -133,5 +139,44 @@ describe("CommandPalette", () => {
 
     expect(screen.getByTestId("location")).toHaveTextContent("/org");
     expect(consumeNewAgentDialogIntent()).toBe(true);
+  });
+});
+
+describe("CommandPalette — Footer 新建对话快捷键提示（快捷键 Provider 集成）", () => {
+  function RebindNewChat({ chord }: { chord: KeyChord }) {
+    const { setBinding } = useShortcutsContext();
+    React.useEffect(() => {
+      setBinding(CMD_NEW_CHAT_ID, chord);
+      // 只挂载时重绑一次：验证 Footer 从同一份绑定数据重新格式化
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    return null;
+  }
+
+  function renderPaletteWithRebind(chord: KeyChord) {
+    return render(
+      <MemoryRouter initialEntries={["/projects"]}>
+        <ShortcutsProvider platform="darwin">
+          <RebindNewChat chord={chord} />
+          <CommandPalette />
+        </ShortcutsProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it("默认模式显示 cmd.new-chat 默认绑定 ⌘N（macOS）", async () => {
+    renderPalette();
+    act(() => useCommandPaletteStore.getState().setOpen(true));
+
+    expect(await screen.findByText("New chat")).toBeInTheDocument();
+    expect(screen.getByText("⌘N")).toBeInTheDocument();
+  });
+
+  it("重绑 cmd.new-chat 后 Footer 立即显示重绑后的按键", async () => {
+    renderPaletteWithRebind({ mod: "primary-shift", key: "K" });
+    act(() => useCommandPaletteStore.getState().setOpen(true));
+
+    expect(await screen.findByText("New chat")).toBeInTheDocument();
+    expect(await screen.findByText("⌘⇧K")).toBeInTheDocument();
   });
 });

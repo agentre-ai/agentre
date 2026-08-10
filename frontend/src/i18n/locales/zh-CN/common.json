@@ -1073,7 +1073,8 @@
       "clearContext": "清上下文",
       "create": "创建",
       "navigate": "导航",
-      "open": "打开"
+      "open": "打开",
+      "newChat": "新建对话"
     },
     "group": {
       "activeFirst": "活跃优先 · 共 {{count}} 条",

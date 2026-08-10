@@ -425,6 +425,32 @@ describe("CommandPalette — 视觉键盘提示（与 Pencil 设计稿一致）"
     expect(screen.queryByText("Clear context")).toBeNull();
     expect(screen.queryByText("⌫")).toBeNull();
   });
+
+  it("Footer 在默认模式下显示新建对话快捷键提示（脱离 Provider 时兜底 ⌘N）", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    appMocks.ProjectListTree.mockResolvedValue([]);
+    renderHarness();
+    await act(async () => {
+      useCommandPaletteStore.getState().toggle(); // 默认模式
+    });
+    await flush();
+
+    expect(screen.getByText("New chat")).toBeTruthy();
+    expect(screen.getByText("⌘N")).toBeTruthy();
+  });
+
+  it("Footer 在命令模式下 NOT 显示新建对话快捷键提示，保留命令模式状态标识", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    appMocks.ProjectListTree.mockResolvedValue([]);
+    renderHarness();
+    await act(async () => {
+      useCommandPaletteStore.getState().openWith("> ");
+    });
+    await flush();
+
+    expect(screen.getByText("Command mode")).toBeTruthy();
+    expect(screen.queryByText("New chat")).toBeNull();
+  });
 });
 
 describe("CommandPalette — Tab 直接切上下文 (BDD)", () => {

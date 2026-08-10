@@ -1073,7 +1073,8 @@
       "clearContext": "Clear context",
       "create": "Create",
       "navigate": "Navigate",
-      "open": "Open"
+      "open": "Open",
+      "newChat": "New chat"
     },
     "group": {
       "activeFirst": "Active first · {{count}} total",
