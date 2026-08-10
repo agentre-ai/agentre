@@ -114,4 +114,16 @@ describe("resolvePreviewRelPath", () => {
     expect(resolvePreviewRelPath("C:\\proj\\a.go", "C:\\proj")).toBe("a.go");
     expect(resolvePreviewRelPath("C:\\other\\a.go", "C:\\proj")).toBeNull();
   });
+
+  it("returns a '/'-separated relPath on Windows, so one file is one preview tab across modes", () => {
+    // 预览标签的身份**就是**这个字符串(chat-sidebar-store 的 FilePreviewTab.path)。
+    // 「目录」模式自己按 "/" 拼(directory-view),「Git」模式的路径直接来自后端、
+    // 恒用 "/";只有「变动」模式的行路径来自工具调用,在 Windows 会话上是 "\" 分隔。
+    // 不在这里归一,同一个文件从两个模式点开就会开出两个标签。
+    expect(resolvePreviewRelPath("C:\\proj\\src\\a.ts", "C:\\proj")).toBe(
+      "src/a.ts",
+    );
+    // 工具调用也可能给出相对路径,同样是 "\" 分隔。
+    expect(resolvePreviewRelPath("src\\a.ts", "C:\\proj")).toBe("src/a.ts");
+  });
 });

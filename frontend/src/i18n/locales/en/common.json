@@ -573,10 +573,8 @@
       "me": "Me"
     },
     "notice": {
-      "modelDeviation": {
-        "sentence": "Selected model {{selected}} was not applied; actually using {{actual}}",
-        "selected": "Selected model",
-        "actual": "was not applied; actually using"
+      "providerFallback": {
+        "sentence": "Selected provider {{provider}} is unavailable; fell back to the agent binding"
       }
     },
     "meta": {
@@ -593,12 +591,19 @@
     },
     "quota": {
       "aria": "Claude Code quota 5h {{five}}% 7d {{seven}}% from {{device}}",
+      "panel": {
+        "fiveHour": "5-hour window",
+        "opusWeekly": "Opus 7-day",
+        "sonnetWeekly": "Sonnet 7-day",
+        "title": "Claude subscription usage",
+        "usedNote": "Percentages are usage · refreshed every 60s",
+        "weekly": "7-day window"
+      },
       "resetRemaining": " (resets in {{time}})",
       "title": {
         "authExpired": "Claude Code OAuth expired · run 'claude /login' on {{device}}",
         "deviceOffline": "{{device}} offline",
         "network": "Claude Code quota · {{device}} (network error, showing last value)",
-        "ok": "Claude Code quota · {{device}}",
         "rateLimited": "Claude Code quota · {{device}} (429 backoff, showing last value)"
       }
     },
@@ -617,21 +622,23 @@
     "files": {
       "empty": "No files have been changed in this session",
       "label": "Files",
-      "openFile": "Open file",
       "openFailed": "Failed to open file: {{error}}",
       "expandFolder": "Expand {{name}}",
       "collapseFolder": "Collapse {{name}}",
+      "treeAria": "Files changed in this session",
       "modes": {
         "label": "View mode",
         "changes": "Changes",
-        "directory": "Directory",
-        "git": "Git"
+        "directory": "Directory"
       }
     },
     "directory": {
       "showIgnored": "Show ignored",
       "showIgnoredOn": "Hide ignored files",
       "showIgnoredOff": "Show ignored files",
+      "search": "Search",
+      "searchOn": "Close search",
+      "searchOff": "Search files",
       "loading": "Loading directory…",
       "empty": "This directory is empty",
       "truncated": "Showing the first {{limit}} entries only",
@@ -640,9 +647,27 @@
       "retry": "Retry",
       "localPathMissingTitle": "This computer hasn't configured a path for this project yet",
       "localPathMissingHint": "This project was synced from your account — the file panel needs a local working directory to list its contents.",
-      "localPathMissingAction": "Specify local path"
+      "localPathMissingAction": "Specify local path",
+      "treeAria": "Working directory files",
+      "subtreeChanges": "{{count}} changed files",
+      "subtreeChanges_one": "{{count}} changed file",
+      "subtreeChanges_other": "{{count}} changed files"
+    },
+    "search": {
+      "placeholder": "Search files by name…",
+      "hitCount": "{{count}} results",
+      "clear": "Clear search",
+      "hint": "Type to search files by name",
+      "empty": "No files match \"{{query}}\"",
+      "emptyHint": "Ignored files are excluded from search by default",
+      "truncatedEmptyHint": "The search stopped before it finished, so this is not the whole picture",
+      "truncated": "Showing the first {{limit}} results only",
+      "loading": "Searching…",
+      "readFailed": "Search failed",
+      "resultsAria": "Search results"
     },
     "git": {
+      "label": "Git",
       "scope": {
         "label": "Comparison scope",
         "uncommitted": "Uncommitted",
@@ -662,6 +687,7 @@
       "readFailed": "Failed to read git changes",
       "retry": "Retry",
       "truncated": "Showing the first {{limit}} changed files only",
+      "listAria": "Git changed files",
       "status": {
         "modified": "Modified",
         "added": "Added",
@@ -672,8 +698,10 @@
     },
     "filePreview": {
       "panelAria": "File preview",
-      "open": "Preview",
       "close": "Close preview",
+      "tabsAria": "Preview tabs",
+      "tabLimit": "Preview tabs are full (max {{limit}}). Close one first.",
+      "closeAll": "Close All",
       "loading": "Reading file…",
       "readFailed": "Failed to read file",
       "retry": "Retry",
@@ -699,6 +727,20 @@
       "empty": "No messages in this session",
       "label": "Outline",
       "turn": "Turn {{turn}}"
+    },
+    "row": {
+      "menu": "More actions",
+      "preview": "Preview",
+      "previewInNewTab": "Preview in a new tab",
+      "jumpToTurn": "Jump to turn",
+      "openWith": "Open with default app",
+      "reveal": "Show in file manager",
+      "revealFailed": "Failed to show in file manager: {{error}}",
+      "copyRelPath": "Copy relative path",
+      "copyAbsPath": "Copy absolute path",
+      "copyFileName": "Copy file name",
+      "expand": "Expand",
+      "collapse": "Collapse"
     },
     "sidebar": "Chat context"
   },
@@ -2249,21 +2291,16 @@
     },
     "reorderFailed": "Failed to save order, please retry"
   },
-  "modelPill": {
+  "providerPill": {
     "active": "Active",
-    "aria": "Model: {{model}}",
-    "errorFetch": "Failed to load model list. Please try again.",
-    "errorPersist": "Failed to save the model switch. Please try again.",
-    "errorProvider": "No model list found for this provider (it may have been removed or is offline).",
-    "followDefault": "Follow provider default",
-    "followDefaultDesc": "Use the provider default model bound to this agent",
-    "followDefaultUnbound": "Follow default",
-    "footer": "The switch takes effect from the next turn; the running turn is unaffected",
-    "freeInputPlaceholder": "Type a model ID, press Enter to confirm",
-    "heading": "Model",
-    "submit": "Use",
-    "title": "Switch model · current {{model}}",
-    "unboundExisting": "No provider bound; existing sessions cannot switch models"
+    "aria": "Provider: {{provider}}",
+    "errorFetch": "Failed to load providers. Please try again.",
+    "followAgentBinding": "Follow agent binding",
+    "followAgentBindingDesc": "Use the provider default bound to this agent",
+    "followAgentBindingUnboundDesc": "Leave unselected; use the CLI login state",
+    "heading": "Provider",
+    "title": "Select provider · current {{provider}}",
+    "unselected": "Select provider"
   },
   "permissionMode": {
     "active": "ACTIVE",

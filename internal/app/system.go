@@ -1,9 +1,11 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -64,6 +66,16 @@ func isAbsolutePath(p string) bool {
 	return false
 }
 
+// RevealPath 在系统文件管理器中打开 path 所在目录并选中该文件。
+// path 必须是绝对路径；包含 ".." 时拒绝。末尾 :line[:col] 后缀会被剥离。
+func (a *App) RevealPath(path string) error {
+	cleaned, err := validateOpenPath(path)
+	if err != nil {
+		return err
+	}
+	return runRevealPlatform(runtime.GOOS, cleaned)
+}
+
 // OpenLogsDir 在系统文件管理器中打开 Agentre 的日志目录（不存在时先创建）。
 // 用于「设置 → 版本 & 更新 → 打开日志」，方便用户取日志附到 Bug 反馈里。
 func (a *App) OpenLogsDir() error {
@@ -85,5 +97,31 @@ func runOpenPlatform(path string) error {
 		return runOpenCmd("cmd", "/c", "start", "", path)
 	default:
 		return runOpenCmd("xdg-open", path)
+	}
+}
+
+func runRevealPlatform(goos, path string) error {
+	switch goos {
+	case "darwin":
+		return runOpenCmd("open", "-R", path)
+	case "windows":
+		// explorer.exe 即使成功也几乎恒以非零码退出（它把退出码用作别的语义），
+		// 照直当失败会让每一次成功的「在文件管理器中显示」都弹一条错误提示。只有
+		// 进程根本起不来（可执行文件找不到之类，此时 err 不是 *exec.ExitError）
+		// 才是真失败。
+		err := runOpenCmd("explorer", "/select,"+path)
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return nil
+		}
+		return err
+	default:
+		// nautilus 只有 GNOME 装，KDE / XFCE / Sway 等桌面上根本不存在。它起不来时
+		// 回落到打开文件所在目录：选不中文件，但比只留一条错误提示强，用的还是与
+		// OpenPath 同一个桌面无关的 xdg-open。
+		if err := runOpenCmd("nautilus", "--select", path); err != nil {
+			return runOpenCmd("xdg-open", filepath.Dir(path))
+		}
+		return nil
 	}
 }

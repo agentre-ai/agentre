@@ -1,5 +1,5 @@
 // Package ctlendpoint defines the on-disk handshake file that the running
-// desktop writes and the `agentre ctl` CLI reads to locate + authenticate
+// desktop writes and the `agrctl ctl` CLI reads to locate + authenticate
 // against the desktop's local control endpoint (exposed on the httpgateway
 // under /ctl/). The file lives in AppDataDir and is written 0600 so only the
 // same OS user can read the token — that file permission is the trust boundary

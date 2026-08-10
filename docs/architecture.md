@@ -13,7 +13,7 @@ internal/
                                 methods only do parse → svc.Xxx().Method(ctx, …) → return)
   bootstrap/                   (startup order: dataDir → cago memory config → logger → SQLite → migrations)
   cli/{claudecodecmd,ctlcmd}/  (subcommand implementations, compiled into the agrctl binary)
-  daemon/                      (agentred-side daemon: client / handlers / migrations / notifier / pairing / remotefs / repository / rpc / sessions / state)
+  daemon/                      (agentred-side daemon: client / handlers / migrations / notifier / pairing / remotefs / repository / rpc / sessions / state / workspacefs)
   service/<domain>_svc/        (business logic; interface + singleton accessor + private implementation)
   repository/<domain>_repo/    (data access; interface + Register/accessor, uniformly going through db.Ctx(ctx))
     mock_<domain>_repo/        (mockgen output, injected into service unit tests)
@@ -21,7 +21,7 @@ internal/
   pkg/                         (cross-cutting internal packages: agentprovider / agentruntime / agentskill / agenttool /
                                 agrctlinstall / ccoauth / claudecodehook / clienv / cliprober / cliprocess / code (i18n error
                                 codes) / ctlendpoint / diff / hookexec / httpgateway / jsonrpc / keychain / llmcatalog /
-                                openclawgateway / paths / procattr / pty / remotefs / sysnotify)
+                                llmurl / openclawgateway / paths / procattr / pty / remotefs / sysnotify / workspacefs)
   buildinfo/                   (CommitID ldflag target)
 migrations/                    (gormigrate sequential migrations, filename prefix YYYYMMDDNNNN)
 pkg/                           (externally reusable packages: claudecode / codex / piagent —— independently maintained CLI subprocess wrappers;

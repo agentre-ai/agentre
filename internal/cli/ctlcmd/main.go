@@ -1,6 +1,5 @@
-// Package ctlcmd is the entry point for "agentre ctl <…>" subcommands.
-// agentre's main() routes early when os.Args[1] == "ctl" so the agentre binary
-// doubles as a control CLI for a running desktop without booting the wails app.
+// Package ctlcmd implements the "agrctl ctl <…>" subcommands used to control
+// a running desktop without booting the Wails app.
 //
 // It talks to the desktop's loopback control API (ctl_svc, mounted on the
 // httpgateway under /ctl/); the endpoint URL + token are read from the
@@ -16,12 +15,12 @@ import (
 	"strings"
 )
 
-const usageText = `agentre ctl — control a running Agentre desktop
+const usageText = `agrctl ctl — control a running Agentre desktop
 
 Usage:
-  agentre ctl agents                          list configured agents
-  agentre ctl projects                        list projects
-  agentre ctl send --agent <name> [flags] <task text...>
+  agrctl ctl agents                          list configured agents
+  agrctl ctl projects                        list projects
+  agrctl ctl send --agent <name> [flags] <task text...>
 
 Send flags:
   --agent <name>     target agent by name

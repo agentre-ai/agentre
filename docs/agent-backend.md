@@ -75,7 +75,7 @@ This table answers "what does it look like when it runs" — process shape, sess
 | Reverse Q&A | not supported | control_request `can_use_tool` + `AskUserQuestion` tool | app-server `item/tool/requestUserInput` JSON-RPC | not supported | not supported | claudecode uses the question text as the key, codex uses the question ID as the key; OpenClaw ask-user is unavailable |
 | Subagent events | ❌ | ✅ `SubagentStarted/Progress/Done` | ❌ | ✅ official bundled + flat-single extension snapshots | ❌ | claudecode translates its native `Task` protocol; Pi recognizes supported extension envelopes at the stateful drain boundary; OpenClaw MVP does not map subagent events |
 | Remote daemon | ✅ | ✅ | ✅ | ✅ | ❌ | the runtime must not depend on desktop-only services (chat_repo / GUI); OpenClaw is blocked by missing daemon-local secret enrollment/reference |
-| Session model switch | ✅ read per turn | ✅ launch flag → evict + respawn | ✅ launch flag → evict + respawn (pooled app-server) | ✅ `--model` per turn | ❌ not in v1 | `RunRequest.ModelOverride`, see [§2.4 J](#j-session-level-model-override--runrequestmodeloverride). A backend outside the allowlist never receives the field, and the frontend ModelPill does not render for it |
+| New-session provider selection | ✅ any provider | ✅ Anthropic family | ✅ OpenAI / Codex family | ✅ Anthropic + OpenAI family | ❌ never rendered | a new-session (`sessionId===0`) composer `ProviderPill` lists only the LLM providers compatible with the backend, gated by `ProviderTypeMatch` (builtin→any, claudecode→anthropic, codex→openai-response, piagent→anthropic/openai-chat/openai-response, openclaw→none — the pill is not rendered for it). Picking one persists `chat_sessions.provider_key`; each turn resolves `effectiveProviderKey = firstNonEmpty(sess.ProviderKey, be.LLMProviderKey)` → that provider's default model. Existing sessions render no switcher — see [§2.4 J](#j-per-turn-model-provider-default-only-no-session-level-override) |
 
 ### PermissionModeMeta
 
@@ -242,7 +242,7 @@ The following breaks down the protocol details, field semantics, and claudecode/
 
 ##### A. Steerer / SteerCanceler / SteerDrainer — mid-turn injection
 
-Interface signatures (`internal/pkg/agentruntime/runner.go:366-411`):
+Interface signatures (`Steerer`, `SteerCanceler`, and `SteerDrainer` in `internal/pkg/agentruntime/runner.go`):
 
 ```go
 type Steerer interface {
@@ -268,7 +268,7 @@ type SteerDrainer interface {
 
 ##### B. Aborter — the "Stop" button
 
-Interface signature (runner.go:426-428):
+Interface signature (`Aborter` in `internal/pkg/agentruntime/runner.go`):
 
 ```go
 type Aborter interface {
@@ -285,7 +285,7 @@ type Aborter interface {
 
 > **piagent currently does not support this** (no equivalent protocol). **codex does** — via the app-server `requestApproval` protocol (`runtimes/codex/runtime.go` `SubmitToolPermission`); it carries allow/deny + alwaysAllowSession but **drops DenyReason** (the deny-message param is ignored, since the codex protocol has no deny-feedback field). The following uses claudecode as the blueprint; copy the relevant parts when a new backend has an equivalent protocol.
 
-Interface signature (runner.go:218-220):
+Interface signature (`ToolPermissionSink` in `internal/pkg/agentruntime/runner.go`):
 
 ```go
 type ToolPermissionSink interface {
@@ -307,7 +307,7 @@ type ToolPermissionSink interface {
    }
    ```
 
-2. **chat_svc persists** (`internal/service/chat_svc/tool_permission.go:22-53`):
+2. **chat_svc persists** (`internal/service/chat_svc/tool_permission.go`):
    - Converts it to a `blocks.ToolPermissionBlock` and adds it to the acc.
    - Projects it into a `ChatBlock{Type:"tool_permission_request"}` pushed to the frontend; canonical carries `ToolPermission{...}` or (when ToolName=="ExitPlanMode") `PlanApproveRequest{...}`.
 
@@ -339,7 +339,7 @@ type ToolPermissionSink interface {
 
 ##### D. AskAnswerSink — reverse-asking the user a question
 
-Interface signature (runner.go:255-257):
+Interface signature (`UserAskSink` in `internal/pkg/agentruntime/runner.go`):
 
 ```go
 type AskAnswerSink interface {
@@ -367,7 +367,7 @@ type AskAnswerSink interface {
    }
    ```
 
-2. **chat_svc persists `blocks.UserAskBlock`** + projects ChatBlock + the canonical UserAsk DTO (`internal/service/chat_svc/ask_user_question.go:21-83`).
+2. **chat_svc persists `blocks.UserAskBlock`** + projects ChatBlock + the canonical UserAsk DTO (`internal/service/chat_svc/ask_user_question.go`).
 
 3. **Frontend renders the UserAskCard**: single-select radio / multi-select checkbox / Other text field / IsSecret password field; provides two buttons Answer + Skip.
 
@@ -394,7 +394,7 @@ type AskAnswerSink interface {
 
 ##### E. PermissionModeSetter — switching permission mode at runtime
 
-Interface signature (runner.go:441-443):
+Interface signature (`PermissionModeSetter` in `internal/pkg/agentruntime/runner.go`):
 
 ```go
 type PermissionModeSetter interface {
@@ -452,13 +452,13 @@ const showBypass = session.permission_mode_at_launch === "bypassPermissions"
 ExitPlanMode is a plan-exit protocol implemented by **reusing the ToolPermission channel** (claudecode-specific; codex has no equivalent):
 
 1. After the CLI finishes planning in plan mode, it calls the `ExitPlanMode` tool → the backend emits `ToolPermissionRequest{ToolName: "ExitPlanMode", Input: {plan: "..."}}`.
-2. chat_svc detects `ToolName=="ExitPlanMode"` in `tool_permission.go:34-41`, and **additionally assembles** `Canonical = PlanApproveRequest{Plan, Actions}`, so the frontend renders with `PlanApproveCard` (instead of the generic ToolPermissionCard).
-3. `Actions` is assembled by `handlers.BuildPlanApproveActions(launchPermissionMode)` in the ToolPermissionRequest handler (`internal/service/chat_svc/handlers/plan_approve.go:16-32`), with the rules:
+2. chat_svc detects `ToolName=="ExitPlanMode"` in `internal/service/chat_svc/handlers/tool_permission.go`, and **additionally assembles** `Canonical = PlanApproveRequest{Plan, Actions}`, so the frontend renders with `PlanApproveCard` (instead of the generic ToolPermissionCard).
+3. `Actions` is assembled by `handlers.BuildPlanApproveActions(launchPermissionMode)` in the ToolPermissionRequest handler (`internal/service/chat_svc/handlers/plan_approve.go`), with the rules:
    - normal launch (empty / default / acceptEdits / plan) → `[plan.approve.accept_edits, plan.approve.manual, plan.refine]`
    - launch="bypassPermissions" → the first item is **replaced** with `plan.approve.bypass_permissions` (not appended), yielding `[plan.approve.bypass_permissions, plan.approve.manual, plan.refine]`
    - `plan.refine` carries `RequiresFeedback: true` — the frontend expands a feedback textarea; after the user submits, it goes through `Allow=false` + `DenyReason=feedback` (the CLI feeds the message back to the AI as a tool_result to continue planning), **not** allow + switch back to plan mode
-4. The frontend calls `AnswerToolPermission` according to the action the user clicked: approve kinds → `Allow=true, TargetPermissionMode=mapPlanApproveAction(actionID)` (see `plan_action.go:198-210`: bypass→`bypassPermissions` / accept_edits→`acceptEdits` / manual→`default`); refine → `Allow=false, DenyReason=feedback`.
-5. The service first calls `SubmitToolPermission()` (after the CLI receives an approve, it automatically switches plan → default). When `Allow=true` and `TargetPermissionMode` is non-empty and not `"default"`, it **relays** a call to `SetPermissionMode()` to switch to the target — so `acceptEdits` / `bypassPermissions` relay, `Manual` (=`default`) does not relay, and `refine` does not relay either since `Allow=false` (`tool_permission.go:131`).
+4. The frontend calls `AnswerToolPermission` according to the action the user clicked: approve kinds → `Allow=true, TargetPermissionMode=mapPlanApproveAction(actionID)` (see `internal/service/chat_svc/plan_action.go`: bypass→`bypassPermissions` / accept_edits→`acceptEdits` / manual→`default`); refine → `Allow=false, DenyReason=feedback`.
+5. The service first calls `SubmitToolPermission()` (after the CLI receives an approve, it automatically switches plan → default). When `Allow=true` and `TargetPermissionMode` is non-empty and not `"default"`, it **relays** a call to `SetPermissionMode()` to switch to the target — so `acceptEdits` / `bypassPermissions` relay, `Manual` (=`default`) does not relay, and `refine` does not relay either since `Allow=false` (`internal/service/chat_svc/tool_permission.go`).
 
 **Key points for onboarding a new backend**: for a backend that has plan-exit semantics, naming the ToolName `"ExitPlanMode"` lets it directly reuse the frontend PlanApproveCard — do not invent a new tool name.
 
@@ -481,10 +481,10 @@ agentruntime.PlanUpdated{Plan: canonical.PlanUpdate{
 - **claudecode has two paths** —
   - `TodoWrite` tool calls go through the translator → `ToolCall.Canonical = canonical.PlanUpdate` (**does not** emit a separate PlanUpdated event; the frontend just reads canonical off the ToolCall);
   - `TaskCreate` / `TaskUpdate` incremental calls have `claudecode/task_aggregator.go` maintain the full task list across turns, emitting a full `agentruntime.PlanUpdated` snapshot on each change.
-- **codex**: two triggers — the `turn/plan/updated` notification sends `Steps[]`; `item/plan/delta + item/completed{type:"plan"}` streams `Text`. The translator funnels them into the same PlanUpdated event, so downstream no longer branches on the two states (`runtimes/codex/translator.go:57-80`). codex also, while in plan mode, attaches `[plan.execute, plan.refine]` two actions to the PlanUpdate via `attachPlanModeActions`, and the frontend PlanCard renders the buttons directly.
+- **codex**: two triggers — the `turn/plan/updated` notification sends `Steps[]`; `item/plan/delta + item/completed{type:"plan"}` streams `Text`. The translator funnels them into the same PlanUpdated event, so downstream no longer branches on the two states (`internal/pkg/agentruntime/runtimes/codex/translator.go`). codex also, while in plan mode, attaches `[plan.execute, plan.refine]` two actions to the PlanUpdate via `attachPlanModeActions`, and the frontend PlanCard renders the buttons directly.
 - **PlanText preserves the trailing newline**: after trimming, the frontend markdown renderer mistakes it for "no trailing newline" and breaks the formatting — use only `strings.TrimSpace` to judge "is it empty", and **do not** trim before emitting.
 
-**chat_svc persists a PlanBlock** (`internal/service/chat_svc/plan_block.go:16-73`):
+**chat_svc persists a PlanBlock** (`internal/service/chat_svc/plan_block.go`):
 - projects it into a `ChatBlock{Type:"plan"}`
 - the frontend PlanCard renders the full text; `TaskProgressBar` reads `steps[].status` for the progress bar
 - multiple PlanUpdated within the same turn go through mutate (overwriting by PlanBlock key), without repeatedly landing new blocks
@@ -548,17 +548,13 @@ agentruntime.ErrUnsupported    // the current runtime does not support this cap
 
 When a new error must have cross-process semantics, **first add the sentinel + error code in `errors.go` + `wire.go` together**; do not temporarily stringify in the daemon handler.
 
-##### J. Session-level model override — `RunRequest.ModelOverride`
+##### J. Per-turn model (provider default only, no session-level override)
 
-A session can pin its own model (`chat_sessions.model_override`, `''` = follow the provider default). `chat_svc.runTurn` fills `RunRequest.ModelOverride` per turn, but **only for backends on an allowlist** — `modelOverrideSwitchable` / `modelOverrideForBackend` (`internal/service/chat_svc/chat.go`) pass it through for builtin / claudecode / codex / piagent and drop it for everything else, so a backend that ignores the field never gets one silently persisted against it.
+Session-level model switching was removed wholesale (`model_override`, #26, never shipped) — there is **no per-session model** anymore, only a per-session **provider** (`chat_sessions.provider_key`, `''` = follow the agent binding). `chat_svc.runTurn` resolves `effectiveProviderKey = firstNonEmpty(sess.ProviderKey, be.LLMProviderKey)` and hands the resolved provider to the runtime. A new backend owes three small things here:
 
-Three things a new backend owes here:
-
-1. **Resolve it where you already read the provider model** — do not invent a second mapping. Every backend has one small function shaped `effectiveModel = firstNonEmpty(req.ModelOverride, req.Provider.Model, backendDefault)`: `builtinEffectiveModel` (`runtimes/builtin/runtime.go`), `claudeEffectiveModel` (`runtimes/claudecode/session.go`), `codexEffectiveModel` (`runtimes/codex/session.go`), `piModelFallback` (`runtimes/piagent/session.go`). The override is a **provider model id**, so the backend's existing mapping still applies (claudecode `--model`, piagent `agentre-<key>/<model>`, codex `thread {model}`, builtin `coding.WithModel`). When the backend is not bound to a provider, the override is a **bare CLI model id** handed to the CLI's own login.
-2. **If the model is a launch-time flag, a changed model must evict and respawn.** Reusing a cached subprocess silently keeps the old model. claudecode compares `cur.launchedModel != claudeEffectiveModel(req)` in `acquireSession` and re-spawns with `--resume <ProviderSessionID> --model <new>`; codex mirrors it for its pooled app-server via the `launchedModel` map. Mirror the existing `launchedEffort` precedent rather than inventing a new invalidation path.
-3. **`RunResult.Model` must be the model that actually ran**, not the one requested. `chat_svc` compares it against the override and appends a persistent deviation notice when they differ, so any per-backend decoration has to be undone before reporting: piagent strips the `agentre-<key>/` prefix in `piUserModelID` for exactly this reason, and codex reports the thread's own model. A backend that echoes back the requested model turns the notice into a permanent false negative; one that reports a decorated or version-suffixed id turns it into a per-turn false positive.
-
-Remote is transparent but not automatic: `remote.Runtime` serializes the field into `wire.RunParams.ModelOverride` and the daemon fills it back when it assembles `RunRequest` (`internal/daemon/handlers/runtime.go`) — a new field on `RunParams` needs its round-trip test like any other.
+1. **Resolve the model exactly where you already read the provider model** — do not invent a second mapping, and do not resurrect an override. Read `req.Provider.Model` at the existing resolution point (claudecode `--model`, piagent `agentre-<key>/<model>` via `providerRunConfig`, codex `thread {model}`, builtin `coding.WithModel`). The frontend provider pill selects a **provider**, never a model; the model is always that provider's default (`llm_provider.Model`), or the CLI's own login when the backend is not bound to a provider.
+2. **`RunResult.Model` must be the model that actually ran**, undecorated — `chat_messages.model` is the per-turn observation field and the #26 deviation notice machinery is gone. piagent still strips its bound-provider `agentre-<key>/` prefix (`piUserModelID`, `runtimes/piagent/session.go`) and codex reports the thread's own model, purely so the reported id stays user-facing.
+3. **Remote carries the effective provider key, not a model.** `remote.Runtime` serializes `effectiveProviderKey` (session `provider_key` preferred, else agent binding) into `wire.RunParams.LLMProviderKey`; the daemon self-resolves it via `ProviderLookup.FindByKey` and, when the session's key is missing/inactive there, falls back to the agent binding and echoes the dropped key back through `RunAck.ProviderFallbackKey` so chat_svc appends a persistent notice (`internal/daemon/handlers/runtime.go`). A new field on `RunParams` still needs its round-trip test like any other.
 
 ### 2.5 Daemon import (remote execution)
 
@@ -592,7 +588,7 @@ Only touch this when adding new fields:
 - `make generate` regenerates the `frontend/wailsjs/` bindings.
 - Editor UI (`frontend/src/components/agentre/agent-backends.tsx` + `agent-backends-utils.ts`): add the type option and new-field form controls — **use shadcn `@/components/ui/*` uniformly**, and do not add a native `<select>`.
 - Capability gating: the frontend hooks `useBackendCapabilities` / `useSessionCapabilities` (`frontend/src/components/agentre/capability/`) call the Wails bindings `GetBackendCapabilities` / `GetSessionCapabilities` (`internal/app/chat.go` → `chat_svc/ipc/capability.go`), returning `Capabilities.Set` + `PermissionModeMeta`. The component reads `caps.has("steer")` / `caps.has("set_permission_mode")` etc. to gate the steer chip / abort button / permission mode pill / ask_user_question card. After adding a new cap to the capability enum, there is no need to change the hook — only change the consuming end.
-- Session model switch gating: the composer's ModelPill is **not** capability-driven — it renders off a hardcoded backend allowlist, `modelSwitchable` in `frontend/src/components/agentre/chat-panel.tsx`, which must stay in step with the backend-side `modelOverrideSwitchable` ([§2.4 J](#j-session-level-model-override--runrequestmodeloverride)). A backend missing from the frontend list gets no pill; one missing from the backend list has its override dropped every turn. The same flag also gates the `/v1/models` fetch, so leaving a backend out of it is what keeps an unsupported backend from making a real authenticated provider request per session.
+- New-session provider selection: the composer's `ProviderPill` (`frontend/src/components/agentre/model-pill/`) renders **only for a new session (`sessionId===0`)** and only for the provider-consuming backends — builtin / claudecode / codex / piagent, gated by `isProviderSelectableBackend` in `frontend/src/components/agentre/model-pill/use-provider-pill.ts` (mirrored as `providerSelectableBackend` in `chat-panel.tsx`). It fetches `ListLLMProviders()` and filters by `isProviderCompatible`, which must stay in step with the backend-side `ProviderTypeMatch` — a backend left off the frontend list gets no pill and no provider fetch at all; OpenClaw never renders the pill. Existing sessions render no switcher (decision 7). The transient pick rides the first `Send` as `SendRequest.ProviderKey` and lands in `chat_sessions.provider_key` ([§2.4 J](#j-per-turn-model-provider-default-only-no-session-level-override)).
 - Session changed-file surfacing: the chat context sidebar's Files view is derived from persisted `ChatMessage.blocks` in `frontend/src/components/agentre/chat-context-sidebar/derive.ts`. Those blocks use the generated Wails field names `toolName` / `toolInput` (not backend-protocol names such as `name` / `input`). A backend that edits files must register its exact mutating tool name and path shape there and cover it with a fixture using the real `ChatBlock` wire shape; current mappings include Claude Code `Edit` / `Write` / `MultiEdit` with `file_path`, Codex `file_change` with `changes[].path` (plus legacy `apply_patch`), and Pi `edit` / `write` with `path`.
 
 ### 2.8 OpenClaw Gateway backend (implemented reference)
@@ -604,7 +600,7 @@ OpenClaw is the reference for a Gateway-native backend whose authentication cann
 3. **Protocol client** — `internal/pkg/openclawgateway` implements challenge/connect, exact protocol-4 negotiation, required operator scopes, req/res routing, event sequence gaps, timeouts, reconnect, feature validation, and read-only agent/model discovery.
 4. **Runtime** — `internal/pkg/agentruntime/runtimes/openclaw` submits `agent` once with the UUID `idempotencyKey` required by the official schema and a stable `agentre:<backendID>:<chatSessionID>` session key. Reconnect/gap reconciliation uses `exec.approval.list` followed by `agent.wait`; it never blindly resends the message. Abort sends exactly `chat.abort {sessionKey,runId}` and converges through that stable identity plus a one-call guard because the official closed abort schema rejects an added idempotency field.
 5. **Approvals** — `CapExecApproval` / `ExecApprovalSink` is distinct from `CapToolPermission`. Requested/resolved events persist a dedicated `exec_approval` block. Resolution sends exactly `{id, decision}` because that official closed schema also rejects extra idempotency fields; duplicate/racing resolutions converge by approval ID and terminal state. AgentRE trusts Gateway `allowedDecisions`, never reconstructs a Node `systemRunPlan`, and never treats approval terminal as execution terminal.
-6. **Frontend** — settings use `OpenClawBackendFields`; transcript rendering uses the dedicated OpenClaw exec approval card. Both use production shadcn/design-system primitives and bilingual i18n, not `frontend/src/mockups`.
+6. **Frontend** — settings use `OpenClawBackendFields`; transcript rendering uses the dedicated OpenClaw exec approval card. Both use production shadcn/design-system primitives and bilingual i18n.
 7. **Remote boundary** — approval event codecs are wire-compatible, but the daemon does not register the runtime because there is no daemon-local secret enrollment/reference. `RunParams` contains no OpenClaw secret; remote execution reports capability unavailable.
 
 ---
@@ -682,7 +678,7 @@ repo unit tests always use `testutils.Database(t)` + sqlmock, **never start a re
 - [ ] The Translator is a pure function, with table-driven tests covering the happy path + at least one boundary/error
 - [ ] `RunRequest.Cwd` is preferred when non-empty; `ForkAnchor` goes through fork when non-empty; `ctx` cancel can unblock
 - [ ] `RunResult` is **not** read before the events channel is closed; new fields (ProviderSessionID / Usage / Model / LaunchPermissionMode / ContextWindow / UserAnchor) are filled according to backend capability
-- [ ] Session model override: `req.ModelOverride` is consumed at the existing model-resolution point (no second mapping), a launch-time model flag evicts + respawns the cached process, `RunResult.Model` reports the **actually running** model undecorated, and the backend is on both allowlists (`modelOverrideSwitchable` / frontend `modelSwitchable`) or deliberately on neither
+- [ ] Per-turn model: the runtime reads `req.Provider.Model` at the existing model-resolution point (no session-level override exists anymore), `RunResult.Model` reports the **actually running** model undecorated, and the frontend new-session provider pill lists this backend only if it is on both sides of the compatibility gate (`ProviderTypeMatch` / frontend `isProviderSelectableBackend` + `isProviderCompatible`) or deliberately on neither
 - [ ] Remote: the `runtime_imports.go` blank import has been added; the new Event / sentinel has the wire codec + round-trip test added
 - [ ] The Wails type's new fields have stable json tags; `make generate` has regenerated `frontend/wailsjs/`
 - [ ] The Prober has been registered in `proberRegistry`; the CLI-kind backend's env wiring is in `agentruntime/clienv.go` and shared with the chat path

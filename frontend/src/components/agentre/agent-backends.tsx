@@ -943,21 +943,12 @@ function BackendEditor({
   );
   const [reasoningEffort, setReasoningEffort] =
     React.useState<ReasoningEffortValue>(
-      // BackendItem.reasoningEffort 在 Wails 重新生成绑定前还未出现在 TS 类型里；
-      // 这里用宽类型读出。后端 entity.Check 已经把非法值挡掉，所以兜底空串。
-      ((editing as unknown as { reasoningEffort?: string } | null)
-        ?.reasoningEffort as ReasoningEffortValue) || "",
+      (editing?.reasoningEffort as ReasoningEffortValue) || "",
     );
   const [defaultPermissionMode, setDefaultPermissionMode] =
-    React.useState<string>(
-      ((editing as unknown as { defaultPermissionMode?: string } | null)
-        ?.defaultPermissionMode as string) || "",
-    );
+    React.useState<string>(editing?.defaultPermissionMode || "");
   const [defaultModel, setDefaultModel] = React.useState<string>(
-    // BackendItem.defaultModel 在 Wails 重新生成绑定前可能还未出现在 TS 类型里；
-    // 用宽类型读出。空串 = 走 provider.Model / CLI 默认。
-    ((editing as unknown as { defaultModel?: string } | null)
-      ?.defaultModel as string) || "",
+    editing?.defaultModel || "",
   );
   const [openClawGatewayURL, setOpenClawGatewayURL] = React.useState(
     editing?.openClawGatewayUrl || OPENCLAW_DEFAULT_GATEWAY_URL,

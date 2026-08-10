@@ -573,10 +573,8 @@
       "me": "我"
     },
     "notice": {
-      "modelDeviation": {
-        "sentence": "所选模型 {{selected}} 未生效，实际使用 {{actual}}",
-        "selected": "所选模型",
-        "actual": "未生效，实际使用"
+      "providerFallback": {
+        "sentence": "所选供应商 {{provider}} 不可用，已回退 agent 绑定"
       }
     },
     "meta": {
@@ -593,12 +591,19 @@
     },
     "quota": {
       "aria": "Claude Code 配额 5h {{five}}% 7d {{seven}}% 来自 {{device}}",
+      "panel": {
+        "fiveHour": "5 小时窗口",
+        "opusWeekly": "Opus 7 天",
+        "sonnetWeekly": "Sonnet 7 天",
+        "title": "Claude 订阅用量",
+        "usedNote": "百分比为已用比例 · 每 60 秒刷新",
+        "weekly": "7 天窗口"
+      },
       "resetRemaining": " (重置剩 {{time}})",
       "title": {
         "authExpired": "Claude Code OAuth 已过期 · 请在 {{device}} 上运行 'claude /login'",
         "deviceOffline": "{{device}} 离线",
         "network": "Claude Code 配额 · {{device}}(网络错误, 显示上次值)",
-        "ok": "Claude Code 配额 · {{device}}",
         "rateLimited": "Claude Code 配额 · {{device}}(429 退避中, 显示上次值)"
       }
     },
@@ -617,21 +622,23 @@
     "files": {
       "empty": "本会话还没有改过任何文件",
       "label": "文件",
-      "openFile": "打开文件",
       "openFailed": "打开文件失败：{{error}}",
       "expandFolder": "展开 {{name}}",
       "collapseFolder": "收起 {{name}}",
+      "treeAria": "本会话改动的文件",
       "modes": {
         "label": "视图模式",
         "changes": "变动",
-        "directory": "目录",
-        "git": "Git"
+        "directory": "目录"
       }
     },
     "directory": {
       "showIgnored": "显示忽略项",
       "showIgnoredOn": "隐藏被忽略的文件",
       "showIgnoredOff": "显示被忽略的文件",
+      "search": "搜索",
+      "searchOn": "关闭搜索",
+      "searchOff": "搜索文件",
       "loading": "正在读取目录…",
       "empty": "这个目录是空的",
       "truncated": "只显示了前 {{limit}} 项",
@@ -640,9 +647,27 @@
       "retry": "重试",
       "localPathMissingTitle": "这台电脑还没有为这个项目配置路径",
       "localPathMissingHint": "这个项目是从账号里同步来的，文件面板需要一个本机工作目录才能列出内容。",
-      "localPathMissingAction": "指定本机路径"
+      "localPathMissingAction": "指定本机路径",
+      "treeAria": "工作目录文件",
+      "subtreeChanges": "{{count}} 个文件有变动",
+      "subtreeChanges_one": "{{count}} 个文件有变动",
+      "subtreeChanges_other": "{{count}} 个文件有变动"
+    },
+    "search": {
+      "placeholder": "按文件名搜索…",
+      "hitCount": "{{count}} 个结果",
+      "clear": "清除搜索",
+      "hint": "输入以按文件名搜索",
+      "empty": "没有匹配“{{query}}”的文件",
+      "emptyHint": "默认不搜索被忽略的文件",
+      "truncatedEmptyHint": "搜索没走完就停了，这不是完整结果",
+      "truncated": "只显示了前 {{limit}} 个结果",
+      "loading": "正在搜索…",
+      "readFailed": "搜索失败",
+      "resultsAria": "搜索结果"
     },
     "git": {
+      "label": "Git",
       "scope": {
         "label": "对比范围",
         "uncommitted": "未提交",
@@ -662,6 +687,7 @@
       "readFailed": "读取 git 变动失败",
       "retry": "重试",
       "truncated": "只显示了前 {{limit}} 个变动文件",
+      "listAria": "Git 变动文件",
       "status": {
         "modified": "已修改",
         "added": "新增",
@@ -672,8 +698,10 @@
     },
     "filePreview": {
       "panelAria": "文件预览",
-      "open": "预览",
       "close": "关闭预览",
+      "tabsAria": "预览标签",
+      "tabLimit": "预览标签已满（最多 {{limit}} 个），请先关闭一个",
+      "closeAll": "全部关闭",
       "loading": "正在读取文件…",
       "readFailed": "读取文件失败",
       "retry": "重试",
@@ -699,6 +727,20 @@
       "empty": "本会话还没有消息",
       "label": "大纲",
       "turn": "第 {{turn}} 轮"
+    },
+    "row": {
+      "menu": "更多操作",
+      "preview": "预览",
+      "previewInNewTab": "在新标签页预览",
+      "jumpToTurn": "跳到对应轮次",
+      "openWith": "用默认应用打开",
+      "reveal": "在文件管理器中显示",
+      "revealFailed": "在文件管理器中显示失败：{{error}}",
+      "copyRelPath": "复制相对路径",
+      "copyAbsPath": "复制绝对路径",
+      "copyFileName": "复制文件名",
+      "expand": "展开",
+      "collapse": "收起"
     },
     "sidebar": "对话上下文"
   },
@@ -2249,21 +2291,16 @@
     },
     "reorderFailed": "排序保存失败，请重试"
   },
-  "modelPill": {
+  "providerPill": {
     "active": "生效中",
-    "aria": "模型：{{model}}",
-    "errorFetch": "模型列表加载失败，请稍后重试",
-    "errorPersist": "模型切换保存失败，请重试",
-    "errorProvider": "未找到该供应商的模型列表（供应商可能已删除或离线）",
-    "followDefault": "跟随供应商默认",
-    "followDefaultDesc": "使用 agent 绑定的供应商默认模型",
-    "followDefaultUnbound": "跟随默认",
-    "footer": "切换从下一轮开始生效，正在进行的回合不受影响",
-    "freeInputPlaceholder": "输入模型 ID，回车确认",
-    "heading": "模型",
-    "submit": "使用",
-    "title": "切换模型 · 当前 {{model}}",
-    "unboundExisting": "未绑定供应商，已有会话无法切换模型"
+    "aria": "供应商：{{provider}}",
+    "errorFetch": "供应商列表加载失败，请稍后重试",
+    "followAgentBinding": "跟随 agent 绑定",
+    "followAgentBindingDesc": "使用 agent 绑定的供应商默认模型",
+    "followAgentBindingUnboundDesc": "不选，走 CLI 登录态",
+    "heading": "供应商",
+    "title": "选择供应商 · 当前 {{provider}}",
+    "unselected": "选择供应商"
   },
   "permissionMode": {
     "active": "ACTIVE",

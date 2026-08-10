@@ -53,41 +53,27 @@ func TestBuildLaunchSpec_MCPServers(t *testing.T) {
 	})
 }
 
-func TestBuildLaunchSpec_ModelOverride(t *testing.T) {
-	Convey("Given RunRequest 带 ModelOverride", t, func() {
-		Convey("Then spec.model = override, 优先于 provider.Model", func() {
+func TestBuildLaunchSpec_ProviderModel(t *testing.T) {
+	Convey("Given RunRequest 绑 provider", t, func() {
+		Convey("Then spec.model = provider.Model(#26 override 已移除)", func() {
 			spec := buildLaunchSpec(agentruntime.RunRequest{
 				Backend: &agent_backend_entity.AgentBackend{
 					Type:    string(agent_backend_entity.TypeCodex),
 					EnvJSON: "{}",
 				},
-				Provider:      &llm_provider_entity.LLMProvider{Model: "gpt-5.4"},
-				ModelOverride: "gpt-5.5",
-			}, nil, "/tmp/work")
-			So(spec.model, ShouldEqual, "gpt-5.5")
-		})
-
-		Convey("Then override 空白时退回 provider.Model", func() {
-			spec := buildLaunchSpec(agentruntime.RunRequest{
-				Backend: &agent_backend_entity.AgentBackend{
-					Type:    string(agent_backend_entity.TypeCodex),
-					EnvJSON: "{}",
-				},
-				Provider:      &llm_provider_entity.LLMProvider{Model: "gpt-5.4"},
-				ModelOverride: "   ",
+				Provider: &llm_provider_entity.LLMProvider{Model: "gpt-5.4"},
 			}, nil, "/tmp/work")
 			So(spec.model, ShouldEqual, "gpt-5.4")
 		})
 
-		Convey("Then provider = nil 时 override 仍作为裸模型下发(CLI 登录态)", func() {
+		Convey("Then provider = nil 时 spec.model 为空(CLI 登录态,runtime 兜底 defaultModelID)", func() {
 			spec := buildLaunchSpec(agentruntime.RunRequest{
 				Backend: &agent_backend_entity.AgentBackend{
 					Type:    string(agent_backend_entity.TypeCodex),
 					EnvJSON: "{}",
 				},
-				ModelOverride: "gpt-5.6-terra",
 			}, nil, "/tmp/work")
-			So(spec.model, ShouldEqual, "gpt-5.6-terra")
+			So(spec.model, ShouldEqual, "")
 		})
 	})
 }

@@ -98,7 +98,9 @@ export function PermissionModePill({
           )}
         >
           <Icon className={cn("size-3", meta.iconClass)} aria-hidden="true" />
-          <span>{meta.label}</span>
+          {/* 极窄的 composer(侧栏 + 右侧面板同开)退成纯图标:模式语义由图标配色、
+              aria-label 与 title 承载,标签是最后一档才让位的。 */}
+          <span className="@max-[620px]/composer:hidden">{meta.label}</span>
           <ChevronDown
             className={cn("size-2.5", meta.iconClass)}
             aria-hidden="true"

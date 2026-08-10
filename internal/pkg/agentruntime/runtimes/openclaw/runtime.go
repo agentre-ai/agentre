@@ -49,8 +49,6 @@ func init() {
 	agentruntime.RegisterRuntime(agent_backend_entity.TypeOpenClaw, defaultRuntime)
 }
 
-func Default() *Runtime { return defaultRuntime }
-
 func RegisterConfigResolver(resolver ConfigResolver) {
 	defaultRuntime.SetConfigResolver(resolver)
 }

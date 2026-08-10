@@ -32,6 +32,7 @@ const (
 	MethodGitBranches    = "workspacefs.gitBranches"
 	MethodReadFile       = "workspacefs.readFile"
 	MethodGitFileContent = "workspacefs.gitFileContent"
+	MethodSearchFiles    = "workspacefs.searchFiles"
 )
 
 // ── Error codes ─────────────────────────────────────────────────────────────
@@ -208,4 +209,31 @@ type GitFileContentResp struct {
 	Content  string `json:"content"`
 	NotARepo bool   `json:"notARepo,omitempty"` // true 时其余字段恒为零值
 	HasHead  bool   `json:"hasHead,omitempty"`  // false 表示空基线(未跟踪/不在 HEAD)
+}
+
+// ── SearchFiles ─────────────────────────────────────────────────────────────
+
+// SearchFilesReq 的 Root 契约同 ReadFileReq:必填绝对路径,root 为空 → ErrNoCwd。
+// 没有 RelPath —— 搜索恒从会话工作目录整棵开始(spec:「遍历从会话工作目录开始」),
+// 也就没有可以逃出 cwd 的路径入参。
+//
+// IncludeIgnored 取自前端「显示忽略项」开关:false 时被 git 忽略的目录整棵剪枝、
+// 被忽略的文件不计入。
+type SearchFilesReq struct {
+	Root           string `json:"root"`
+	Query          string `json:"query"`
+	IncludeIgnored bool   `json:"includeIgnored,omitempty"`
+}
+
+// SearchHit 镜像 internal/pkg/workspacefs.SearchHit:Path 相对 Root、"/" 分隔。
+type SearchHit struct {
+	Path  string `json:"path"`
+	IsDir bool   `json:"isDir,omitempty"`
+}
+
+// SearchFilesResp 的 Truncated 表示结果不完整(命中上限或目录数预算),前端据此
+// 在列表末尾出说明 —— 不静默返回不完整结果。
+type SearchFilesResp struct {
+	Hits      []SearchHit `json:"hits"`
+	Truncated bool        `json:"truncated,omitempty"`
 }

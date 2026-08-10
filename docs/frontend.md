@@ -37,7 +37,6 @@ cd frontend && pnpm exec eslint src
 - Routing uses `MemoryRouter`.
 - Stores live in `frontend/src/stores`, hooks in `frontend/src/hooks`.
 - Wails runtime / bindings are imported from `frontend/wailsjs`.
-- `frontend/src/mockups` contains standalone visual design entrypoints and is not imported by the product App. Production features must be implemented in the normal component/store/hook paths; the production i18n literal guard excludes only this non-product fixture directory.
 - Keep the existing dense desktop-app layout for the UI; **do not** write landing-page styling into the app shell.
 - For icons used in user operations, prefer the `lucide-react` and Iconify Tabler already in use in the project; **do not** hand-draw inline SVG.
 

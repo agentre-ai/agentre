@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -1102,25 +1103,135 @@ func TestRuntime_Run_UnknownBackendType_Errors(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestRuntime_Run_ForwardsModelOverride 钉死 daemon 侧组装 RunRequest 时把
-// wire.RunParams.ModelOverride 回填到 req.ModelOverride(远端会话换模型生效)。
-func TestRuntime_Run_ForwardsModelOverride(t *testing.T) {
+// TestRuntime_Run_EffectiveKeyPreferredOverAgentBinding 钉死决策 9:wire 带的
+// effectiveProviderKey(会话 provider_key 优先,chat_svc 组装)优先于 agent 绑定 ——
+// daemon 必须按 wire 的 key 自解,而不是只认 be.LLMProviderKey。
+func TestRuntime_Run_EffectiveKeyPreferredOverAgentBinding(t *testing.T) {
 	rt := &fullRT{}
 	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
 		ch := make(chan agentruntime.Event)
 		close(ch)
 		return ch, &agentruntime.RunResult{}, nil
 	}
-	ctx, _, _, _, h := setupRuntimeTest(t, rt)
-	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)}
+	ctx, _, gw, lookup, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{
+		Type:           string(agent_backend_entity.TypeClaudeCode),
+		LLMProviderKey: "agent-bound-key",
+	}
+	// 会话所选供应商在 daemon 上也存在 → 用它,不用 agent 绑定。
+	lookup.EXPECT().FindByKey(ctx, "session-key").Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: "session-key", Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-x",
+		Status: consts.ACTIVE,
+	}, nil)
+	gw.EXPECT().URL().Return("").AnyTimes()
+
 	_, err := h.Run(ctx, wire.RunParams{
-		Backend:       backendJSON(t, be),
-		SessionID:     42,
-		ModelOverride: "claude-haiku-4-5",
+		Backend:        backendJSON(t, be),
+		SessionID:      42,
+		LLMProviderKey: "session-key",
 	})
 	require.NoError(t, err)
 	require.Len(t, rt.runReqs, 1)
-	assert.Equal(t, "claude-haiku-4-5", rt.runReqs[0].req.ModelOverride)
+	assert.Equal(t, "session-key", rt.runReqs[0].req.Provider.ProviderKey, "远端必须按 wire effectiveProviderKey 自解")
+}
+
+// TestRuntime_Run_EffectiveKeyMissing_FallsBackToAgentBinding 钉死决策 9 回退:会话
+// provider_key 在 daemon 缺失 → 回退 agent 绑定执行,并在 ack 回传 providerFallbackKey
+// 信号,桌面端据此追加一条持久 notice(与本地 Q3 一致)。
+func TestRuntime_Run_EffectiveKeyMissing_FallsBackToAgentBinding(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event)
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	ctx, _, gw, lookup, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{
+		Type:           string(agent_backend_entity.TypeClaudeCode),
+		LLMProviderKey: "agent-bound-key",
+	}
+	// 会话所选供应商在 daemon 缺失 → 查 agent 绑定。
+	lookup.EXPECT().FindByKey(ctx, "session-key").Return(nil, errors.New("provider session-key not configured"))
+	lookup.EXPECT().FindByKey(ctx, "agent-bound-key").Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: "agent-bound-key", Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-x",
+		Status: consts.ACTIVE,
+	}, nil)
+	gw.EXPECT().URL().Return("").AnyTimes()
+
+	ack, err := h.Run(ctx, wire.RunParams{
+		Backend:        backendJSON(t, be),
+		SessionID:      42,
+		LLMProviderKey: "session-key",
+	})
+	require.NoError(t, err)
+	require.Len(t, rt.runReqs, 1)
+	assert.Equal(t, "agent-bound-key", rt.runReqs[0].req.Provider.ProviderKey, "缺会话 key 时应回退 agent 绑定")
+	assert.Equal(t, "session-key", ack.ProviderFallbackKey, "回退必须回传信号供桌面端追加 notice")
+}
+
+// TestRuntime_Run_EffectiveKeyInactive_FallsBackToAgentBinding 钉死决策 9 回退的非
+// active 分支:会话 provider_key 指向的供应商停用(IsActive=false)同样回退 agent 绑定
+// 并回传信号。
+func TestRuntime_Run_EffectiveKeyInactive_FallsBackToAgentBinding(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event)
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	ctx, _, gw, lookup, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{
+		Type:           string(agent_backend_entity.TypeClaudeCode),
+		LLMProviderKey: "agent-bound-key",
+	}
+	// 会话所选供应商已停用(Status=0) → 回退 agent 绑定。
+	lookup.EXPECT().FindByKey(ctx, "session-key").Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: "session-key", Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-x",
+		Status: 0,
+	}, nil)
+	lookup.EXPECT().FindByKey(ctx, "agent-bound-key").Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: "agent-bound-key", Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-x",
+		Status: consts.ACTIVE,
+	}, nil)
+	gw.EXPECT().URL().Return("").AnyTimes()
+
+	ack, err := h.Run(ctx, wire.RunParams{
+		Backend:        backendJSON(t, be),
+		SessionID:      42,
+		LLMProviderKey: "session-key",
+	})
+	require.NoError(t, err)
+	require.Len(t, rt.runReqs, 1)
+	assert.Equal(t, "agent-bound-key", rt.runReqs[0].req.Provider.ProviderKey, "非 active 会话 key 应回退 agent 绑定")
+	assert.Equal(t, "session-key", ack.ProviderFallbackKey)
+}
+
+// TestRuntime_Run_EffectiveKeyMissing_NoAgentBinding_FallsBackToCLILogin 钉死决策 9
+// 边界:会话 provider_key 在 daemon 缺失且 agent 未绑定任何供应商(CLI 登录态) →
+// 回退 CLI 登录态(provider=nil)并回传信号,不报错。
+func TestRuntime_Run_EffectiveKeyMissing_NoAgentBinding_FallsBackToCLILogin(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event)
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	ctx, _, _, lookup, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{
+		Type:           string(agent_backend_entity.TypeClaudeCode),
+		LLMProviderKey: "",
+	}
+	lookup.EXPECT().FindByKey(ctx, "session-key").Return(nil, errors.New("provider session-key not configured"))
+
+	ack, err := h.Run(ctx, wire.RunParams{
+		Backend:        backendJSON(t, be),
+		SessionID:      42,
+		LLMProviderKey: "session-key",
+	})
+	require.NoError(t, err)
+	require.Len(t, rt.runReqs, 1)
+	assert.Nil(t, rt.runReqs[0].req.Provider, "无 agent 绑定回退 CLI 登录态(provider=nil)")
+	assert.Equal(t, "session-key", ack.ProviderFallbackKey, "回退必须回传信号")
 }
 
 func TestRuntime_Run_ProviderLookupMissing_ReturnsProviderMissingCode(t *testing.T) {
@@ -1174,6 +1285,7 @@ func TestRuntime_Run_WithProvider_ReusesPermanentTokenAcrossTurns(t *testing.T) 
 	}
 	lookup.EXPECT().FindByKey(ctx, "pk").Return(&llm_provider_entity.LLMProvider{
 		ProviderKey: "pk", Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-x",
+		Status: consts.ACTIVE,
 	}, nil).Times(2)
 	gw.EXPECT().URL().Return("http://gw").AnyTimes()
 	// ttl=0 (permanent), minted exactly once; NO RevokeToken EXPECT → gomock

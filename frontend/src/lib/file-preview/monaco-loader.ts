@@ -24,10 +24,6 @@
 export type MonacoNS = typeof import("monaco-editor/editor/editor.api");
 
 export type MonacoCodeEditor = ReturnType<MonacoNS["editor"]["create"]>;
-export type MonacoDiffEditor = ReturnType<
-  MonacoNS["editor"]["createDiffEditor"]
->;
-
 let cached: Promise<MonacoNS> | null = null;
 
 /** 动态加载 Monaco 命名空间（幂等，进程内单例）。 */

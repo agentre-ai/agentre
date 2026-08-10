@@ -1,5 +1,5 @@
 // Package ctl_svc exposes a loopback control API (mounted on the httpgateway
-// under /ctl/) that the external `agentre ctl` CLI drives to list agents /
+// under /ctl/) that the external `agrctl ctl` CLI drives to list agents /
 // projects and dispatch a task to an agent by creating a chat session and
 // starting a turn — the same primitives the in-turn subagent MCP uses, but
 // reachable from outside a running turn so a human (or a plain shell command)

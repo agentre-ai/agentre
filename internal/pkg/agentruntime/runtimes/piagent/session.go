@@ -260,35 +260,27 @@ func safePiResponseCommand(command string) (string, bool) {
 }
 
 // providerRunConfig 装配绑定供应商时的 provider 会话参数（APIKey 校验与 env 注入在
-// Run 层完成，见 runtime.go）：返回 --model 值（effectiveModel = firstNonEmpty(
-// modelOverride, p.Model) 非空时为 "agentre-<key>/<model>"）与物化后的 provider
-// 扩展绝对路径。Provider.Model 与 override 均为空（保存时已拦截，此处仅兜底）时沿用
-// 现状：返回零值不报错，不注入模型也不物化扩展。
+// Run 层完成，见 runtime.go）：返回 --model 值（effectiveModel = p.Model，非空时为
+// "agentre-<key>/<model>"）与物化后的 provider 扩展绝对路径。Provider.Model 为空
+// （保存时已拦截，此处仅兜底）时沿用现状：返回零值不报错，不注入模型也不物化扩展。
 // 模型名（Type 不可识别 / 模型空）出错一律显式返回，不静默吞掉后走无绑定运行。
-func providerRunConfig(p *llm_provider_entity.LLMProvider, modelOverride string) (model string, extPath string, err error) {
+// #26 会话级模型覆盖已移除,不再有 override 参与。
+func providerRunConfig(p *llm_provider_entity.LLMProvider) (model string, extPath string, err error) {
 	if p == nil {
 		return "", "", nil
 	}
-	m := strings.TrimSpace(modelOverride)
-	if m == "" {
-		m = strings.TrimSpace(p.Model)
-	}
+	m := strings.TrimSpace(p.Model)
 	if m == "" {
 		return "", "", nil
 	}
-	// 复用 PiAgentProviderModelName 的 "agentre-<key>/<model>" 拼装 + Type 校验；
-	// override 替换 provider.Model 时用浅拷贝避免改共享实体。
-	q := *p
-	q.Model = m
-	model, err = agentruntime.PiAgentProviderModelName(&q)
+	// 复用 PiAgentProviderModelName 的 "agentre-<key>/<model>" 拼装 + Type 校验。
+	model, err = agentruntime.PiAgentProviderModelName(p)
 	if err != nil {
 		return "", "", err
 	}
-	// 扩展与 --model 必须出自同一个 effectiveModel(都用 q):PiAgentProviderExtension
-	// 渲染的 registerProvider 只声明 models:[<q.Model>]，若这里传原始 p，pi 拿到的
-	// --model agentre-<key>/<override> 就是一个自己没注册过的 model id，绑 provider
-	// 的会话级切换直接用不了。扩展按内容哈希落盘，不同模型天然是不同文件。
-	extPath, err = MaterializeProviderExtension(&q)
+	// 扩展与 --model 必须出自同一个 effectiveModel(都用 p):PiAgentProviderExtension
+	// 渲染的 registerProvider 只声明 models:[<p.Model>]。扩展按内容哈希落盘。
+	extPath, err = MaterializeProviderExtension(p)
 	if err != nil {
 		return "", "", err
 	}
@@ -296,25 +288,17 @@ func providerRunConfig(p *llm_provider_entity.LLMProvider, modelOverride string)
 }
 
 // piModelFallback 未绑 provider（或 provider.Model 空）时的 --model 兜底：
-// effectiveModel = firstNonEmpty(req.ModelOverride, defaultModelForBackend)。
-// override 是裸 CLI 模型 id，直接作 --model 下发（走 pi 自身登录/配置），不经 agentre
-// 网关（specs §模型解析与各后端生效 - 未绑 provider 路径）。
+// effectiveModel = defaultModelForBackend。裸 CLI 模型 id 直接作 --model 下发（走 pi
+// 自身登录/配置），不经 agentre 网关。
 func piModelFallback(req agentruntime.RunRequest) string {
-	if m := strings.TrimSpace(req.ModelOverride); m != "" {
-		return m
-	}
 	return defaultModelForBackend(req.Backend)
 }
 
 // piResultModelPlaceholder 是 RunResult.Model 在 pi 真实 usage 帧上报前的占位：
-// effectiveModel = firstNonEmpty(override, provider.Model, backendDefault)。pi 每轮
-// 在 usage 帧上报真实模型 id 会覆盖它（runtime.go result.Model = raw.Model）；仅当 pi
-// 不报模型（极少）时落到这里 —— 若占位沿用 provider.Model 而用户设了 override，会误报
-// 「所选 X 未生效，实际 Y」偏离提示。
+// effectiveModel = firstNonEmpty(provider.Model, backendDefault)。pi 每轮在 usage 帧
+// 上报真实模型 id 会覆盖它（runtime.go result.Model = raw.Model）；仅当 pi 不报模型
+// （极少）时落到这里。
 func piResultModelPlaceholder(req agentruntime.RunRequest) string {
-	if m := strings.TrimSpace(req.ModelOverride); m != "" {
-		return m
-	}
 	if req.Provider != nil {
 		if pm := strings.TrimSpace(req.Provider.Model); pm != "" {
 			return pm
@@ -325,9 +309,9 @@ func piResultModelPlaceholder(req agentruntime.RunRequest) string {
 
 // piUserModelID 把 pi 上报的模型 id 归一为面向用户的原始模型 id。
 // 绑 provider 时 pi 实际运行的是 "agentre-<key>/<model>"(PiAgentProviderModelName 拼装
-// 的 --model 值),usage 帧上报的模型也带这个前缀 —— 若直接吐给 chat_svc,偏离提示会把
-// 「所选 X 未生效,实际 agentre-<key>/X」误报成真偏差(前缀两边对不上)。剥掉与当前
-// provider 匹配的前缀后,上报值才与 override 同语义。未绑 provider / 前缀不匹配时原样
+// 的 --model 值),usage 帧上报的模型也带这个前缀 —— 若直接吐给 chat_svc,transcript 的
+// model 字段会带着机器前缀,与面向用户的 provider.Model 对不上。剥掉与当前 provider
+// 匹配的前缀后,上报值才与 provider.Model 同语义。未绑 provider / 前缀不匹配时原样
 // 返回,不误伤 CLI 登录态的裸模型名。
 func piUserModelID(req agentruntime.RunRequest, reported string) string {
 	reported = strings.TrimSpace(reported)
@@ -350,7 +334,7 @@ var sessionFactory = func(req agentruntime.RunRequest, env map[string]string, cw
 	var providerExtPath string
 	if req.Provider != nil {
 		var err error
-		model, providerExtPath, err = providerRunConfig(req.Provider, req.ModelOverride)
+		model, providerExtPath, err = providerRunConfig(req.Provider)
 		if err != nil {
 			return nil, err
 		}

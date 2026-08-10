@@ -1,22 +1,36 @@
-import {
-  ChevronDown,
-  ChevronRight,
-  ExternalLink,
-  Eye,
-  FileCode,
-  Folder,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, Folder } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
-import { cn } from "@/lib/utils";
-import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
+import { basename } from "../../file-preview/file-meta";
+import {
+  collapseDirChain,
+  deriveFileTree,
+  type ChainEntry,
+  type FileEntry,
+  type FileTreeNode,
+} from "../derive";
 
-import { deriveFileTree, type FileEntry, type FileTreeNode } from "../derive";
-import { resolvePreviewRelPath } from "../previewable";
+import { SidebarList } from "./sidebar-list";
+import { FileTypeIcon, SidebarRow } from "./sidebar-row";
 
-import { indentStyle } from "./tree-indent";
-import { useOpenFile } from "./use-open-file";
+type DirNode = Extract<FileTreeNode, { kind: "dir" }>;
+
+/**
+ * treeChildrenOf 是 collapseDirChain 在「变动」模式下的 childrenOf：整棵树一次性
+ * 已知（deriveFileTree 的产物），所以恒不返回 null——链压缩在这个模式下总能探到
+ * 底，唯一会让链终止的是遇到文件或分支，不存在「还不知道」的情况。
+ */
+function treeChildrenOf(
+  node: FileTreeNode,
+): Array<ChainEntry<FileTreeNode>> | null {
+  if (node.kind !== "dir") return null;
+  return node.children.map((child) => ({
+    name: child.kind === "dir" ? child.name : basename(child.entry.path),
+    isDir: child.kind === "dir",
+    cursor: child,
+  }));
+}
 
 type Props = {
   sessionId: number;
@@ -39,11 +53,6 @@ function DiffBadge({ plus, minus }: { plus: number; minus: number }) {
   );
 }
 
-function basename(path: string): string {
-  const parts = path.split(/[\\/]/);
-  return parts[parts.length - 1] ?? path;
-}
-
 export function FilesView({
   sessionId,
   files,
@@ -54,12 +63,6 @@ export function FilesView({
   const { t } = useTranslation();
   const tree = React.useMemo(() => deriveFileTree(files), [files]);
   const filePathsKey = files.map((file) => file.path).join("\u0000");
-
-  // 当前被预览文件的 relPath(按会话);与某行的预览按钮同路径时高亮它。
-  const previewPath = useChatSidebarStore(
-    (s) => s.previewBySession[sessionId]?.path,
-  );
-  const openPreview = useChatSidebarStore((s) => s.openPreview);
 
   // 展开状态仅存组件内、不持久化；文件集合变化时重置为全部展开。
   const [collapsed, setCollapsed] = React.useState<Set<string>>(new Set());
@@ -76,9 +79,6 @@ export function FilesView({
     });
   };
 
-  const canOpen = cwd !== "" && !remote;
-  const openFile = useOpenFile(cwd);
-
   if (files.length === 0) {
     return (
       <div className="px-3 py-6 text-center text-xs text-muted-foreground">
@@ -87,43 +87,75 @@ export function FilesView({
     );
   }
 
-  const renderDir = (
-    node: Extract<FileTreeNode, { kind: "dir" }>,
-    dirPath: string,
-    depth: number,
-  ) => {
-    const isCollapsed = collapsed.has(dirPath);
+  const renderDir = (node: DirNode, parentPath: string, depth: number) => {
+    // 链压缩（spec「路径展示」）：只包含一个子目录且不直接包含文件的目录链折
+    // 叠为一行。「变动」模式的整棵树一次性可得，chain.children 因此恒不为
+    // null——链总能探到底（文件或分支），不存在「还不知道」的中间态。
+    const chain = collapseDirChain(node.name, node, treeChildrenOf);
+    const label = chain.names.join("/");
+    const chainPrefix =
+      chain.names.length > 1
+        ? `${chain.names.slice(0, -1).join("/")}/`
+        : undefined;
+    const displayName = chain.names[chain.names.length - 1];
+    const startPath = parentPath ? `${parentPath}/${node.name}` : node.name;
+    const terminalPath = parentPath ? `${parentPath}/${label}` : label;
+    // 展开/收起状态按链首（这一行在其父容器里的位置）为键，与压缩前保持同一份
+    // 语义——链变长变短不会让已经记下的展开态失效。
+    const isCollapsed = collapsed.has(startPath);
+    const terminalChildren = chain.children ?? [];
+
     return (
-      <div key={dirPath} className="flex flex-col">
-        <button
-          type="button"
-          onClick={() => toggleCollapse(dirPath)}
-          aria-expanded={!isCollapsed}
-          aria-label={
+      <div key={startPath} className="flex flex-col">
+        <SidebarRow
+          sessionId={sessionId}
+          cwd={cwd}
+          remote={remote}
+          sourceMode="changes"
+          kind="dir"
+          path={terminalPath}
+          // 链首是这一行的稳定身份（链尾会随链变长而变），键盘落点按它记。
+          rowKey={startPath}
+          name={displayName}
+          chainPrefix={chainPrefix}
+          title={label}
+          depth={depth}
+          expanded={!isCollapsed}
+          onToggle={() => toggleCollapse(startPath)}
+          ariaLabel={
             isCollapsed
-              ? t("chatContext.files.expandFolder", { name: node.name })
-              : t("chatContext.files.collapseFolder", { name: node.name })
+              ? t("chatContext.files.expandFolder", { name: label })
+              : t("chatContext.files.collapseFolder", { name: label })
           }
-          className="flex items-center gap-1.5 rounded-md py-1.5 pr-2.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/50"
-          style={indentStyle(depth)}
-        >
-          {isCollapsed ? (
-            <ChevronRight className="size-3.5 shrink-0" aria-hidden="true" />
-          ) : (
-            <ChevronDown className="size-3.5 shrink-0" aria-hidden="true" />
-          )}
-          <Folder
-            className="size-3.5 shrink-0 text-muted-foreground"
-            aria-hidden="true"
-          />
-          <span className="flex-1 truncate font-mono">{node.name}</span>
-        </button>
+          lead={
+            <>
+              {isCollapsed ? (
+                <ChevronRight
+                  className="size-3.5 shrink-0"
+                  aria-hidden="true"
+                />
+              ) : (
+                <ChevronDown className="size-3.5 shrink-0" aria-hidden="true" />
+              )}
+              <Folder className="size-3.5 shrink-0" aria-hidden="true" />
+            </>
+          }
+          testId="changes-row"
+          withMenu={false}
+        />
+        {/* 压缩后的行整体展开/收起；子项相对这一行只多缩进一级，无论链吸收
+            了多少段（spec「压缩后的行作为一个整体展开 / 收起，其子项缩进
+            只增加一级」）。 */}
         {!isCollapsed ? (
           <div className="flex flex-col">
-            {node.children.map((child) =>
-              child.kind === "dir"
-                ? renderDir(child, `${dirPath}/${child.name}`, depth + 1)
-                : renderFile(child.entry, depth + 1),
+            {terminalChildren.map((child) =>
+              child.isDir
+                ? renderDir(child.cursor as DirNode, terminalPath, depth + 1)
+                : renderFile(
+                    (child.cursor as Extract<FileTreeNode, { kind: "file" }>)
+                      .entry,
+                    depth + 1,
+                  ),
             )}
           </div>
         ) : null}
@@ -131,67 +163,47 @@ export function FilesView({
     );
   };
 
-  const renderFile = (entry: FileEntry, depth: number) => {
-    const previewRelPath = resolvePreviewRelPath(entry.path, cwd);
-    return (
-      <div
-        key={entry.path}
-        className="flex items-center"
-        style={indentStyle(depth)}
-      >
-        <button
-          type="button"
-          onClick={() => onJumpToTurn(entry.lastTurn)}
-          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md py-1.5 pr-2.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/50"
-          title={entry.path}
-        >
+  const renderFile = (entry: FileEntry, depth: number) => (
+    <SidebarRow
+      key={entry.path}
+      sessionId={sessionId}
+      cwd={cwd}
+      remote={remote}
+      sourceMode="changes"
+      kind="file"
+      path={entry.path}
+      name={basename(entry.path)}
+      depth={depth}
+      title={entry.path}
+      onJumpToTurn={() => onJumpToTurn(entry.lastTurn)}
+      lead={
+        <>
           {/* 预留与目录 chevron 等宽的槽位，让同级目录名/文件名、图标列对齐 */}
           <span className="size-3.5 shrink-0" aria-hidden="true" />
-          <FileCode
-            className="size-3.5 shrink-0 text-muted-foreground"
-            aria-hidden="true"
-          />
-          <span className="min-w-0 flex-1 truncate font-mono">
-            {basename(entry.path)}
-          </span>
+          <FileTypeIcon path={entry.path} />
+        </>
+      }
+      trailing={
+        <span className="ml-auto flex shrink-0 items-center">
           <DiffBadge plus={entry.plus} minus={entry.minus} />
-        </button>
-        {previewRelPath !== null ? (
-          <button
-            type="button"
-            aria-label={t("chatContext.filePreview.open")}
-            title={t("chatContext.filePreview.open")}
-            onClick={() => openPreview(sessionId, previewRelPath, "changes")}
-            className={cn(
-              "ml-1 shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground",
-              previewPath === previewRelPath && "text-primary",
-            )}
-          >
-            <Eye className="size-3" aria-hidden="true" />
-          </button>
-        ) : null}
-        {canOpen ? (
-          <button
-            type="button"
-            aria-label={t("chatContext.files.openFile")}
-            title={t("chatContext.files.openFile")}
-            onClick={() => openFile(entry.path)}
-            className="ml-1 shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground"
-          >
-            <ExternalLink className="size-3" aria-hidden="true" />
-          </button>
-        ) : null}
-      </div>
-    );
-  };
+        </span>
+      }
+      testId="changes-row"
+      rowData={{ "data-path": entry.path }}
+    />
+  );
 
   return (
-    <div className="flex flex-col gap-0.5 px-2 py-2.5">
+    <SidebarList
+      variant="tree"
+      label={t("chatContext.files.treeAria")}
+      className="flex flex-col gap-0.5 px-2 py-2.5"
+    >
       {tree.map((node) =>
         node.kind === "dir"
-          ? renderDir(node, node.name, 0)
+          ? renderDir(node, "", 0)
           : renderFile(node.entry, 0),
       )}
-    </div>
+    </SidebarList>
   );
 }

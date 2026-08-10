@@ -48,6 +48,11 @@ func TestRun_EchoesPromptThenDone(t *testing.T) {
 	assert.True(t, sawDone)
 	assert.Equal(t, "e2e-fake-42", result.ProviderSessionID)
 	assert.Equal(t, "e2e-fake-model", result.Model)
+	// 上报上下文窗口,否则 chat_svc 的 resolveContextWindowWithRuntime 拿不到值
+	// (fake 的 model 不在 llmcatalog 里),session.ContextWindow 留 0,
+	// 前端底栏的 ContextMeter 因 max==0 整块不渲染。取 1M 顺带覆盖 formatTokens 的 M 档。
+	assert.Equal(t, ContextWindowTokens, result.ContextWindow)
+	assert.Equal(t, 1_000_000, ContextWindowTokens)
 }
 
 func TestRun_RespectsContextCancellation(t *testing.T) {
@@ -87,10 +92,13 @@ func TestRun_HonorsChunkDelayEnv(t *testing.T) {
 }
 
 // CapMCPTools 必须声明,才能让 MCP 工具注入接缝(org/subagent/hook)在 e2e 里生效。
+// CapSetPermission 必须声明,否则 chat-panel 的 isModeSwitchable 为假、
+// PermissionModePill 整块不渲染,底栏的极窄档降级在 e2e 里就没有观测对象。
 func TestCapabilities_DeclaresMCPTools(t *testing.T) {
 	caps := New().Capabilities()
 	assert.True(t, caps.Has(capability.CapMCPTools))
 	assert.True(t, caps.Has(capability.CapAbort))
+	assert.True(t, caps.Has(capability.CapSetPermission))
 }
 
 // System prompt 断言指令只服务本地 e2e:用真实 RunRequest.SystemPrompt 证明主持人提示确实

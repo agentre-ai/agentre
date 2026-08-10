@@ -439,20 +439,6 @@ func (mr *MockSessionRepoMockRecorder) UpdateExecDaemon(ctx, sessionID, deviceID
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateExecDaemon", reflect.TypeOf((*MockSessionRepo)(nil).UpdateExecDaemon), ctx, sessionID, deviceID, daemonFingerprint, agentBackendID)
 }
 
-// UpdateModelOverride mocks base method.
-func (m *MockSessionRepo) UpdateModelOverride(ctx context.Context, sessionID int64, model string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateModelOverride", ctx, sessionID, model)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// UpdateModelOverride indicates an expected call of UpdateModelOverride.
-func (mr *MockSessionRepoMockRecorder) UpdateModelOverride(ctx, sessionID, model any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateModelOverride", reflect.TypeOf((*MockSessionRepo)(nil).UpdateModelOverride), ctx, sessionID, model)
-}
-
 // UpdatePermissionMode mocks base method.
 func (m *MockSessionRepo) UpdatePermissionMode(ctx context.Context, sessionID int64, mode string) error {
 	m.ctrl.T.Helper()

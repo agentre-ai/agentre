@@ -22,8 +22,7 @@ const (
 	defaultTimezone   = "Asia/Shanghai"
 )
 
-// HookSvc 是脚本 Hook 的服务契约。RunHook（run.go）/ StartScheduler（scheduler.go）
-// 在后续 Task 中加回本接口。
+// HookSvc 是脚本 Hook 的服务契约。
 type HookSvc interface {
 	Load(ctx context.Context, req *LoadHooksRequest) (*LoadHooksResponse, error)
 	CreateHook(ctx context.Context, req *CreateHookRequest) (*HookItem, error)

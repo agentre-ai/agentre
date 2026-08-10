@@ -77,9 +77,9 @@ type Runtime struct {
 
 	// launchedModel 记录每个 chat 会话(spawn 时)下发的 effectiveModel,
 	// key 与 CLISessionPool 一致(sessionKey)。--model 是启动期 flag(WithModel
-	// 绑定在 Client 创建时),app-server 进程又会被池跨轮复用 —— 模型变了必须 evict +
-	// 重 spawn(镜像 claudecode 的 launchedEffort/launchedModel 先例),否则下一轮
-	// 复用旧模型进程,会话级切换不生效(RunResult.Model 仍旧模型,偏离提示误报)。
+	// 绑定在 Client 创建时),app-server 进程又会被池跨轮复用 —— provider.Model 变了
+	// (换供应商绑定等)必须 evict + 重 spawn(镜像 claudecode 的 launchedEffort 先例),
+	// 否则下一轮复用旧模型进程,新模型不生效(RunResult.Model 仍旧模型)。
 	//
 	// 池按 LRU 上限(MarkIdle 的 prune)逐出空闲会话时不会回调这里,故条目可能只增不减
 	// (逐出后该 key 再 spawn 会被 recordLaunchedModel 覆盖)。为防长驻进程里 map 随
@@ -433,16 +433,15 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	out := make(chan agentruntime.Event, 32)
 	active.setOut(out)
 
-	// RunResult.Model 上报线程实际模型(sess.Model()),而非启动请求模型(设计决策 9):
-	// codex 的 thread/resume 返回线程当前 model,override 经 --model 生效后 sess.Model()
-	// 即实际运行模型 —— 偏离提示(决策 5)依赖这个信号;无 override 时两者同值,不回归。
+	// RunResult.Model 上报线程实际模型(sess.Model()),而非启动请求模型:codex 的
+	// thread/resume 返回线程当前 model。绑 provider 时 provider.Model 经 --model 生效后
+	// sess.Model() 即实际运行模型;无 provider 时两者同值,不回归。
 	modelID := strings.TrimSpace(sess.Model())
 	if modelID == "" {
 		// app-server 没在 thread start/resume 结果里带 model 时 sess.Model() 为空 ——
 		// 此时「观测不到」不等于「跑的是 defaultModelID」:直接落死常量会把一个从没跑过
-		// 的 model id 写进 assistantMsg.Model,还会让 chat_svc 的偏离提示每轮误报
-		// 「所选 X 未生效,实际 gpt-5.5」。回落到本轮请求的 effectiveModel(override →
-		// provider.Model),观测不到就按「请求值已生效」处理。
+		// 的 model id 写进 assistantMsg.Model。回落到本轮请求的 effectiveModel
+		// (provider.Model),观测不到就按「请求值已生效」处理。
 		modelID = codexEffectiveModel(req)
 	}
 	if modelID == "" {
@@ -486,7 +485,7 @@ func (r *Runtime) acquireSession(req agentruntime.RunRequest, env map[string]str
 		key := sessionKey(req.SessionID)
 		if v, ok := r.pool.Get(key); ok {
 			// 模型是启动期 flag:effectiveModel 变化 → evict + 重 spawn(镜像 claudecode
-			// launchedEffort/launchedModel 先例)。模型未变则复用池内 app-server。
+			// launchedEffort 先例)。模型未变则复用池内 app-server。
 			if r.modelChanged(key, codexEffectiveModel(req)) {
 				r.pool.Remove(key)
 				r.forgetLaunchedModel(key)

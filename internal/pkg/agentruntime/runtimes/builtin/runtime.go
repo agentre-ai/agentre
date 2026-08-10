@@ -31,14 +31,10 @@ func init() {
 	agentruntime.RegisterRuntime(agent_backend_entity.TypeBuiltin, defaultRuntime)
 }
 
-// builtinEffectiveModel 统一模型解析规则(builtin 版):effectiveModel =
-// firstNonEmpty(req.ModelOverride, req.Provider.Model)。builtin 强制要求绑 provider
-// (Run 里 nil 检查),且 backend 无默认模型字段(DefaultModel 仅 claudecode 用),
-// 所以规则只取前两项。进程内每轮读取,无子进程/缓存问题。
+// builtinEffectiveModel 统一模型解析规则(builtin 版):#26 会话级模型覆盖已移除,
+// effectiveModel 直接回落供应商默认(provider.Model)。builtin 强制要求绑 provider
+// (Run 里 nil 检查),且 backend 无默认模型字段(DefaultModel 仅 claudecode 用)。
 func builtinEffectiveModel(req agentruntime.RunRequest) string {
-	if m := strings.TrimSpace(req.ModelOverride); m != "" {
-		return m
-	}
 	return strings.TrimSpace(req.Provider.Model)
 }
 

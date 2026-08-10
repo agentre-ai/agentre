@@ -41,11 +41,6 @@ type SessionRepo interface {
 	Create(ctx context.Context, s *chat_entity.Session) error
 	Update(ctx context.Context, s *chat_entity.Session) error
 	UpdatePermissionMode(ctx context.Context, sessionID int64, mode string) error
-	// UpdateModelOverride 单列写入会话级模型覆盖(model_override)。与 UpdatePermissionMode
-	// 同模式:model_override 在 Update(整行 Save)里被 Omit,只能通过这里写 —— 否则
-	// 用户在轮次中途调 SetChatSessionModel 换模型,会被轮次收尾拿旧实体做的整行 Save
-	// 盖回旧值(见 TestSessionRepo_UpdateKeepsModelOverride)。
-	UpdateModelOverride(ctx context.Context, sessionID int64, model string) error
 	// UpdatePermissionModeAtLaunch sets the launched-mode snapshot for a session.
 	// Called by the claudecode runner after spawning the CLI subprocess. Never
 	// invoked through the user-facing SetPermissionMode IPC — that one only
@@ -403,13 +398,9 @@ func (r *sessionRepo) Update(ctx context.Context, s *chat_entity.Session) error 
 	//     空闲的远端会话从此落在 ListRemoteExecSessions 的取材条件之外,再也进不了
 	//     启动补齐;钉住的档也会被抹回未钉住,下一轮又变成重挑(决策36明确禁止)。
 	// 这四列在服务层没有任何「写实体再 Update」的路径,Omit 不会丢掉谁的写入。
-	//   - model_override —— 会话级模型覆盖由 SetChatSessionModel(UpdateModelOverride)
-	//     单列写入;轮次收尾的整行 Save 若把它写回去,会把用户在轮次中途的换模型盖回
-	//     旧值(见 TestSessionRepo_UpdateKeepsModelOverride)。
 	err := db.Ctx(ctx).Omit(
 		"permission_mode", "permission_mode_at_launch",
 		"exec_device_id", "exec_daemon_fingerprint", "exec_agent_backend_id", "event_cursor",
-		"model_override",
 	).Save(s).Error
 	s.ApplyDerivedFields()
 	return err
@@ -421,15 +412,6 @@ func (r *sessionRepo) UpdatePermissionMode(ctx context.Context, sessionID int64,
 		Updates(map[string]any{
 			"permission_mode": mode,
 			"updatetime":      time.Now().UnixMilli(),
-		}).Error
-}
-
-func (r *sessionRepo) UpdateModelOverride(ctx context.Context, sessionID int64, model string) error {
-	return db.Ctx(ctx).Model(&chat_entity.Session{}).
-		Where("id = ? AND status = ?", sessionID, consts.ACTIVE).
-		Updates(map[string]any{
-			"model_override": model,
-			"updatetime":     time.Now().UnixMilli(),
 		}).Error
 }
 

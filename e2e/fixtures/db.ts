@@ -2,10 +2,15 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// The e2e temp DB. AGENTRE_DATA_DIR is set by playwright.config.ts (in every process, incl.
-// workers); fall back to the same deterministic path for safety.
-const dbPath = () =>
-  join(process.env.AGENTRE_DATA_DIR ?? join(tmpdir(), "agentre-e2e-data"), "agentre.db");
+// The e2e temp data dir. AGENTRE_DATA_DIR is set by playwright.config.ts (in every process,
+// incl. workers); fall back to the same deterministic path for safety. Exported so specs that
+// need to touch the filesystem directly (e.g. seeding a real git repo under
+// <dataDir>/agents/<agentID>/, mirroring internal/pkg/agentruntime/cwd.go's AgentCwd) share the
+// exact same root the Go backend resolves via internal/pkg/paths.AppDataDir().
+export const e2eDataDir = () =>
+  process.env.AGENTRE_DATA_DIR ?? join(tmpdir(), "agentre-e2e-data");
+
+const dbPath = () => join(e2eDataDir(), "agentre.db");
 
 // Count chat_sessions stuck in agent_status='running'. Read-only, independent of the Go service
 // layer — proves the real status write hit disk. After a finished turn this must be 0.
@@ -117,6 +122,23 @@ export function fakeAssistantMessageCount(): number {
       )
       .get() as { n: number };
     return row.n;
+  } finally {
+    db.close();
+  }
+}
+
+// Look up an agent's id by its (unique) name. Read-only — lets a spec compute the same
+// filesystem path the Go backend resolves for a project-less session's cwd
+// (internal/pkg/agentruntime/cwd.go's AgentCwd: <AppDataDir>/agents/<agentID>/) without
+// hardcoding the seeded CEO agent's autoincrement id. Returns null when no such agent exists.
+export function agentIdByName(name: string): number | null {
+  const db = new DatabaseSync(dbPath(), { readOnly: true });
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    const row = db.prepare("SELECT id FROM agents WHERE name = ?").get(name) as
+      | { id: number }
+      | undefined;
+    return row?.id ?? null;
   } finally {
     db.close();
   }

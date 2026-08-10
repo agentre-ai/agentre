@@ -1,8 +1,6 @@
-import type { LucideIcon } from "lucide-react";
-
 import type { department_svc } from "../../../../wailsjs/go/models";
 
-import { ICON_LIST, iconForKey as iconForKeyShared } from "../icon-registry";
+import { iconForKey as iconForKeyShared } from "../icon-registry";
 
 export type OrgAgentColor =
   | "agent-1"
@@ -23,18 +21,10 @@ export type OrgAgentColor =
   | "agent-16"
   | "neutral";
 
-export type OrgAgentStatus = "running" | "waiting" | "idle";
-
 export type OrgSelection =
   | { kind: "agent"; id: number }
   | { kind: "department"; id: number }
   | null;
-
-// 向后兼容：旧版本 `ICON_REGISTRY` 是 key → LucideIcon 的 Record。
-// 新代码请直接使用 `../icon-registry` 里的 `ICON_LIST` / `iconForKey` / `searchIcons`。
-export const ICON_REGISTRY: Record<string, LucideIcon> = Object.fromEntries(
-  ICON_LIST.map((m) => [m.key, m.icon]),
-);
 
 export const iconForKey = iconForKeyShared;
 
