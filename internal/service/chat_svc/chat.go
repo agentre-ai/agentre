@@ -1270,6 +1270,13 @@ func (s *chatSvc) goalSessionContext(ctx context.Context, sessionID int64) (*cha
 	if !be.IsCodex() {
 		return nil, nil, nil, nil, i18n.NewError(ctx, code.ChatGoalUnsupported)
 	}
+	// goal 与 turn 共用同一个 codex app-server 会话池,所以供应商必须同一口径解析
+	// (会话 provider_key > agent 绑定,spec 2026-08-10)。各读各的会让 acquireSession
+	// 的启动期比对键(effectiveModel + effectiveProviderKey,决策 4)在 goal 与 turn 之间
+	// 反复翻转 —— 一次 /goal 就把这条会话正在用的 app-server evict 掉重 spawn,而且这次
+	// goal 本身打在用户没选的那家上游。回退 notice 丢弃:goal 不写 transcript,回退提示
+	// 由真正跑轮的那条路径产出。
+	prov, _ = s.resolveSessionProvider(ctx, sess, be, prov)
 	return sess, a, be, prov, nil
 }
 

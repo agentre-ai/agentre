@@ -26,9 +26,15 @@ import (
 // 「有效供应商解析（唯一口径）」）：会话级 provider_key 非空取它，否则取 agent 绑定；
 // 两者皆空表示无供应商，即 CLI 自身登录态。
 //
-// 任何消费点（turn 解析、网关 token、CLI env/config 门控、LoadSession 展示、复制启动
-// 命令、远端 wire）都必须走这里，不得再各自直接读 be.LLMProviderKey —— 各读各的正是
-// 「会话选了供应商却打到 agent 绑定那家」的成因。
+// 任何消费点（turn 解析、网关 token、CLI env/config 门控、goal 入口、LoadSession 展示、
+// 复制启动命令、远端 wire）都必须走这里，不得再各自直接读 be.LLMProviderKey —— 各读各的
+// 正是「会话选了供应商却打到 agent 绑定那家」的成因。goal 尤其不能漏：它与 turn 共用同
+// 一个 CLI 会话池，两边解析不一致会让启动期比对键（决策 4）反复翻转、把在用的子进程
+// evict 掉重 spawn。
+//
+// 已知残留（本地已收口，远端未）：远端 goal 的 wire.GoalParams 不带 provider key，daemon
+// 的 hydrateGoalProvider 仍按 agent 绑定自解 —— 补齐需要给该 RPC 加 wire 字段（与
+// RunParams.LLMProviderKey 同形），属协议改动。
 func effectiveProviderKey(sess *chat_entity.Session, be *agent_backend_entity.AgentBackend) string {
 	var sessKey, agentKey string
 	if sess != nil {

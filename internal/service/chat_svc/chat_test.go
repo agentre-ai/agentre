@@ -3004,6 +3004,43 @@ func TestGoal_CodexRoutesToGoalController(t *testing.T) {
 	})
 }
 
+// TestGoal_UsesSessionEffectiveProvider 钉死 /goal 入口的供应商口径：goal 与 turn 必须
+// 落在同一家供应商上（会话 provider_key > agent 绑定，spec 2026-08-10「有效供应商解析
+// （唯一口径）」）。
+//
+// goal 与 turn 共用同一个 codex app-server 会话池：acquireSession 的启动期比对键是
+// (effectiveModel, effectiveProviderKey)（决策 4），goal 侧若还按 agent 绑定解析
+// Provider，两边比对键就不一致 —— 一次 /goal 会把这条会话正在用的 app-server evict 掉
+// 重 spawn（下一轮 turn 再 evict 一次），而且这次 goal 本身就打在用户没选的那家上游。
+// 登录态后端（backend 未绑定、会话自己选了一家）是最直接的形态：Provider 会整个丢成 nil。
+func TestGoal_UsesSessionEffectiveProvider(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+	runner := &goalRecordingRunner{recordingRunner: &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}}
+	t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeCodex, runner))
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+		ProviderSessionID: "codex-thread-123", ProviderKey: "session-picked",
+	}, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Codex", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	// 登录态 codex 后端：这一档没绑供应商，会话自己选了一家接管。
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "session-picked").Return(&llm_provider_entity.LLMProvider{
+		ID: 34, ProviderKey: "session-picked", Type: string(llm_provider_entity.TypeOpenAIResponse),
+		Model: "gpt-session", Status: consts.ACTIVE,
+	}, nil)
+
+	_, err := m.svc.GetGoal(ctx, &chat_svc.GoalRequest{SessionID: 100})
+	require.NoError(t, err)
+	require.NotNil(t, runner.getReq.Provider, "goal 必须带上本会话的 effective provider，而不是 agent 绑定")
+	assert.Equal(t, "session-picked", runner.getReq.Provider.ProviderKey)
+}
+
 func TestStartGoal_CreatesCodexSessionAndSetsGoalBeforeFirstTurn(t *testing.T) {
 	convey.Convey("Given a new Codex chat, when setting /goal before the first message, then a provider thread is created and stored without creating chat messages", t, func() {
 		m := setupChatTest(t)

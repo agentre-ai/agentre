@@ -207,10 +207,17 @@ func TestSignChatTokenFor_SwitchReroutesWithoutReissuing(t *testing.T) {
 		t.Fatalf("expected exactly one re-route call; got %v", gw.rerouted)
 	}
 
-	// 同一供应商的续轮不再重复改路由（避免每轮都写一次 + 刷日志）。
+	// 同一供应商的续轮照样把路由重申一遍（幂等，且 gateway 重启丢表时能立刻被
+	// SetTokenProvider 的 ok=false 探到并告警）；变的只有日志——只有真换了才记一条。
 	_, tok3 := s.signChatTokenFor(context.Background(), be, 42, "session-picked")
 	if tok3 != tok1 {
 		t.Fatalf("unchanged provider must keep the same token; got %q", tok3)
+	}
+	if len(gw.rerouted) != 2 {
+		t.Fatalf("每轮都要重申一次路由（幂等）；got %v", gw.rerouted)
+	}
+	if gw.issued != 1 {
+		t.Fatalf("续轮不得再签一个 token; issued=%d", gw.issued)
 	}
 	if got := gw.routeOf(tok3); got != "session-picked" {
 		t.Fatalf("route must stay on the switched provider; routed to %q", got)
