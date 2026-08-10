@@ -3760,6 +3760,14 @@ func (s *chatSvc) prepareTurnRun(
 		// 覆盖解析出来的那家（缺失/停用已回退过），也正是本轮 `--model` 用的那家 ——
 		// 会话换了供应商，token 的上游随之改变，字符串不变（决策 3）。
 		req.GatewayURL, req.GatewayToken = s.signChatTokenFor(ctx, be, sess.ID, providerKeyOf(prov))
+		// 本轮有 effective provider 却拿不到网关(未注入/未运行)：LLM 本该经本机网关转发
+		// 到所选供应商,此时装不上 ANTHROPIC_* / codex model_provider,子进程会**静默**
+		// 退回 CLI 自身登录态,把这段对话打到用户没选的那家上游。与 resolveAgentBackend
+		// 对「backend 已绑 provider」那半的判定同一口径 —— 那半只看 be.LLMProviderKey,
+		// 覆盖不到「登录态 backend 上会话自己选了供应商」这条新路径(决策 6/7)。
+		if prov != nil && (req.GatewayURL == "" || req.GatewayToken == "") {
+			return fail(i18n.NewError(ctx, code.ChatBackendGatewayUnavailable))
+		}
 	}
 	switch agent_backend_entity.BackendType(be.Type) {
 	case agent_backend_entity.TypeClaudeCode:

@@ -30,6 +30,7 @@ type recordingGateway struct {
 	issuedFor []string          // 每次签发时传入的 provider key
 	rerouted  []string          // 每次「改路由不换 token」的调用
 	routes    map[string]string // token → 当前路由到的 provider key
+	state     string            // GatewayStatus.State；newRecordingGateway 默认 running
 }
 
 func (g *recordingGateway) IssueToken(_ context.Context, _ *agent_backend_entity.AgentBackend, ttl time.Duration) (string, error) {
@@ -71,7 +72,14 @@ func (g *recordingGateway) routeOf(token string) string {
 }
 
 func newRecordingGateway() *recordingGateway {
-	return &recordingGateway{routes: map[string]string{}}
+	return &recordingGateway{routes: map[string]string{}, state: "running"}
+}
+
+// newStoppedGateway 是「网关已注入但没在跑」（用户在设置里停了本机网关 / 端口占用起不来）。
+func newStoppedGateway() *recordingGateway {
+	g := newRecordingGateway()
+	g.state = "stopped"
+	return g
 }
 func (g *recordingGateway) RevokeToken(t string) {
 	g.mu.Lock()
@@ -80,7 +88,7 @@ func (g *recordingGateway) RevokeToken(t string) {
 }
 func (g *recordingGateway) URL() string { return "http://gw" }
 func (g *recordingGateway) Status() httpgateway.GatewayStatus {
-	return httpgateway.GatewayStatus{State: "running"}
+	return httpgateway.GatewayStatus{State: g.state}
 }
 
 func claudeBackendFixture() *agent_backend_entity.AgentBackend {
@@ -238,4 +246,53 @@ func TestPrepareTurnRun_LocalTokenRoutesToTurnProvider(t *testing.T) {
 	require.NotEmpty(t, prepared.req.GatewayToken, "本地 claudecode 仍要签 token")
 	assert.Equal(t, "session-picked", gw.routeOf(prepared.req.GatewayToken),
 		"token 必须路由到本轮的 provider，而不是 agent 绑定")
+}
+
+// TestPrepareTurnRun_SessionProviderNeedsRunningGateway 钉死规格「登录态与后端可用性」：
+// 未绑供应商的 CLI 登录态会话选了一个 agentre 供应商接管时，「该轮起签发网关 token、装配
+// 网关 env / config，请求经本机网关转发到所选供应商」—— 网关没在跑就装不上 ANTHROPIC_*
+// / codex model_provider，子进程会**静默**退回 CLI 自身登录态、把这段对话打到用户没选的
+// 那家上游。这一轮存在 effective provider 却拿不到网关，必须与「backend 已绑 provider 时
+// resolveAgentBackend 直接报 ChatBackendGatewayUnavailable」同一口径地报错，不静默降级。
+//
+// 反向那一半是硬不变量 1：整轮压根没有 effective provider（真·CLI 登录态）时行为完全不变
+// —— 照常起轮，只是不带网关参数。
+func TestPrepareTurnRun_SessionProviderNeedsRunningGateway(t *testing.T) {
+	newTurn := func(t *testing.T, prov *llm_provider_entity.LLMProvider) (*chatSvc, *chat_entity.Session, *agent_entity.Agent, *agent_backend_entity.AgentBackend) {
+		t.Helper()
+		runner := &directRunRunner{request: make(chan agentruntime.RunRequest, 1)}
+		t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, runner))
+		prevCwd := resolveCwdFn
+		t.Cleanup(func() { resolveCwdFn = prevCwd })
+		dir := t.TempDir()
+		resolveCwdFn = func(context.Context, *chat_entity.Session) (string, error) { return dir, nil }
+
+		return &chatSvc{gateway: newStoppedGateway()},
+			&chat_entity.Session{ID: 100, AgentID: 7},
+			&agent_entity.Agent{ID: 7, AgentBackendID: 12},
+			// 登录态：agent 这一档没绑任何供应商。
+			&agent_backend_entity.AgentBackend{ID: 12, Type: string(agent_backend_entity.TypeClaudeCode)}
+	}
+
+	t.Run("会话选了供应商但网关没在跑 → 报错而不是退回 CLI 登录态", func(t *testing.T) {
+		prov := &llm_provider_entity.LLMProvider{
+			ProviderKey: "session-picked", Type: string(llm_provider_entity.TypeAnthropic),
+			Model: "claude-x", Status: consts.ACTIVE,
+		}
+		s, sess, a, be := newTurn(t, prov)
+		sess.ProviderKey = "session-picked"
+
+		_, err := s.prepareTurnRun(context.Background(), sess, a, be, prov, nil, nil, "", false, false)
+		require.Error(t, err, "本轮有 effective provider 却没有网关，必须报错")
+	})
+
+	t.Run("真·CLI 登录态（无任何供应商）不受影响：照常起轮、不带网关参数", func(t *testing.T) {
+		s, sess, a, be := newTurn(t, nil)
+
+		prepared, err := s.prepareTurnRun(context.Background(), sess, a, be, nil, nil, nil, "", false, false)
+		require.NoError(t, err)
+		require.NotNil(t, prepared)
+		assert.Empty(t, prepared.req.GatewayToken)
+		assert.Empty(t, prepared.req.GatewayURL)
+	})
 }
