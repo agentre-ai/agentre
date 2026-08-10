@@ -658,7 +658,9 @@ func TestPull_AdvancesCursorAcrossRuns(t *testing.T) {
 	h.transport.pages = []*syncwire.PullPage{{NextCursor: 11}}
 	require.NoError(t, h.svc.SyncOnce(ctx))
 
-	assert.Equal(t, []int64{0, 11}, h.transport.pulledAt, "第二轮从游标 11 继续")
+	// 第一轮：从 0 拉到那一条，然后补一次收尾空拉（R6a，见 resync_window_test.go）；
+	// 第二轮：从 11 继续，第一页就是空的，不再补。
+	assert.Equal(t, []int64{0, 11, 11}, h.transport.pulledAt, "第二轮从游标 11 继续")
 	st, err := h.svc.Status(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, int64(11), st.Cursor)

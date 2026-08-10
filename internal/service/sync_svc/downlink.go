@@ -65,7 +65,18 @@ func (s *service) pullFrom(ctx context.Context, accountID, cursor int64) error {
 		}); err != nil {
 			return err
 		}
-		if !p.HasMore {
+		// 拉到**空页**才收工，而不是拉到 HasMore=false 就收工（R6a）。
+		//
+		// server 把「这一页一行都没有」当作「这台设备的游标已经站在账号序列的头上」，
+		// 并且只在那一刻刷新它的 last_sync_at；超窗口判定读的正是那个值。停在
+		// 「最后一页非空」上，server 就永远看不到这台设备赶上进度 —— 对正常设备无所谓
+		// （下一个周期的 pull 会拉回一个空页），但超窗口的设备等不到那个周期：flush
+		// 失败就 return，pull 排在它后面，而 flush 正是因为超窗口才失败的。结果是
+		// 「上行被拒 → 重同步 → 窗口没刷新 → 重试再被拒」的死循环，队列一条都出不去。
+		//
+		// 代价是每次真有增量的下行多一次往返（返回空页那一次）；空转的那些周期
+		// 第一页就是空的，不受影响。翻页上限 maxPullPages 仍是兜底。
+		if !p.HasMore && len(p.Items) == 0 {
 			break
 		}
 	}
