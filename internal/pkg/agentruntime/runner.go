@@ -80,6 +80,10 @@ const (
 	EventRuntimeStatus EventKind = "runtime_status"
 	EventError         EventKind = "error"
 	EventDone          EventKind = "done"
+	// EventUserMessage (R18):daemon 在「开新一轮」事件流开头注入的发起方标记(见
+	// event.go 的 UserMessageEvent)。它是 wire 事件流的一部分,走既有的
+	// runtime.event 通知 / journal / 补齐,不需要额外的通知通道。
+	EventUserMessage EventKind = "user_message"
 )
 
 // ToolUseEvent EventToolUseStart / End 携带。Input 是原始 JSON；chat_svc 自己 unmarshal 到 map。

@@ -239,6 +239,13 @@ type RunParams struct {
 	// daemon 用它做 ProviderLookup（FindByKey），不需要 desktop 越线传 APIKey。
 	// 决策 9 后它携带 effectiveProviderKey（会话 provider_key 优先），daemon 自解。
 	LLMProviderKey string `json:"llmProviderKey,omitempty"`
+	// SourceDevice / SourceDeviceName 是「开新一轮」发起方的设备身份（R18/R19）。
+	// 浏览器在握手时声明自己的设备指纹与显示名（如「Chrome · macOS」），随 runtime.run
+	// 过线；daemon 据此在事件流开头注入一条 user_message 标记，扇出给同一条会话的其余
+	// 订阅者，让桌面端把这一轮落成一行带来源标识的用户消息。桌面端自己发消息不传这两
+	// 个字段 → 不注入、消息不带来源标识，单端界面零变化（R17 既有承诺不变）。
+	SourceDevice     string `json:"sourceDevice,omitempty"`
+	SourceDeviceName string `json:"sourceDeviceName,omitempty"`
 }
 
 // MCPProxyRequest 是 daemon→desktop 隧道里一次 MCP HTTP 请求的封装。daemon 把 CLI 子进程

@@ -3944,6 +3944,110 @@ describe("ChatPanel · T30 后台任务完成翻转 messages", () => {
   });
 });
 
+// ─── T31: R18 —— 浏览器「开新一轮」的 user 行随 autonomous_started 插入 ────────
+// 浏览器在空闲会话上发消息,daemon 把这一轮作为带 user_message 标记的补齐轮扇出。
+// 前端收到 autonomous_started 时,必须先插 user 行再插 assistant 行,否则桌面端看到的
+// 又是「没有提问的回复」。来源标识在 user 消息 DTO 上(transcript 渲染层复用
+// chat.message.fromDevice 的 inline pill;本机消息无 sourceDevice,零变化)。
+
+describe("ChatPanel · T31 R18 浏览器开新轮的 user 行插入", () => {
+  function getAutonomousHandler(
+    sessionId: number,
+  ): ((ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void) | null {
+    const calls = runtimeMocks.EventsOn.mock.calls as unknown as Array<
+      [string, (ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void]
+    >;
+    const found = calls.find(
+      ([name]) => name === `chat:autonomous:${sessionId}`,
+    );
+    return found ? found[1] : null;
+  }
+
+  it("Given an autonomous_started with userMessages, When it arrives, Then user row lands before the assistant row", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 1 });
+
+    render(<ChatPanel sessionId={1} />);
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:autonomous:1",
+        expect.any(Function),
+      ),
+    );
+
+    const handler = getAutonomousHandler(1);
+    act(() => {
+      handler!(
+        {
+          kind: "autonomous_started",
+          sessionId: 1,
+          stream: "chat:event:1:52",
+          trigger: "catch_up",
+          userMessages: [
+            {
+              id: 50,
+              role: "user",
+              blocks: [{ type: "text", text: "浏览器发来的消息" }],
+              sourceDevice: "sha256:web-device",
+              sourceDeviceName: "Chrome · macOS",
+            },
+          ],
+          assistantMessage: {
+            id: 52,
+            role: "assistant",
+            blocks: [],
+          },
+        } as unknown as import("@/hooks/use-chat-stream").ChatStreamEvent,
+      );
+    });
+
+    expect(setMessagesSpy).toHaveBeenCalled();
+    const updater = setMessagesSpy.mock.calls.at(-1)![0] as (
+      prev: Array<Record<string, unknown>>,
+    ) => Array<Record<string, unknown>>;
+    const result = updater(mockSessionStore.messages);
+    expect(result.map((m) => m.id)).toEqual([50, 52]);
+    expect(result[0]).toMatchObject({
+      role: "user",
+      sourceDevice: "sha256:web-device",
+      sourceDeviceName: "Chrome · macOS",
+    });
+    expect(result[1]).toMatchObject({ role: "assistant" });
+  });
+
+  it("Given an autonomous_started without userMessages (true autonomous turn), When it arrives, Then only the assistant row is appended (zero change)", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 2 });
+
+    render(<ChatPanel sessionId={2} />);
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:autonomous:2",
+        expect.any(Function),
+      ),
+    );
+
+    const handler = getAutonomousHandler(2);
+    act(() => {
+      handler!(
+        {
+          kind: "autonomous_started",
+          sessionId: 2,
+          stream: "chat:event:2:62",
+          trigger: "background_task",
+          assistantMessage: { id: 62, role: "assistant", blocks: [] },
+        } as unknown as import("@/hooks/use-chat-stream").ChatStreamEvent,
+      );
+    });
+
+    const updater = setMessagesSpy.mock.calls.at(-1)![0] as (
+      prev: Array<Record<string, unknown>>,
+    ) => Array<Record<string, unknown>>;
+    const result = updater(mockSessionStore.messages);
+    expect(result.map((m) => m.id)).toEqual([62]);
+  });
+});
+
 // ─── T30b: 空闲态后台 subagent 的进度回写 messages(sess-2275)──────────────────
 // 后台 subagent 在会话空闲态一直跑,CLI 每次工具调用都吐 task_progress。派遣卡的
 // tool_use block 早已从 liveBlocks 落进 messages —— store 的 mergeSubagentMeta 只翻
