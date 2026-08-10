@@ -33,12 +33,12 @@ type NotifierPort interface {
 
 // JournalPort 落库一条「本该发给客户端的通知」,返回库为它分配的 seq。
 //
-// 它是 R1「先落库,后推送」的接缝:会话通知的发送方先调 Append 拿到 seq,成功后才推送。
-// Append 返回 error 时 seq 不推进、该条通知也不推送(R3),因此日志里的 seq 连续无洞 ——
+// 它是「先落库，后推送」的接缝：会话通知的发送方先调 Append 拿到 seq，成功后才推送。
+// Append 返回 error 时 seq 不推进、该条通知也不推送，因此日志里的 seq 连续无洞 ——
 // 客户端拉到的连续 seq 就是完整序列。
 //
 // 会话身份是 (peerFingerprint, peerSessionID) 的组合:会话 id 是各客户端本地自增的,
-// 不同客户端必然重号(R16)。payload 是那条通知的 params 原样、且**不含 seq**;seq 是
+// 不同客户端必然重号。payload 是那条通知的 params 原样、且**不含 seq**；seq 是
 // 日志行自己的属性,推送时(实时与重连补齐同样)才盖到帧上。
 //
 // 实现挂在 Daemon 级(一个 daemon 一份库),不是 per-connection —— 断连重连不该重置任何
@@ -60,8 +60,8 @@ type DBStat struct {
 	SizeBytes int64
 }
 
-// DBStatPort 交出 DBStat。规格「安全、隐私、兼容性与可访问性 / 磁盘增长」要求库文件
-// 路径与体量在 daemon 状态查询里可见,用户据此自行判断何时清理。实现在 daemon 包
+// DBStatPort 交出 DBStat。库文件路径与体量必须在 daemon 状态查询里可见，用户据此
+// 自行判断何时清理。实现在 daemon 包
 // (只有它知道自己开在哪个 DataDir 下),按 DIP 声明在消费方。
 //
 // Path 只喂给本机 IPC 的状态查询;经 LAN 发给对端的 health.ping 只带体量(见
@@ -71,11 +71,11 @@ type DBStatPort interface {
 }
 
 // SessionRecord 是一条会话在 daemon 上的身份与元数据。会话身份是
-// (PeerFingerprint, PeerSessionID) 的组合(R16);AgentID / Cwd / BackendType 原样透传
+// (PeerFingerprint, PeerSessionID) 的组合；AgentID / Cwd / BackendType 原样透传
 // 客户端起手时报的值,供重连后的清单重建界面。
 //
 // 它**不含**「最新 seq」与「是否正在等待输入」:前者的真相源是通知日志的 MAX(seq),
-// 后者由实时 waiter 状态叠加计算、永不落库(R11)。
+// 后者由实时 waiter 状态叠加计算、永不落库。
 type SessionRecord struct {
 	PeerFingerprint string
 	PeerSessionID   string
@@ -87,7 +87,7 @@ type SessionRecord struct {
 
 // SessionLifecyclePort 记录会话生命周期的推进,由跑一轮执行的一侧调用。
 //
-// 三步对应规格「会话生命周期」的那条链:Start(起手,建行并置 running)→ Finish
+// 生命周期依次为 Start（起手，建行并置 running）→ Finish
 // (轮结束,置 idle)→ Running(自主续轮开始,回到 running)。daemon 重启导致的
 // interrupted 不在这里 —— 那是启动清扫一次性做的,进程内没有触发点。
 type SessionLifecyclePort interface {
@@ -97,21 +97,21 @@ type SessionLifecyclePort interface {
 }
 
 // SessionQueryPort 是会话的读出口,供重连客户端的清单 / 接管查询使用。两个方法都以
-// 对端指纹打头:查询一律限定在调用方自己的对端范围内(R16),按会话 id 单独查的入口
+// 对端指纹打头：查询一律限定在调用方自己的对端范围内，按会话 id 单独查的入口
 // 本层不提供。
 type SessionQueryPort interface {
 	List(ctx context.Context, peerFingerprint string) ([]SessionRecord, error)
 	Find(ctx context.Context, peerFingerprint, peerSessionID string) (*SessionRecord, error)
 }
 
-// SteerSourceEntry 是一条 mid-turn steer 的提交方信息(R17)。Record 时由 Steer RPC
+// SteerSourceEntry 是一条 mid-turn steer 的提交方信息。Record 时由 Steer RPC
 // 从调用连接的对端鉴权状态里取,Consume 时盖回被消费的 steer 上。
 type SteerSourceEntry struct {
 	Peer string // 提交方设备指纹;空 = 本机/未知
 	Name string // 提交方设备名(auth.pair 时上报);空 = 无可用名字
 }
 
-// SteerSourcePort 记录并消费「queuedID → 提交方对端」的映射(R17)。它是 **Daemon 级**
+// SteerSourcePort 记录并消费「queuedID → 提交方对端」的映射。它是 **Daemon 级**
 // 的:Steer RPC 可能落在任意一条连接上(同设备多条连接 / 他端接管别人的会话),而
 // SteerConsumed 由发起会话那条连接的 fanout 发出 —— 映射必须在两者之间共享,per-conn
 // 存就会在「提交落在连接 B、fanout 跑在连接 A」时查不到。

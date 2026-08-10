@@ -44,7 +44,7 @@ func TestBuildArgs_ForkAlone_NoResume_OK(t *testing.T) {
 }
 
 func TestBuildArgs_ResumeSessionAt_RequiresFork(t *testing.T) {
-	// 见 spec §4：resume-session-at 单独用会破坏性 rewind 原 session。
+	// resume-session-at 单独使用会破坏性 rewind 原 session，因此必须配合 fork-session。
 	// 这里 buildArgs 仍透传两个 flag，业务校验在 Client 层；测试只确认 argv 拼接顺序。
 	got := buildArgs(runSpec{resumeID: "sess-abc", resumeSessionAtUUID: "uuid-1", forkSession: true})
 	joined := strings.Join(got, " ")

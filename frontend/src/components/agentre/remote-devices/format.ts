@@ -52,6 +52,14 @@ export function friendlyLastError(le: string, t: TFunction): string {
   return le;
 }
 
+/** Formats a whole-second countdown as M:SS, clamped at 0:00. */
+export function formatCountdown(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${m}:${String(sec).padStart(2, "0")}`;
+}
+
 /** Extracts host[:port] from a URL for display; falls back to the raw input. */
 export function hostOf(url: string): string {
   try {

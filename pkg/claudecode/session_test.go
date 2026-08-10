@@ -326,7 +326,7 @@ func fakeInterruptNoAck(gotLines chan<- string) fakeCLIFunc {
 	}
 }
 
-// TestSession_Interrupt_PendingAckIsBounded 钉死决策 2：CLI 不回执时 Interrupt 的
+// TestSession_Interrupt_PendingAckIsBounded 验证 CLI 不回执时 Interrupt 的
 // ack 等待**有界**（interruptAckBound=500ms），超时返回独立哨兵 ErrInterruptPending
 // （errors.Is 可判），control_request 帧只写一次 —— 而不是无界挂到子进程死。
 func TestSession_Interrupt_PendingAckIsBounded(t *testing.T) {
@@ -364,7 +364,7 @@ func TestSession_Interrupt_PendingAckIsBounded(t *testing.T) {
 	assert.Contains(t, controlRequests[0], `"subtype":"interrupt"`)
 }
 
-// TestSession_StopTask_PendingAckIsBounded 钉死决策 2 的同款修复：StopTask 的 ack
+// TestSession_StopTask_PendingAckIsBounded 验证 StopTask 的 ack
 // 等待同样有界,CLI 不回执时返回 ErrInterruptPending（不无界挂死）。
 func TestSession_StopTask_PendingAckIsBounded(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -1846,7 +1846,7 @@ func TestSession_NormalAssistantFrameStillEmitsText(t *testing.T) {
 
 // TestSession_SubagentModelEvent 验证 Session.parseLine 这条解码路径（与
 // frameDecoder.decodeLine 共用 parseAssistantContentWithUsage，见 stream_test.go
-// TestStream_SubagentModelEvent）同样满足 R2/R5：subagent 内部帧（parent_tool_use_id
+// TestStream_SubagentModelEvent）同样验证：subagent 内部帧（parent_tool_use_id
 // 非空）携带非空 message.model 时产出 EventSubagentModel；主 agent 自己的帧即便带
 // model 也不产出。
 func TestSession_SubagentModelEvent(t *testing.T) {
@@ -1868,7 +1868,7 @@ func TestSession_SubagentModelEvent(t *testing.T) {
 	assert.False(t, isResult)
 }
 
-// TestSession_MainAgentFrameModelDoesNotEmitSubagentModel 隔离守卫（R5）：主 agent
+// TestSession_MainAgentFrameModelDoesNotEmitSubagentModel 是隔离守卫：主 agent
 // 自己的帧（parent_tool_use_id 为空）即便带 message.model，也绝不能被误判成 subagent
 // 内部帧而产出 EventSubagentModel——那会污染主 agent 的模型展示。
 func TestSession_MainAgentFrameModelDoesNotEmitSubagentModel(t *testing.T) {
@@ -1918,7 +1918,7 @@ func TestSession_SubagentModelEvent_SyntheticSentinelNotEmitted(t *testing.T) {
 }
 
 // TestSession_SubagentModelEvent_APIErrorFlagGovernsRegardlessOfSentinelString 覆盖
-// 修订后的 R2 第二段:判定必须以帧的权威标志 isApiErrorMessage 为准,不能靠嗅探
+// 判定必须以帧的权威标志 isApiErrorMessage 为准，不能靠嗅探
 // message.model 的字符串值是否等于当前已知的占位符 "<synthetic>"。本测试用一个
 // 不同于该字面量的占位符值,模拟 CLI 未来改动占位符取值——isApiErrorMessage:true
 // 且首个 text 块与顶层 error 都为空,apiErrorEvent 因而放行,帧落进

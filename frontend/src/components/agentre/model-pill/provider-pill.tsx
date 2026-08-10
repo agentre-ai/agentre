@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/popover";
 
 import type { UseProviderPillReturn } from "./use-provider-pill";
+import { LlmModelLogo, LlmProviderLogo } from "../ai-brand-logo";
 
 export type ProviderPillProps = UseProviderPillReturn;
 
@@ -68,6 +69,15 @@ export function ProviderPill({
             className="size-3 shrink-0 text-muted-foreground"
             aria-hidden="true"
           />
+          {selected ? (
+            <LlmModelLogo
+              providerType={selected.type}
+              providerName={selected.name}
+              baseUrl={selected.baseUrl}
+              model={selected.model ?? ""}
+              className="size-3.5"
+            />
+          ) : null}
           <span className="max-w-[140px] truncate font-mono">{label}</span>
           {providerKey ? (
             <RotateCcw
@@ -153,19 +163,34 @@ export function ProviderPill({
                     active ? "bg-primary-soft" : "hover:bg-accent/60",
                   )}
                 >
-                  <span className="mt-1 inline-flex size-3 shrink-0 items-center justify-center">
+                  <span className="relative mt-0.5 inline-flex size-6 shrink-0 items-center justify-center">
+                    <LlmProviderLogo
+                      providerType={p.type}
+                      providerName={p.name}
+                      baseUrl={p.baseUrl}
+                      className="size-6 rounded-md"
+                    />
                     {active ? (
-                      <span className="size-1.5 rounded-full bg-primary" />
-                    ) : (
-                      <span className="size-1.5 rounded-full border border-border" />
-                    )}
+                      <span className="absolute -bottom-0.5 -right-0.5 size-2 rounded-full border border-background bg-primary" />
+                    ) : null}
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="truncate font-mono text-xs font-semibold text-foreground">
                       {p.name}
                     </span>
                     <span className="mt-0.5 block truncate font-mono text-2xs leading-snug text-muted-foreground">
-                      {p.type}
+                      <span className="inline-flex items-center gap-1">
+                        {p.model ? (
+                          <LlmModelLogo
+                            providerType={p.type}
+                            providerName={p.name}
+                            baseUrl={p.baseUrl}
+                            model={p.model}
+                            className="size-3"
+                          />
+                        ) : null}
+                        {p.type}
+                      </span>
                       {p.model ? ` · ${p.model}` : ""}
                     </span>
                   </span>

@@ -37,7 +37,7 @@ func TestLoginCompletesDeviceFlowAndPersistsOpaqueAccountClaim(t *testing.T) {
 			// (rpc.DaemonFingerprint(uuid) = "sha256:<hex>"),不是裸 instance uuid:
 			// devices.fingerprint 与它「本就是同一个概念」。桌面端按本地配对行里的
 			// DaemonFingerprint 向 server 点名中转目标,也按它与账号清单合并设备面板的
-			// 一行(R15);登记成另一个值,中转永远解析不到这台 daemon,面板也永远合不上。
+			// 一行；登记成另一个值，中转永远解析不到这台 daemon，面板也永远合不上。
 			assert.Equal(t, rpc.DaemonFingerprint(st.InstanceUUID()), body["fingerprint"])
 			assert.Equal(t, "linux", body["platform"])
 			assert.Equal(t, "dev", body["version"])

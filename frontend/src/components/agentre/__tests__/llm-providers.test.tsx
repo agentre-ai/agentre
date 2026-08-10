@@ -268,6 +268,42 @@ describe("LlmProvidersPanel", () => {
     expect(writeText).toHaveBeenCalledWith("copy-uuid-test");
   });
 
+  it("shows separate official logos for the provider and its model", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 1,
+              type: "anthropic",
+              name: "Anthropic",
+              providerKey: "provider-logo-test",
+              baseUrl: "",
+              maskedApiKey: "sk-•••",
+              hasApiKey: true,
+              model: "claude-sonnet-4-6",
+              maxOutput: 0,
+              contextWindow: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+    });
+
+    render(<LlmProvidersPanel />);
+    const table = await screen.findByRole("table", {
+      name: "LLM provider list",
+    });
+    expect(
+      within(table).getByRole("img", { name: "Anthropic" }),
+    ).toBeInTheDocument();
+    expect(
+      within(table).getByRole("img", { name: "Claude" }),
+    ).toBeInTheDocument();
+  });
+
   it("shows the masked API key when editing a configured provider", async () => {
     const user = userEvent.setup();
     installAppMock({

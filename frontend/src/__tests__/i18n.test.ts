@@ -309,8 +309,6 @@ const shellAndSettingsKeys = [
   "nav.projects",
   "nav.settings",
   "settings.agentBackend.description",
-  "settings.agentBackend.runtimeHint.description",
-  "settings.agentBackend.runtimeHint.title",
   "settings.agentBackend.title",
   "settings.appearance.colorMode.title",
   "settings.appearance.description",

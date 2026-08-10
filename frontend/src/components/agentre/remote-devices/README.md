@@ -31,9 +31,9 @@ RemoteDevicesPanel
    │
    └── DeviceRow → DeviceActionMenu
                        ├── Refresh → svc.Refresh
-                       ├── Rename  → window.prompt → svc.Rename
+                       ├── Rename  → RenameDialog → svc.Rename
                        ├── Edit TLS → opens TLSTrustDialog
-                       └── Remove   → window.confirm → svc.Remove
+                       └── Remove   → RemoveConfirmDialog → svc.Remove
 ```
 
 ## Manual smoke test (M7)

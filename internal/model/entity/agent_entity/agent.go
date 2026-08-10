@@ -41,12 +41,12 @@ type Agent struct {
 	ParentAgentID int64  `gorm:"column:parent_agent_id;type:bigint;not null;default:0"`
 	// AgentBackendID 是 Agent 执行目标列表的**派生值**：sort_order 最小的那一档，
 	// 没有目标行则为 0。仓储读取时一律由 agent_exec_targets 补齐；agents 表的
-	// agent_backend_id 列只保留写入供回滚窗口用，不再被读取（R15）。
+	// agent_backend_id 是旧写入列，不再作为读取来源。
 	AgentBackendID int64  `gorm:"column:agent_backend_id;type:bigint;not null;default:0"`
 	SortOrder      int    `gorm:"column:sort_order;type:int;not null;default:0"`
 	PromptJSON     string `gorm:"column:prompt_json;type:text;not null;default:'[]'"`
-	// SkillsJSON 保留列，只为迁移前的回滚窗口与仓储写入兼容而留在结构体上；技能
-	// 授权的读取与富方法（GetSkills 等）已下沉到 AgentExecTarget（R15e）。业务代码
+	// SkillsJSON 是旧存储列，仅供仓储读写现有行；技能授权的读取与富方法
+	// （GetSkills 等）属于 AgentExecTarget。业务代码
 	// 不应再直接消费这个字段的语义，只应把它当成传给仓储层的原始载荷。
 	SkillsJSON string `gorm:"column:skills_json;type:text;not null;default:'[]'"`
 	ToolsJSON  string `gorm:"column:tools_json;type:text;not null;default:'[]'"`
@@ -54,7 +54,7 @@ type Agent struct {
 	Pinned     bool   `gorm:"column:pinned;type:boolean;not null;default:0"`
 	Createtime int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
 	Updatetime int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
-	// SyncMeta 账号级同步元数据（R1，366 行）。
+	// SyncMeta 是账号级同步元数据。
 	syncmeta_entity.SyncMeta `gorm:"embedded"`
 }
 
@@ -168,8 +168,7 @@ func (a *Agent) Check(ctx context.Context) error {
 	if !isValidJSONArray(a.PromptJSON) {
 		return i18n.NewError(ctx, code.AgentInvalidPayload)
 	}
-	// SkillsJSON 不再在这里校验：技能授权的存放位置与校验职责已下沉到
-	// AgentExecTarget（R15e），Agent 行上的这一列只是遗留写入载荷。
+	// 技能授权由 AgentExecTarget 存储并校验；Agent 行上的旧列只是仓储写入载荷。
 	if !isValidJSONArray(a.ToolsJSON) {
 		return i18n.NewError(ctx, code.AgentInvalidPayload)
 	}

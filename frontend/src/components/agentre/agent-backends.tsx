@@ -2,22 +2,17 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
-  Bot,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   ExternalLink,
-  Hammer,
   Loader2,
   Pencil,
   Plus,
   Puzzle,
   Radar,
-  RadioTower,
   SendHorizontal,
-  Sparkles,
   Trash2,
-  Wand2,
   X,
 } from "lucide-react";
 
@@ -33,18 +28,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import i18n from "@/i18n";
 import { cn } from "@/lib/utils";
 
 import { truncateFlashText } from "./agent-backends-utils";
+import {
+  AgentBackendLogo,
+  LlmModelLogo,
+  LlmProviderLogo,
+} from "./ai-brand-logo";
 import {
   CancelTestAgentBackend,
   CreateAgentBackend,
@@ -92,27 +84,21 @@ const backendTypeMeta: Record<
   BackendType,
   {
     disabled: boolean;
-    icon: typeof Puzzle;
   }
 > = {
   builtin: {
-    icon: Puzzle,
     disabled: false,
   },
   claudecode: {
-    icon: Hammer,
     disabled: false,
   },
   codex: {
-    icon: Wand2,
     disabled: false,
   },
   piagent: {
-    icon: Bot,
     disabled: false,
   },
   openclaw: {
-    icon: RadioTower,
     disabled: false,
   },
 };
@@ -249,6 +235,16 @@ function cliBinaryName(t: BackendType): string {
   if (t === "claudecode") return "claude";
   if (t === "piagent") return "pi";
   return "codex";
+}
+
+// 在「目标机」的 $PATH 里找 t 对应的可执行文件。deviceId 空串 = 本机，
+// 非空 = 让 agent_backend_svc 派发到那台远端 daemon 去扫它自己的 $PATH。
+// 远端不可达时这里会 throw，交给调用方决定怎么呈现。
+function probeCLIPath(t: BackendType, deviceId: string) {
+  return ResolveAgentBackendCLIPath({
+    type: t,
+    deviceId,
+  } as agent_backend_svc.ResolveCLIPathRequest);
 }
 
 function safeParseRoutes(s: string): Record<string, string> {
@@ -526,67 +522,37 @@ export function AgentBackendsPanel({
       {flash ? (
         <FlashBanner state={flash} onDismiss={() => setFlash(null)} />
       ) : null}
-      <div data-slot="table-container" className="min-w-0 overflow-x-auto">
-        <Table
-          aria-label={t("agentBackends.table.ariaLabel")}
-          className="min-w-[980px]"
-        >
-          <TableHeader>
-            <TableRow className="bg-secondary hover:bg-secondary">
-              <TableHead className="w-[260px] px-4 font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                {t("agentBackends.table.name")}
-              </TableHead>
-              <TableHead className="w-[180px] font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                {t("agentBackends.table.type")}
-              </TableHead>
-              <TableHead className="min-w-[260px] font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                {t("agentBackends.table.cli")}
-              </TableHead>
-              <TableHead className="w-[250px] font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                {t("agentBackends.table.modelProvider")}
-              </TableHead>
-              <TableHead className="w-[100px]" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {loading ? (
-              <TableRow>
-                <TableCell
-                  colSpan={5}
-                  className="py-6 text-center text-xs text-muted-foreground"
-                >
-                  <Loader2
-                    className="mr-2 inline size-3.5 animate-spin"
-                    aria-hidden="true"
-                  />
-                  {t("common.loading")}
-                </TableCell>
-              </TableRow>
-            ) : backends.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={5} className="p-0">
-                  <AgentBackendsEmptyState
-                    onCreate={() => setEditor({ kind: "create" })}
-                    onOpenLlmProviders={onOpenLlmProviders}
-                  />
-                </TableCell>
-              </TableRow>
-            ) : (
-              backends.map((b) => (
-                <BackendRow
-                  key={b.id}
-                  backend={b}
-                  testing={testingId === b.id}
-                  testDisabled={testingId !== null}
-                  onTest={() => handleTestRow(b)}
-                  onCancelTest={handleCancelRow}
-                  onEdit={() => setEditor({ kind: "edit", backend: b })}
-                  onDelete={() => setPendingDelete(b)}
-                />
-              ))
-            )}
-          </TableBody>
-        </Table>
+      <div className="flex min-w-0 flex-col">
+        {loading ? (
+          <div className="flex items-center justify-center gap-2 px-4 py-6 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+            {t("common.loading")}
+          </div>
+        ) : backends.length === 0 ? (
+          <AgentBackendsEmptyState
+            onCreate={() => setEditor({ kind: "create" })}
+            onOpenLlmProviders={onOpenLlmProviders}
+          />
+        ) : (
+          <div
+            role="list"
+            aria-label={t("agentBackends.list.ariaLabel")}
+            className="flex min-w-0 flex-col"
+          >
+            {backends.map((b) => (
+              <BackendRow
+                key={b.id}
+                backend={b}
+                testing={testingId === b.id}
+                testDisabled={testingId !== null}
+                onTest={() => handleTestRow(b)}
+                onCancelTest={handleCancelRow}
+                onEdit={() => setEditor({ kind: "edit", backend: b })}
+                onDelete={() => setPendingDelete(b)}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       {editor.kind !== "closed" ? (
@@ -755,8 +721,6 @@ function BackendRow({
 }) {
   const { t } = useTranslation();
   const typ = (backend.type as BackendType) ?? "builtin";
-  const meta = backendTypeMeta[typ] ?? backendTypeMeta.builtin;
-  const Icon = meta.icon;
   const cliBased = isCliBackend(typ);
   const openClaw = typ === "openclaw";
   // 未关联 provider 的 CLI 后端 = 走 CLI 自身 login，不算需处理。
@@ -774,66 +738,53 @@ function BackendRow({
         : t("agentBackends.provider.unlinked");
   const warning = !openClaw && !unlinkedCli && !backend.llmProviderActive;
 
+  // 双行列表第二行的 mono 元数据：类型 · CLI/网关 · 供应商 · 使用数。
+  const metaParts: string[] = [t(`agentBackends.backendType.${typ}.label`)];
+  if (openClaw && backend.openClawGatewayUrl) {
+    metaParts.push(backend.openClawGatewayUrl);
+  } else if (cliBased && backend.cliPath) {
+    metaParts.push(backend.cliPath);
+  }
+  metaParts.push(providerLabel);
+  metaParts.push(
+    backend.agentCount > 0
+      ? t("agentBackends.row.agentCount", { count: backend.agentCount })
+      : t("agentBackends.row.unused"),
+  );
+
   return (
-    <TableRow className="hover:bg-accent/45">
-      <TableCell className="px-4 py-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <span
-            className={cn(
-              "inline-flex size-1.5 rounded-full",
-              warning ? "bg-status-waiting" : "bg-status-running",
-            )}
-            aria-hidden="true"
-          />
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <div className="flex min-w-0 items-center gap-1.5">
-              <span
-                data-selectable-text="true"
-                className="truncate text-sm font-medium"
-              >
-                {backend.name}
-              </span>
-              {warning ? (
-                <Badge
-                  variant="secondary"
-                  className="rounded-sm bg-status-waiting-bg px-1.5 py-0 font-mono text-2xs text-status-waiting"
-                >
-                  {t("agentBackends.row.needsAction")}
-                </Badge>
-              ) : null}
-            </div>
-            <span className="font-mono text-2xs text-subtle-foreground">
-              {backend.agentCount > 0
-                ? t("agentBackends.row.agentCount", {
-                    count: backend.agentCount,
-                  })
-                : t("agentBackends.row.unused")}
-            </span>
-          </div>
-        </div>
-      </TableCell>
-      <TableCell className="py-3 text-xs">
-        <span className="inline-flex items-center gap-1.5">
-          <Icon
-            className="size-3.5 shrink-0 text-primary-text"
-            aria-hidden="true"
-          />
-          {t(`agentBackends.backendType.${typ}.label`)}
+    <div
+      role="listitem"
+      className={cn(
+        "flex min-w-0 flex-col gap-1.5 border-b border-border px-4 py-3 transition-colors last:border-b-0 hover:bg-accent/45",
+        // 需处理的行用琥珀色左缘标记，一眼可扫；用 inset 阴影避免改变行宽。
+        warning && "shadow-[inset_3px_0_0_0_var(--status-waiting)]",
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-2.5">
+        <AgentBackendLogo backendType={typ} className="size-7 rounded-md" />
+        <span
+          data-selectable-text="true"
+          className="min-w-0 truncate text-sm font-semibold"
+        >
+          {backend.name}
         </span>
-      </TableCell>
-      <TableCell className="py-3 text-xs text-muted-foreground">
-        {openClaw ? backend.openClawGatewayUrl : "—"}
-      </TableCell>
-      <TableCell className="py-3">
-        <span className="inline-flex min-w-0 items-center gap-1.5 font-mono text-2xs">
-          <Sparkles className="size-3 shrink-0 text-muted-foreground" />
-          <span data-selectable-text="true" className="truncate">
-            {providerLabel}
-          </span>
-        </span>
-      </TableCell>
-      <TableCell className="px-4 py-3">
-        <div className="flex justify-end gap-1">
+        {warning ? (
+          <Badge
+            variant="secondary"
+            className="shrink-0 rounded-sm bg-status-waiting-bg px-1.5 py-0 font-mono text-2xs text-status-waiting"
+          >
+            {t("agentBackends.row.needsAction")}
+          </Badge>
+        ) : unlinkedCli ? (
+          <Badge
+            variant="secondary"
+            className="shrink-0 rounded-sm bg-secondary px-1.5 py-0 font-mono text-2xs text-secondary-foreground"
+          >
+            {t("agentBackends.row.cliLogin")}
+          </Badge>
+        ) : null}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
           <Button
             type="button"
             variant="ghost"
@@ -891,8 +842,39 @@ function BackendRow({
             <Trash2 data-icon="only" aria-hidden="true" />
           </Button>
         </div>
-      </TableCell>
-    </TableRow>
+      </div>
+      <div className="flex min-w-0 items-center gap-1.5 pl-[38px]">
+        <span
+          className={cn(
+            "size-1.5 shrink-0 rounded-full",
+            warning ? "bg-status-waiting" : "bg-status-running",
+          )}
+          aria-hidden="true"
+        />
+        {!openClaw && backend.llmProviderModel ? (
+          <LlmModelLogo
+            providerType={backend.llmProviderType ?? ""}
+            model={backend.llmProviderModel}
+            className="size-3.5"
+          />
+        ) : null}
+        <span className="min-w-0 truncate font-mono text-2xs text-muted-foreground">
+          {metaParts.map((part, i) => (
+            <span key={i}>
+              {i > 0 ? (
+                <span
+                  className="mx-1.5 text-subtle-foreground"
+                  aria-hidden="true"
+                >
+                  ·
+                </span>
+              ) : null}
+              {part}
+            </span>
+          ))}
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -985,6 +967,8 @@ function BackendEditor({
   const [cliProbing, setCliProbing] = React.useState(false);
   // 「$PATH 没挂到 binary」的提示文案；命中后清空。
   const [cliProbeMiss, setCliProbeMiss] = React.useState<string | null>(null);
+  // 名称一旦被用户敲过就不再跟着类型走；编辑态本来就带着既有名字，视同已敲过。
+  const nameTouchedRef = React.useRef(state.kind === "edit");
 
   const filteredProviders = React.useMemo(
     () => matchingProviders(type, providers),
@@ -1010,16 +994,34 @@ function BackendEditor({
     dev: string = "",
   ): Promise<string | null> {
     if (!isCliBackend(t)) return null;
-    const r = await ResolveAgentBackendCLIPath({
-      type: t,
-      deviceId: dev,
-    } as agent_backend_svc.ResolveCLIPathRequest);
+    const r = await probeCLIPath(t, dev);
     return r.found ? r.path : null;
+  }
+
+  // 没被用户敲过的名称跟着「设备 · 类型」走，省掉一次手输。
+  // 只有 CLI 引擎带设备前缀 —— 它们才能派到远端；内置 / 网关直接用类型名。
+  function defaultBackendName(bt: BackendType, dev: string): string {
+    if (!isCliBackend(bt)) return t(`agentBackends.backendType.${bt}.label`);
+    const deviceName =
+      dev === ""
+        ? t("agentBackends.device.localShort")
+        : (devices.find((d) => String(d.id) === dev)?.name ??
+          t("agentBackends.device.localShort"));
+    return t("agentBackends.name.deviceDefault", {
+      device: deviceName,
+      name: t(`agentBackends.backendType.${bt}.shortLabel`),
+    });
   }
 
   function handleTypeChange(nextType: BackendType) {
     setSaveResult(null);
     setType(nextType);
+    if (!nameTouchedRef.current) {
+      // openclaw 会把 deviceId 清空，名字用同一个「清空后」的设备算，避免留下上一台机器。
+      setName(
+        defaultBackendName(nextType, nextType === "openclaw" ? "" : deviceId),
+      );
+    }
     setLlmProviderKey("");
     setRoutes(emptyRoutes());
     setSandbox("");
@@ -1495,17 +1497,7 @@ function BackendEditor({
           </>
         }
       >
-        <label className="flex flex-col gap-1.5 text-xs">
-          <span className="font-medium">{t("agentBackends.fields.name")}</span>
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder={t("agentBackends.fields.namePlaceholder")}
-            required
-            autoFocus
-          />
-        </label>
-
+        {/* 类型排在名称之前：它决定了下面出现哪些字段，也决定名称的默认值。 */}
         <div className="flex flex-col gap-1.5 text-xs">
           <span className="font-medium">{t("agentBackends.fields.type")}</span>
           <BackendTypeSegmented
@@ -1514,6 +1506,20 @@ function BackendEditor({
             disabled={state.kind === "edit"}
           />
         </div>
+
+        <label className="flex flex-col gap-1.5 text-xs">
+          <span className="font-medium">{t("agentBackends.fields.name")}</span>
+          <Input
+            value={name}
+            onChange={(e) => {
+              nameTouchedRef.current = true;
+              setName(e.target.value);
+            }}
+            placeholder={t("agentBackends.fields.namePlaceholder")}
+            required
+            autoFocus
+          />
+        </label>
 
         <div className="flex flex-col gap-1.5 text-xs">
           <span className="font-medium">
@@ -1807,29 +1813,24 @@ function BackendTypeSegmented({
       onValueChange={(next) => {
         if (next) onChange(next as BackendType);
       }}
-      // 5 个引擎在对话框宽度(~545px)下挤成 5 列时,每格只有 ~107px,标签会溢出格子
-      // 与相邻图标叠字。改成 3 列两行:每格 ~178px,最长的 "OpenClaw Gateway" 也放得下。
       className="grid w-full grid-cols-3 gap-1"
       aria-label={t("agentBackends.fields.type")}
     >
-      {items.map((backendType) => {
-        const m = backendTypeMeta[backendType];
-        const Icon = m.icon;
-        const itemDisabled = disabled || m.disabled;
-        return (
-          <ToggleGroupItem
-            key={backendType}
-            value={backendType}
-            disabled={itemDisabled}
-            role="button"
-            aria-pressed={value === backendType}
-            className="min-w-0 px-1.5 text-xs"
-          >
-            <Icon aria-hidden="true" />
-            {t(`agentBackends.backendType.${backendType}.label`)}
-          </ToggleGroupItem>
-        );
-      })}
+      {items.map((backendType) => (
+        <ToggleGroupItem
+          key={backendType}
+          value={backendType}
+          disabled={disabled || backendTypeMeta[backendType].disabled}
+          role="button"
+          aria-pressed={value === backendType}
+          className="min-w-0 px-1.5 text-xs"
+        >
+          <span aria-hidden="true">
+            <AgentBackendLogo backendType={backendType} className="size-4" />
+          </span>
+          {t(`agentBackends.backendType.${backendType}.label`)}
+        </ToggleGroupItem>
+      ))}
     </ToggleGroup>
   );
 }
@@ -1974,11 +1975,22 @@ function LlmProviderField({
               {providers.map((p) => (
                 <SelectItem key={p.id} value={providerSelectValue(p)}>
                   <span className="inline-flex items-center gap-2">
-                    <Sparkles
-                      className="size-3 text-muted-foreground"
-                      aria-hidden="true"
+                    <LlmProviderLogo
+                      providerType={p.type}
+                      providerName={p.name}
+                      baseUrl={p.baseUrl}
+                      className="size-4"
                     />
                     <span>{p.name}</span>
+                    {p.model ? (
+                      <LlmModelLogo
+                        providerType={p.type}
+                        providerName={p.name}
+                        baseUrl={p.baseUrl}
+                        model={p.model}
+                        className="size-3.5"
+                      />
+                    ) : null}
                     <span className="font-mono text-2xs text-muted-foreground">
                       {p.model || t("agentBackends.provider.noModel")}
                     </span>
@@ -2147,7 +2159,22 @@ function ModelRoutesField({
                       value={p.providerKey || String(p.id)}
                     >
                       <span className="inline-flex items-center gap-2">
+                        <LlmProviderLogo
+                          providerType={p.type}
+                          providerName={p.name}
+                          baseUrl={p.baseUrl}
+                          className="size-4"
+                        />
                         <span>{p.name}</span>
+                        {p.model ? (
+                          <LlmModelLogo
+                            providerType={p.type}
+                            providerName={p.name}
+                            baseUrl={p.baseUrl}
+                            model={p.model}
+                            className="size-3.5"
+                          />
+                        ) : null}
                         <span className="font-mono text-2xs text-muted-foreground">
                           {p.model || t("agentBackends.provider.noModel")}
                         </span>

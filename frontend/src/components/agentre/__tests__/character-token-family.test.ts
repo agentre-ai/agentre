@@ -1,13 +1,6 @@
-// §1.8 Token family addition — characterization PIN (post-Plan C)
-//
-// Plan C 前:前端按 backendType 做 family-specific 加法(Anthropic 系 = prompt
-// +cached+cacheCreation, OpenAI 系 = prompt-only)。
-// Plan C 后:runtime translator 在每条 ChatMessage / StreamUsage 上自报
-// TotalInputTokens(已按 family 聚合好的「本次 API call 实际输入大小」),
-// 前端 computeComposerContextUsage 直接读这个值。
-//
-// 本测试不再 pin 前端的家族公式 —— 而是 pin"前端按 TotalInputTokens 读上下文用量"
-// 的新契约。原家族公式的 pin 迁到后端 translator 测试(runtimes/*/translator_test.go)。
+// Runtime translator 在每条 ChatMessage / StreamUsage 上提供 TotalInputTokens，
+// 它已经按模型家族聚合为本次 API 调用的实际输入大小。前端直接使用该值；各模型
+// 家族的聚合公式由对应 translator 测试覆盖。
 import { describe, expect, it } from "vitest";
 
 import type { chat_svc } from "../../../../wailsjs/go/models";
@@ -36,7 +29,7 @@ function asstMsg(partial: Partial<Msg> & { id: number }): Msg {
   } as Msg;
 }
 
-describe("§1.8 Token family addition (Plan C contract PIN)", () => {
+describe("composer context usage from total input tokens", () => {
   const CTX = 100_000;
 
   it("liveUsage.totalInputTokens 优先 → 用 live 值", () => {

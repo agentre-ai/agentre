@@ -8,6 +8,7 @@ import {
   friendlyLastError,
   hostOf,
   friendlyLoginError,
+  formatCountdown,
 } from "./format";
 
 const t = ((key: string, params?: Record<string, unknown>) => {
@@ -88,6 +89,23 @@ describe("friendlyLastError", () => {
   });
   it("returns empty for empty", () => {
     expect(friendlyLastError("", t)).toBe("");
+  });
+});
+
+describe("formatCountdown", () => {
+  it("formats whole minutes", () => {
+    expect(formatCountdown(900)).toBe("15:00");
+  });
+  it("pads seconds below a minute", () => {
+    expect(formatCountdown(65)).toBe("1:05");
+    expect(formatCountdown(59)).toBe("0:59");
+  });
+  it("floors at zero and ignores negatives", () => {
+    expect(formatCountdown(0)).toBe("0:00");
+    expect(formatCountdown(-5)).toBe("0:00");
+  });
+  it("rounds fractional seconds down", () => {
+    expect(formatCountdown(899.9)).toBe("14:59");
   });
 });
 

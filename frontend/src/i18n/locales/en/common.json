@@ -50,15 +50,6 @@
       "test": "Test Connection",
       "testNamed": "Test connection for {{name}}"
     },
-    "autoScan": {
-      "button": "Auto Scan",
-      "buttonTitle": "Scan system PATH for Claude Code / Codex / Pi Agent CLI and auto-create backends",
-      "created": "Created {{count}} backend(s): {{names}}",
-      "nothingFound": "No claude / codex / pi executables found in system PATH",
-      "partialFound": "Created {{createdCount}} backend(s): {{createdNames}}. {{skippedCount}} already exist(s): {{skippedNames}}",
-      "scanning": "Scanning...",
-      "skipped": "{{count}} backend(s) already exist: {{names}}"
-    },
     "approval": {
       "hint": "Whether tool execution needs human approval",
       "label": "Approval Policy",
@@ -68,21 +59,40 @@
         "untrusted": "Auto-run trusted tools only"
       }
     },
+    "autoScan": {
+      "button": "Auto Scan",
+      "buttonTitle": "Scan system PATH for Claude Code / Codex / Pi Agent CLI and auto-create backends",
+      "created": "Created {{count}} backend(s): {{names}}",
+      "nothingFound": "No claude / codex / pi executables found in system PATH",
+      "partialFound": "Created {{createdCount}} backend(s): {{createdNames}}. {{skippedCount}} already exist(s): {{skippedNames}}",
+      "scanning": "Scanning...",
+      "skipped": "{{count}} backend(s) already exist: {{names}}"
+    },
     "backendType": {
       "builtin": {
+        "badge": "Local only",
         "label": "Built-in Agent"
       },
       "claudecode": {
-        "label": "Claude Code CLI"
+        "label": "Claude Code CLI",
+        "shortLabel": "Claude Code"
       },
       "codex": {
-        "label": "Codex CLI"
-      },
-      "piagent": {
-        "label": "Pi Agent CLI"
+        "label": "Codex CLI",
+        "shortLabel": "Codex"
       },
       "openclaw": {
         "label": "OpenClaw Gateway"
+      },
+      "piagent": {
+        "label": "Pi Agent CLI",
+        "shortLabel": "Pi Agent"
+      },
+      "probe": {
+        "failed": "Probe failed",
+        "installed": "Installed",
+        "missing": "Not installed",
+        "probing": "Detecting"
       }
     },
     "cli": {
@@ -93,6 +103,11 @@
       "label": "CLI Path",
       "notFound": "{{bin}} was not found in $PATH. Fill it in manually."
     },
+    "defaultModel": {
+      "hint": "--model · leave empty to use the provider model / CLI default",
+      "label": "Custom Model",
+      "placeholder": "e.g. claude-fable-5 or an alias like opus/sonnet (used on CLI login)"
+    },
     "deleteDialog": {
       "description": "Delete \"{{name}}\"? This is a soft delete and does not affect existing agent references.",
       "title": "Delete Agent Backend"
@@ -100,6 +115,7 @@
     "device": {
       "builtinLocalOnly": "Built-in backends can only run locally",
       "local": "📍 Local (this machine)",
+      "localShort": "Local",
       "offlineSuffix": " · offline",
       "placeholder": "Select runtime device"
     },
@@ -125,7 +141,8 @@
       "device": "Runtime Device",
       "name": "Name",
       "namePlaceholder": "Example: Local · Claude Code",
-      "type": "Type"
+      "type": "Type",
+      "typeLocked": "Cannot be changed after creation"
     },
     "flash": {
       "close": "Close notice",
@@ -134,16 +151,17 @@
       "providerSynced": "Remote provider synced",
       "saved": "Saved"
     },
-    "defaultModel": {
-      "hint": "--model · leave empty to use the provider model / CLI default",
-      "label": "Custom Model",
-      "placeholder": "e.g. claude-fable-5 or an alias like opus/sonnet (used on CLI login)"
+    "list": {
+      "ariaLabel": "Agent backend list"
     },
     "modelRoutes": {
       "hint": "ANTHROPIC_DEFAULT_*_MODEL. Leave empty to use the main provider.",
       "inheritMain": "Inherit main provider",
       "inheritWithName": "Inherit main provider · {{name}}",
       "label": "Model Tier Routes"
+    },
+    "name": {
+      "deviceDefault": "{{device}} · {{name}}"
     },
     "openclaw": {
       "agent": "Agent",
@@ -272,19 +290,13 @@
     "row": {
       "agentCount": "{{count}} agents in use",
       "needsAction": "Needs action",
-      "unused": "Not used by any agent"
+      "unused": "Not used by any agent",
+      "cliLogin": "CLI login"
     },
     "sandbox": {
       "defaultHint": "Empty = use codex CLI default",
       "hint": "File-system isolation for codex subprocesses",
       "label": "Sandbox"
-    },
-    "table": {
-      "ariaLabel": "Agent backend list",
-      "cli": "CLI / Identifier",
-      "modelProvider": "Model / Provider",
-      "name": "Name",
-      "type": "Type"
     },
     "test": {
       "passed": "Test passed · {{latency}}ms · {{message}}"
@@ -1901,7 +1913,9 @@
         "connecting": "Connecting...",
         "continue": "Continue",
         "openBrowser": "Open Browser",
-        "signOut": "Sign out"
+        "signOut": "Sign out",
+        "copyCode": "Copy",
+        "copied": "Copied"
       },
       "description": "Connect this desktop to your account so your other devices can find it.",
       "errors": {
@@ -1914,6 +1928,13 @@
       "fields": {
         "url": "Server URL"
       },
+      "servers": {
+        "official": "Agentre Cloud",
+        "officialDesc": "Official hosted service · app.agentrehub.com",
+        "recommended": "Recommended",
+        "custom": "Custom server",
+        "customDesc": "Connect a self-hosted or privately deployed agentrehub"
+      },
       "signIn": "Sign in",
       "status": {
         "signedIn": "Signed in to {{server}}"
@@ -1921,7 +1942,9 @@
       "title": "Sign in to your account",
       "waiting": {
         "userCode": "Your code",
-        "verificationUrl": "Go to"
+        "verificationUrl": "Go to",
+        "expiresIn": "Code expires in {{time}}",
+        "autoClose": "Auto-finishes sign-in once you approve · sign out anytime in the Remote panel"
       }
     },
     "panel": {
@@ -2412,10 +2435,6 @@
   "settings": {
     "agentBackend": {
       "description": "Configure agent execution engines and their models. Runtime options such as working directory and permission mode are configured per agent in Organization → Agent.",
-      "runtimeHint": {
-        "description": "Working directory, permission mode, extra CLI arguments, and related runtime options are configured per agent under Organization → Agent → Config. This page only manages shared backend instances.",
-        "title": "Runtime options live on each agent"
-      },
       "title": "Agent Backends"
     },
     "appearance": {

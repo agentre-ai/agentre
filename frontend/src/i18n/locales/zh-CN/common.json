@@ -50,15 +50,6 @@
       "test": "测试连接",
       "testNamed": "测试连接 {{name}}"
     },
-    "autoScan": {
-      "button": "自动扫描",
-      "buttonTitle": "扫描系统 PATH 中的 Claude Code / Codex / Pi Agent CLI 并自动创建后端",
-      "created": "已创建 {{count}} 个后端: {{names}}",
-      "nothingFound": "未在系统 PATH 中找到 claude / codex / pi 可执行文件",
-      "partialFound": "已创建 {{createdCount}} 个后端: {{createdNames}}。{{skippedCount}} 个已存在: {{skippedNames}}",
-      "scanning": "扫描中...",
-      "skipped": "{{count}} 个后端已存在: {{names}}"
-    },
     "approval": {
       "hint": "工具执行前是否人工确认",
       "label": "Approval Policy",
@@ -68,21 +59,40 @@
         "untrusted": "仅信任的工具自动执行"
       }
     },
+    "autoScan": {
+      "button": "自动扫描",
+      "buttonTitle": "扫描系统 PATH 中的 Claude Code / Codex / Pi Agent CLI 并自动创建后端",
+      "created": "已创建 {{count}} 个后端: {{names}}",
+      "nothingFound": "未在系统 PATH 中找到 claude / codex / pi 可执行文件",
+      "partialFound": "已创建 {{createdCount}} 个后端: {{createdNames}}。{{skippedCount}} 个已存在: {{skippedNames}}",
+      "scanning": "扫描中...",
+      "skipped": "{{count}} 个后端已存在: {{names}}"
+    },
     "backendType": {
       "builtin": {
+        "badge": "仅本机",
         "label": "内置 Agent"
       },
       "claudecode": {
-        "label": "Claude Code CLI"
+        "label": "Claude Code CLI",
+        "shortLabel": "Claude Code"
       },
       "codex": {
-        "label": "Codex CLI"
-      },
-      "piagent": {
-        "label": "Pi Agent CLI"
+        "label": "Codex CLI",
+        "shortLabel": "Codex"
       },
       "openclaw": {
         "label": "OpenClaw Gateway"
+      },
+      "piagent": {
+        "label": "Pi Agent CLI",
+        "shortLabel": "Pi Agent"
+      },
+      "probe": {
+        "failed": "探测失败",
+        "installed": "已安装",
+        "missing": "未安装",
+        "probing": "探测中"
       }
     },
     "cli": {
@@ -93,6 +103,11 @@
       "label": "CLI 路径",
       "notFound": "$PATH 中未找到 {{bin}}，请手动填写"
     },
+    "defaultModel": {
+      "hint": "--model · 留空走供应商模型 / CLI 默认",
+      "label": "自定义模型",
+      "placeholder": "如 claude-fable-5 或别名 opus/sonnet（走 CLI 登录态时生效）"
+    },
     "deleteDialog": {
       "description": "确认删除「{{name}}」？该操作仅软删，不影响已存在的 Agent 引用。",
       "title": "删除 Agent 后端"
@@ -100,6 +115,7 @@
     "device": {
       "builtinLocalOnly": "builtin 后端只能在本地运行",
       "local": "📍 本地（当前机器）",
+      "localShort": "本机",
       "offlineSuffix": " · offline",
       "placeholder": "选择运行设备"
     },
@@ -125,7 +141,8 @@
       "device": "运行设备",
       "name": "名称",
       "namePlaceholder": "例如：本机 · Claude Code",
-      "type": "类型"
+      "type": "类型",
+      "typeLocked": "创建后不可更改"
     },
     "flash": {
       "close": "关闭提示",
@@ -134,16 +151,17 @@
       "providerSynced": "已同步远端 Provider",
       "saved": "已保存"
     },
-    "defaultModel": {
-      "hint": "--model · 留空走供应商模型 / CLI 默认",
-      "label": "自定义模型",
-      "placeholder": "如 claude-fable-5 或别名 opus/sonnet（走 CLI 登录态时生效）"
+    "list": {
+      "ariaLabel": "Agent 后端列表"
     },
     "modelRoutes": {
       "hint": "ANTHROPIC_DEFAULT_*_MODEL，留空走主供应商",
       "inheritMain": "继承主供应商",
       "inheritWithName": "继承主供应商 · {{name}}",
       "label": "模型分级路由"
+    },
+    "name": {
+      "deviceDefault": "{{device}} · {{name}}"
     },
     "openclaw": {
       "agent": "Agent",
@@ -272,19 +290,13 @@
     "row": {
       "agentCount": "{{count}} agents 使用中",
       "needsAction": "需处理",
-      "unused": "暂未被 Agent 使用"
+      "unused": "暂未被 Agent 使用",
+      "cliLogin": "CLI 登录"
     },
     "sandbox": {
       "defaultHint": "空 = 走 codex CLI 默认",
       "hint": "codex 子进程文件系统隔离",
       "label": "Sandbox"
-    },
-    "table": {
-      "ariaLabel": "Agent 后端列表",
-      "cli": "CLI / 标识",
-      "modelProvider": "模型 / 供应商",
-      "name": "名称",
-      "type": "类型"
     },
     "test": {
       "passed": "测试通过 · {{latency}}ms · {{message}}"
@@ -1901,7 +1913,9 @@
         "connecting": "连接中…",
         "continue": "继续",
         "openBrowser": "打开浏览器",
-        "signOut": "退出登录"
+        "signOut": "退出登录",
+        "copyCode": "复制",
+        "copied": "已复制"
       },
       "description": "把这台桌面连接到你的账号，让其它设备能发现它。",
       "errors": {
@@ -1914,6 +1928,13 @@
       "fields": {
         "url": "服务器地址"
       },
+      "servers": {
+        "official": "Agentre Cloud",
+        "officialDesc": "官方托管服务 · app.agentrehub.com",
+        "recommended": "推荐",
+        "custom": "自定义服务器",
+        "customDesc": "连接自建或私有部署的 agentrehub"
+      },
       "signIn": "登录",
       "status": {
         "signedIn": "已登录 {{server}}"
@@ -1921,7 +1942,9 @@
       "title": "登录账号",
       "waiting": {
         "userCode": "你的验证码",
-        "verificationUrl": "前往"
+        "verificationUrl": "前往",
+        "expiresIn": "验证码将于 {{time}} 后过期",
+        "autoClose": "批准后自动完成登录 · 已登录会话可随时在「远端」面板退出"
       }
     },
     "panel": {
@@ -2412,10 +2435,6 @@
   "settings": {
     "agentBackend": {
       "description": "配置 Agent 的执行引擎与对应模型。工作目录 / 权限模式等运行时参数下放到「组织架构 → Agent」单独配置。",
-      "runtimeHint": {
-        "description": "工作目录、权限模式、额外 CLI 参数等按 Agent 单独配置（组织架构 → Agent → 配置），本页只管理共享后端实例。",
-        "title": "运行时参数下放到每个 Agent"
-      },
       "title": "Agent 后端"
     },
     "appearance": {

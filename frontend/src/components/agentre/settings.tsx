@@ -351,22 +351,6 @@ function SettingsNav({
   );
 }
 
-function RuntimeHint() {
-  const { t } = useTranslation();
-
-  return (
-    <Alert className="border-agent-1/30 bg-agent-1/10 py-3 text-agent-1">
-      <Info className="size-4" aria-hidden="true" />
-      <AlertTitle className="text-xs font-semibold text-agent-1">
-        {t("settings.agentBackend.runtimeHint.title")}
-      </AlertTitle>
-      <AlertDescription className="text-2xs leading-relaxed text-agent-1">
-        {t("settings.agentBackend.runtimeHint.description")}
-      </AlertDescription>
-    </Alert>
-  );
-}
-
 type SettingsPageHeaderProps = {
   description: string;
   title: string;
@@ -543,13 +527,10 @@ function AgentBackendSettings({
         title={t("settings.agentBackend.title")}
         description={t("settings.agentBackend.description")}
       />
-      <div className="flex min-w-0 flex-col gap-3">
-        <AgentBackendsPanel
-          onOpenLlmProviders={onOpenLlmProviders}
-          onOpenProxySettings={onOpenProxySettings}
-        />
-        <RuntimeHint />
-      </div>
+      <AgentBackendsPanel
+        onOpenLlmProviders={onOpenLlmProviders}
+        onOpenProxySettings={onOpenProxySettings}
+      />
     </>
   );
 }

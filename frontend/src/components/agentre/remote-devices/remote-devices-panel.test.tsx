@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 const ZERO_SERVER_STATE = {
   ID: 1,
@@ -45,6 +46,8 @@ vi.mock("../../../../wailsjs/runtime/runtime", () => ({
 
 import {
   RemoteDeviceList,
+  RemoteDeviceRemove,
+  RemoteDeviceRename,
   ServerListDevices,
   ServerGetState,
   ServerCheckURL,
@@ -56,6 +59,8 @@ import { RemoteDevicesPanel } from "./remote-devices-panel";
 import type { DeviceView } from "./use-remote-devices";
 
 const mockList = RemoteDeviceList as unknown as ReturnType<typeof vi.fn>;
+const mockRemove = RemoteDeviceRemove as unknown as ReturnType<typeof vi.fn>;
+const mockRename = RemoteDeviceRename as unknown as ReturnType<typeof vi.fn>;
 const mockServerList = ServerListDevices as unknown as ReturnType<typeof vi.fn>;
 const mockGetState = ServerGetState as unknown as ReturnType<typeof vi.fn>;
 const mockCheckURL = ServerCheckURL as unknown as ReturnType<typeof vi.fn>;
@@ -183,6 +188,84 @@ describe("RemoteDevicesPanel", () => {
     expect(screen.queryByText(/192\.168\.1\.50/)).not.toBeInTheDocument();
   });
 
+  describe("unpair & rename use dialogs, never native window.*", () => {
+    const device = {
+      id: 1,
+      name: "linux-srv",
+      url: "ws://h1/rpc",
+      tlsMode: "default",
+      online: true,
+      lastSeenAt: Date.now(),
+    } as Partial<DeviceView>;
+
+    beforeEach(() => {
+      mockList.mockReset();
+      mockList.mockResolvedValueOnce([device] as Partial<DeviceView>[]);
+      mockRemove.mockReset();
+      mockRename.mockReset();
+    });
+
+    async function renderOneRow(user: ReturnType<typeof userEvent.setup>) {
+      render(<RemoteDevicesPanel />);
+      await waitFor(() =>
+        expect(screen.getAllByTestId("device-row")).toHaveLength(1),
+      );
+      await user.click(screen.getByLabelText("More actions"));
+    }
+
+    it("clicking Unpair opens a confirm dialog with the blast-radius copy instead of removing right away", async () => {
+      const user = userEvent.setup();
+      await renderOneRow(user);
+      await user.click(await screen.findByText("Unpair"));
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      expect(screen.getByText("linux-srv")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          /This desktop will clear the token and fingerprint pin/,
+        ),
+      ).toBeInTheDocument();
+      expect(mockRemove).not.toHaveBeenCalled();
+    });
+
+    it("confirming the Unpair dialog removes the device", async () => {
+      const user = userEvent.setup();
+      mockRemove.mockResolvedValue(undefined);
+      await renderOneRow(user);
+      await user.click(await screen.findByText("Unpair"));
+      await user.click(screen.getByRole("button", { name: "Unpair" }));
+      expect(mockRemove).toHaveBeenCalledWith(1);
+    });
+
+    it("cancelling the Unpair dialog does not remove the device", async () => {
+      const user = userEvent.setup();
+      await renderOneRow(user);
+      await user.click(await screen.findByText("Unpair"));
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(mockRemove).not.toHaveBeenCalled();
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("clicking Rename opens a dialog prefilled with the current name", async () => {
+      const user = userEvent.setup();
+      await renderOneRow(user);
+      await user.click(await screen.findByText("Rename"));
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      expect(screen.getByLabelText("Rename to")).toHaveValue("linux-srv");
+    });
+
+    it("submitting the Rename dialog calls RemoteDeviceRename with the trimmed name", async () => {
+      const user = userEvent.setup();
+      mockRename.mockResolvedValue(undefined);
+      await renderOneRow(user);
+      await user.click(await screen.findByText("Rename"));
+      const input = screen.getByLabelText("Rename to");
+      await user.clear(input);
+      await user.type(input, "new-name  ");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(mockRename).toHaveBeenCalledWith(1, "new-name");
+    });
+  });
+
   // 规格「界面与交互 › 登录」:设备面板是账号登录的入口。
   describe("account login", () => {
     it("shows a Sign in entry point when not connected to an account", async () => {
@@ -241,9 +324,7 @@ describe("RemoteDevicesPanel", () => {
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
-      fireEvent.change(screen.getByPlaceholderText(/hub\.example\.com/), {
-        target: { value: "https://hub.example.com" },
-      });
+      // 未记住自建地址 → 对话框默认官方云,无需输入,直接继续。
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
       await waitFor(() =>

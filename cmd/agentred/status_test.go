@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestPrintStatus_ShowsDatabasePathAndSize 覆盖规格「安全、隐私…/磁盘增长」对 CLI 那一半的
-// 要求:远端盒子上的 transcript 是永久落盘的档案,库文件的**位置与体量**必须在 daemon 状态
+// TestPrintStatus_ShowsDatabasePathAndSize 验证 CLI 的可观察契约：远端盒子上的
+// transcript 是永久落盘的档案，库文件的**位置与体量**必须在 daemon 状态
 // 查询里看得见,用户才能自行判断何时该清理。/local/status 早就交出了 dbPath / dbSizeBytes,
 // 但 `agentred status` 一个字都不印 —— 对用户而言那等于不可见。
 func TestPrintStatus_ShowsDatabasePathAndSize(t *testing.T) {

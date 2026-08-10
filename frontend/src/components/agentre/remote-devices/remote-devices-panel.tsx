@@ -3,6 +3,15 @@ import { Plus, Server } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 
 import { AddDeviceDialog } from "./add-device-dialog";
 import { DeviceRow } from "./device-row";
@@ -64,6 +73,11 @@ export function RemoteDevicesPanel() {
   const [addOpen, setAddOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [editTLSFor, setEditTLSFor] = useState<DeviceRowModel | null>(null);
+  const [removeFor, setRemoveFor] = useState<DeviceRowModel | null>(null);
+  const [renameFor, setRenameFor] = useState<{
+    id: number;
+    draft: string;
+  } | null>(null);
 
   useEffect(() => {
     const t = window.setInterval(() => setNow(Date.now()), 60_000);
@@ -127,25 +141,9 @@ export function RemoteDevicesPanel() {
               device={d}
               now={now}
               onRefresh={() => void refresh(d.id)}
-              onRename={() => {
-                const next = window.prompt(
-                  t("remoteDevices.actions.renamePrompt"),
-                  d.name,
-                );
-                if (next && next.trim()) void rename(d.id, next.trim());
-              }}
+              onRename={() => setRenameFor({ id: d.id, draft: d.name })}
               onEditTLS={() => setEditTLSFor(d)}
-              onRemove={() => {
-                if (
-                  window.confirm(
-                    t("remoteDevices.actions.removeConfirm", {
-                      name: d.name,
-                    }),
-                  )
-                ) {
-                  void remove(d.id);
-                }
-              }}
+              onRemove={() => setRemoveFor(d)}
             />
           ))}
           <button
@@ -157,6 +155,101 @@ export function RemoteDevicesPanel() {
           </button>
         </div>
       )}
+
+      <Dialog
+        open={removeFor !== null}
+        onOpenChange={(open) => {
+          if (!open) setRemoveFor(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {t("remoteDevices.actions.removePairing")}
+            </DialogTitle>
+          </DialogHeader>
+          <DialogBody>
+            <p className="text-sm text-muted-foreground">
+              {t("remoteDevices.actions.removeConfirm", {
+                name: removeFor?.name ?? "",
+              })}
+            </p>
+          </DialogBody>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setRemoveFor(null)}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => {
+                if (removeFor) void remove(removeFor.id);
+                setRemoveFor(null);
+              }}
+            >
+              {t("remoteDevices.actions.removePairing")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={renameFor !== null}
+        onOpenChange={(open) => {
+          if (!open) setRenameFor(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("remoteDevices.actions.rename")}</DialogTitle>
+          </DialogHeader>
+          <DialogBody>
+            <form
+              id="rename-device-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (renameFor && renameFor.draft.trim()) {
+                  void rename(renameFor.id, renameFor.draft.trim());
+                  setRenameFor(null);
+                }
+              }}
+            >
+              <Input
+                autoFocus
+                value={renameFor?.draft ?? ""}
+                onChange={(e) =>
+                  setRenameFor((prev) =>
+                    prev ? { ...prev, draft: e.target.value } : prev,
+                  )
+                }
+                placeholder={t("remoteDevices.actions.renamePrompt")}
+                aria-label={t("remoteDevices.actions.renamePrompt")}
+              />
+            </form>
+          </DialogBody>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setRenameFor(null)}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              type="submit"
+              form="rename-device-form"
+              size="sm"
+              disabled={!renameFor || renameFor.draft.trim().length === 0}
+            >
+              {t("common.save")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AddDeviceDialog
         open={addOpen}

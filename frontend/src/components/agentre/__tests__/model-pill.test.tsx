@@ -142,6 +142,12 @@ describe("ProviderPill · 新建会话供应商选择器", () => {
 
     const listbox = screen.getByRole("listbox");
     expect(within(listbox).getByText("Acme Claude")).toBeInTheDocument();
+    expect(
+      within(listbox).getByRole("img", { name: "Anthropic" }),
+    ).toBeInTheDocument();
+    expect(
+      within(listbox).getByRole("img", { name: "Claude" }),
+    ).toBeInTheDocument();
     expect(within(listbox).queryByText("Acme Chat")).not.toBeInTheDocument();
     expect(within(listbox).queryByText("Acme Resp")).not.toBeInTheDocument();
   });

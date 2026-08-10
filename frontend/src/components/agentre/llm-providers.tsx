@@ -63,6 +63,7 @@ import {
   UpdateLLMProvider,
 } from "../../../wailsjs/go/app/App";
 import { llm_provider_svc } from "../../../wailsjs/go/models";
+import { LlmModelLogo, LlmProviderLogo } from "./ai-brand-logo";
 
 type Provider = llm_provider_svc.ProviderItem;
 type ModelInfo = llm_provider_svc.ModelInfo;
@@ -483,33 +484,39 @@ function ProviderRow({
   return (
     <TableRow className="align-top hover:bg-accent/45">
       <TableCell className="px-4 py-3">
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="truncate text-sm font-medium">{provider.name}</span>
-          <span className="font-mono text-2xs text-subtle-foreground">
-            {provider.hasApiKey
-              ? provider.maskedApiKey
-              : t("llmProviders.row.noApiKey")}
-          </span>
-          {provider.model ? (
-            <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded-sm bg-primary-soft px-1.5 py-0.5 font-mono text-2xs text-primary-text">
-              <Cpu className="size-3" aria-hidden="true" />
-              {provider.model}
+        <div className="flex min-w-0 items-start gap-2.5">
+          <LlmProviderLogo
+            providerType={provider.type}
+            providerName={provider.name}
+            baseUrl={provider.baseUrl}
+            className="mt-0.5 size-7 rounded-md"
+          />
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <span className="truncate text-sm font-medium">
+              {provider.name}
             </span>
-          ) : null}
+            <span className="font-mono text-2xs text-subtle-foreground">
+              {provider.hasApiKey
+                ? provider.maskedApiKey
+                : t("llmProviders.row.noApiKey")}
+            </span>
+            {provider.model ? (
+              <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded-sm bg-primary-soft px-1.5 py-0.5 font-mono text-2xs text-primary-text">
+                <LlmModelLogo
+                  providerType={provider.type}
+                  providerName={provider.name}
+                  baseUrl={provider.baseUrl}
+                  model={provider.model}
+                  className="size-3"
+                />
+                {provider.model}
+              </span>
+            ) : null}
+          </div>
         </div>
       </TableCell>
       <TableCell className="py-3 text-xs">
         <span className="inline-flex min-w-0 items-center gap-1.5">
-          <span
-            role="img"
-            aria-label={providerTypeLabel}
-            className={cn(
-              "inline-flex size-[18px] shrink-0 items-center justify-center rounded-sm text-2xs font-bold",
-              badgeToneClass(meta?.tone ?? "dark"),
-            )}
-          >
-            {meta?.badge ?? providerTypeLabel.slice(0, 1)}
-          </span>
           <span className="truncate">{providerTypeLabel}</span>
         </span>
       </TableCell>
@@ -1141,6 +1148,7 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
           icon={Cpu}
         >
           <ModelCombobox
+            providerType={values.type}
             value={values.model}
             onChange={(v) => update("model", v)}
             options={modelOptions}
@@ -1354,6 +1362,7 @@ type ModelComboboxProps = {
   onFetch: () => void;
   options: ModelInfo[];
   value: string;
+  providerType: string;
 };
 
 function ModelCombobox({
@@ -1362,6 +1371,7 @@ function ModelCombobox({
   onChange,
   onFetch,
   options,
+  providerType,
   value,
 }: ModelComboboxProps) {
   const { t } = useTranslation();
@@ -1401,6 +1411,13 @@ function ModelCombobox({
             open && hasOptions && "border-ring",
           )}
         >
+          {value ? (
+            <LlmModelLogo
+              providerType={providerType}
+              model={value}
+              className="ml-2.5 size-4 self-center"
+            />
+          ) : null}
           <input
             ref={inputRef}
             value={value}
@@ -1507,6 +1524,11 @@ function ModelCombobox({
                   selected && "bg-primary-soft text-primary-text",
                 )}
               >
+                <LlmModelLogo
+                  providerType={providerType}
+                  model={m.id}
+                  className="size-4"
+                />
                 <span className="truncate font-mono text-xs">{m.id}</span>
                 {m.knownInCago && (m.maxOutput > 0 || m.contextWindow > 0) ? (
                   <span className="ml-auto pl-2 font-mono text-2xs text-muted-foreground">

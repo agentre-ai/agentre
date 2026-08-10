@@ -162,15 +162,21 @@ describe("AgentBackendsPanel", () => {
     installAppMock();
     render(<AgentBackendsPanel />);
 
-    const table = await screen.findByRole("table", {
+    const list = await screen.findByRole("list", {
       name: "Agent backend list",
     });
     await waitFor(() => {
-      expect(within(table).getByText("默认助手")).toBeInTheDocument();
+      expect(within(list).getByText("默认助手")).toBeInTheDocument();
       expect(
-        within(table).getByText(/Anthropic · claude-sonnet-4-6/),
+        within(list).getByText(/Anthropic · claude-sonnet-4-6/),
       ).toBeInTheDocument();
     });
+    expect(
+      within(list).getByRole("img", { name: "Agentre" }),
+    ).toBeInTheDocument();
+    expect(
+      within(list).getByRole("img", { name: "Claude" }),
+    ).toBeInTheDocument();
   });
 
   it("flags rows whose LLM provider is inactive", async () => {
@@ -198,12 +204,12 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    const table = await screen.findByRole("table", {
+    const list = await screen.findByRole("list", {
       name: "Agent backend list",
     });
     await waitFor(() => {
-      expect(within(table).getByText("孤儿后端")).toBeInTheDocument();
-      expect(within(table).getByText("Needs action")).toBeInTheDocument();
+      expect(within(list).getByText("孤儿后端")).toBeInTheDocument();
+      expect(within(list).getByText("Needs action")).toBeInTheDocument();
     });
   });
 
@@ -215,7 +221,7 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel onOpenLlmProviders={onOpenLlmProviders} />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
@@ -233,7 +239,7 @@ describe("AgentBackendsPanel", () => {
     const mocks = installAppMock();
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
@@ -267,7 +273,9 @@ describe("AgentBackendsPanel", () => {
     render(<AgentBackendsPanel />);
     await screen.findByText("默认助手");
 
-    const row = screen.getByText("默认助手").closest("tr") as HTMLElement;
+    const row = screen
+      .getByText("默认助手")
+      .closest('[role="listitem"]') as HTMLElement;
     fireEvent.click(
       within(row).getByRole("button", { name: /Test connection/ }),
     );
@@ -301,7 +309,9 @@ describe("AgentBackendsPanel", () => {
     render(<AgentBackendsPanel />);
     await screen.findByText("默认助手");
 
-    const row = screen.getByText("默认助手").closest("tr") as HTMLElement;
+    const row = screen
+      .getByText("默认助手")
+      .closest('[role="listitem"]') as HTMLElement;
     fireEvent.click(
       within(row).getByRole("button", { name: /Test connection/ }),
     );
@@ -408,7 +418,7 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
@@ -455,15 +465,15 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    const table = await screen.findByRole("table", {
+    const list = await screen.findByRole("list", {
       name: "Agent backend list",
     });
     await waitFor(() => {
       expect(
-        within(table).getByText("无 provider 的 claude"),
+        within(list).getByText("无 provider 的 claude"),
       ).toBeInTheDocument();
-      expect(within(table).getByText(/Use CLI login/)).toBeInTheDocument();
-      expect(within(table).queryByText("Needs action")).not.toBeInTheDocument();
+      expect(within(list).getByText(/Use CLI login/)).toBeInTheDocument();
+      expect(within(list).queryByText("Needs action")).not.toBeInTheDocument();
     });
   });
 
@@ -523,7 +533,9 @@ describe("AgentBackendsPanel", () => {
       render(<AgentBackendsPanel />);
 
       await screen.findByText(name);
-      const row = screen.getByText(name).closest("tr") as HTMLElement;
+      const row = screen
+        .getByText(name)
+        .closest('[role="listitem"]') as HTMLElement;
       await user.click(within(row).getByRole("button", { name: /Edit/ }));
 
       const dialog = await screen.findByRole("dialog");
@@ -545,7 +557,7 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
@@ -634,7 +646,7 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
@@ -650,8 +662,13 @@ describe("AgentBackendsPanel", () => {
       within(dialog).getByRole("combobox", { name: "LLM Provider" }),
     );
     // piagent 三类全收：anthropic / openai-chat / openai-response 都要列出来。
+    const anthropicOption = screen.getByRole("option", { name: /Anthropic/ });
+    expect(anthropicOption).toBeInTheDocument();
     expect(
-      screen.getByRole("option", { name: /Anthropic/ }),
+      anthropicOption.querySelector('[data-brand="anthropic"]'),
+    ).toBeInTheDocument();
+    expect(
+      anthropicOption.querySelector('[data-brand="claude"]'),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("option", { name: /OpenAI Chat/ }),
@@ -700,7 +717,7 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
@@ -729,7 +746,7 @@ describe("AgentBackendsPanel", () => {
     const mocks = installAppMock();
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
@@ -765,7 +782,7 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
@@ -800,7 +817,7 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
@@ -858,7 +875,7 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const editorDialog = await screen.findByRole("dialog");
@@ -912,7 +929,7 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const editorDialog = await screen.findByRole("dialog");
@@ -969,7 +986,7 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const editorDialog = await screen.findByRole("dialog");
@@ -1036,7 +1053,7 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
@@ -1101,7 +1118,7 @@ describe("AgentBackendsPanel", () => {
     await screen.findByText("走 gateway 的 claude");
     const row = screen
       .getByText("走 gateway 的 claude")
-      .closest("tr") as HTMLElement;
+      .closest('[role="listitem"]') as HTMLElement;
     await user.click(within(row).getByRole("button", { name: /Edit/ }));
 
     const dialog = await screen.findByRole("dialog");
@@ -1128,7 +1145,7 @@ describe("AgentBackendsPanel", () => {
     installAppMock({ ResolveAgentBackendCLIPath: resolveFn });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(
@@ -1154,7 +1171,7 @@ describe("AgentBackendsPanel", () => {
     installAppMock({ ResolveAgentBackendCLIPath: resolveFn });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: /Codex CLI/ }));
@@ -1175,7 +1192,7 @@ describe("AgentBackendsPanel", () => {
     installAppMock();
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: /Codex CLI/ }));
@@ -1202,7 +1219,7 @@ describe("AgentBackendsPanel", () => {
     const mocks = installAppMock();
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
@@ -1243,7 +1260,7 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(
@@ -1266,7 +1283,7 @@ describe("AgentBackendsPanel", () => {
     installAppMock({ ResolveAgentBackendCLIPath: resolveFn });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(
@@ -1296,7 +1313,7 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: /Codex CLI/ }));
@@ -1332,7 +1349,9 @@ describe("AgentBackendsPanel", () => {
     render(<AgentBackendsPanel />);
     await screen.findByText("默认助手");
 
-    const row = screen.getByText("默认助手").closest("tr") as HTMLElement;
+    const row = screen
+      .getByText("默认助手")
+      .closest('[role="listitem"]') as HTMLElement;
     fireEvent.click(
       within(row).getByRole("button", { name: /Test connection/ }),
     );
@@ -1367,7 +1386,9 @@ describe("AgentBackendsPanel", () => {
     render(<AgentBackendsPanel />);
     await screen.findByText("默认助手");
 
-    const row = screen.getByText("默认助手").closest("tr") as HTMLElement;
+    const row = screen
+      .getByText("默认助手")
+      .closest('[role="listitem"]') as HTMLElement;
     fireEvent.click(
       within(row).getByRole("button", { name: /Test connection/ }),
     );
@@ -1391,7 +1412,7 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
@@ -1449,7 +1470,7 @@ describe("AgentBackendsPanel", () => {
     installAppMock();
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
@@ -1513,7 +1534,7 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(
@@ -1589,7 +1610,7 @@ describe("AgentBackendsPanel", () => {
     render(<AgentBackendsPanel />);
 
     const row = (await screen.findByText("OpenClaw Local")).closest(
-      "tr",
+      '[role="listitem"]',
     ) as HTMLElement;
     await user.click(within(row).getByRole("button", { name: /Edit/ }));
     const dialog = await screen.findByRole("dialog");
@@ -1628,7 +1649,7 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent backend list" });
+    await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(
@@ -1677,6 +1698,7 @@ describe("AgentBackendsPanel", () => {
     );
   });
 });
+
 
 describe("truncateFlashText", () => {
   it("短文本原样返回，truncated=false", () => {

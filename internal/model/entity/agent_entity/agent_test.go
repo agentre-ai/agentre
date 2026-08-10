@@ -29,7 +29,7 @@ func TestAgentCheck(t *testing.T) {
 		{"system with department rejected", &Agent{Name: "CEO", SystemBadge: "DEFAULT", DepartmentID: 1, PromptJSON: "[]", SkillsJSON: "[]"}, true},
 		{"system with parent rejected", &Agent{Name: "CEO", SystemBadge: "DEFAULT", ParentAgentID: 1, PromptJSON: "[]", SkillsJSON: "[]"}, true},
 		{"bad prompt json", &Agent{Name: "Eva", DepartmentID: 1, AgentBackendID: 1, PromptJSON: "{", SkillsJSON: "[]"}, true},
-		// SkillsJSON 不再被 Check 校验（R15e：授权与校验职责下沉到 AgentExecTarget），
+		// 技能授权由 AgentExecTarget 校验，SkillsJSON 旧列不属于 Agent 的领域约束；
 		// 即便这一列存了坏 JSON，Agent 行本身也不因此判无效。
 		{"bad skills json on legacy column does not fail Check", &Agent{Name: "Eva", DepartmentID: 1, AgentBackendID: 1, PromptJSON: "[]", SkillsJSON: "x"}, false},
 	}

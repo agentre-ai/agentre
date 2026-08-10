@@ -42,7 +42,7 @@ func TestRootSubcommands(t *testing.T) {
 	}
 }
 
-// TestUnclaimClearsAccountLocally covers R19: unclaim returns the daemon to the
+// TestUnclaimClearsAccountLocally verifies that unclaim returns the daemon to the
 // unclaimed state by removing every account-derived local cache — credential,
 // verification key, and revocation list — exclusively through state.json. The
 // default HTTP transport is a tripwire: any network request fails the test.

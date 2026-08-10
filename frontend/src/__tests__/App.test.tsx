@@ -1020,22 +1020,21 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(screen.getByRole("button", { name: "Agent Backends" }));
 
-    const backendTable = await screen.findByRole("table", {
+    const backendList = await screen.findByRole("list", {
       name: "Agent backend list",
     });
 
-    expectHorizontalTableScroll(backendTable);
+    // 新版列表不再横向滚动：无 table-container 包裹，自身也不 overflow-x-auto。
+    expect(backendList.closest("[data-slot='table-container']")).toBeNull();
+    expect(backendList).not.toHaveClass("overflow-x-auto");
     await waitFor(() => {
-      expect(within(backendTable).getByText("默认助手")).toBeInTheDocument();
-      expect(within(backendTable).getByText("AWS Bedrock")).toBeInTheDocument();
+      expect(within(backendList).getByText("默认助手")).toBeInTheDocument();
+      expect(within(backendList).getByText("AWS Bedrock")).toBeInTheDocument();
       expect(
-        within(backendTable).getByText(/Anthropic · sonnet-4-6/),
+        within(backendList).getByText(/Anthropic · sonnet-4-6/),
       ).toBeInTheDocument();
     });
 
-    expect(
-      screen.getByText(/Runtime options live on each agent/),
-    ).toBeInTheDocument();
     expect(
       screen.queryByRole("table", { name: "LLM provider list" }),
     ).not.toBeInTheDocument();
@@ -1055,15 +1054,15 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(screen.getByRole("button", { name: "Agent Backends" }));
 
-    const backendTable = await screen.findByRole("table", {
+    const backendList = await screen.findByRole("list", {
       name: "Agent backend list",
     });
     await waitFor(() => {
-      expect(within(backendTable).getByText("默认助手")).toBeInTheDocument();
+      expect(within(backendList).getByText("默认助手")).toBeInTheDocument();
     });
 
     expect(
-      within(backendTable)
+      within(backendList)
         .getByText("默认助手")
         .closest("[data-selectable-text='true']"),
     ).toBeInTheDocument();
@@ -1090,7 +1089,7 @@ describe("App", () => {
       screen.getByRole("button", { name: "Agent Backends" }),
     ).not.toHaveAttribute("aria-current");
     expect(
-      screen.queryByRole("table", { name: "Agent backend list" }),
+      screen.queryByRole("list", { name: "Agent backend list" }),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("list", { name: "LLM provider compact list" }),
