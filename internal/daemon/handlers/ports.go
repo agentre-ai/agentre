@@ -74,15 +74,22 @@ type DBStatPort interface {
 // (PeerFingerprint, PeerSessionID) 的组合(R16);AgentID / Cwd / BackendType 原样透传
 // 客户端起手时报的值,供重连后的清单重建界面。
 //
+// Title / AgentSyncID 是 R7 的新列:会话标题与所属 Agent 的账号级同步标识,每轮由
+// 调用方随 RunParams 携带、幂等覆盖,老会话缺字段时保持空串。ProviderSessionID 是
+// 决策 8 的新列:daemon 每轮从 RunAck 路径收回并落库,续话不再需要调用方提供。
+//
 // 它**不含**「最新 seq」与「是否正在等待输入」:前者的真相源是通知日志的 MAX(seq),
 // 后者由实时 waiter 状态叠加计算、永不落库(R11)。
 type SessionRecord struct {
-	PeerFingerprint string
-	PeerSessionID   string
-	AgentID         int64
-	Cwd             string
-	BackendType     string
-	LifecycleState  string
+	PeerFingerprint   string
+	PeerSessionID     string
+	AgentID           int64
+	Cwd               string
+	BackendType       string
+	LifecycleState    string
+	Title             string
+	AgentSyncID       string
+	ProviderSessionID string
 }
 
 // SessionLifecyclePort 记录会话生命周期的推进,由跑一轮执行的一侧调用。

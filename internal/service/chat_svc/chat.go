@@ -3685,6 +3685,8 @@ func (s *chatSvc) prepareTurnRun(
 		AgentID:           a.ID,
 		SessionID:         sess.ID,
 		Cwd:               cwd,
+		Title:             sess.Title,
+		AgentSyncID:       a.SyncID,
 		SystemPrompt:      strings.Join(a.GetPrompt(), "\n"),
 		ProviderSessionID: sess.ProviderSessionID,
 		Compact:           compact,

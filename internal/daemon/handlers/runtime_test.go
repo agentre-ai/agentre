@@ -1739,6 +1739,66 @@ func TestRuntime_Run_RecordsSessionRowThenMovesItToIdleAtTurnEnd(t *testing.T) {
 	}}, sess.started(), "起手必须建行并置 running,带上客户端展示要用的元数据")
 }
 
+// TestRuntime_Run_PersistsTitleAgentSyncIDAndProviderSessionID 覆盖 R7 + 决策 8 的
+// 落库:每轮 runtime.run 起手时把会话标题、Agent 同步标识与 daemon 从 result 收回的
+// provider_session_id 一并写进那一行。
+func TestRuntime_Run_PersistsTitleAgentSyncIDAndProviderSessionID(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.Done{}
+		close(ch)
+		return ch, &agentruntime.RunResult{ProviderSessionID: "claude-abc123"}, nil
+	}
+	ctx, notif, sess, h := setupRuntimeTestWithSessions(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)}
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend: backendJSON(t, be), SessionID: 5, AgentID: 7, Cwd: "/work",
+		Title: "fix the bug", AgentSyncID: "01HXsync000000000000000000",
+	})
+	require.NoError(t, err)
+
+	notif.waitFrames(t, 2) // Done + runResultDone
+	assert.Equal(t, []handlers.SessionRecord{{
+		PeerSessionID:     "5",
+		AgentID:           7,
+		Cwd:               "/work",
+		BackendType:       string(agent_backend_entity.TypeClaudeCode),
+		LifecycleState:    wire.SessionLifecycleRunning,
+		Title:             "fix the bug",
+		AgentSyncID:       "01HXsync000000000000000000",
+		ProviderSessionID: "claude-abc123",
+	}}, sess.started(), "起手建行必须带上标题、Agent 同步标识与 daemon 收回的 provider_session_id")
+}
+
+// TestRuntime_Run_ContinuationResolvesStoredProviderSessionID 覆盖决策 8:provider_session_id
+// 落库之后,续话不再需要调用方提供 —— 调用方空着字段发下一轮时,daemon 用自己落库的那
+// 份把它续上。
+func TestRuntime_Run_ContinuationResolvesStoredProviderSessionID(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.Done{}
+		close(ch)
+		return ch, &agentruntime.RunResult{ProviderSessionID: "claude-abc123"}, nil
+	}
+	ctx, notif, _, h := setupRuntimeTestWithSessions(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)}
+	// 第一轮:daemon 从 result 收回 providerSessionID 并落库。
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 5, AgentID: 7, Cwd: "/work"})
+	require.NoError(t, err)
+	notif.waitFrames(t, 2)
+	require.Len(t, rt.runReqs, 1)
+
+	// 第二轮:调用方不再提供 providerSessionID(决策 8)。
+	_, err = h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 5, AgentID: 7, Cwd: "/work"})
+	require.NoError(t, err)
+	notif.waitFrames(t, 2)
+	require.Len(t, rt.runReqs, 2)
+	assert.Equal(t, "claude-abc123", rt.runReqs[1].req.ProviderSessionID,
+		"续话不需要调用方提供 providerSessionID,daemon 拿自己落库的那份续上")
+}
+
 // TestRuntime_Run_AutonomousTurnMovesLifecycleBackToRunning 覆盖自主续轮:backend
 // 自发跑的一轮同样是「一轮执行中」,会话必须在这段时间报 running 而不是停在 idle ——
 // 否则重连的客户端会把一条正在产出事件的会话显示成闲置。

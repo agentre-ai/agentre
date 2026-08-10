@@ -210,10 +210,16 @@ type HistoryMessageWire struct {
 // daemon 端 handlers/runtime.go 在 Run 入口处自己用 ProviderLookup + 自家
 // Gateway 解出这三者,desktop 端 chat_svc.runTurn 检 be.IsRemote() 后也不再填。
 type RunParams struct {
-	Backend           json.RawMessage      `json:"backend"`
-	AgentID           int64                `json:"agentId"`
-	SessionID         int64                `json:"sessionId"`
-	Cwd               string               `json:"cwd,omitempty"`
+	Backend   json.RawMessage `json:"backend"`
+	AgentID   int64           `json:"agentId"`
+	SessionID int64           `json:"sessionId"`
+	Cwd       string          `json:"cwd,omitempty"`
+	// Title 是该会话此刻的标题(R7)。桌面端每轮携带当前值,daemon 幂等覆盖;老桌面端
+	// 不传时保持空串。改名后最多滞后一轮生效。
+	Title string `json:"title,omitempty"`
+	// AgentSyncID 是该会话所属 Agent 的账号级同步标识(块 1,决策 3 的 ULID,不是本地
+	// 自增 agent_id)。会话列表按它解析 Agent 名与头像(R5)。
+	AgentSyncID       string               `json:"agentSyncId,omitempty"`
 	SystemPrompt      string               `json:"systemPrompt,omitempty"`
 	ProviderSessionID string               `json:"providerSessionId,omitempty"`
 	UserText          string               `json:"userText,omitempty"`
@@ -389,15 +395,22 @@ type SessionSummary struct {
 	SessionID       int64  `json:"sessionId"`
 	PeerFingerprint string `json:"peerFingerprint,omitempty"`
 	AgentID         int64  `json:"agentId,omitempty"`
-	Cwd             string `json:"cwd,omitempty"`
-	BackendType     string `json:"backendType,omitempty"`
-	LifecycleState  string `json:"lifecycleState"`
-	WaitingForInput bool   `json:"waitingForInput,omitempty"`
-	LatestSeq       int64  `json:"latestSeq"`
+	// Title / AgentSyncID / ProviderSessionID 是 R7 + 决策 8 的新列:会话标题、所属
+	// Agent 的账号级同步标识、以及续话要用的 provider 原生会话身份。老会话缺这些
+	// 字段时如实留空(空串,不猜、不填占位名)。
+	Title             string `json:"title,omitempty"`
+	AgentSyncID       string `json:"agentSyncId,omitempty"`
+	ProviderSessionID string `json:"providerSessionId,omitempty"`
+	Cwd               string `json:"cwd,omitempty"`
+	BackendType       string `json:"backendType,omitempty"`
+	LifecycleState    string `json:"lifecycleState"`
+	WaitingForInput   bool   `json:"waitingForInput,omitempty"`
+	LatestSeq         int64  `json:"latestSeq"`
 }
 
-// SessionListResult 是 MethodSessionList 的应答:调用方自己那个对端在这台 daemon 上的
-// 全部会话。无参数 —— 范围就是「调用这条连接的对端」,不接受别的取值。
+// SessionListResult 是 MethodSessionList 的应答:这台 daemon 上的会话。调用方自己的
+// 对端永远在范围内;daemon 已认领账号时 ListAll 会把全部对端的会话一并列出(账号可见
+// 性,见 handlers/session_catchup.go 的 List),范围不再只有「调用这条连接的对端」。
 type SessionListResult struct {
 	Sessions []SessionSummary `json:"sessions"`
 }

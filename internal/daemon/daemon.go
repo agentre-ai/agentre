@@ -1764,12 +1764,15 @@ var (
 
 func (s daemonSessionStore) Start(ctx context.Context, rec handlers.SessionRecord) error {
 	return session_repo.Session().Upsert(dbpkg.WithContextDB(ctx, s.db), &session_repo.DaemonSession{
-		PeerFingerprint: rec.PeerFingerprint,
-		PeerSessionID:   rec.PeerSessionID,
-		AgentID:         rec.AgentID,
-		Cwd:             rec.Cwd,
-		BackendType:     rec.BackendType,
-		LifecycleState:  rec.LifecycleState,
+		PeerFingerprint:   rec.PeerFingerprint,
+		PeerSessionID:     rec.PeerSessionID,
+		AgentID:           rec.AgentID,
+		Cwd:               rec.Cwd,
+		BackendType:       rec.BackendType,
+		LifecycleState:    rec.LifecycleState,
+		Title:             rec.Title,
+		AgentSyncID:       rec.AgentSyncID,
+		ProviderSessionID: rec.ProviderSessionID,
 	})
 }
 
@@ -1825,12 +1828,15 @@ func (s daemonSessionStore) Find(ctx context.Context, peerFingerprint, peerSessi
 
 func sessionRecordOf(row *session_repo.DaemonSession) handlers.SessionRecord {
 	return handlers.SessionRecord{
-		PeerFingerprint: row.PeerFingerprint,
-		PeerSessionID:   row.PeerSessionID,
-		AgentID:         row.AgentID,
-		Cwd:             row.Cwd,
-		BackendType:     row.BackendType,
-		LifecycleState:  row.LifecycleState,
+		PeerFingerprint:   row.PeerFingerprint,
+		PeerSessionID:     row.PeerSessionID,
+		AgentID:           row.AgentID,
+		Cwd:               row.Cwd,
+		BackendType:       row.BackendType,
+		LifecycleState:    row.LifecycleState,
+		Title:             row.Title,
+		AgentSyncID:       row.AgentSyncID,
+		ProviderSessionID: row.ProviderSessionID,
 	}
 }
 

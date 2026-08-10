@@ -399,7 +399,13 @@ type RunRequest struct {
 	// 兜底（保留老的 Agent 级目录行为）。chat_svc 在拼 RunRequest 时调
 	// project_svc.ResolveSessionCwd 解析 project 维度的 cwd 注入此字段，避免
 	// agentruntime 反向依赖 project_svc。
-	Cwd               string
+	Cwd string
+	// Title 是该会话此刻的标题（R7）。桌面端每轮携带当前值，远端 daemon 幂等覆盖；
+	// 本地 runner 不用它。改名后最多滞后一轮生效。
+	Title string
+	// AgentSyncID 是该会话所属 Agent 的账号级同步标识（块 1 决策 3 的 ULID，不是本地
+	// 自增 agent_id）。远端 daemon 落库并在会话列表里回传（R5 / R7）；本地 runner 不用它。
+	AgentSyncID       string
 	SystemPrompt      string
 	ProviderSessionID string // 空 = 新建；非空 = resume
 	UserText          string

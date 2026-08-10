@@ -68,6 +68,36 @@ func TestSessionCatchup_List_ReportsLatestSeqFromTheJournal(t *testing.T) {
 	assert.Zero(t, got.Sessions[1].LatestSeq, "还没发过通知的会话报 0")
 }
 
+// TestSessionCatchup_List_ReturnsTitleAgentSyncIDAndProviderSessionID 覆盖 R7 + 决策 8
+// 的回传:daemon 落库的标题、Agent 同步标识与 provider_session_id 随 session.list 回到
+// 客户端;老会话缺这些字段时如实留空(空串,不猜、不填占位名)。
+func TestSessionCatchup_List_ReturnsTitleAgentSyncIDAndProviderSessionID(t *testing.T) {
+	ctx, sessions, journal, h := setupCatchupTest(t, bareRT{})
+	sessions.EXPECT().List(gomock.Any(), "").Return([]handlers.SessionRecord{
+		{PeerSessionID: "1", AgentID: 7, Cwd: "/work", BackendType: "claudecode",
+			LifecycleState:    wire.SessionLifecycleRunning,
+			Title:             "fix the bug",
+			AgentSyncID:       "01HXsync000000000000000000",
+			ProviderSessionID: "claude-abc123",
+		},
+		// 老会话:这三个字段从没落过库,如实留空。
+		{PeerSessionID: "2", AgentID: 8, Cwd: "/other", BackendType: "codex", LifecycleState: wire.SessionLifecycleIdle},
+	}, nil)
+	journal.EXPECT().LatestSeqByPeer(gomock.Any(), "").Return(nil, nil)
+
+	got, err := h.List(ctx)
+	require.NoError(t, err)
+	require.Len(t, got.Sessions, 2)
+
+	assert.Equal(t, "fix the bug", got.Sessions[0].Title)
+	assert.Equal(t, "01HXsync000000000000000000", got.Sessions[0].AgentSyncID)
+	assert.Equal(t, "claude-abc123", got.Sessions[0].ProviderSessionID)
+
+	assert.Empty(t, got.Sessions[1].Title, "老会话缺标题时 session.list 如实留空")
+	assert.Empty(t, got.Sessions[1].AgentSyncID, "老会话缺 Agent 同步标识时 session.list 如实留空")
+	assert.Empty(t, got.Sessions[1].ProviderSessionID, "老会话缺 provider_session_id 时 session.list 如实留空")
+}
+
 // TestSessionCatchup_List_WaitingForInputIsOverlaidLive 覆盖 R11:「是否正在等待
 // 输入」由实时 waiter 状态叠加计算,永不落库 —— 落库的标志会活过 daemon 重启,变成
 // 一个没人能回答的问题。同一份会话行,backend 有阻塞 waiter 时为真,没有时为假。

@@ -52,10 +52,12 @@ func NewSessionCatchupHandlers(deps SessionCatchupDeps) *SessionCatchupHandlers 
 	return &SessionCatchupHandlers{deps: deps}
 }
 
-// List 返回调用方那个对端在本 daemon 上的全部会话(R16)。
+// List 返回这台 daemon 上的全部会话。调用方自己的对端永远在范围内;daemon 已认领且
+// 调用方账号等于 daemon 账号时走 ListAll 把全部对端的会话一并列出(账号可见性)。
 //
 // 每条会话的「最新 seq」取自通知日志的 MAX(seq) —— 唯一真相源。会话一条通知都还没
-// 发出时报 0。「是否正在等待输入」现算,见 waitingForInput。
+// 发出时报 0。「是否正在等待输入」现算,见 waitingForInput。标题 / Agent 同步标识 /
+// provider_session_id(R7 + 决策 8)原样回传;老会话缺这些字段时保持空串、如实留空。
 func (h *SessionCatchupHandlers) List(ctx context.Context) (wire.SessionListResult, error) {
 	peer := peerFingerprint(ctx)
 	accountWide := hasClaimedAccount(ctx, h.deps.ClaimedAccountID)
@@ -102,13 +104,16 @@ func (h *SessionCatchupHandlers) List(ctx context.Context) (wire.SessionListResu
 			}
 		}
 		summary := wire.SessionSummary{
-			SessionID:       sid,
-			AgentID:         row.AgentID,
-			Cwd:             row.Cwd,
-			BackendType:     row.BackendType,
-			LifecycleState:  row.LifecycleState,
-			WaitingForInput: h.waitingForInput(ctx, row, sid),
-			LatestSeq:       latestSeq,
+			SessionID:         sid,
+			AgentID:           row.AgentID,
+			Title:             row.Title,
+			AgentSyncID:       row.AgentSyncID,
+			ProviderSessionID: row.ProviderSessionID,
+			Cwd:               row.Cwd,
+			BackendType:       row.BackendType,
+			LifecycleState:    row.LifecycleState,
+			WaitingForInput:   h.waitingForInput(ctx, row, sid),
+			LatestSeq:         latestSeq,
 		}
 		// Origin 只标在**别的对端**发起的那些会话上。空 origin 的语义是
 		// ResolveSessionPeer 的入口约定 ——「省略 = 调用方自己的对端」—— 而清单是客户端

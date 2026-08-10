@@ -440,6 +440,16 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		return h.preparePi(em, p, &be, piOwner, piPreparer, req)
 	}
 
+	// 续话(决策 8):provider_session_id 已由上一轮在这台 daemon 上落库,调用方不再需要
+	// 提供。这里只改直连(非 Pi)路径 —— Pi 的 prepare/start 由已准备的身份自己带,不受
+	// 影响;调用方显式提供的值(重开 fork 等)优先于落库的那份。查不出行或读失败时保持
+	// 空,让 runtime 自己新建会话,不拿一个读不出来的库去换续话。
+	if strings.TrimSpace(req.ProviderSessionID) == "" && h.deps.SessionQuery != nil {
+		if row, err := h.deps.SessionQuery.Find(ctx, em.peer, em.peerSessionID); err == nil && row != nil && row.ProviderSessionID != "" {
+			req.ProviderSessionID = row.ProviderSessionID
+		}
+	}
+
 	events, result, err := rt.Run(ctx, req)
 	if err != nil {
 		return wire.RunAck{}, err
@@ -460,7 +470,7 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	// 里报的 sessionID 是它,这一行是把两边对上号的唯一地方。
 	log.Printf("runtime.run: session started sid=%d backendKey=%d backend=%s agentId=%d userTextBytes=%d",
 		p.SessionID, em.rid, be.Type, p.AgentID, len(p.UserText))
-	h.startSession(em, p, bt)
+	h.startSession(em, p, bt, providerSessionIDOf(result))
 	go h.fanout(em, owner, events, result) //nolint:gosec // G118: turn fanout outlives the Run RPC and owns terminal cleanup.
 	// 真实 runtime 若支持自主续轮(claudecode),起每会话一个转发 goroutine 把
 	// AutonomousTurns(sid) 推到 client。session 已 spawn,此刻订阅才拿得到 channel。
@@ -611,7 +621,7 @@ func (h *RuntimeHandlers) startPreparedPi(
 	}
 	log.Printf("runtime.run: Pi generation started sid=%d backendKey=%d backend=%s",
 		p.SessionID, em.rid, be.Type)
-	h.startSession(em, p, bt)
+	h.startSession(em, p, bt, providerSessionID)
 	go h.fanout(em, owner, events, result)
 	return ack, nil
 }
@@ -627,19 +637,33 @@ func drainRuntimeEvents(events <-chan agentruntime.Event) {
 // 日志、不影响这一轮执行:一轮已经在跑了,拿它陪葬换不回任何东西,代价是这条会话在
 // 清单里缺席直到下一轮重新建行。
 
-// startSession 在一轮起手时建行并置 running。
-func (h *RuntimeHandlers) startSession(em *sessionEmitter, p wire.RunParams, bt agent_backend_entity.BackendType) {
+// startSession 在一轮起手时建行并置 running。providerSessionID 是 daemon 这一轮从
+// result 收回的 provider 原生会话身份(决策 8):首轮新建后落库,后续轮续用;空串 =
+// runtime 还没给出身份(这一轮就是新建)。标题与 Agent 同步标识(R7)随 p 携带、幂等覆盖。
+func (h *RuntimeHandlers) startSession(em *sessionEmitter, p wire.RunParams, bt agent_backend_entity.BackendType, providerSessionID string) {
 	err := h.deps.Sessions.Start(em.ctx, SessionRecord{
-		PeerFingerprint: em.peer,
-		PeerSessionID:   em.peerSessionID,
-		AgentID:         p.AgentID,
-		Cwd:             p.Cwd,
-		BackendType:     string(bt),
-		LifecycleState:  wire.SessionLifecycleRunning,
+		PeerFingerprint:   em.peer,
+		PeerSessionID:     em.peerSessionID,
+		AgentID:           p.AgentID,
+		Cwd:               p.Cwd,
+		BackendType:       string(bt),
+		LifecycleState:    wire.SessionLifecycleRunning,
+		Title:             p.Title,
+		AgentSyncID:       p.AgentSyncID,
+		ProviderSessionID: providerSessionID,
 	})
 	if err != nil {
 		log.Printf("runtime.run: record session failed sid=%d peer=%q err=%v", em.sid, em.peer, err)
 	}
+}
+
+// providerSessionIDOf 取这一轮 result 里 runtime 确认的 provider 原生会话身份;result
+// 为 nil(直连路径 run 失败前)时回空串。
+func providerSessionIDOf(result *agentruntime.RunResult) string {
+	if result == nil {
+		return ""
+	}
+	return strings.TrimSpace(result.ProviderSessionID)
 }
 
 // runningSession 把会话推回 running(自主续轮开始)。
