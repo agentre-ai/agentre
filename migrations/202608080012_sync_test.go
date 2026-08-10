@@ -8,24 +8,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// syncMetaTestTables 镜像 202608080016_sync_metadata.go 里的 syncMetaTables:
-// 账号级七张表(366 行),迁移测试对每一张都跑同一份不变量,不抽样。
-var syncMetaTestTables = []string{
-	"projects",
-	"departments",
-	"agents",
-	"agent_backends",
-	"project_agents",
-	"project_locations",
-	"agent_exec_targets",
-}
-
-// TestMigration202608080016_EmptySyncIDsDoNotCollide 锁住部分唯一索引的存在
-// 理由(366 行):未登录/迁移前创建的行 sync_id 留空,本仓 DDL 一律 not null
-// default ”,若唯一索引不是 WHERE sync_id != ” 的部分索引,第二条空标识行就
-// 会撞唯一约束插不进去 —— 这是 R1/R12a 的硬前提。
-func TestMigration202608080016_EmptySyncIDsDoNotCollide(t *testing.T) {
-	gormDB := openTestDB(t, "202608080015")
+// TestMigration202608080012_EmptySyncIDsDoNotCollide 锁住部分唯一索引的存在
+// 理由:未登录/迁移前创建的行 sync_id 留空,本仓 DDL 一律 not null default ”,
+// 若唯一索引不是 WHERE sync_id != ” 的部分索引,第二条空标识行就会撞唯一约束
+// 插不进去 —— 这是 R1/R12a 的硬前提。对 syncMetaTables 里每一张表都跑,不抽样。
+func TestMigration202608080012_EmptySyncIDsDoNotCollide(t *testing.T) {
+	gormDB := openTestDB(t, "202608080011")
 	require.NoError(t, RunMigrations(gormDB))
 
 	seeds := map[string]string{
@@ -38,7 +26,7 @@ func TestMigration202608080016_EmptySyncIDsDoNotCollide(t *testing.T) {
 		"agent_exec_targets": `INSERT INTO agent_exec_targets (agent_id, agent_backend_id, sort_order) VALUES (?, 1, ?)`,
 	}
 
-	for _, table := range syncMetaTestTables {
+	for _, table := range syncMetaTables {
 		t.Run(table, func(t *testing.T) {
 			var err1, err2 error
 			switch table {
@@ -62,11 +50,11 @@ func TestMigration202608080016_EmptySyncIDsDoNotCollide(t *testing.T) {
 	}
 }
 
-// TestMigration202608080016_NonEmptySyncIDsAreUnique 唯一索引仍然对非空标识生效:
+// TestMigration202608080012_NonEmptySyncIDsAreUnique 唯一索引仍然对非空标识生效:
 // 同一张表里两行相同的非空 sync_id 必须被拒绝——否则同一个同步标识在本地对应
 // 两条不同的行,违反 R1「跨机身份稳定」。
-func TestMigration202608080016_NonEmptySyncIDsAreUnique(t *testing.T) {
-	gormDB := openTestDB(t, "202608080015")
+func TestMigration202608080012_NonEmptySyncIDsAreUnique(t *testing.T) {
+	gormDB := openTestDB(t, "202608080011")
 	require.NoError(t, RunMigrations(gormDB))
 
 	require.NoError(t, gormDB.Exec(
@@ -81,11 +69,11 @@ func TestMigration202608080016_NonEmptySyncIDsAreUnique(t *testing.T) {
 	assert.Error(t, err, "重复的非空 sync_id 必须撞唯一索引")
 }
 
-// TestMigration202608080016_ExistingRowsDefaultToUnclaimed 迁移前已存在的历史行
+// TestMigration202608080012_ExistingRowsDefaultToUnclaimed 迁移前已存在的历史行
 // (以及迁移本身不做任何回填)落在 sync_account_id = 0——尚未被任何账号认领,
 // 直到后续任务的「首次登录认领」把它们收进当前账号(R12a)。
-func TestMigration202608080016_ExistingRowsDefaultToUnclaimed(t *testing.T) {
-	gormDB := openTestDB(t, "202608080015")
+func TestMigration202608080012_ExistingRowsDefaultToUnclaimed(t *testing.T) {
+	gormDB := openTestDB(t, "202608080011")
 	require.NoError(t, gormDB.Exec(
 		`INSERT INTO departments (name, status, createtime, updatetime) VALUES ('legacy', 1, 0, 0)`,
 	).Error)

@@ -31,13 +31,7 @@ func migrationList() []*gormigrate.Migration {
 		migration202608080008(), // app_settings + proxy defaults
 		migration202608080009(), // server_state + paired_agentreds
 		migration202608080010(), // issues + labels + issue_labels + label defaults
-		migration202608080011(), // agent_exec_targets + 单元素回填
-		migration202608080012(), // projects.local_path_missing（本机未配置路径状态位）
-		migration202608080013(), // project_locations 自然键改为 (project, daemon_fingerprint)
-		migration202608080014(), // agent_exec_targets.skills_json（技能授权下沉到执行目标行）
-		migration202608080015(), // chat_sessions.exec_agent_backend_id（会话钉住的执行目标档）
-		migration202608080016(), // 账号级七张表加同步元数据（sync_id 部分唯一索引等六列）
-		migration202608080017(), // 新建 sync_lost_changes / sync_outbound_queue / sync_inbound_queue
-		migration202608080018(), // sync_lost_changes 补自然键两列（恢复路径记录 / 远端 backend）
+		migration202608080011(), // 执行目标 + 本机路径（R15/R15e/R15b/R10/决策 26）
+		migration202608080012(), // 同步基础设施（R1 同步元数据 / R5/R7/R2a 队列表）
 	}
 }
