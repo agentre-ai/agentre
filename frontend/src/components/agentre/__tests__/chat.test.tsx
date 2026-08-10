@@ -592,6 +592,32 @@ describe("ChatTranscript autonomous turn banner", () => {
     } as chat_svc.ChatMessage;
   }
 
+  // noticeMsg:供应商切换/回退 notice 的落库形状——独立的 assistant 消息,blocks 只有
+  // 一个 type: "notice" 块(session_provider.go 的 encodeProviderSwitch 同源同形)。
+  function noticeMsg(id: number): chat_svc.ChatMessage {
+    return {
+      blocks: [
+        {
+          level: "info",
+          noticeKind: "switch",
+          providerKey: "session-key",
+          providerName: "中转 · GLM 5.2",
+          type: "notice",
+        } as ChatBlockData,
+      ],
+      completionTokens: 0,
+      createtime: new Date("2026-05-17T10:30:00Z").getTime(),
+      durationMs: 0,
+      errorText: "",
+      id,
+      model: "",
+      promptTokens: 0,
+      role: "assistant",
+      seq: id,
+      sessionId: 1,
+    } as chat_svc.ChatMessage;
+  }
+
   it("自主续轮(assistant 紧邻前一条 assistant,无 user 行)前渲染 AutoTriggerBanner", () => {
     render(
       <ChatTranscript
@@ -621,6 +647,53 @@ describe("ChatTranscript autonomous turn banner", () => {
           msg(2, "assistant", "hello"),
           msg(3, "user", "again"),
           msg(4, "assistant", "ok"),
+        ]}
+      />,
+    );
+    expect(screen.queryAllByRole("separator")).toHaveLength(0);
+  });
+
+  it("供应商切换 notice 行本身不触发 banner,且不吞掉它之后紧跟的真实自主续轮", () => {
+    const { container } = render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          msg(1, "user", "后台跑吧，完了叫我"),
+          msg(2, "assistant", "后台任务我先跑着，完了叫你。"),
+          noticeMsg(3),
+          msg(4, "assistant", "后台任务跑完了，结果是……"),
+        ]}
+      />,
+    );
+    // notice 行(msg 3)在判定里透明:它自己不算自主轮 —— 它所在的行里没有 banner。
+    const noticeRow = container.querySelector('[data-message-id="3"]');
+    expect(noticeRow).not.toBeNull();
+    expect(
+      within(noticeRow as HTMLElement).queryByRole("separator"),
+    ).toBeNull();
+    // msg(4) 紧邻的前一条真实消息仍是 assistant(notice 被跳过)→ 真自主续轮的 banner
+    // 必须照常出现在 msg(4) 的行里(决策 3 的反向边界,mockup「R2 的反向边界」)。
+    const realRow = container.querySelector('[data-message-id="4"]');
+    expect(realRow).not.toBeNull();
+    expect(
+      within(realRow as HTMLElement).getByRole("separator"),
+    ).toHaveTextContent(/auto-continued|自动继续/);
+    // 全局也应恰好一条 banner,不多不少。
+    expect(screen.getAllByRole("separator")).toHaveLength(1);
+  });
+
+  it("供应商切换 notice 之后接正常 user→assistant 轮不产生 banner", () => {
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          msg(1, "user", "hi"),
+          msg(2, "assistant", "先切个供应商"),
+          noticeMsg(3),
+          msg(4, "user", "继续"),
+          msg(5, "assistant", "好的"),
         ]}
       />,
     );

@@ -1315,13 +1315,28 @@ const ChatTranscript = React.forwardRef<
   // 判定:assistant 轮且其在**完整 messages**里紧邻的前一条不是 user —— 正常轮是
   // user→assistant、auto-continue / steer 也是 user→assistant,只有自主续轮是
   // assistant→assistant(无 user 行)。用完整 messages(而非 displayMessages)算,
-  // 避免 compact 折叠把首条 assistant 误判成自主轮。会话首条(i===0)永不算。
+  // 避免 compact 折叠把首条 assistant 误判成自主轮。会话首条(永不算,见下方 prevRole
+  // 的 undefined 初值)。
+  //
+  // 只含 notice 块的消息(供应商切换/回退提示,规格决策 3)在这条判定里透明:它自己
+  // 永远不进 ids(单独 continue,连角色都不看),且在寻找「紧邻前一条」时被跳过(不
+  // 推进 prevRole)—— 否则它会插进两条真实 assistant 消息之间把回退提示误判成自主
+  // 续轮,也可能反过来垫在 assistant 与后续真实自主续轮之间把该有的判定拆断。
   const autonomousIds = React.useMemo(() => {
     const ids = new Set<number>();
-    for (let i = 1; i < messages.length; i++) {
-      if (messages[i].role === "assistant" && messages[i - 1].role !== "user") {
-        ids.add(messages[i].id);
+    let prevRole: string | undefined;
+    for (const m of messages) {
+      const isNoticeOnly =
+        m.blocks.length > 0 && m.blocks.every((b) => b.type === "notice");
+      if (isNoticeOnly) continue;
+      if (
+        prevRole !== undefined &&
+        m.role === "assistant" &&
+        prevRole !== "user"
+      ) {
+        ids.add(m.id);
       }
+      prevRole = m.role;
     }
     return ids;
   }, [messages]);
