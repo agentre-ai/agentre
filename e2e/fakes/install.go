@@ -201,3 +201,17 @@ func Install(ctx context.Context) {
 	logger.Ctx(ctx).Info("e2efakes.Install: e2e fakes installed",
 		zap.Int64("backendID", backendID), zap.Int64("agentID", ceo.ID))
 }
+
+// InstallAgentred 在 agentred(daemon)的 e2e 构建里注册确定性 fake runtime,让
+// web 端到端对 agentred 的 runtime.run 得到字节稳定的回复(见 fake 包注释)。
+//
+// 它与 Install 分开:Install 播的是桌面侧那一套(backend / agent / 工具表,表在
+// agentre.db),agentred 的 SQLite 没有那些表;daemon 的 runtime 选择按 wire
+// RunParams 里的 backend.type 走 agentruntime.RuntimeFor,这里只注册就够。失败只
+// 记日志不 panic —— e2e 环境异常应让 Playwright 用例红,而不是让 daemon 崩。
+func InstallAgentred(ctx context.Context) {
+	installE2EKeychainOverride()
+	agentruntime.RegisterRuntime(agent_backend_entity.TypeClaudeCode, fakert.New())
+	agentskill.RegisterDiscoverer(agent_backend_entity.TypeClaudeCode, claudeSkillDiscoverer{})
+	logger.Ctx(ctx).Info("e2efakes.InstallAgentred: e2e fake runtime installed for agentred")
+}

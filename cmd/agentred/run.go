@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/agentre-ai/agentre/e2e/fakes"
 	"github.com/agentre-ai/agentre/internal/daemon"
 	"github.com/agentre-ai/agentre/internal/pkg/paths"
 )
@@ -40,6 +41,9 @@ func newRunCmd() *cobra.Command {
 			if err := os.MkdirAll(dir, 0o700); err != nil {
 				return err
 			}
+			// e2e 构建(go build -tags e2e)在这里安装确定性 fake runtime,让 web 端到端
+			// 对 agentred 的 runtime.run 得到字节稳定的回复;默认构建里是空操作。
+			fakes.InstallAgentred(cmd.Context())
 			d, err := daemon.New(daemon.Options{
 				DataDir:      dir,
 				LANHost:      host,
