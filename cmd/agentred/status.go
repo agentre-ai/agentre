@@ -35,6 +35,9 @@ func newStatusCmd() *cobra.Command {
 // (老版本)时整行不印 —— 印一行空路径会让人以为库文件丢了。
 func printStatus(w io.Writer, v map[string]any) {
 	_, _ = fmt.Fprintf(w, "Daemon running, pid %v\n", v["pid"])
+	if version, ok := v["version"].(string); ok && version != "" {
+		_, _ = fmt.Fprintf(w, "Version: %s\n", version)
+	}
 	_, _ = fmt.Fprintln(w, "Listening on:")
 	for _, u := range toAnySlice(v["listenURLs"]) {
 		_, _ = fmt.Fprintf(w, "  %v\n", u)

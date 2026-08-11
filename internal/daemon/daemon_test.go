@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/agentre-ai/agentre/internal/buildinfo"
 	"github.com/agentre-ai/agentre/internal/daemon/client"
 	"github.com/agentre-ai/agentre/internal/daemon/handlers"
 	"github.com/agentre-ai/agentre/internal/daemon/notifier"
@@ -33,6 +34,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
 	piagentrt "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
+	"github.com/cago-frame/cago/configs"
 )
 
 // TestDaemon_OpensOwnDatabaseAndRunsMigrations 覆盖任务目标的第一句:agentred
@@ -1003,8 +1005,16 @@ func TestDaemon_TwoConnectionsKeepTerminalHandlersIsolated(t *testing.T) {
 	require.ErrorIs(t, err, rpc.ErrMethodNotFound, "bindConn must not mutate the bootstrap registry")
 }
 
-func TestDaemon_IPCStatus(t *testing.T) {
-	dir := t.TempDir()
+func TestGivenRunningDaemonWhenReadingIPCStatusThenReportsIdentityAndPairing(t *testing.T) {
+	previousVersion, previousCommit := configs.Version, buildinfo.CommitID
+	configs.Version, buildinfo.CommitID = "v1.2.3", "abcdef1234567890"
+	t.Cleanup(func() {
+		configs.Version, buildinfo.CommitID = previousVersion, previousCommit
+	})
+
+	dir, err := os.MkdirTemp("", "agentred-ipc")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	d, err := New(Options{
 		DataDir: dir,
 		LANHost: "127.0.0.1",
@@ -1032,6 +1042,7 @@ func TestDaemon_IPCStatus(t *testing.T) {
 	var v map[string]any
 	require.NoError(t, json.Unmarshal(body, &v))
 	assert.NotEmpty(t, v["daemonUUID"])
+	assert.Equal(t, "v1.2.3 (abcdef1)", v["version"])
 	assert.NotContains(t, v, "keyStorage")
 
 	resp2, err := c.Get("http://daemon/local/pair")

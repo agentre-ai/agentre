@@ -101,6 +101,31 @@ func TestLoginCompletesDeviceFlowAndPersistsOpaqueAccountClaim(t *testing.T) {
 	assert.NotZero(t, got.Credential.RefreshTokenExpiresAt)
 }
 
+func TestGivenInjectedBuildIdentityWhenLoginAuthorizesThenRegistersSameIdentity(t *testing.T) {
+	setAgentredBuildIdentityForTest(t, "v1.2.3", "abcdef1234567890")
+
+	t.Setenv("AGENTRED_DATA_DIR", t.TempDir())
+	var registeredVersion string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/oauth/device/authorize", r.URL.Path)
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		registeredVersion, _ = body["version"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer server.Close()
+
+	cmd := newLoginCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--server", server.URL})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid response")
+	assert.Equal(t, "v1.2.3 (abcdef1)", registeredVersion)
+}
+
 func TestLoginRejectsAlreadyClaimedDaemonWithoutNetwork(t *testing.T) {
 	dir := t.TempDir()
 	st, err := state.Load(dir)

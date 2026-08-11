@@ -12,11 +12,18 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/agentre-ai/agentre/internal/buildinfo"
 	"github.com/agentre-ai/agentre/internal/daemon/handlers"
 	"github.com/agentre-ai/agentre/internal/daemon/state"
+	"github.com/cago-frame/cago/configs"
 )
 
 const ipcSocketName = "agentred.sock"
+
+// BuildIdentity returns the version and commit injected into the agentred binary.
+func BuildIdentity() string {
+	return configs.Version + " (" + buildinfo.ShortCommitID() + ")"
+}
 
 // startIPC binds a unix-domain socket under <DataDir>/agentred.sock and
 // serves a minimal HTTP API for the local CLI (status / pair / llm).
@@ -79,6 +86,7 @@ func (d *Daemon) ipcStatus(w http.ResponseWriter, r *http.Request) {
 	dbStat := d.DBStat()
 	writeJSON(w, map[string]any{
 		"pid":              os.Getpid(),
+		"version":          BuildIdentity(),
 		"daemonUUID":       snap.DaemonInstanceUUID,
 		"listenURLs":       lanURLs(d),
 		"socketPath":       d.SocketPath(),

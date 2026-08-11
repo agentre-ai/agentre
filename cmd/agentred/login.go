@@ -79,7 +79,7 @@ func newLoginCmd() *cobra.Command {
 			return nil
 		},
 		platform: runtime.GOOS,
-		version:  "dev",
+		version:  agentredBuildIdentity(),
 	})
 }
 
