@@ -15,8 +15,12 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
+	"go.uber.org/mock/gomock"
 )
 
 // recordingGateway is a TokenIssuer that records the TTLs it was asked to issue
@@ -93,6 +97,40 @@ func (g *recordingGateway) Status() httpgateway.GatewayStatus {
 
 func claudeBackendFixture() *agent_backend_entity.AgentBackend {
 	return &agent_backend_entity.AgentBackend{ID: 7, Type: string(agent_backend_entity.TypeClaudeCode)}
+}
+
+// registerProviderMockForTurn 给 prepareTurnRun 链路注册 provider repo mock：
+// EffectiveLLMConfig v1 seam 的 ResolveTarget 会查一次 FindByKey + FindModelByKey
+// （provider-default 查 DefaultModelKey；fixed-model 查指定 ModelKey）。
+// key 默认是 anthropic 类型；ptype 非空时用它覆盖（piagent 测试需要）。
+func registerProviderMockForTurn(t *testing.T, key, modelKey, ptype string) *mock_llm_provider_repo.MockLLMProviderRepo {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	m := mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl)
+	prev := llm_provider_repo.LLMProvider()
+	llm_provider_repo.RegisterLLMProvider(m)
+	t.Cleanup(func() { llm_provider_repo.RegisterLLMProvider(prev) })
+	typ := ptype
+	if typ == "" {
+		typ = string(llm_provider_entity.TypeAnthropic)
+	}
+	m.EXPECT().FindByKey(gomock.Any(), key).Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: key, Type: typ,
+		Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-" + key,
+		Status: consts.ACTIVE,
+	}, nil).AnyTimes()
+	m.EXPECT().FindModelByKey(gomock.Any(), "mk-"+key).Return(&llm_provider_model_entity.LLMProviderModel{
+		ModelKey: "mk-" + key, ModelID: "model-" + key,
+		Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE,
+	}, nil).AnyTimes()
+	if modelKey != "" && modelKey != "mk-"+key {
+		m.EXPECT().FindModelByKey(gomock.Any(), modelKey).Return(&llm_provider_model_entity.LLMProviderModel{
+			ModelKey: modelKey, ModelID: "model-fixed-" + modelKey,
+			Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE,
+		}, nil).AnyTimes()
+	}
+	return m
 }
 
 // TestSignChatTokenFor_PermanentAndStablePerSession reproduces the root cause of
@@ -228,6 +266,7 @@ func TestSignChatTokenFor_SwitchReroutesWithoutReissuing(t *testing.T) {
 // 后端组装 RunRequest 时，交给子进程的那个 gateway token 必须路由到**本轮真正要跑的那家
 // 供应商**（turn 入口已按会话 provider_key 覆盖解析过的 prov），而不是 agent 绑定。
 func TestPrepareTurnRun_LocalTokenRoutesToTurnProvider(t *testing.T) {
+	registerProviderMockForTurn(t, "session-picked", "", "")
 	gw := newRecordingGateway()
 	s := &chatSvc{gateway: gw}
 	runner := &directRunRunner{request: make(chan agentruntime.RunRequest, 1)}
@@ -243,8 +282,7 @@ func TestPrepareTurnRun_LocalTokenRoutesToTurnProvider(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "agent-bound",
 	}
 	prov := &llm_provider_entity.LLMProvider{
-		ProviderKey: "session-picked", Type: string(llm_provider_entity.TypeAnthropic),
-		Model: "claude-x", Status: consts.ACTIVE,
+		ProviderKey: "session-picked", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}
 
 	prepared, err := s.prepareTurnRun(context.Background(), sess, a, be, prov, nil, nil, "", false, false)
@@ -282,9 +320,9 @@ func TestPrepareTurnRun_SessionProviderNeedsRunningGateway(t *testing.T) {
 	}
 
 	t.Run("会话选了供应商但网关没在跑 → 报错而不是退回 CLI 登录态", func(t *testing.T) {
+		registerProviderMockForTurn(t, "session-picked", "", "")
 		prov := &llm_provider_entity.LLMProvider{
-			ProviderKey: "session-picked", Type: string(llm_provider_entity.TypeAnthropic),
-			Model: "claude-x", Status: consts.ACTIVE,
+			ProviderKey: "session-picked", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 		}
 		s, sess, a, be := newTurn(t)
 		sess.ProviderKey = "session-picked"
@@ -312,6 +350,7 @@ func TestPrepareTurnRun_SessionProviderNeedsRunningGateway(t *testing.T) {
 // 没有任何消费点。所以网关没在跑时这一轮照样能正常执行，把它打成
 // ChatBackendGatewayUnavailable 等于凭空失败一条本来跑得通的会话。
 func TestPrepareTurnRun_PiAgentSessionProviderRunsWithoutGateway(t *testing.T) {
+	registerProviderMockForTurn(t, "session-picked", "", string(llm_provider_entity.TypeAnthropic))
 	runner := &directRunRunner{request: make(chan agentruntime.RunRequest, 1)}
 	t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner))
 	prevCwd := resolveCwdFn
@@ -325,8 +364,7 @@ func TestPrepareTurnRun_PiAgentSessionProviderRunsWithoutGateway(t *testing.T) {
 	a := &agent_entity.Agent{ID: 7, AgentBackendID: 12}
 	be := &agent_backend_entity.AgentBackend{ID: 12, Type: string(agent_backend_entity.TypePiAgent)}
 	prov := &llm_provider_entity.LLMProvider{
-		ProviderKey: "session-picked", Type: string(llm_provider_entity.TypeAnthropic),
-		Model: "claude-x", APIKey: "sk-x", Status: consts.ACTIVE,
+		ProviderKey: "session-picked", Type: string(llm_provider_entity.TypeAnthropic), APIKey: "sk-x", Status: consts.ACTIVE,
 	}
 
 	prepared, err := s.prepareTurnRun(context.Background(), sess, a, be, prov, nil, nil, "", false, false)
@@ -335,4 +373,95 @@ func TestPrepareTurnRun_PiAgentSessionProviderRunsWithoutGateway(t *testing.T) {
 	require.NotNil(t, prepared.req.Provider)
 	assert.Equal(t, "session-picked", prepared.req.Provider.ProviderKey,
 		"所选供应商仍随 RunRequest 下发 —— pi 从它取 APIKey")
+}
+
+// TestPrepareTurnRun_BackendFixedModelResolvesSpecificChild 钉死 spec 决策 5/10 的
+// Backend fixed-model：backend 绑定了 ProviderKey+ModelKey 时，EffectiveLLMConfig v1
+// 经 ResolveTarget 解析到**指定**启用子模型（fixed-model），而不是 provider-default
+// 的当前默认。assistantMsg.Model / RunRequest.Effective 都取解析出的 ModelID。
+func TestPrepareTurnRun_BackendFixedModelResolvesSpecificChild(t *testing.T) {
+	registerProviderMockForTurn(t, "key-1", "mk-fixed", "")
+	runner := &directRunRunner{request: make(chan agentruntime.RunRequest, 1)}
+	t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, runner))
+	prevCwd := resolveCwdFn
+	t.Cleanup(func() { resolveCwdFn = prevCwd })
+	dir := t.TempDir()
+	resolveCwdFn = func(context.Context, *chat_entity.Session) (string, error) { return dir, nil }
+
+	s := &chatSvc{gateway: newRecordingGateway()}
+	sess := &chat_entity.Session{ID: 100, AgentID: 7}
+	a := &agent_entity.Agent{ID: 7, AgentBackendID: 12}
+	be := &agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeClaudeCode),
+		LLMProviderKey: "key-1", LLMModelKey: "mk-fixed", Status: consts.ACTIVE,
+	}
+	prov := &llm_provider_entity.LLMProvider{
+		ProviderKey: "key-1", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
+	}
+
+	prepared, err := s.prepareTurnRun(context.Background(), sess, a, be, prov, nil, nil, "", false, false)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	require.NotNil(t, prepared.req.Effective)
+	assert.Equal(t, agentruntime.EffectiveModeFixedModel, prepared.req.Effective.Mode,
+		"Backend 钉了 ModelKey 时必须是 fixed-model 模式")
+	assert.Equal(t, "mk-fixed", prepared.req.Effective.ModelKey)
+	assert.Equal(t, "model-fixed-mk-fixed", prepared.req.Effective.ModelID,
+		"fixed-model 必须解析到指定子模型，而不是 provider-default 默认")
+}
+
+// TestPrepareTurnRun_BackendProviderDefaultFollowsCurrentDefault 钉死 provider-default
+// 对照：backend 只钉 ProviderKey（ModelKey 空）时，EffectiveLLMConfig v1 仍解析 Provider
+// 当前默认模型。
+func TestPrepareTurnRun_BackendProviderDefaultFollowsCurrentDefault(t *testing.T) {
+	registerProviderMockForTurn(t, "key-1", "", "")
+	runner := &directRunRunner{request: make(chan agentruntime.RunRequest, 1)}
+	t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, runner))
+	prevCwd := resolveCwdFn
+	t.Cleanup(func() { resolveCwdFn = prevCwd })
+	dir := t.TempDir()
+	resolveCwdFn = func(context.Context, *chat_entity.Session) (string, error) { return dir, nil }
+
+	s := &chatSvc{gateway: newRecordingGateway()}
+	sess := &chat_entity.Session{ID: 100, AgentID: 7}
+	a := &agent_entity.Agent{ID: 7, AgentBackendID: 12}
+	be := &agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeClaudeCode),
+		LLMProviderKey: "key-1", Status: consts.ACTIVE,
+	}
+	prov := &llm_provider_entity.LLMProvider{
+		ProviderKey: "key-1", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
+	}
+
+	prepared, err := s.prepareTurnRun(context.Background(), sess, a, be, prov, nil, nil, "", false, false)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	require.NotNil(t, prepared.req.Effective)
+	assert.Equal(t, agentruntime.EffectiveModeProviderDefault, prepared.req.Effective.Mode)
+	assert.Equal(t, "mk-key-1", prepared.req.Effective.ModelKey)
+	assert.Equal(t, "model-key-1", prepared.req.Effective.ModelID,
+		"provider-default 必须解析 Provider 当前默认模型")
+}
+
+// TestEffectiveLLMForTurn_SessionOverridesProviderSkipsBackendFixedModel 钉死 backend
+// 固定模型只在 effective provider == backend 自家 provider 时适用：会话把 provider 覆盖
+// 到别家后，不得把 backend 的 ModelKey 拿去解析那一家（否则 ModelNotOwned 硬失败）。
+func TestEffectiveLLMForTurn_SessionOverridesProviderSkipsBackendFixedModel(t *testing.T) {
+	registerProviderMockForTurn(t, "session-picked", "", "")
+	s := &chatSvc{}
+	be := &agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeClaudeCode),
+		LLMProviderKey: "agent-bound", LLMModelKey: "mk-fixed", Status: consts.ACTIVE,
+	}
+	prov := &llm_provider_entity.LLMProvider{
+		ProviderKey: "session-picked", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
+	}
+
+	cfg, err := s.effectiveLLMForTurn(context.Background(), prov, backendModelKeyFor(be, prov))
+	require.NoError(t, err)
+	assert.Equal(t, agentruntime.EffectiveModeProviderDefault, cfg.Mode,
+		"会话覆盖 provider 后不应用 backend 固定模型，仍走 provider-default")
+	assert.NotEqual(t, "mk-fixed", cfg.ModelKey,
+		"不得把 backend 的 ModelKey 拿去解析会话覆盖到的那家（解析出的是那家默认模型）")
+	assert.Equal(t, "mk-session-picked", cfg.ModelKey, "解析到覆盖那家的当前默认模型")
 }

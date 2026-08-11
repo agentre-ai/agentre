@@ -53,7 +53,7 @@ func TestAgentBackendCheck(t *testing.T) {
 		},
 		{
 			name:    "builtin rejects non-empty model_routes",
-			input:   &AgentBackend{Type: string(TypeBuiltin), Name: "x", LLMProviderKey: "11111111-1111-1111-1111-111111111111", ModelRoutes: `{"OPUS":"22222222-2222-2222-2222-222222222222"}`},
+			input:   &AgentBackend{Type: string(TypeBuiltin), Name: "x", LLMProviderKey: "11111111-1111-1111-1111-111111111111", ModelRoutes: `{"OPUS":{"providerKey":"22222222-2222-2222-2222-222222222222"}}`},
 			wantErr: true,
 		},
 		{
@@ -91,17 +91,17 @@ func TestAgentBackendCheck(t *testing.T) {
 		},
 		{
 			name:    "claudecode valid with model routes",
-			input:   &AgentBackend{Type: string(TypeClaudeCode), Name: "cc", LLMProviderKey: "11111111-1111-1111-1111-111111111111", ModelRoutes: `{"OPUS":"22222222-2222-2222-2222-222222222222","SONNET":"33333333-3333-3333-3333-333333333333"}`},
+			input:   &AgentBackend{Type: string(TypeClaudeCode), Name: "cc", LLMProviderKey: "11111111-1111-1111-1111-111111111111", ModelRoutes: `{"OPUS":{"providerKey":"22222222-2222-2222-2222-222222222222"},"SONNET":{"providerKey":"33333333-3333-3333-3333-333333333333","modelKey":"mk-sonnet"}}`},
 			wantErr: false,
 		},
 		{
 			name:    "claudecode rejects unknown alias",
-			input:   &AgentBackend{Type: string(TypeClaudeCode), Name: "cc", LLMProviderKey: "11111111-1111-1111-1111-111111111111", ModelRoutes: `{"GEMINI":"22222222-2222-2222-2222-222222222222"}`},
+			input:   &AgentBackend{Type: string(TypeClaudeCode), Name: "cc", LLMProviderKey: "11111111-1111-1111-1111-111111111111", ModelRoutes: `{"GEMINI":{"providerKey":"22222222-2222-2222-2222-222222222222"}}`},
 			wantErr: true,
 		},
 		{
 			name:    "claudecode rejects alias with empty providerKey",
-			input:   &AgentBackend{Type: string(TypeClaudeCode), Name: "cc", LLMProviderKey: "11111111-1111-1111-1111-111111111111", ModelRoutes: `{"OPUS":""}`},
+			input:   &AgentBackend{Type: string(TypeClaudeCode), Name: "cc", LLMProviderKey: "11111111-1111-1111-1111-111111111111", ModelRoutes: `{"OPUS":{"providerKey":""}}`},
 			wantErr: true,
 		},
 		{
@@ -274,6 +274,39 @@ func TestAgentBackendCheck(t *testing.T) {
 			name:    "piagent rejects non-empty default_model",
 			input:   &AgentBackend{Type: string(TypePiAgent), Name: "pi", DefaultModel: "whatever"},
 			wantErr: true,
+		},
+
+		// llm_model_key（固定模型）——两个 key 都非空 = fixed-model；ProviderKey 非空且
+		// ModelKey 空 = provider-default；两个都空 = native。
+		{
+			name:    "claudecode fixed model valid",
+			input:   &AgentBackend{Type: string(TypeClaudeCode), Name: "cc", LLMProviderKey: "11111111-1111-1111-1111-111111111111", LLMModelKey: "22222222-2222-2222-2222-222222222222"},
+			wantErr: false,
+		},
+		{
+			name:    "builtin fixed model valid",
+			input:   &AgentBackend{Type: string(TypeBuiltin), Name: "x", LLMProviderKey: "11111111-1111-1111-1111-111111111111", LLMModelKey: "22222222-2222-2222-2222-222222222222"},
+			wantErr: false,
+		},
+		{
+			name:    "codex fixed model valid",
+			input:   &AgentBackend{Type: string(TypeCodex), Name: "cx", LLMProviderKey: "11111111-1111-1111-1111-111111111111", LLMModelKey: "22222222-2222-2222-2222-222222222222"},
+			wantErr: false,
+		},
+		{
+			name:    "piagent fixed model valid",
+			input:   &AgentBackend{Type: string(TypePiAgent), Name: "pi", LLMProviderKey: "11111111-1111-1111-1111-111111111111", LLMModelKey: "22222222-2222-2222-2222-222222222222"},
+			wantErr: false,
+		},
+		{
+			name:    "modelKey without providerKey is invalid",
+			input:   &AgentBackend{Type: string(TypeClaudeCode), Name: "cc", LLMModelKey: "22222222-2222-2222-2222-222222222222"},
+			wantErr: true,
+		},
+		{
+			name:    "native claudecode with empty keys is valid",
+			input:   &AgentBackend{Type: string(TypeClaudeCode), Name: "cc", DefaultModel: "claude-fable-5"},
+			wantErr: false,
 		},
 	}
 

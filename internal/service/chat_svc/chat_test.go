@@ -204,12 +204,10 @@ func assertLoadSessionContextWindow(
 ) {
 	t.Helper()
 	expectLoadSessionBackend(m, ctx, sessionID, agentID, backendID, agent_backend_entity.TypeClaudeCode, &llm_provider_entity.LLMProvider{
-		ID:            providerID,
-		ProviderKey:   providerKey,
-		Type:          string(llm_provider_entity.TypeAnthropic),
-		Model:         "claude-sonnet-4-6",
-		ContextWindow: providerContextWindow,
-		Status:        consts.ACTIVE,
+		ID:          providerID,
+		ProviderKey: providerKey,
+		Type:        string(llm_provider_entity.TypeAnthropic),
+		Status:      consts.ACTIVE,
 	}, &chat_entity.Message{
 		ID: sessionID * 10, SessionID: sessionID, Role: "assistant", BlocksJSON: "[]", Seq: 1, Model: "claude-haiku-4-5",
 	})
@@ -795,7 +793,7 @@ func TestLoadSession(t *testing.T) {
 		convey.Convey("LLMProviderType 透传到 detail（前端按它判定 Usage 字段语义）", func() {
 			convey.Convey("builtin + anthropic provider → llmProviderType=anthropic", func() {
 				expectLoadSessionBackend(m, ctx, 20, 60, 70, agent_backend_entity.TypeBuiltin, &llm_provider_entity.LLMProvider{
-					ID: 80, ProviderKey: "key-80", Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-sonnet-4-6", Status: consts.ACTIVE,
+					ID: 80, ProviderKey: "key-80", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 				})
 
 				resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 20})
@@ -805,7 +803,7 @@ func TestLoadSession(t *testing.T) {
 
 			convey.Convey("builtin + openai-chat provider → llmProviderType=openai-chat", func() {
 				expectLoadSessionBackend(m, ctx, 21, 61, 71, agent_backend_entity.TypeBuiltin, &llm_provider_entity.LLMProvider{
-					ID: 81, ProviderKey: "key-81", Type: string(llm_provider_entity.TypeOpenAIChat), Model: "gpt-4o", Status: consts.ACTIVE,
+					ID: 81, ProviderKey: "key-81", Type: string(llm_provider_entity.TypeOpenAIChat), Status: consts.ACTIVE,
 				})
 
 				resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 21})
@@ -838,7 +836,7 @@ func TestLoadSession(t *testing.T) {
 				ID: 33, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-44", Status: consts.ACTIVE,
 			}, nil)
 			m.provider.EXPECT().FindByKey(ctx, "key-44").Return(&llm_provider_entity.LLMProvider{
-				ID: 44, Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-sonnet-4-6", ContextWindow: 200000, Status: consts.ACTIVE,
+				ID: 44, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 			}, nil)
 			m.message.EXPECT().List(ctx, int64(4)).Return(nil, nil)
 
@@ -859,7 +857,7 @@ func TestLoadSession(t *testing.T) {
 			}, nil)
 			// ContextWindow 留 0；Model 取 cago 内置 catalog 已知的 claude-sonnet-4-6
 			m.provider.EXPECT().FindByKey(ctx, "key-45").Return(&llm_provider_entity.LLMProvider{
-				ID: 45, Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-sonnet-4-6", Status: consts.ACTIVE,
+				ID: 45, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 			}, nil)
 			m.message.EXPECT().List(ctx, int64(5)).Return(nil, nil)
 
@@ -930,7 +928,7 @@ func TestLoadSession(t *testing.T) {
 				ID: 43, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "key-48", Status: consts.ACTIVE,
 			}, nil)
 			m.provider.EXPECT().FindByKey(ctx, "key-48").Return(&llm_provider_entity.LLMProvider{
-				ID: 48, Type: string(llm_provider_entity.TypeOpenAIResponse), Model: "gpt-5.4", ContextWindow: 100000, Status: consts.ACTIVE,
+				ID: 48, Type: string(llm_provider_entity.TypeOpenAIResponse), Status: consts.ACTIVE,
 			}, nil)
 			m.message.EXPECT().List(ctx, int64(10)).Return([]*chat_entity.Message{
 				{ID: 110, SessionID: 10, Role: "assistant", BlocksJSON: "[]", Seq: 1, Model: "gpt-5-codex"},
@@ -1167,7 +1165,7 @@ func TestGetLaunchCommand(t *testing.T) {
 
 		convey.Convey("claudecode + provider → 单行命令含 BASE_URL、永久 token、model、--resume", func() {
 			expectLaunchCommandBackend(m, ctx, 3, 7, 22, agent_backend_entity.TypeClaudeCode, "sess-uuid", &llm_provider_entity.LLMProvider{
-				ID: 33, ProviderKey: "key-33", Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-sonnet-4-6", Status: consts.ACTIVE,
+				ID: 33, ProviderKey: "key-33", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 			})
 
 			command := loadLaunchCommand(t, m, ctx, 3, agent_backend_entity.TypeClaudeCode)
@@ -1182,7 +1180,7 @@ func TestGetLaunchCommand(t *testing.T) {
 
 		convey.Convey("codex + provider session → 单行命令用 resume 子命令带 session id", func() {
 			expectLaunchCommandBackend(m, ctx, 6, 8, 23, agent_backend_entity.TypeCodex, "codex-thread-123", &llm_provider_entity.LLMProvider{
-				ID: 34, ProviderKey: "key-34", Type: string(llm_provider_entity.TypeOpenAIResponse), Model: "gpt-5-codex", Status: consts.ACTIVE,
+				ID: 34, ProviderKey: "key-34", Type: string(llm_provider_entity.TypeOpenAIResponse), Status: consts.ACTIVE,
 			})
 
 			command := loadLaunchCommand(t, m, ctx, 6, agent_backend_entity.TypeCodex)
@@ -1295,7 +1293,7 @@ func TestSend_ImageInput(t *testing.T) {
 				Status:         consts.ACTIVE,
 			}
 			agent := &agent_entity.Agent{ID: 7, Name: "Builtin", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`}
-			provider := &llm_provider_entity.LLMProvider{ID: 11, Type: string(llm_provider_entity.TypeAnthropic), Model: "m", Status: consts.ACTIVE}
+			provider := &llm_provider_entity.LLMProvider{ID: 11, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}
 
 			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
 			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(agent, nil)
@@ -2135,7 +2133,6 @@ func TestSend_NewSession(t *testing.T) {
 		}, nil)
 		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
 			ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-			Model: "claude-sonnet-4-6",
 		}, nil)
 
 		fp := providertest.New().
@@ -2325,7 +2322,7 @@ func TestSend_ExistingSessionUsesSessionAgentBackend(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
@@ -3031,8 +3028,7 @@ func TestGoal_UsesSessionEffectiveProvider(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "session-picked").Return(&llm_provider_entity.LLMProvider{
-		ID: 34, ProviderKey: "session-picked", Type: string(llm_provider_entity.TypeOpenAIResponse),
-		Model: "gpt-session", Status: consts.ACTIVE,
+		ID: 34, ProviderKey: "session-picked", Type: string(llm_provider_entity.TypeOpenAIResponse), Status: consts.ACTIVE,
 	}, nil)
 
 	_, err := m.svc.GetGoal(ctx, &chat_svc.GoalRequest{SessionID: 100})
@@ -3844,7 +3840,7 @@ func TestSend_TerminalDaemonDisconnectLandsErrorStatus(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 
 	var sessionUpdates []*chat_entity.Session
@@ -3918,7 +3914,7 @@ func runStopErrTurnErrorText(t *testing.T, stop error) string {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
@@ -4204,7 +4200,7 @@ func TestSend_RuntimeErrorsStayVisibleAndPersistedWithoutEnteringLogs(t *testing
 				ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 			}, nil)
 			m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-				ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+				ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 			}, nil)
 			m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
@@ -4328,7 +4324,7 @@ func TestSend_StreamErrorEventCarriesFinalAssistantMessage(t *testing.T) {
 			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(backend, nil)
 			if tt.backendType == agent_backend_entity.TypeBuiltin {
 				m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-					ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+					ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 				}, nil)
 			}
 			m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
@@ -4401,7 +4397,7 @@ func TestSend_StreamErrorAlsoEmitsSessionStatusError(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
@@ -4468,7 +4464,7 @@ func TestSend_StreamErrorFollowedByProgressDoesNotFailTurn(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 
 	m.dbMock.ExpectBegin()
@@ -4545,7 +4541,7 @@ func TestSend_StreamErrorFollowedOnlyByMetadataStillFailsTurn(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 
 	m.dbMock.ExpectBegin()
@@ -4609,7 +4605,7 @@ func TestSend_FailTurnEmitsSessionStatusError(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
@@ -4675,7 +4671,7 @@ func TestSend_StreamRetryEventIsForwardedWithoutFailingTurn(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
@@ -4761,7 +4757,7 @@ func TestSend_StreamUsageEventsAreForwardedAndPersisted(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
@@ -4930,7 +4926,7 @@ func standardSendMocksWithoutMessageUpdate(t *testing.T, m *chatMocks, sessionID
 		ID: backendID, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: providerKey, Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), providerKey).Return(&llm_provider_entity.LLMProvider{
-		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 
 	m.dbMock.ExpectBegin()
@@ -4975,7 +4971,7 @@ func TestSend_ErrorSessionMarksRunningAtTurnStart(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 
 	m.dbMock.ExpectBegin()
@@ -5028,7 +5024,7 @@ func TestSend_PersistFailureDoesNotPersistRunning(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 
 	m.dbMock.ExpectBegin()
@@ -5052,7 +5048,7 @@ func TestSend_NewSessionCreatesIdleNotRunning(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 
 	var created chat_entity.Session
@@ -5099,7 +5095,7 @@ func TestRegenerate_PersistFailureDoesNotPersistRunning(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 
 	m.dbMock.ExpectBegin()
@@ -5314,7 +5310,7 @@ func TestSend_CheckpointsAssistantWhenToolResultArrives(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 
 	m.dbMock.ExpectBegin()
@@ -5468,7 +5464,7 @@ func TestSend_SteerConsumedSplitsMessages(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
@@ -5611,7 +5607,7 @@ func TestSend_AutoContinuesWhenSteerInboxNonEmpty(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
@@ -5719,7 +5715,7 @@ func TestSend_AutoContinuesMultipleLevels(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
@@ -6114,7 +6110,7 @@ func TestRegenerate_BuiltinTruncatesAndRestartsTurn(t *testing.T) {
 			ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 		}, nil)
 		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-			ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+			ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 		}, nil)
 		m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
@@ -6181,7 +6177,7 @@ func TestRegenerate_BuiltinWithProviderSessionStillRestartsTurn(t *testing.T) {
 			ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 		}, nil)
 		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-			ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+			ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 		}, nil)
 		m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
@@ -6480,7 +6476,7 @@ func TestSend_NonPiUserAnchorPersistenceFailureKeepsCompletedTurn(t *testing.T) 
 			if backendType == agent_backend_entity.TypeBuiltin {
 				backend.LLMProviderKey = "provider-key"
 				m.provider.EXPECT().FindByKey(gomock.Any(), "provider-key").Return(&llm_provider_entity.LLMProvider{
-					ID: 11, Type: string(llm_provider_entity.TypeOpenAIChat), Model: "test-model", Status: consts.ACTIVE,
+					ID: 11, Type: string(llm_provider_entity.TypeOpenAIChat), Status: consts.ACTIVE,
 				}, nil)
 				m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
 			}
@@ -8542,7 +8538,7 @@ func TestEdit_BuiltinTruncatesAndReplaysNewText(t *testing.T) {
 			ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 		}, nil)
 		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-			ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+			ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 		}, nil)
 		m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{}, nil).AnyTimes()
 		m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
@@ -10170,7 +10166,7 @@ func TestSend_StreamToolUseCarriesCanonical(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}, nil)
 
 	m.dbMock.ExpectBegin()

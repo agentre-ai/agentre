@@ -34,7 +34,6 @@ import { truncateFlashText } from "./agent-backends-utils";
 import {
   AgentBackendLogo,
   LlmModelLogo,
-  LlmProviderLogo,
 } from "./ai-brand-logo";
 import {
   CancelTestAgentBackend,
@@ -60,6 +59,12 @@ import {
   llm_provider_svc,
 } from "../../../wailsjs/go/models";
 import { AgentreDialog } from "./app-dialog";
+import {
+  ModelTargetPicker,
+  recordRecentTarget,
+  useModelTargetCatalog,
+  type PickerProvider,
+} from "./model-target-picker";
 import {
   OPENCLAW_DEFAULT_GATEWAY_URL,
   OPENCLAW_SESSION_MODE,
@@ -133,13 +138,19 @@ type FlashState =
 type SandboxValue = "" | "read-only" | "workspace-write" | "danger-full-access";
 type ApprovalValue = "" | "untrusted" | "on-request" | "never";
 type ReasoningEffortValue = "" | "low" | "medium" | "high" | "xhigh" | "max";
+// RouteTarget 是 Claude Tier Route 的结构化目标（与后端 DTO 同形）：
+// providerKey 空 = inherit-main；modelKey 空 = provider-default。
+type RouteTarget = { providerKey: string; modelKey: string };
 type BackendDraft = {
   type: BackendType;
   name: string;
   deviceId: string;
   llmProviderKey: string;
+  // llmModelKey 主绑定目标的稳定 ModelKey（空 = provider-default）。
+  llmModelKey: string;
   cliPath: string;
-  modelRoutes: string;
+  // modelRoutes 类型化 Claude Tier Route target（key = OPUS/SONNET/HAIKU）。
+  modelRoutes: Record<ClaudeTier, RouteTarget>;
   sandbox: string;
   approval: string;
   envJson: string;
@@ -264,20 +275,16 @@ function probeCLIPath(t: BackendType, deviceId: string) {
   } as agent_backend_svc.ResolveCLIPathRequest);
 }
 
-function safeParseRoutes(s: string): Record<string, string> {
-  try {
-    const obj = JSON.parse(s || "{}");
-    if (!obj || typeof obj !== "object") return {};
-    // Normalize: values may be legacy numeric IDs or new string keys — always stringify.
-    return Object.fromEntries(
-      Object.entries(obj as Record<string, unknown>).map(([k, v]) => [
-        k,
-        String(v ?? ""),
-      ]),
-    );
-  } catch {
-    return {};
+// parseRoutes 把后端 DTO 的类型化 modelRoutes 解析成三档 Record。
+function parseRoutes(raw: Record<string, RouteTarget> | undefined): Record<ClaudeTier, RouteTarget> {
+  const next = emptyRoutes();
+  for (const tier of CLAUDE_TIERS) {
+    const v = raw?.[tier];
+    if (v && v.providerKey) {
+      next[tier] = { providerKey: v.providerKey, modelKey: v.modelKey ?? "" };
+    }
   }
+  return next;
 }
 
 function safeParseEnv(s: string): EnvEntry[] {
@@ -292,16 +299,6 @@ function safeParseEnv(s: string): EnvEntry[] {
   }
 }
 
-function serializeRoutes(routes: Record<ClaudeTier, string>): string {
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(routes)) {
-    if (v && v.trim() !== "") {
-      out[k] = v.trim();
-    }
-  }
-  return Object.keys(out).length === 0 ? "{}" : JSON.stringify(out);
-}
-
 function serializeEnv(entries: EnvEntry[]): string {
   const out: Record<string, string> = {};
   for (const e of entries) {
@@ -312,8 +309,22 @@ function serializeEnv(entries: EnvEntry[]): string {
   return Object.keys(out).length === 0 ? "{}" : JSON.stringify(out);
 }
 
-function emptyRoutes(): Record<ClaudeTier, string> {
-  return { OPUS: "", SONNET: "", HAIKU: "" };
+function emptyRoutes(): Record<ClaudeTier, RouteTarget> {
+  return { OPUS: { providerKey: "", modelKey: "" }, SONNET: { providerKey: "", modelKey: "" }, HAIKU: { providerKey: "", modelKey: "" } };
+}
+
+// routeTargets 把非空的 tier route 收进提交用的 map（继承主绑定的空 target 不提交）。
+function routeTargetsForRequest(
+  routes: Record<ClaudeTier, RouteTarget>,
+): Record<string, RouteTarget> {
+  const out: Record<string, RouteTarget> = {};
+  for (const tier of CLAUDE_TIERS) {
+    const r = routes[tier];
+    if (r && r.providerKey.trim() !== "") {
+      out[tier] = { providerKey: r.providerKey.trim(), modelKey: r.modelKey.trim() };
+    }
+  }
+  return out;
 }
 
 function referencedProviderKeys(draft: BackendDraft): string[] {
@@ -322,10 +333,11 @@ function referencedProviderKeys(draft: BackendDraft): string[] {
     keys.add(draft.llmProviderKey.trim());
   }
   if (draft.type === "claudecode") {
-    const routes = safeParseRoutes(draft.modelRoutes);
-    for (const value of Object.values(routes)) {
-      const key = value.trim();
-      if (key !== "") keys.add(key);
+    for (const tier of CLAUDE_TIERS) {
+      const r = draft.modelRoutes[tier];
+      if (r && r.providerKey.trim() !== "") {
+        keys.add(r.providerKey.trim());
+      }
     }
   }
   return Array.from(keys);
@@ -336,7 +348,7 @@ function providerLabel(key: string, providers: Provider[]): string {
     (item) => item.providerKey === key || String(item.id) === key,
   );
   if (!p) return key;
-  return p.model ? `${p.name} · ${p.model}` : p.name;
+  return p.name;
 }
 
 function openClawProbeErrorMessage(
@@ -923,15 +935,17 @@ function BackendEditor({
       (editing as unknown as { llmProviderKey?: string } | null)
         ?.llmProviderKey ?? "",
   );
-  const [routes, setRoutes] = React.useState<Record<ClaudeTier, string>>(() => {
-    const parsed = safeParseRoutes(editing?.modelRoutes ?? "");
-    const next = emptyRoutes();
-    for (const tier of CLAUDE_TIERS) {
-      const v = parsed[tier];
-      if (v) next[tier] = v;
-    }
-    return next;
-  });
+  // llmModelKey 主绑定固定模型（空 = provider-default）。
+  const [llmModelKey, setLlmModelKey] = React.useState<string>(
+    (editing as unknown as { llmModelKey?: string } | null)?.llmModelKey ?? "",
+  );
+  const [routes, setRoutes] = React.useState<Record<ClaudeTier, RouteTarget>>(
+    () =>
+      parseRoutes(
+        (editing as unknown as { modelRoutes?: Record<string, RouteTarget> } | null)
+          ?.modelRoutes,
+      ),
+  );
   const [sandbox, setSandbox] = React.useState<SandboxValue>(
     (editing?.sandbox as SandboxValue) ?? "",
   );
@@ -997,6 +1011,13 @@ function BackendEditor({
     () => matchingProviders(type, providers),
     [type, providers],
   );
+
+  // Picker 目录：每个 provider 的模型目录（供主目标 + Claude tier 路由使用）。
+  const {
+    catalog: targetCatalog,
+    loading: catalogLoading,
+    error: catalogError,
+  } = useModelTargetCatalog(providers);
 
   const autoProviderKey =
     state.kind === "create" &&
@@ -1207,8 +1228,11 @@ function BackendEditor({
             ? (editing?.deviceId ?? "")
             : deviceId,
       llmProviderKey: type === "openclaw" ? "" : effectiveLlmProviderKey,
+      // openclaw 不绑定 Agentre ProviderModel（spec 决策 4/22）。
+      llmModelKey: type === "openclaw" ? "" : llmModelKey.trim(),
       cliPath: isCliBackend(type) ? cliPath.trim() : "",
-      modelRoutes: type === "claudecode" ? serializeRoutes(routes) : "{}",
+      modelRoutes:
+        type === "claudecode" ? routeTargetsForRequest(routes) : {},
       sandbox: type === "codex" ? sandbox : "",
       approval: type === "codex" ? approval : "",
       envJson: isCliBackend(type) ? serializeEnv(envEntries) : "{}",
@@ -1255,6 +1279,11 @@ function BackendEditor({
           ...draft,
         } as agent_backend_svc.CreateBackendRequest);
       }
+      // 最近使用只在 target 成功持久化后记录（spec 决策 19）；native/inherit 不进入。
+      recordRecentTarget("backend", draft.deviceId, {
+        providerKey: draft.llmProviderKey,
+        modelKey: draft.llmModelKey,
+      });
       await onSaved(t("agentBackends.flash.created"));
     } else if (state.kind === "edit" && editing) {
       const request = {
@@ -1262,6 +1291,7 @@ function BackendEditor({
         name: draft.name,
         deviceId: draft.deviceId,
         llmProviderKey: draft.llmProviderKey,
+        llmModelKey: draft.llmModelKey,
         cliPath: draft.cliPath,
         modelRoutes: draft.modelRoutes,
         sandbox: draft.sandbox,
@@ -1284,6 +1314,11 @@ function BackendEditor({
       } else {
         await UpdateAgentBackend(request);
       }
+      // 最近使用只在 target 成功持久化后记录（spec 决策 19）；native/inherit 不进入。
+      recordRecentTarget("backend", draft.deviceId, {
+        providerKey: draft.llmProviderKey,
+        modelKey: draft.llmModelKey,
+      });
       await onSaved(t("agentBackends.flash.saved"));
     }
   }
@@ -1315,7 +1350,7 @@ function BackendEditor({
         useDraft: true,
         ...draft,
         requestId,
-      } as agent_backend_svc.TestBackendRequest;
+      } as unknown as agent_backend_svc.TestBackendRequest;
       const res =
         type === "openclaw"
           ? await TestOpenClawAgentBackend(request, openClawToken)
@@ -1490,12 +1525,29 @@ function BackendEditor({
   const strictLabel = strictMatchLabel(type, selectedProvider?.type);
   // builtin 必须有 provider；CLI 自身登录、OpenClaw 走 Gateway 认证，都允许未关联。
   const providerOptional = isCliBackend(type) || type === "openclaw";
-  // piagent 绑定了 Model 为空的供应商时后端保存会报 AgentBackendProviderModelRequired；
-  // 前端先行提示并禁用保存/测试，避免落库失败后再绕圈。
+  // piagent 绑定时 provider-default / fixed-model 都必须最终解析到可用模型
+  // （spec「ModelTarget contract」）。目录加载完成且能确定目标解析不到模型时才前置拦截。
+  const selectedTargetProvider = targetCatalog.find(
+    (p) => p.providerKey === effectiveLlmProviderKey,
+  );
   const piAgentModelMissing =
     type === "piagent" &&
     effectiveLlmProviderKey !== "" &&
-    !selectedProvider?.model;
+    !!selectedTargetProvider &&
+    (llmModelKey !== ""
+      ? !selectedTargetProvider.models.some(
+          (m) => m.modelKey === llmModelKey && m.enabled,
+        )
+      : !selectedTargetProvider.defaultModel);
+  // 主目标是否已失效：绑定了 provider/model 但目录里解析不出来（Provider/Model 缺失/停用）。
+  const mainTargetInvalid =
+    effectiveLlmProviderKey !== "" &&
+    !!selectedTargetProvider &&
+    (llmModelKey !== ""
+      ? !selectedTargetProvider.models.some(
+          (m) => m.modelKey === llmModelKey && m.enabled,
+        )
+      : !selectedTargetProvider.defaultModel);
   const submitDisabled =
     submitting ||
     piAgentModelMissing ||
@@ -1639,15 +1691,24 @@ function BackendEditor({
         </div>
 
         {type !== "openclaw" ? (
-          <LlmProviderField
+          <ModelTargetField
             type={type}
             providers={filteredProviders}
             value={effectiveLlmProviderKey}
-            onChange={setLlmProviderKey}
+            modelKey={llmModelKey}
+            onTargetChange={({ providerKey, modelKey }) => {
+              setLlmProviderKey(providerKey);
+              setLlmModelKey(modelKey);
+            }}
             strictLabel={strictLabel}
+            invalid={mainTargetInvalid}
             piAgentModelMissing={piAgentModelMissing}
             editing={!!editing}
             onOpenLlmProviders={onOpenLlmProviders}
+            catalog={targetCatalog}
+            catalogLoading={catalogLoading}
+            catalogError={catalogError}
+            executionLocation={deviceId}
           />
         ) : (
           <OpenClawBackendFields
@@ -1720,10 +1781,12 @@ function BackendEditor({
 
         {type === "claudecode" ? (
           <ModelRoutesField
-            providers={filteredProviders}
+            catalog={targetCatalog}
+            catalogLoading={catalogLoading}
+            catalogError={catalogError}
             routes={routes}
             onChange={setRoutes}
-            mainProviderKey={llmProviderKey}
+            executionLocation={deviceId}
           />
         ) : null}
 
@@ -2037,24 +2100,36 @@ function ProviderConfigureCta({ onConfigure }: { onConfigure?: () => void }) {
   );
 }
 
-function LlmProviderField({
+function ModelTargetField({
   type,
   providers,
   value,
-  onChange,
+  modelKey,
+  onTargetChange,
   strictLabel,
+  invalid,
   piAgentModelMissing,
   editing,
   onOpenLlmProviders,
+  catalog,
+  catalogLoading,
+  catalogError,
+  executionLocation,
 }: {
   type: BackendType;
   providers: Provider[];
   value: string;
-  onChange: (v: string) => void;
+  modelKey: string;
+  onTargetChange: (t: { providerKey: string; modelKey: string }) => void;
   strictLabel: string | null;
+  invalid: boolean;
   piAgentModelMissing: boolean;
   editing: boolean;
   onOpenLlmProviders?: () => void;
+  catalog: PickerProvider[];
+  catalogLoading: boolean;
+  catalogError: boolean;
+  executionLocation: string;
 }) {
   const { t } = useTranslation();
   // claudecode / codex / piagent 允许「不关联」走 CLI 自身登录；builtin 必填。
@@ -2064,9 +2139,7 @@ function LlmProviderField({
     (p.providerKey && p.providerKey === value) || String(p.id) === value;
   const stale = editing && value !== "" && !providers.some(matchesProvider);
   const empty = providers.length === 0;
-  const selected = providers.some(matchesProvider);
-  // Resolve which key to use for a provider: prefer providerKey, fall back to id.
-  const providerSelectValue = (p: Provider) => p.providerKey || String(p.id);
+  const selected = { providerKey: value, modelKey };
 
   if (empty && !optional) {
     return (
@@ -2145,62 +2218,34 @@ function LlmProviderField({
           </AlertDescription>
         </Alert>
       ) : (
-        <div className="flex items-center gap-1.5">
-          <Select value={selected ? value : ""} onValueChange={onChange}>
-            <SelectTrigger
-              aria-label={t("agentBackends.provider.label")}
-              className="flex-1"
-            >
-              <SelectValue
-                placeholder={
-                  optional
-                    ? t("agentBackends.provider.placeholderOptional")
-                    : t("agentBackends.provider.placeholderRequired")
-                }
-              />
-            </SelectTrigger>
-            <SelectContent>
-              {providers.map((p) => (
-                <SelectItem key={p.id} value={providerSelectValue(p)}>
-                  <span className="inline-flex items-center gap-2">
-                    <LlmProviderLogo
-                      providerType={p.type}
-                      providerName={p.name}
-                      baseUrl={p.baseUrl}
-                      className="size-4"
-                    />
-                    <span>{p.name}</span>
-                    {p.model ? (
-                      <LlmModelLogo
-                        providerType={p.type}
-                        providerName={p.name}
-                        baseUrl={p.baseUrl}
-                        model={p.model}
-                        className="size-3.5"
-                      />
-                    ) : null}
-                    <span className="font-mono text-2xs text-muted-foreground">
-                      {p.model || t("agentBackends.provider.noModel")}
-                    </span>
-                  </span>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {optional && selected ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              aria-label={t("agentBackends.provider.clear")}
-              title={t("agentBackends.provider.clearTitle")}
-              onClick={() => onChange("")}
-            >
-              <X data-icon="only" aria-hidden="true" />
-            </Button>
-          ) : null}
-        </div>
+        <ModelTargetPicker
+          scenario="backend"
+          backendType={type}
+          executionLocation={executionLocation}
+          selected={selected}
+          onChange={(target) =>
+            onTargetChange({
+              providerKey: target.providerKey,
+              modelKey: target.modelKey,
+            })
+          }
+          catalog={catalog}
+          loading={catalogLoading}
+          error={catalogError}
+          invalid={invalid}
+          aria-label={t("agentBackends.provider.label")}
+        />
       )}
+      {value !== "" && !modelKey ? (
+        <span className="font-mono text-2xs text-muted-foreground">
+          {t("agentBackends.provider.followsDefault")}
+        </span>
+      ) : null}
+      {value !== "" && modelKey ? (
+        <span className="font-mono text-2xs text-muted-foreground">
+          {t("agentBackends.provider.fixedNote")}
+        </span>
+      ) : null}
       {piAgentModelMissing ? (
         <Alert className="border-status-waiting/40 bg-status-waiting-bg text-xs">
           <AlertCircle className="size-4" aria-hidden="true" />
@@ -2278,23 +2323,21 @@ function CliPathField({
 }
 
 function ModelRoutesField({
-  providers,
+  catalog,
+  catalogLoading,
+  catalogError,
   routes,
   onChange,
-  mainProviderKey,
+  executionLocation,
 }: {
-  providers: Provider[];
-  routes: Record<ClaudeTier, string>;
-  onChange: (r: Record<ClaudeTier, string>) => void;
-  mainProviderKey: string;
+  catalog: PickerProvider[];
+  catalogLoading: boolean;
+  catalogError: boolean;
+  routes: Record<ClaudeTier, RouteTarget>;
+  onChange: (r: Record<ClaudeTier, RouteTarget>) => void;
+  executionLocation: string;
 }) {
   const { t } = useTranslation();
-  const inheritName =
-    providers.find(
-      (p) =>
-        (p.providerKey && p.providerKey === mainProviderKey) ||
-        String(p.id) === mainProviderKey,
-    )?.name ?? t("agentBackends.modelRoutes.inheritMain");
   return (
     <div className="flex flex-col gap-1.5 text-xs">
       <div className="flex items-center justify-between">
@@ -2307,7 +2350,18 @@ function ModelRoutesField({
       </div>
       <div className="flex flex-col gap-1.5">
         {CLAUDE_TIERS.map((tier) => {
-          const value = routes[tier] ?? "";
+          const route = routes[tier] ?? { providerKey: "", modelKey: "" };
+          const tierInvalid =
+            route.providerKey !== "" &&
+            !catalog.some(
+              (p) =>
+                p.providerKey === route.providerKey &&
+                (route.modelKey === ""
+                  ? !!p.defaultModel
+                  : p.models.some(
+                      (m) => m.modelKey === route.modelKey && m.enabled,
+                    )),
+            );
           return (
             <div
               key={tier}
@@ -2319,58 +2373,27 @@ function ModelRoutesField({
               >
                 {tier}
               </Badge>
-              <Select
-                value={value === "" ? "__inherit__" : value}
-                onValueChange={(v) =>
+              <ModelTargetPicker
+                scenario="route"
+                backendType="claudecode"
+                executionLocation={executionLocation}
+                selected={route}
+                onChange={(target) =>
                   onChange({
                     ...routes,
-                    [tier]: v === "__inherit__" ? "" : v,
+                    [tier]: {
+                      providerKey: target.providerKey,
+                      modelKey: target.modelKey,
+                    },
                   })
                 }
-              >
-                <SelectTrigger>
-                  <SelectValue
-                    placeholder={t("agentBackends.provider.selectProvider")}
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__inherit__">
-                    <span className="text-muted-foreground">
-                      {t("agentBackends.modelRoutes.inheritWithName", {
-                        name: inheritName,
-                      })}
-                    </span>
-                  </SelectItem>
-                  {providers.map((p) => (
-                    <SelectItem
-                      key={p.id}
-                      value={p.providerKey || String(p.id)}
-                    >
-                      <span className="inline-flex items-center gap-2">
-                        <LlmProviderLogo
-                          providerType={p.type}
-                          providerName={p.name}
-                          baseUrl={p.baseUrl}
-                          className="size-4"
-                        />
-                        <span>{p.name}</span>
-                        {p.model ? (
-                          <LlmModelLogo
-                            providerType={p.type}
-                            providerName={p.name}
-                            baseUrl={p.baseUrl}
-                            model={p.model}
-                            className="size-3.5"
-                          />
-                        ) : null}
-                        <span className="font-mono text-2xs text-muted-foreground">
-                          {p.model || t("agentBackends.provider.noModel")}
-                        </span>
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                catalog={catalog}
+                loading={catalogLoading}
+                error={catalogError}
+                invalid={tierInvalid}
+                compact
+                aria-label={t("agentBackends.modelRoutes.tierAria", { tier })}
+              />
             </div>
           );
         })}

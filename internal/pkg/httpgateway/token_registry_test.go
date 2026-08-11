@@ -16,7 +16,7 @@ func TestTokenRegistry_IssueResolveRevoke(t *testing.T) {
 		ID:             7,
 		Type:           string(agent_backend_entity.TypeClaudeCode),
 		LLMProviderKey: "key-3",
-		ModelRoutes:    `{"OPUS":"key-5","sonnet":"key-6"}`,
+		ModelRoutes:    `{"OPUS":{"providerKey":"key-5"},"SONNET":{"providerKey":"key-6","modelKey":"mk-6"}}`,
 	}
 	tok, err := r.Issue(b, b.LLMProviderKey, 60*time.Second)
 	assert.NoError(t, err)
@@ -28,9 +28,11 @@ func TestTokenRegistry_IssueResolveRevoke(t *testing.T) {
 		assert.Equal(t, int64(7), got.BackendID)
 		assert.Equal(t, "key-3", got.Main.ProviderKey)
 		assert.Equal(t, agent_backend_entity.TypeClaudeCode, got.BackendType)
-		// alias 已规范成大写
+		// alias 已规范成大写；tier target 携带完整 ProviderKey+ModelKey
 		assert.Equal(t, "key-5", got.Routes["OPUS"].ProviderKey)
+		assert.Empty(t, got.Routes["OPUS"].ModelKey)
 		assert.Equal(t, "key-6", got.Routes["SONNET"].ProviderKey)
+		assert.Equal(t, "mk-6", got.Routes["SONNET"].ModelKey)
 	}
 
 	r.Revoke(tok)
@@ -138,7 +140,7 @@ func TestTokenRegistry_SetProviderKeyKeepsTokenString(t *testing.T) {
 	r := NewTokenRegistry()
 	b := &agent_backend_entity.AgentBackend{
 		ID: 7, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "agent-bound",
-		ModelRoutes: `{"OPUS":"tier-key"}`,
+		ModelRoutes: `{"OPUS":{"providerKey":"tier-key","modelKey":"tier-mk"}}`,
 	}
 	tok, err := r.Issue(b, "agent-bound", 0)
 	assert.NoError(t, err)
@@ -153,6 +155,7 @@ func TestTokenRegistry_SetProviderKeyKeepsTokenString(t *testing.T) {
 		assert.Equal(t, "switched", entry.Main.ProviderKey)
 		assert.Equal(t, int64(7), entry.BackendID, "身份不变")
 		assert.Equal(t, "tier-key", entry.Routes["OPUS"].ProviderKey, "tier 路由来自 backend 配置，不受切换影响")
+		assert.Equal(t, "tier-mk", entry.Routes["OPUS"].ModelKey, "tier 路由携带完整 ModelKey")
 	}
 }
 

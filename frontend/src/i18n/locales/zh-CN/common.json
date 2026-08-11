@@ -158,7 +158,8 @@
       "hint": "ANTHROPIC_DEFAULT_*_MODEL，留空走主供应商",
       "inheritMain": "继承主供应商",
       "inheritWithName": "继承主供应商 · {{name}}",
-      "label": "模型分级路由"
+      "label": "模型分级路由",
+      "tierAria": "OPUS/SONNET/HAIKU 路由"
     },
     "name": {
       "deviceDefault": "{{device}} · {{name}}"
@@ -250,7 +251,9 @@
       "staleOptionalClause": "，或清除关联走 CLI 自身登录",
       "staleTitle": "原 LLM 供应商已停用或与当前类型不匹配",
       "strictMatch": "严格匹配 · {{type}}",
-      "unlinked": "未关联供应商"
+      "unlinked": "未关联供应商",
+      "followsDefault": "默认模型变化会从下一轮动态跟随",
+      "fixedNote": "已固定该模型，Provider 默认变化不会影响它"
     },
     "providerSync": {
       "descriptionOnly": "同步会把本机保存的 API Key 写入远端 agentred 状态文件；不会保存表单其它改动。",
@@ -2963,5 +2966,22 @@
     "noOutput": "无输出",
     "expand": "展开输出",
     "collapse": "折叠输出"
+  },
+  "modelTargetPicker": {
+    "special": {
+      "backend": "CLI 自身登录态",
+      "chat": "跟随 Agent 绑定",
+      "route": "继承主绑定"
+    },
+    "searchPlaceholder": "搜索供应商或模型…",
+    "clearSearch": "清空搜索",
+    "loading": "正在加载模型目录…",
+    "error": "模型目录加载失败",
+    "empty": "暂无可用供应商，请先到 LLM 供应商管理页创建。",
+    "defaultBadge": "默认",
+    "defaultLabel": "跟随默认模型",
+    "invalidHint": "该目标已失效（供应商或模型缺失/停用），请重新选择。",
+    "remoteMissing": "目标设备缺少该供应商，请在远端同步后再选择。",
+    "noDefaultModel": "未设置默认模型"
   }
 }

@@ -99,7 +99,7 @@ func (r *TokenRegistry) Issue(b *agent_backend_entity.AgentBackend, providerKey 
 	}
 	upper := make(map[string]TokenTarget, len(routes))
 	for k, v := range routes {
-		upper[strings.ToUpper(k)] = TokenTarget{ProviderKey: v}
+		upper[strings.ToUpper(k)] = TokenTarget{ProviderKey: v.ProviderKey, ModelKey: v.ModelKey}
 	}
 
 	tok, err := RandomToken(24)

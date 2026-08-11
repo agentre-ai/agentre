@@ -27,7 +27,7 @@ func TestBuildClaudeCodeEnv(t *testing.T) {
 	t.Run("有 gateway + LLM provider 时注入 ANTHROPIC_* + AGENTRE_GATEWAY_* + 用户 env_json", func(t *testing.T) {
 		b := &agent_backend_entity.AgentBackend{
 			LLMProviderKey: "key-7", // 绑了 provider → claude CLI 该走 gateway 转发
-			ModelRoutes:    `{"OPUS":"key-opus"}`,
+			ModelRoutes:    `{"OPUS":{"providerKey":"key-opus"}}`,
 			EnvJSON:        `{"ANTHROPIC_LOG":"info"}`,
 		}
 		env, err := buildClaudeCodeEnv(b, ProbeDeps{
@@ -53,7 +53,7 @@ func TestBuildClaudeCodeEnv(t *testing.T) {
 	t.Run("OPUS/SONNET/HAIKU 三路 alias 都注入对应的字面量", func(t *testing.T) {
 		b := &agent_backend_entity.AgentBackend{
 			LLMProviderKey: "key-1",
-			ModelRoutes:    `{"OPUS":"key-opus","SONNET":"key-sonnet","HAIKU":"key-haiku"}`,
+			ModelRoutes:    `{"OPUS":{"providerKey":"key-opus"},"SONNET":{"providerKey":"key-sonnet"},"HAIKU":{"providerKey":"key-haiku"}}`,
 		}
 		env, err := buildClaudeCodeEnv(b, ProbeDeps{
 			Token:      "tok",

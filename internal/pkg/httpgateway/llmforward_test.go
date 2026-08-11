@@ -230,7 +230,7 @@ func TestForwarder_AliasRoutingPicksTierProvider(t *testing.T) {
 	w := issueAndRequest(t, f.AnthropicHandler(), tokens,
 		&agent_backend_entity.AgentBackend{
 			ID: 5, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-1",
-			ModelRoutes: `{"OPUS":"key-2"}`,
+			ModelRoutes: `{"OPUS":{"providerKey":"key-2"}}`,
 		},
 		"/v1/messages",
 		`{"model":"opus","messages":[]}`,

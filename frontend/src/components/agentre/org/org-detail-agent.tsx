@@ -840,8 +840,9 @@ function backendItemFromSummary(
     llmProviderType: "",
     llmProviderModel: b.llmProviderModel,
     llmProviderActive: b.llmProviderActive,
+    llmModelKey: "",
     cliPath: "",
-    modelRoutes: "",
+    modelRoutes: {},
     sandbox: "",
     approval: "",
     envJson: "",
@@ -859,5 +860,5 @@ function backendItemFromSummary(
     agentCount: 0,
     createtime: 0,
     updatetime: 0,
-  };
+  } as unknown as agent_backend_svc.BackendItem;
 }

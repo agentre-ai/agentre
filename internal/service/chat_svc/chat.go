@@ -652,7 +652,7 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		// 展示侧使用同一解析规则（EffectiveLLMConfig v1 seam）：上下文窗口 / 模型目录
 		// 走解析出的模型，不直接读 Provider 行。查询失败不阻塞加载会话本身（与 prov
 		// 同一容忍度）。
-		cfg, _ := s.effectiveLLMForTurn(ctx, prov)
+		cfg, _ := s.effectiveLLMForTurn(ctx, prov, backendModelKeyFor(be, prov))
 		resp.Session.ContextWindow = resolveContextWindowWithRuntime(sess, cfg, msgs)
 
 		// Device + cwd 信息: 给前端 chat header 渲染"远端运行 · /home/me/proj"小字使用。
@@ -750,7 +750,7 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	}
 	// 执行侧配置（EffectiveLLMConfig v1 seam）：--model 用解析出的 ModelID，
 	// 不再读 Provider 旧单模型字段。
-	cfg, err := s.effectiveLLMForTurn(ctx, prov)
+	cfg, err := s.effectiveLLMForTurn(ctx, prov, backendModelKeyFor(be, prov))
 	if err != nil {
 		return nil, operationFailedWithCause(ctx, err)
 	}

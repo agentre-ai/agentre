@@ -158,7 +158,8 @@
       "hint": "ANTHROPIC_DEFAULT_*_MODEL. Leave empty to use the main provider.",
       "inheritMain": "Inherit main provider",
       "inheritWithName": "Inherit main provider · {{name}}",
-      "label": "Model Tier Routes"
+      "label": "Model Tier Routes",
+      "tierAria": "Claude tier route"
     },
     "name": {
       "deviceDefault": "{{device}} · {{name}}"
@@ -250,7 +251,9 @@
       "staleOptionalClause": ", or clear the link to use CLI login",
       "staleTitle": "The original LLM provider is disabled or does not match this type",
       "strictMatch": "Strict match · {{type}}",
-      "unlinked": "No linked provider"
+      "unlinked": "No linked provider",
+      "followsDefault": "Follows the provider default model each turn",
+      "fixedNote": "Fixed to this model; provider default changes won't affect it"
     },
     "providerSync": {
       "descriptionOnly": "Sync writes the locally saved API key to the remote agentred state file. Other form changes are not saved.",
@@ -2963,5 +2966,22 @@
     "noOutput": "No output",
     "expand": "Expand output",
     "collapse": "Collapse output"
+  },
+  "modelTargetPicker": {
+    "special": {
+      "backend": "CLI login state",
+      "chat": "Follow agent binding",
+      "route": "Inherit main binding"
+    },
+    "searchPlaceholder": "Search providers or models…",
+    "clearSearch": "Clear search",
+    "loading": "Loading model catalog…",
+    "error": "Failed to load model catalog",
+    "empty": "No available providers. Create one in LLM Providers first.",
+    "defaultBadge": "default",
+    "defaultLabel": "Follow default model",
+    "invalidHint": "This target is no longer valid (provider or model missing/disabled). Choose again.",
+    "remoteMissing": "Target device is missing this provider. Sync it first.",
+    "noDefaultModel": "No default model set"
   }
 }
