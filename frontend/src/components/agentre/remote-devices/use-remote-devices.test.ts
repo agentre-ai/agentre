@@ -193,10 +193,43 @@ describe("mergeDeviceSources (R15)", () => {
 });
 
 describe("useRemoteDevices", () => {
+  it("moves an initial load failure to error and a successful retry to ready", async () => {
+    mockList.mockRejectedValueOnce(new Error("list unavailable"));
+    const { result } = renderHook(() => useRemoteDevices());
+
+    await waitFor(() => expect(result.current.loadState).toBe("error"));
+    expect(result.current.devices).toEqual([]);
+
+    mockList.mockResolvedValueOnce([lanDevice()]);
+    await act(async () => {
+      await result.current.reload();
+    });
+
+    expect(result.current.loadState).toBe("ready");
+    expect(result.current.devices).toHaveLength(1);
+  });
+
+  it("keeps existing devices ready when a background focus reload fails", async () => {
+    mockList.mockResolvedValueOnce([lanDevice()]);
+    const { result } = renderHook(() => useRemoteDevices());
+    await waitFor(() => expect(result.current.loadState).toBe("ready"));
+
+    mockList.mockRejectedValueOnce(new Error("refresh unavailable"));
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(mockList).toHaveBeenCalledTimes(2));
+
+    expect(result.current.loadState).toBe("ready");
+    expect(result.current.devices).toHaveLength(1);
+    expect(result.current.devices[0].name).toBe("linux-srv");
+  });
+
   it("loads devices on mount", async () => {
     mockList.mockResolvedValueOnce([{ id: 1, name: "a" }]);
     const { result } = renderHook(() => useRemoteDevices());
-    await waitFor(() => expect(result.current.loading).toBe(false));
+    await waitFor(() => expect(result.current.loadState).toBe("ready"));
     expect(result.current.devices[0].name).toBe("a");
     // 未登录 → 无账号来源,单行只有 LAN 直连路径。
     expect(result.current.devices[0].paths).toEqual([
@@ -220,7 +253,7 @@ describe("useRemoteDevices", () => {
     mockList.mockResolvedValue([]);
     mockAdd.mockResolvedValueOnce({ id: 3, name: "c" });
     const { result } = renderHook(() => useRemoteDevices());
-    await waitFor(() => expect(result.current.loading).toBe(false));
+    await waitFor(() => expect(result.current.loadState).toBe("ready"));
     await act(async () => {
       await result.current.add({
         url: "ws://h/rpc",
@@ -248,7 +281,7 @@ describe("useRemoteDevices", () => {
     );
 
     const { result } = renderHook(() => useRemoteDevices());
-    await waitFor(() => expect(result.current.loading).toBe(false));
+    await waitFor(() => expect(result.current.loadState).toBe("ready"));
 
     await act(async () => {
       handlers["remote.device.state"]({
@@ -283,7 +316,7 @@ describe("useRemoteDevices", () => {
       },
     );
     const { result } = renderHook(() => useRemoteDevices());
-    await waitFor(() => expect(result.current.loading).toBe(false));
+    await waitFor(() => expect(result.current.loadState).toBe("ready"));
     await act(async () => {
       handlers["remote.device.state"]({
         id: 999,

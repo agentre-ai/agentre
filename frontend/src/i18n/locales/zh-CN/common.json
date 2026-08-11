@@ -1959,6 +1959,11 @@
       "tofuMismatch": "服务端身份指纹已变化，请确认安全后重新配对",
       "unauthorized": "凭据已失效，请重新配对"
     },
+    "load": {
+      "errorDescription": "请检查连接后重试。",
+      "errorTitle": "无法加载远端设备",
+      "loading": "正在加载远端设备"
+    },
     "login": {
       "actions": {
         "connecting": "连接中…",

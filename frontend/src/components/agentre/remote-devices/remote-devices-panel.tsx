@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
 
 import { AddDeviceDialog } from "./add-device-dialog";
 import { DeviceRow } from "./device-row";
@@ -66,8 +67,16 @@ function AccountStatus({
 
 export function RemoteDevicesPanel() {
   const { t } = useTranslation();
-  const { devices, loading, add, remove, updateTLS, rename, refresh, reload } =
-    useRemoteDevices();
+  const {
+    devices,
+    loadState,
+    add,
+    remove,
+    updateTLS,
+    rename,
+    refresh,
+    reload,
+  } = useRemoteDevices();
   const serverLogin = useServerLogin();
   const [now, setNow] = useState(() => Date.now());
   const [addOpen, setAddOpen] = useState(false);
@@ -85,8 +94,41 @@ export function RemoteDevicesPanel() {
   }, []);
 
   const onlineCount = devices.filter((d) => d.online).length;
+  const reloadInBackground = () => {
+    void reload().catch(() => {});
+  };
 
-  if (loading) return null;
+  if (loadState === "loading") {
+    return (
+      <div className="flex min-h-48 items-center justify-center">
+        <Spinner
+          className="size-5"
+          aria-label={t("remoteDevices.load.loading")}
+        />
+      </div>
+    );
+  }
+
+  if (loadState === "error") {
+    return (
+      <div
+        role="alert"
+        className="flex flex-col items-start gap-3 rounded-lg border border-status-error/40 bg-destructive-soft p-4"
+      >
+        <div className="flex flex-col gap-1">
+          <p className="font-medium text-status-error">
+            {t("remoteDevices.load.errorTitle")}
+          </p>
+          <p className="text-sm text-muted-foreground">
+            {t("remoteDevices.load.errorDescription")}
+          </p>
+        </div>
+        <Button variant="outline" onClick={reloadInBackground}>
+          {t("common.retry")}
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -121,7 +163,7 @@ export function RemoteDevicesPanel() {
               void serverLogin
                 .logout()
                 .catch(() => {})
-                .finally(() => reload());
+                .finally(reloadInBackground);
             }}
           />
           <Button onClick={() => setAddOpen(true)}>
@@ -283,7 +325,7 @@ export function RemoteDevicesPanel() {
           // reflect the newly-claimed account without waiting for a window
           // focus event.
           void serverLogin.refresh();
-          void reload();
+          reloadInBackground();
         }}
         checkURL={serverLogin.checkURL}
         startLogin={serverLogin.startLogin}

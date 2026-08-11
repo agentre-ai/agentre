@@ -85,6 +85,41 @@ describe("RemoteDevicesPanel", () => {
     mockLogout.mockResolvedValue(undefined);
   });
 
+  it("shows an accessible loading state instead of a blank page", () => {
+    mockList.mockReturnValueOnce(new Promise(() => {}));
+
+    render(<RemoteDevicesPanel />);
+
+    expect(
+      screen.getByRole("status", { name: "Loading remote devices" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/No agentred devices paired/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows an initial load error instead of the empty state and retries", async () => {
+    const user = userEvent.setup();
+    mockList.mockRejectedValueOnce(new Error("list unavailable"));
+
+    render(<RemoteDevicesPanel />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Couldn't load remote devices");
+    expect(alert).toHaveClass("border-status-error/40", "bg-destructive-soft");
+    expect(
+      screen.queryByText(/No agentred devices paired/),
+    ).not.toBeInTheDocument();
+
+    mockList.mockResolvedValueOnce([]);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(
+      await screen.findByText(/No agentred devices paired/),
+    ).toBeInTheDocument();
+    expect(mockList).toHaveBeenCalledTimes(2);
+  });
+
   it("shows empty state when no devices", async () => {
     mockList.mockResolvedValueOnce([]);
     render(<RemoteDevicesPanel />);

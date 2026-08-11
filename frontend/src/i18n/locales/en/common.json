@@ -1959,6 +1959,11 @@
       "tofuMismatch": "The server identity fingerprint changed. Verify it is safe, then pair again.",
       "unauthorized": "Credentials expired. Pair again."
     },
+    "load": {
+      "errorDescription": "Check the connection and try again.",
+      "errorTitle": "Couldn't load remote devices",
+      "loading": "Loading remote devices"
+    },
     "login": {
       "actions": {
         "connecting": "Connecting...",
