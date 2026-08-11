@@ -32,16 +32,32 @@ type BundleItems struct {
 	RemoteDevices []BundleRemoteDevice `json:"remoteDevices,omitempty"`
 }
 
-// BundleLLMProvider 一条 LLM 供应商记录。
+// BundleLLMProvider 一条 LLM 供应商记录（新 1→N 形状）。
+//
+// 单模型投影已移除：Model / MaxOutput / ContextWindow 不再出现在 Provider 层，
+// 改由 Models 子列表逐条携带稳定 ModelKey、ModelID 与 token 元数据；DefaultModelKey
+// 指回 Provider 默认启用的子模型。APIKey 只在 includeSecrets 时写入。
 type BundleLLMProvider struct {
-	ProviderKey   string `json:"providerKey"`
-	Type          string `json:"type"`
+	ProviderKey     string                   `json:"providerKey"`
+	Type            string                   `json:"type"`
+	Name            string                   `json:"name"`
+	BaseURL         string                   `json:"baseURL"`
+	Enabled         bool                     `json:"enabled"`
+	DefaultModelKey string                   `json:"defaultModelKey"`
+	APIKey          string                   `json:"apiKey"`
+	Models          []BundleLLMProviderModel `json:"models"`
+}
+
+// BundleLLMProviderModel 一条稳定模型记录。
+// ModelKey 是不可变的跨实体稳定引用（Backend / Session / Route 都指向它），
+// 导入时原样保留；ContextWindow / MaxOutput 是该模型的 token 元数据。
+type BundleLLMProviderModel struct {
+	ModelKey      string `json:"modelKey"`
+	ModelID       string `json:"modelId"`
 	Name          string `json:"name"`
-	BaseURL       string `json:"baseURL"`
-	Model         string `json:"model"`
-	MaxOutput     int    `json:"maxOutput"`
 	ContextWindow int    `json:"contextWindow"`
-	APIKey        string `json:"apiKey"`
+	MaxOutput     int    `json:"maxOutput"`
+	Enabled       bool   `json:"enabled"`
 }
 
 // BundleAgentBackend 一条 Agent 后端记录。

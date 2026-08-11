@@ -54,7 +54,11 @@ func (s *dataSvc) Export(ctx context.Context, req *ExportRequest) (*ExportResult
 		}
 		bundle.Items.LLMProviders = make([]BundleLLMProvider, 0, len(rows))
 		for _, r := range rows {
-			bundle.Items.LLMProviders = append(bundle.Items.LLMProviders, toBundleProvider(r, req.IncludeSecrets))
+			item, err := toBundleProvider(ctx, r, req.IncludeSecrets)
+			if err != nil {
+				return nil, err
+			}
+			bundle.Items.LLMProviders = append(bundle.Items.LLMProviders, item)
 		}
 		summary[string(ScopeLLMProviders)] = len(bundle.Items.LLMProviders)
 	}
@@ -155,17 +159,40 @@ func (s *dataSvc) Export(ctx context.Context, req *ExportRequest) (*ExportResult
 	return &ExportResult{JSON: raw, Summary: summary}, nil
 }
 
-func toBundleProvider(p *llm_provider_entity.LLMProvider, secrets bool) BundleLLMProvider {
+// toBundleProvider 把 Provider 行 + 其全部子模型合成为新 1→N bundle 形状。
+// 单模型投影(provider.Model/MaxOutput/ContextWindow)已移除:连接配置留在
+// Provider 层,稳定 ModelKey/ModelID 与 token 元数据逐条落到 Models,defaultModelKey
+// 指回默认启用模型。APIKey 只在 includeSecrets 时带出。
+func toBundleProvider(ctx context.Context, p *llm_provider_entity.LLMProvider, secrets bool) (BundleLLMProvider, error) {
 	apiKey := ""
 	if secrets {
 		apiKey = p.APIKey
 	}
-	return BundleLLMProvider{
-		ProviderKey: p.ProviderKey, Type: p.Type, Name: p.Name,
-		BaseURL: p.BaseURL, Model: p.Model,
-		MaxOutput: p.MaxOutput, ContextWindow: p.ContextWindow,
-		APIKey: apiKey,
+	models, err := llm_provider_repo.LLMProvider().ListModels(ctx, p.ID)
+	if err != nil {
+		return BundleLLMProvider{}, err
 	}
+	out := BundleLLMProvider{
+		ProviderKey:     p.ProviderKey,
+		Type:            p.Type,
+		Name:            p.Name,
+		BaseURL:         p.BaseURL,
+		Enabled:         p.IsEnabled(),
+		DefaultModelKey: p.DefaultModelKey,
+		APIKey:          apiKey,
+		Models:          make([]BundleLLMProviderModel, 0, len(models)),
+	}
+	for _, m := range models {
+		out.Models = append(out.Models, BundleLLMProviderModel{
+			ModelKey:      m.ModelKey,
+			ModelID:       m.ModelID,
+			Name:          m.Name,
+			ContextWindow: m.ContextWindow,
+			MaxOutput:     m.MaxOutput,
+			Enabled:       m.IsEnabled(),
+		})
+	}
+	return out, nil
 }
 
 func toBundleDevice(d *paired_agentred_entity.PairedAgentred, secrets bool) BundleRemoteDevice {

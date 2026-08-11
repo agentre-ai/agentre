@@ -16,6 +16,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/department_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/paired_agentred_entity"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
@@ -78,11 +79,19 @@ func TestExport_LLMProvidersOnly_Scrubbed(t *testing.T) {
 	rows := []*llm_provider_entity.LLMProvider{
 		{
 			ID: 1, ProviderKey: "key-1", Type: "anthropic", Name: "Main",
-			APIKey: "secret", BaseURL: "https://x", Model: "claude",
-			MaxOutput: 8192, ContextWindow: 200000, Status: consts.ACTIVE,
+			APIKey: "secret", BaseURL: "https://x",
+			Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-1",
+			Status: consts.ACTIVE,
 		},
 	}
 	m.providers.EXPECT().List(gomock.Any()).Return(rows, nil)
+	m.providers.EXPECT().ListModels(gomock.Any(), int64(1)).Return([]*llm_provider_model_entity.LLMProviderModel{
+		{
+			ID: 10, ProviderID: 1, ModelKey: "mk-1", ModelID: "claude-3-5-sonnet",
+			Name: "Sonnet", ContextWindow: 200000, MaxOutput: 8192,
+			Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE,
+		},
+	}, nil)
 
 	Convey("Export llm-providers without secrets", t, func() {
 		res, err := m.svc.Export(m.ctx, &data_svc.ExportRequest{
@@ -103,6 +112,15 @@ func TestExport_LLMProvidersOnly_Scrubbed(t *testing.T) {
 		So(p.ProviderKey, ShouldEqual, "key-1")
 		So(p.Name, ShouldEqual, "Main")
 		So(p.APIKey, ShouldEqual, "") // 关键断言:脱敏
+		// 新 1→N 形状:默认 key + 子模型 + token 元数据原样带出
+		So(p.Enabled, ShouldBeTrue)
+		So(p.DefaultModelKey, ShouldEqual, "mk-1")
+		So(p.Models, ShouldHaveLength, 1)
+		So(p.Models[0].ModelKey, ShouldEqual, "mk-1")
+		So(p.Models[0].ModelID, ShouldEqual, "claude-3-5-sonnet")
+		So(p.Models[0].ContextWindow, ShouldEqual, 200000)
+		So(p.Models[0].MaxOutput, ShouldEqual, 8192)
+		So(p.Models[0].Enabled, ShouldBeTrue)
 		So(res.Summary[string(data_svc.ScopeLLMProviders)], ShouldEqual, 1)
 	})
 }
@@ -112,6 +130,7 @@ func TestExport_LLMProviders_IncludeSecrets(t *testing.T) {
 	m.providers.EXPECT().List(gomock.Any()).Return([]*llm_provider_entity.LLMProvider{
 		{ID: 1, ProviderKey: "k1", Type: "anthropic", Name: "M", APIKey: "sk-xxx"},
 	}, nil)
+	m.providers.EXPECT().ListModels(gomock.Any(), int64(1)).Return(nil, nil)
 
 	Convey("Export 携带 includeSecrets", t, func() {
 		res, err := m.svc.Export(m.ctx, &data_svc.ExportRequest{
@@ -293,8 +312,18 @@ func TestApplyImport_Providers_Create(t *testing.T) {
 	m.backends.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
 	m.depts.EXPECT().List(gomock.Any()).Return(nil, nil)
 
-	m.providers.EXPECT().Create(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider) error {
+	m.providers.EXPECT().CreateWithModels(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider, models []*llm_provider_model_entity.LLMProviderModel, defaultKey string) error {
+			// 连接配置 + 默认 key + 子模型(含 token 元数据)一个业务操作落库
+			So(p.ProviderKey, ShouldEqual, "k1")
+			So(p.APIKey, ShouldEqual, "sk-x")
+			So(defaultKey, ShouldEqual, "mk-1")
+			So(models, ShouldHaveLength, 1)
+			So(models[0].ModelKey, ShouldEqual, "mk-1") // 稳定 key 原样保留
+			So(models[0].ModelID, ShouldEqual, "claude-3-5-sonnet")
+			So(models[0].ContextWindow, ShouldEqual, 200000)
+			So(models[0].MaxOutput, ShouldEqual, 8192)
+			So(models[0].Enabled, ShouldEqual, llm_provider_model_entity.EnabledOn)
 			p.ID = 100
 			return nil
 		})
@@ -306,7 +335,13 @@ func TestApplyImport_Providers_Create(t *testing.T) {
 		Format: data_svc.BundleFormat, Version: 1,
 		Scopes: []string{string(data_svc.ScopeLLMProviders)},
 		Items: data_svc.BundleItems{LLMProviders: []data_svc.BundleLLMProvider{
-			{ProviderKey: "k1", Name: "P1", Type: "anthropic", APIKey: "sk-x"},
+			{
+				ProviderKey: "k1", Name: "P1", Type: "anthropic", APIKey: "sk-x",
+				Enabled: true, DefaultModelKey: "mk-1",
+				Models: []data_svc.BundleLLMProviderModel{
+					{ModelKey: "mk-1", ModelID: "claude-3-5-sonnet", ContextWindow: 200000, MaxOutput: 8192, Enabled: true},
+				},
+			},
 		}},
 	}
 	raw, _ := json.Marshal(bundle)
@@ -366,6 +401,9 @@ func TestApplyImport_Providers_Overwrite(t *testing.T) {
 			So(p.ID, ShouldEqual, 5)
 			So(p.Name, ShouldEqual, "New")
 			So(p.Status, ShouldEqual, consts.ACTIVE) // 保留本地原 status
+			// 新形状:连接字段外还写 enabled + 默认模型 key
+			So(p.Enabled, ShouldEqual, llm_provider_entity.EnabledOn)
+			So(p.DefaultModelKey, ShouldEqual, "mk-1")
 			return nil
 		})
 
@@ -376,12 +414,82 @@ func TestApplyImport_Providers_Overwrite(t *testing.T) {
 		Format: data_svc.BundleFormat, Version: 1,
 		Scopes: []string{string(data_svc.ScopeLLMProviders)},
 		Items: data_svc.BundleItems{LLMProviders: []data_svc.BundleLLMProvider{
-			{ProviderKey: "k1", Name: "New"},
+			{ProviderKey: "k1", Name: "New", Enabled: true, DefaultModelKey: "mk-1"},
 		}},
 	}
 	raw, _ := json.Marshal(bundle)
 
 	Convey("overwrite 调 Update,保留 status", t, func() {
+		res, err := m.svc.ApplyImport(m.ctx, &data_svc.ApplyImportRequest{
+			Raw:              raw,
+			FallbackStrategy: data_svc.ActionOverwrite,
+		})
+		So(err, ShouldBeNil)
+		So(res.Counts["overwrote"], ShouldEqual, 1)
+	})
+}
+
+// TestApplyImport_Providers_Overwrite_UpsertsModels 覆盖已有 Provider 时按稳定
+// ModelKey 做 upsert:bundle 里的模型已存在则更新 token 元数据,缺失则新建。
+func TestApplyImport_Providers_Overwrite_UpsertsModels(t *testing.T) {
+	m := setupDataSvcTest(t)
+	existing := []*llm_provider_entity.LLMProvider{{ID: 5, ProviderKey: "k1", Name: "Old", Status: consts.ACTIVE}}
+	m.providers.EXPECT().List(gomock.Any()).Return(existing, nil).Times(2)
+	m.devices.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
+	m.backends.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
+	m.depts.EXPECT().List(gomock.Any()).Return(nil, nil)
+
+	m.providers.EXPECT().Update(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_entity.LLMProvider{})).
+		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider) error {
+			So(p.ID, ShouldEqual, 5)
+			return nil
+		})
+
+	// 已有模型 mk-1 → 更新;mk-2 不存在 → 新建
+	m.providers.EXPECT().FindModelByKey(gomock.Any(), "mk-1").Return(
+		&llm_provider_model_entity.LLMProviderModel{
+			ID: 11, ProviderID: 5, ModelKey: "mk-1", ModelID: "old-id",
+			ContextWindow: 1000, MaxOutput: 1000, Enabled: llm_provider_model_entity.EnabledOn,
+		}, nil)
+	m.providers.EXPECT().FindModelByKey(gomock.Any(), "mk-2").Return(nil, nil)
+	m.providers.EXPECT().UpdateModel(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_model_entity.LLMProviderModel{})).
+		DoAndReturn(func(_ context.Context, mdl *llm_provider_model_entity.LLMProviderModel) error {
+			So(mdl.ID, ShouldEqual, 11)
+			So(mdl.ModelID, ShouldEqual, "claude-3-5-sonnet") // 可编辑字段被覆盖
+			So(mdl.ContextWindow, ShouldEqual, 200000)
+			So(mdl.MaxOutput, ShouldEqual, 8192)
+			So(mdl.ModelKey, ShouldEqual, "mk-1") // 稳定 key 不变
+			return nil
+		})
+	m.providers.EXPECT().CreateModel(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_model_entity.LLMProviderModel{})).
+		DoAndReturn(func(_ context.Context, mdl *llm_provider_model_entity.LLMProviderModel) error {
+			So(mdl.ProviderID, ShouldEqual, 5)
+			So(mdl.ModelKey, ShouldEqual, "mk-2")
+			So(mdl.ModelID, ShouldEqual, "claude-3-5-haiku")
+			So(mdl.ContextWindow, ShouldEqual, 100000)
+			So(mdl.Enabled, ShouldEqual, llm_provider_model_entity.EnabledOff)
+			return nil
+		})
+
+	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectCommit()
+
+	bundle := data_svc.BundleV1{
+		Format: data_svc.BundleFormat, Version: 1,
+		Scopes: []string{string(data_svc.ScopeLLMProviders)},
+		Items: data_svc.BundleItems{LLMProviders: []data_svc.BundleLLMProvider{
+			{
+				ProviderKey: "k1", Name: "New", Enabled: true, DefaultModelKey: "mk-1",
+				Models: []data_svc.BundleLLMProviderModel{
+					{ModelKey: "mk-1", ModelID: "claude-3-5-sonnet", ContextWindow: 200000, MaxOutput: 8192, Enabled: true},
+					{ModelKey: "mk-2", ModelID: "claude-3-5-haiku", ContextWindow: 100000, MaxOutput: 4096, Enabled: false},
+				},
+			},
+		}},
+	}
+	raw, _ := json.Marshal(bundle)
+
+	Convey("overwrite 按 ModelKey upsert 子模型,保留 token 元数据", t, func() {
 		res, err := m.svc.ApplyImport(m.ctx, &data_svc.ApplyImportRequest{
 			Raw:              raw,
 			FallbackStrategy: data_svc.ActionOverwrite,
@@ -398,9 +506,9 @@ func TestApplyImport_Backend_ResolvesProviderRef(t *testing.T) {
 	m.backends.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{}, nil).Times(2)
 	m.depts.EXPECT().List(gomock.Any()).Return(nil, nil)
 
-	// 先 Create provider
-	m.providers.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_entity.LLMProvider{})).
-		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider) error {
+	// 先 Create provider(经 CreateWithModels 一个事务写入)
+	m.providers.EXPECT().CreateWithModels(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider, _ []*llm_provider_model_entity.LLMProviderModel, _ string) error {
 			p.ID = 50
 			return nil
 		})
@@ -1238,11 +1346,17 @@ func TestApplyImport_Provider_Duplicate(t *testing.T) {
 	m.backends.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
 	m.depts.EXPECT().List(gomock.Any()).Return(nil, nil).Times(1)
 
-	// Duplicate creates a new row with renamed name and new UUID key
-	m.providers.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_entity.LLMProvider{})).
-		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider) error {
+	// Duplicate 创建新行(新 UUID key + (copy) 后缀),模型重 mint 新 ModelKey,
+	// 默认 key 也重映射到新 key(本地已有同 key 模型,唯一索引不允许复用)。
+	m.providers.EXPECT().CreateWithModels(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider, models []*llm_provider_model_entity.LLMProviderModel, defaultKey string) error {
 			// uniqueName appends " (copy)" since "P1" is taken
 			So(p.Name, ShouldEqual, "P1 (copy)")
+			So(p.ProviderKey, ShouldNotEqual, "k1")
+			So(models, ShouldHaveLength, 1)
+			So(models[0].ModelKey, ShouldNotEqual, "mk-1") // 重 mint,不复用旧 key
+			So(models[0].ModelID, ShouldEqual, "claude-3-5-sonnet")
+			So(defaultKey, ShouldEqual, models[0].ModelKey) // 默认 key 重映射
 			p.ID = 99
 			return nil
 		})
@@ -1254,7 +1368,13 @@ func TestApplyImport_Provider_Duplicate(t *testing.T) {
 		Format: data_svc.BundleFormat, Version: 1,
 		Scopes: []string{string(data_svc.ScopeLLMProviders)},
 		Items: data_svc.BundleItems{LLMProviders: []data_svc.BundleLLMProvider{
-			{ProviderKey: "k1", Name: "P1", Type: "anthropic"},
+			{
+				ProviderKey: "k1", Name: "P1", Type: "anthropic",
+				Enabled: true, DefaultModelKey: "mk-1",
+				Models: []data_svc.BundleLLMProviderModel{
+					{ModelKey: "mk-1", ModelID: "claude-3-5-sonnet", Enabled: true},
+				},
+			},
 		}},
 	}
 	raw, _ := json.Marshal(bundle)
