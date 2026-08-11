@@ -43,6 +43,9 @@ import (
 type App struct {
 	ctx              context.Context
 	hookPollerCancel context.CancelFunc
+	peerMu           sync.Mutex
+	peerCancel       context.CancelFunc
+	peerDone         chan struct{}
 	ccUsageStop      func()
 	terminalSvc      *terminal_svc.Service
 
@@ -80,8 +83,12 @@ func (a *App) Startup(ctx context.Context) {
 	// Server 联机：绑定 wails 事件源后启动 boot 协程（最长一次刷新）。
 	server_svc.Server().SetEmitter(func(payload any) {
 		wailsruntime.EventsEmit(a.ctx, "server.state", payload)
+		if state, ok := payload.(map[string]any); ok && state["kind"] == "logged_in" {
+			a.startInboundPeer(context.Background())
+		}
 	})
 	bootstrap.ServerBoot(context.Background())
+	a.startInboundPeer(context.Background())
 	// 工作区多端同步的下行轮询（R3：30 秒一轮）。未登录时每一轮都是空操作（R12）。
 	bootstrap.SyncBoot(context.Background())
 
@@ -158,6 +165,7 @@ func (a *App) resetStaleSessionsOnStartup(ctx context.Context) {
 
 // Shutdown is wired to wails OnShutdown.
 func (a *App) Shutdown(ctx context.Context) {
+	a.stopInboundPeer(ctx)
 	if a.hookPollerCancel != nil {
 		a.hookPollerCancel()
 		a.hookPollerCancel = nil
