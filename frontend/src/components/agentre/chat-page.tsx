@@ -436,7 +436,7 @@ function ChatPage() {
       ),
     [agents, filterValue, filterStatuses, attentionReasons],
   );
-  // 列表：agent 按最近活跃倒序;pinned（系统 agent + 用户置顶的 agent）浮顶。
+  // 列表：agent 按最近活跃倒序；pinned（DB 置顶的 agent）浮顶。
   // agent 活跃度取 sessionIds 在 meta-store 的 max(lastMessageAt)，确保 turn
   // 结束后实时反映。无活跃的项 ts=0 沉到底部。
   const agentRows = React.useMemo<AgentRow[]>(() => {

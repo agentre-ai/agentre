@@ -596,9 +596,9 @@ func TestListAgents(t *testing.T) {
 			}
 		})
 
-		convey.Convey("CEO 默认 Pinned，但无后端时 Chattable=false", func() {
+		convey.Convey("CEO 未置顶（DB pinned=0，无默认置顶回填），无后端时 Chattable=false", func() {
 			m.agent.EXPECT().List(ctx).Return([]*agent_entity.Agent{
-				{ID: 1, Name: "CEO 助手", SystemBadge: agent_entity.SystemBadgeDefault, AgentBackendID: 0, Status: consts.ACTIVE},
+				{ID: 1, Name: "CEO 助手", SystemBadge: agent_entity.SystemBadgeDefault, Pinned: false, AgentBackendID: 0, Status: consts.ACTIVE},
 				{ID: 2, Name: "工程师", AgentBackendID: 7, Status: consts.ACTIVE},
 			}, nil)
 			m.backend.EXPECT().BatchFind(ctx, []int64{7}).Return(map[int64]*agent_backend_entity.AgentBackend{
@@ -624,7 +624,7 @@ func TestListAgents(t *testing.T) {
 			resp, err := m.svc.ListAgents(ctx, &chat_svc.ListAgentsRequest{})
 			assert.NoError(t, err)
 			assert.Len(t, resp.Agents, 2)
-			assert.True(t, resp.Agents[0].Pinned)
+			assert.False(t, resp.Agents[0].Pinned)
 			assert.False(t, resp.Agents[0].Chattable)
 			assert.True(t, resp.Agents[1].Chattable)
 			assert.Equal(t, 3, resp.Agents[1].ActiveCount)
