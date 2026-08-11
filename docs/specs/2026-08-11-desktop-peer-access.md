@@ -32,6 +32,19 @@
 
 7. **执行目标的顺序被账号级同步，而它表达的偏好本质上是机器相关的。** `AgentExecTarget` 整行带 `syncmeta_entity.SyncMeta`（`agent_entity/exec_target.go:17-25`），`sort_order` 因此是同步的：在桌面 A 上拖一下排序，桌面 B 上那个 Agent 的顺序跟着变。而「优先在我面前这台跑」在 A 上和在 B 上要的是不同的第一名 —— 一份共享的有序列表表达不了它，正是这个约束逼出了相对槽位（问题 5）。
 
+### 本轮基线
+
+2026-08-11 采集于两个仓库的 `feat/2026-08-11-desktop-peer-access` worktree（`agentre` 起点 `63b9a3d4`，`agentre-server` 起点 `f552139a`）。工作区根的 `go.work` 不包含 worktree 路径，因此全部 Go 命令加 `GOWORK=off`：
+
+| 基线 | 命令 | 结果 |
+|---|---|---|
+| `agentre` 后端 | `GOWORK=off make test-backend` | EXIT=0，123 个包全过 |
+| `agentre` 前端 | `GOWORK=off make test-frontend` | EXIT=0，241 文件 / 2551 测试 |
+| `agentre-server` 后端 | `GOWORK=off make test-backend`（含 `-race`） | EXIT=0，40 个包全过 |
+| `agentre-server` 前端 | `GOWORK=off make test-frontend` | EXIT=0，36 文件 / 384 测试 |
+
+采集中复现了轮 A 记录过的同一处**与本轮无关的既有问题**，按约定只记录不修改：新检出的 `agentre` 无法自举 —— 根包的 `//go:embed all:frontend/dist` 与 `make generate` 互为前置，两者都是 gitignore 的产物。破环办法是先写一个占位 `frontend/dist/index.html`。此外在新检出里直接跑 `cd frontend && pnpm test` 会有 53 个测试文件加载失败（`frontend/wailsjs/` 尚未生成），**1671 个用例本身全过**；必须走 `make test-frontend`（它先 `wails generate`）才是真实基线。
+
 ## 参与者与用户故事
 
 1. 作为**出门在外的用户**，我想用手机看家里那台开着的电脑上正在跑的对话并接着往下聊，而不是只能看到 agentred 上的那几条。
