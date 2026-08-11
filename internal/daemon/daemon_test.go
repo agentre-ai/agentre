@@ -22,6 +22,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/cago-frame/cago/configs"
+
 	"github.com/agentre-ai/agentre/internal/buildinfo"
 	"github.com/agentre-ai/agentre/internal/daemon/client"
 	"github.com/agentre-ai/agentre/internal/daemon/handlers"
@@ -34,7 +36,6 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
 	piagentrt "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
-	"github.com/cago-frame/cago/configs"
 )
 
 // TestDaemon_OpensOwnDatabaseAndRunsMigrations 覆盖任务目标的第一句:agentred

@@ -10,10 +10,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/cago-frame/cago/configs"
+
 	"github.com/agentre-ai/agentre/internal/buildinfo"
 	"github.com/agentre-ai/agentre/internal/daemon/state"
 	"github.com/agentre-ai/agentre/internal/pkg/paths"
-	"github.com/cago-frame/cago/configs"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

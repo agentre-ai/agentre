@@ -12,10 +12,11 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/cago-frame/cago/configs"
+
 	"github.com/agentre-ai/agentre/internal/buildinfo"
 	"github.com/agentre-ai/agentre/internal/daemon/handlers"
 	"github.com/agentre-ai/agentre/internal/daemon/state"
-	"github.com/cago-frame/cago/configs"
 )
 
 const ipcSocketName = "agentred.sock"
