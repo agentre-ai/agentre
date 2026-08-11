@@ -1915,6 +1915,84 @@
     "truncated": "Some items are not listed. Use the filter to narrow the folder."
   },
   "remoteDevices": {
+    "onboarding": {
+      "commands": {
+        "daemonRunning": "Daemon running",
+        "foregroundRun": "agentred run",
+        "installUnix": "curl -fsSL https://github.com/agentre-ai/agentre/releases/latest/download/install.sh | sh",
+        "installWindows": "irm https://github.com/agentre-ai/agentre/releases/latest/download/install.ps1 | iex",
+        "listenAddress": "ws://…:7456/rpc",
+        "pair": "agentred pair",
+        "serviceInstall": "agentred service install --start",
+        "serviceRestart": "agentred service restart",
+        "serviceStatus": "agentred service status"
+      },
+      "complete": {
+        "action": "Configure Agent Backends",
+        "description": "Choose Claude Code, Codex, or Pi on this device.",
+        "title": "Remote connected"
+      },
+      "copyLabel": "Copy {{label}}",
+      "copySuccess": "Command copied",
+      "install": {
+        "archHint": "Architecture is detected automatically",
+        "description": "Choose the remote operating system, then run the install command in its terminal.",
+        "linux": "Linux",
+        "macos": "macOS",
+        "manual": "Manual installation",
+        "next": "Installed, next",
+        "osLabel": "Remote operating system",
+        "powershell": "PowerShell",
+        "recommended": "Recommended install command",
+        "terminal": "Remote terminal",
+        "windows": "Windows",
+        "title": "Install agentred"
+      },
+      "pair": {
+        "back": "Back to service",
+        "commandLabel": "Get pairing information",
+        "description": "Run the pairing command on the remote machine, then enter its address and one-time code.",
+        "submit": "Pair and verify",
+        "title": "Connect this remote machine"
+      },
+      "service": {
+        "background": "Background service (recommended)",
+        "description": "Use the background service for a machine that should stay available.",
+        "diagnostics": {
+          "first": "Run <command>{{command}}</command> and confirm <status>{{status}}</status> appears.",
+          "second": "Confirm the listen address includes <address>{{address}}</address>.",
+          "third": "Keep the service running, then continue to pairing."
+        },
+        "diagnosticsHint": "Run these checks in the remote terminal",
+        "diagnosticsTitle": "Confirm the service is running",
+        "foreground": "Temporary foreground",
+        "foregroundDescription": "Keep this terminal open; closing it stops agentred.",
+        "installLabel": "Install and start service",
+        "modeHint": "Background service is recommended",
+        "modeLabel": "Run mode",
+        "next": "Service is running",
+        "restartLabel": "Restart service",
+        "statusLabel": "Check status",
+        "title": "Start the remote service"
+      },
+      "stepLabel": "Step {{current}} of {{total}}",
+      "steps": {
+        "install": {
+          "done": "Complete",
+          "subtitle": "About 1 minute",
+          "title": "Install agentred"
+        },
+        "pair": {
+          "subtitle": "One-time code",
+          "title": "Pair and verify"
+        },
+        "service": {
+          "done": "Running",
+          "subtitle": "Stay online",
+          "title": "Start the remote service"
+        }
+      }
+    },
     "actions": {
       "addAgentred": "Add agentred",
       "continueAddLan": "+ Add another agentred (LAN)",
@@ -1947,12 +2025,6 @@
       "pair": "Pair",
       "pairing": "Pairing...",
       "title": "Add agentred Device"
-    },
-    "empty": {
-      "middle": ", then run",
-      "prefix": "Run",
-      "suffix": "to get a 6-character pairing code, then return here and choose Add agentred.",
-      "title": "No agentred devices paired"
     },
     "errors": {
       "dialFailed": "Connection failed: {{message}}",

@@ -46,6 +46,7 @@ vi.mock("../../../../wailsjs/runtime/runtime", () => ({
 
 import {
   RemoteDeviceList,
+  RemoteDeviceAdd,
   RemoteDeviceRemove,
   RemoteDeviceRename,
   ServerListDevices,
@@ -59,6 +60,7 @@ import { RemoteDevicesPanel } from "./remote-devices-panel";
 import type { DeviceView } from "./use-remote-devices";
 
 const mockList = RemoteDeviceList as unknown as ReturnType<typeof vi.fn>;
+const mockAdd = RemoteDeviceAdd as unknown as ReturnType<typeof vi.fn>;
 const mockRemove = RemoteDeviceRemove as unknown as ReturnType<typeof vi.fn>;
 const mockRename = RemoteDeviceRename as unknown as ReturnType<typeof vi.fn>;
 const mockServerList = ServerListDevices as unknown as ReturnType<typeof vi.fn>;
@@ -73,6 +75,7 @@ const mockLogout = ServerLogout as unknown as ReturnType<typeof vi.fn>;
 describe("RemoteDevicesPanel", () => {
   beforeEach(() => {
     mockList.mockReset();
+    mockAdd.mockReset();
     mockServerList.mockReset();
     mockServerList.mockRejectedValue(new Error("not logged in"));
     mockGetState.mockReset();
@@ -94,11 +97,11 @@ describe("RemoteDevicesPanel", () => {
       screen.getByRole("status", { name: "Loading remote devices" }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByText(/No agentred devices paired/),
+      screen.queryByRole("heading", { name: "Install agentred" }),
     ).not.toBeInTheDocument();
   });
 
-  it("shows an initial load error instead of the empty state and retries", async () => {
+  it("shows an initial load error instead of the onboarding and retries", async () => {
     const user = userEvent.setup();
     mockList.mockRejectedValueOnce(new Error("list unavailable"));
 
@@ -108,26 +111,140 @@ describe("RemoteDevicesPanel", () => {
     expect(alert).toHaveTextContent("Couldn't load remote devices");
     expect(alert).toHaveClass("border-status-error/40", "bg-destructive-soft");
     expect(
-      screen.queryByText(/No agentred devices paired/),
+      screen.queryByRole("heading", { name: "Install agentred" }),
     ).not.toBeInTheDocument();
 
     mockList.mockResolvedValueOnce([]);
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
     expect(
-      await screen.findByText(/No agentred devices paired/),
+      await screen.findByRole("heading", { name: "Install agentred" }),
     ).toBeInTheDocument();
     expect(mockList).toHaveBeenCalledTimes(2);
   });
 
-  it("shows empty state when no devices", async () => {
+  it("shows the three-step agentred onboarding when the ready device list is empty", async () => {
     mockList.mockResolvedValueOnce([]);
+
     render(<RemoteDevicesPanel />);
-    await waitFor(() =>
-      expect(
-        screen.getByText(/No agentred devices paired/),
-      ).toBeInTheDocument(),
+
+    expect(
+      await screen.findByRole("heading", { name: "Install agentred" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Start the remote service")).toBeInTheDocument();
+    expect(screen.getByText("Pair and verify")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "curl -fsSL https://github.com/agentre-ai/agentre/releases/latest/download/install.sh | sh",
+      ),
+    ).toHaveAttribute("data-selectable-text", "true");
+  });
+
+  it("switches installer and service commands through the approved three-step flow", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValueOnce([]);
+
+    render(<RemoteDevicesPanel />);
+    await screen.findByRole("heading", { name: "Install agentred" });
+
+    await user.click(screen.getByRole("radio", { name: "macOS" }));
+    expect(
+      screen.getByText(
+        "curl -fsSL https://github.com/agentre-ai/agentre/releases/latest/download/install.sh | sh",
+      ),
+    ).toHaveAttribute("data-selectable-text", "true");
+
+    await user.click(screen.getByRole("radio", { name: "Windows" }));
+    expect(
+      screen.getByText(
+        "irm https://github.com/agentre-ai/agentre/releases/latest/download/install.ps1 | iex",
+      ),
+    ).toHaveAttribute("data-selectable-text", "true");
+
+    await user.click(screen.getByRole("button", { name: "Installed, next" }));
+    expect(
+      screen.getByText("agentred service install --start"),
+    ).toHaveAttribute("data-selectable-text", "true");
+    expect(screen.getByText("Daemon running")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("radio", { name: "Temporary foreground" }),
     );
+    expect(screen.getByText("agentred run")).toHaveAttribute(
+      "data-selectable-text",
+      "true",
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Service is running" }),
+    );
+    expect(
+      screen.getByRole("heading", { name: "Connect this remote machine" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("agentred pair")).toHaveAttribute(
+      "data-selectable-text",
+      "true",
+    );
+  });
+
+  it("keeps pairing input and shows the concrete error when onboarding pairing fails", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValueOnce([]);
+    mockAdd.mockRejectedValueOnce(new Error("Pairing code expired"));
+
+    render(<RemoteDevicesPanel />);
+    await screen.findByRole("heading", { name: "Install agentred" });
+    await user.click(screen.getByRole("button", { name: "Installed, next" }));
+    await user.click(
+      screen.getByRole("button", { name: "Service is running" }),
+    );
+    await user.type(
+      screen.getByLabelText("Address"),
+      "ws://linux-srv.local:7456/rpc",
+    );
+    await user.type(screen.getByLabelText("Pairing Code"), "abc2de");
+    await user.click(screen.getByRole("button", { name: "Pair and verify" }));
+
+    expect(await screen.findByText("Pairing code expired")).toBeInTheDocument();
+    expect(screen.getByLabelText("Address")).toHaveValue(
+      "ws://linux-srv.local:7456/rpc",
+    );
+    expect(screen.getByLabelText("Pairing Code")).toHaveValue("ABC2DE");
+  });
+
+  it("keeps the device list and opens Agent Backends after onboarding pairing succeeds", async () => {
+    const user = userEvent.setup();
+    const onOpenAgentBackends = vi.fn();
+    mockList.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        id: 1,
+        name: "linux-srv",
+        url: "ws://linux-srv.local:7456/rpc",
+        tlsMode: "default",
+        online: true,
+        lastSeenAt: Date.now(),
+      },
+    ] as Partial<DeviceView>[]);
+    mockAdd.mockResolvedValueOnce(undefined);
+
+    render(<RemoteDevicesPanel onOpenAgentBackends={onOpenAgentBackends} />);
+    await screen.findByRole("heading", { name: "Install agentred" });
+    await user.click(screen.getByRole("button", { name: "Installed, next" }));
+    await user.click(
+      screen.getByRole("button", { name: "Service is running" }),
+    );
+    await user.type(
+      screen.getByLabelText("Address"),
+      "ws://linux-srv.local:7456/rpc",
+    );
+    await user.type(screen.getByLabelText("Pairing Code"), "ABC2DE");
+    await user.click(screen.getByRole("button", { name: "Pair and verify" }));
+
+    expect(await screen.findByTestId("device-row")).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Configure Agent Backends" }),
+    );
+    expect(onOpenAgentBackends).toHaveBeenCalledOnce();
   });
 
   it("renders a row per device + counters", async () => {

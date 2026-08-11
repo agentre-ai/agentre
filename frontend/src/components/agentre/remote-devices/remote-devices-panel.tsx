@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Plus, Server } from "lucide-react";
+import { ArrowRight, CircleCheck, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -15,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 
 import { AddDeviceDialog } from "./add-device-dialog";
+import { AgentredOnboarding } from "./agentred-onboarding";
 import { DeviceRow } from "./device-row";
 import { hostOf } from "./format";
 import { LoginDialog } from "./login-dialog";
@@ -65,7 +67,13 @@ function AccountStatus({
   );
 }
 
-export function RemoteDevicesPanel() {
+export type RemoteDevicesPanelProps = {
+  onOpenAgentBackends?: () => void;
+};
+
+export function RemoteDevicesPanel({
+  onOpenAgentBackends = () => {},
+}: RemoteDevicesPanelProps) {
   const { t } = useTranslation();
   const {
     devices,
@@ -80,6 +88,7 @@ export function RemoteDevicesPanel() {
   const serverLogin = useServerLogin();
   const [now, setNow] = useState(() => Date.now());
   const [addOpen, setAddOpen] = useState(false);
+  const [showBackendGuide, setShowBackendGuide] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [editTLSFor, setEditTLSFor] = useState<DeviceRowModel | null>(null);
   const [removeFor, setRemoveFor] = useState<DeviceRowModel | null>(null);
@@ -132,7 +141,7 @@ export function RemoteDevicesPanel() {
 
   return (
     <div className="flex flex-col gap-4">
-      <header className="flex items-start justify-between gap-4">
+      <header className="flex flex-col items-start justify-between gap-4 sm:flex-row">
         <div className="flex flex-col gap-1">
           <h1 className="text-2xl font-semibold">
             {t("remoteDevices.panel.title")}
@@ -149,7 +158,7 @@ export function RemoteDevicesPanel() {
             </p>
           ) : null}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <AccountStatus
             loading={serverLogin.loading}
             loggedIn={serverLogin.loggedIn}
@@ -167,34 +176,61 @@ export function RemoteDevicesPanel() {
             }}
           />
           <Button onClick={() => setAddOpen(true)}>
-            <Plus className="mr-2 h-4 w-4" />{" "}
+            <Plus data-icon="inline-start" aria-hidden="true" />
             {t("remoteDevices.actions.addAgentred")}
           </Button>
         </div>
       </header>
 
       {devices.length === 0 ? (
-        <EmptyState onAdd={() => setAddOpen(true)} />
+        <AgentredOnboarding
+          onSubmit={async (request) => {
+            await add(request);
+            setShowBackendGuide(true);
+          }}
+        />
       ) : (
-        <div className="flex flex-col gap-2">
-          {devices.map((d) => (
-            <DeviceRow
-              key={d.id}
-              device={d}
-              now={now}
-              onRefresh={() => void refresh(d.id)}
-              onRename={() => setRenameFor({ id: d.id, draft: d.name })}
-              onEditTLS={() => setEditTLSFor(d)}
-              onRemove={() => setRemoveFor(d)}
-            />
-          ))}
-          <button
+        <div className="flex flex-col gap-3">
+          {showBackendGuide ? (
+            <Alert className="border-primary/30 bg-primary-soft">
+              <CircleCheck aria-hidden="true" />
+              <AlertTitle>
+                {t("remoteDevices.onboarding.complete.title")}
+              </AlertTitle>
+              <AlertDescription className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+                <span>
+                  {t("remoteDevices.onboarding.complete.description")}
+                </span>
+                <Button type="button" size="sm" onClick={onOpenAgentBackends}>
+                  {t("remoteDevices.onboarding.complete.action")}
+                  <ArrowRight data-icon="inline-end" aria-hidden="true" />
+                </Button>
+              </AlertDescription>
+            </Alert>
+          ) : null}
+          <div className="flex flex-col gap-2">
+            {devices.map((d) => (
+              <DeviceRow
+                key={d.id}
+                device={d}
+                now={now}
+                onRefresh={() => void refresh(d.id)}
+                onRename={() => setRenameFor({ id: d.id, draft: d.name })}
+                onEditTLS={() => setEditTLSFor(d)}
+                onRemove={() => setRemoveFor(d)}
+              />
+            ))}
+          </div>
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
             onClick={() => setAddOpen(true)}
-            className="text-sm text-muted-foreground hover:text-foreground self-start"
+            className="self-start"
           >
+            <Plus data-icon="inline-start" aria-hidden="true" />
             {t("remoteDevices.actions.continueAddLan")}
-          </button>
+          </Button>
         </div>
       )}
 
@@ -332,28 +368,6 @@ export function RemoteDevicesPanel() {
         pollLoginToken={serverLogin.pollLoginToken}
         cancelLogin={serverLogin.cancelLogin}
       />
-    </div>
-  );
-}
-
-function EmptyState({ onAdd }: { onAdd: () => void }) {
-  const { t } = useTranslation();
-
-  return (
-    <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed py-12 px-6 text-center">
-      <Server className="h-10 w-10 text-muted-foreground" />
-      <div className="text-base font-medium">
-        {t("remoteDevices.empty.title")}
-      </div>
-      <div className="text-sm text-muted-foreground max-w-md">
-        {t("remoteDevices.empty.prefix")} <code>agentred run</code>
-        {t("remoteDevices.empty.middle")} <code>agentred pair</code>{" "}
-        {t("remoteDevices.empty.suffix")}
-      </div>
-      <Button onClick={onAdd}>
-        <Plus className="mr-2 h-4 w-4" />{" "}
-        {t("remoteDevices.actions.addAgentred")}
-      </Button>
     </div>
   );
 }
