@@ -321,8 +321,8 @@ What this repo contributes:
 
 | Piece | Why |
 | --- | --- |
-| `e2e/fakes/remote.go` (`//go:build e2e`) | The app joins that agentred the way a claimed machine would: one `paired_agentreds` row (`AGENTRE_E2E_AGENTRED_FINGERPRINT` / `_URL`) + a claudecode backend bound to it + the `E2E Remote Agent` that uses it. Every turn with that agent therefore goes `remote.Runtime → ConnPool.Borrow → /v1/relay/client` — the browser's own endpoint. The paired row's URL points at a dead loopback port on purpose: `Borrow` races LAN-direct against relay, and only the relay leg is under test |
-| `e2e/fakes/login.go` | the same seeded login §10 uses; it also re-runs `bootstrap.InitRemoteDevice`, because it replaces the `server_svc` singleton the connection pool captured at boot (a real login mutates that instance instead of replacing it) |
+| `e2e/fakes/remote.go` (`//go:build e2e`) | The app joins that agentred the way a claimed machine would: one `paired_agentreds` row (`AGENTRE_E2E_AGENTRED_FINGERPRINT` / `_URL`) + a claudecode backend bound to it + the `E2E Remote Agent` that uses it. Every turn with that agent therefore goes `remote.Runtime → ConnPool.Borrow → /v1/relay/client` — the browser's own endpoint. The paired row's URL points at a dead loopback port on purpose: `Borrow` races LAN-direct against relay, and only the relay leg is under test. It re-runs `bootstrap.InitRemoteDevice` first, because `login.go` **replaces** the `server_svc` singleton the connection pool captured at boot (a real login mutates that instance instead), and a pool still holding the old one dials with no access token |
+| `e2e/fakes/login.go` | the same seeded login §10 uses |
 
 Run it from `agentre-server/e2e`; its README owns the runner, the ports and the
 runtime gotchas the scenario had to be shaped around.
