@@ -60,9 +60,29 @@ Agentre 把这套工作流放进一个桌面应用。每个 **Agent** 都有自�
 
 ## 远端执行
 
-Agentre 附带 `agentred` companion daemon，可以在局域网内另一台 Linux 或 macOS 机器上运行会话。
+Agentre 使用 `agentred` companion daemon，可以在局域网内另一台 macOS、Linux 或 Windows 机器上运行会话。发布版本同时提供 amd64 与 arm64 架构。
 
-1. 打开 **设置 → Remote devices**，配对一台 `agentred` daemon。
+在 macOS 或 Linux 上安装最新版本：
+
+```bash
+curl -fsSL https://github.com/agentre-ai/agentre/releases/latest/download/install.sh | sh
+agentred --version
+agentred service install --start
+agentred service status
+```
+
+在 Windows PowerShell 中安装最新版本（无需管理员终端）：
+
+```powershell
+irm https://github.com/agentre-ai/agentre/releases/latest/download/install.ps1 | iex
+agentred --version
+agentred service install --start
+agentred service status
+```
+
+然后连接桌面应用：
+
+1. 打开 **设置 → Remote devices**，配对这台 `agentred` daemon。
 2. 打开 **设置 → Agent backends**，创建后端，并把运行设备设为刚配对的机器。
 3. 在 **项目 → 设置 → 成员** 中添加 Agent，让它使用该后端，并填写远端机器上的工作路径。
 4. 从命令面板发起对话。会话实际在远端运行，桌面应用仍然显示工具审批、提问、状态和输出。
