@@ -27,7 +27,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import i18n from "@/i18n";
 import { cn } from "@/lib/utils";
 
@@ -79,6 +78,24 @@ type BackendType = "builtin" | "claudecode" | "codex" | "piagent" | "openclaw";
 // wailsjs/go/models is generated at build time and not present in this worktree.
 type DeviceView = { id: number; name: string; online: boolean };
 type ProviderSummary = { key?: string; name?: string; type?: string };
+
+// 选择器里的展示顺序：三个 CLI 引擎在前（最常用且需要装命令行），内置与网关收尾。
+// openclaw 排最后是因为它在两列网格里独占整行，避免出现空格子。
+const BACKEND_TYPE_ORDER: BackendType[] = [
+  "claudecode",
+  "codex",
+  "piagent",
+  "builtin",
+  "openclaw",
+];
+
+// 打开新建对话框时会对这三个类型各探一次目标机的 $PATH。
+const CLI_BACKEND_TYPES: BackendType[] = ["claudecode", "codex", "piagent"];
+
+// probing → 请求在飞；installed/missing → 目标机 $PATH 的结论；
+// failed → 远端不可达（离线 / 超时 / 探测报错），此时不能谎报「未安装」。
+type CLIProbeState = "probing" | "installed" | "missing" | "failed";
+type CLIProbe = { state: CLIProbeState; path: string };
 
 const backendTypeMeta: Record<
   BackendType,
@@ -691,6 +708,7 @@ function Toolbar({
         <Button
           type="button"
           size="sm"
+          data-testid="agent-backend-create"
           className="h-[30px] gap-1.5 px-3 text-xs"
           onClick={onCreate}
         >
@@ -969,6 +987,11 @@ function BackendEditor({
   const [cliProbeMiss, setCliProbeMiss] = React.useState<string | null>(null);
   // 名称一旦被用户敲过就不再跟着类型走；编辑态本来就带着既有名字，视同已敲过。
   const nameTouchedRef = React.useRef(state.kind === "edit");
+  // 类型选择器右侧徽标的数据源：三个 CLI 引擎在目标机 $PATH 里的探测结果。
+  const [cliProbes, setCliProbes] = React.useState<
+    Partial<Record<BackendType, CLIProbe>>
+  >({});
+  const cliProbeGenerationRef = React.useRef(0);
 
   const filteredProviders = React.useMemo(
     () => matchingProviders(type, providers),
@@ -998,6 +1021,40 @@ function BackendEditor({
     return r.found ? r.path : null;
   }
 
+  // 新建时对三个 CLI 引擎各探一次目标机的 $PATH，让「装没装」在选类型这一步就可见，
+  // 而不是选完之后才在 CLI 路径字段撞墙。换运行设备（本机 ↔ 远端）要整组重探。
+  // 探测不阻塞选择：飞行中的类型照样可以点。
+  React.useEffect(() => {
+    if (state.kind !== "create") return;
+    const generation = ++cliProbeGenerationRef.current;
+    setCliProbes(
+      Object.fromEntries(
+        CLI_BACKEND_TYPES.map((cliType) => [
+          cliType,
+          { state: "probing", path: "" },
+        ]),
+      ) as Partial<Record<BackendType, CLIProbe>>,
+    );
+    for (const cliType of CLI_BACKEND_TYPES) {
+      void (async () => {
+        let probe: CLIProbe;
+        try {
+          const r = await probeCLIPath(cliType, deviceId);
+          probe = {
+            state: r.found ? "installed" : "missing",
+            path: r.found ? r.path : "",
+          };
+        } catch {
+          // 远端离线 / 超时 / 探测报错：只能说「没探到」，不能说「没装」。
+          probe = { state: "failed", path: "" };
+        }
+        // 换设备后旧一轮的迟到结果直接丢弃，避免徽标显示上一台机器的结论。
+        if (cliProbeGenerationRef.current !== generation) return;
+        setCliProbes((prev) => ({ ...prev, [cliType]: probe }));
+      })();
+    }
+  }, [state.kind, deviceId]);
+
   // 没被用户敲过的名称跟着「设备 · 类型」走，省掉一次手输。
   // 只有 CLI 引擎带设备前缀 —— 它们才能派到远端；内置 / 网关直接用类型名。
   function defaultBackendName(bt: BackendType, dev: string): string {
@@ -1011,6 +1068,13 @@ function BackendEditor({
       device: deviceName,
       name: t(`agentBackends.backendType.${bt}.shortLabel`),
     });
+  }
+
+  function handleDeviceChange(nextDeviceId: string) {
+    setDeviceId(nextDeviceId);
+    if (!nameTouchedRef.current) {
+      setName(defaultBackendName(type, nextDeviceId));
+    }
   }
 
   function handleTypeChange(nextType: BackendType) {
@@ -1049,14 +1113,24 @@ function BackendEditor({
     // 切类型时清空 cliPath，避免 claude / codex 两个不同的可执行文件串台。
     setCliPath("");
     setCliProbeMiss(null);
-    // create 模式下，切到 CLI 类型自动尝试探测一次，命中就填进去；用户随时可手改/清空。
-    // edit 模式 type 是 disabled 的，所以这里不会跑；编辑场景只靠 Input 旁的「自动识别」按钮。
+    // create 模式下切到 CLI 类型要把识别到的路径自动填进去；用户随时可手改/清空。
+    // edit 模式不渲染选择器，所以这里不会跑；编辑场景只靠 Input 旁的「自动识别」按钮。
     if (state.kind === "create" && isCliBackend(nextType)) {
-      void (async () => {
-        // 新建流程的隐式自动填：静默吞错，远端不可达就当没识别到。
-        const path = await detectCLIPath(nextType, deviceId).catch(() => null);
-        if (path) setCliPath(path);
-      })();
+      const probed = cliProbes[nextType];
+      if (probed?.state === "installed") {
+        // 打开对话框时那一轮探测已经给出结论，直接复用 —— 远端设备上这能省掉一次真实往返，
+        // 而方向键换选项会逐个触发本函数，代价按键盘步数累加。
+        setCliPath(probed.path);
+      } else if (probed?.state !== "missing") {
+        // 只有「还没探完 / 探测失败」才补一发；已知未安装就不用再问一次。
+        void (async () => {
+          // 新建流程的隐式自动填：静默吞错，远端不可达就当没识别到。
+          const path = await detectCLIPath(nextType, deviceId).catch(
+            () => null,
+          );
+          if (path) setCliPath(path);
+        })();
+      }
     }
   }
 
@@ -1498,14 +1572,20 @@ function BackendEditor({
         }
       >
         {/* 类型排在名称之前：它决定了下面出现哪些字段，也决定名称的默认值。 */}
-        <div className="flex flex-col gap-1.5 text-xs">
-          <span className="font-medium">{t("agentBackends.fields.type")}</span>
-          <BackendTypeSegmented
-            value={type}
-            onChange={handleTypeChange}
-            disabled={state.kind === "edit"}
-          />
-        </div>
+        {state.kind === "edit" ? (
+          <BackendTypeReadonly type={type} />
+        ) : (
+          <div className="flex flex-col gap-1.5 text-xs">
+            <span className="font-medium">
+              {t("agentBackends.fields.type")}
+            </span>
+            <BackendTypePicker
+              value={type}
+              onChange={handleTypeChange}
+              probes={cliProbes}
+            />
+          </div>
+        )}
 
         <label className="flex flex-col gap-1.5 text-xs">
           <span className="font-medium">{t("agentBackends.fields.name")}</span>
@@ -1527,7 +1607,7 @@ function BackendEditor({
           </span>
           <Select
             value={deviceIdToSelectValue(deviceId)}
-            onValueChange={(v) => setDeviceId(selectValueToDeviceId(v))}
+            onValueChange={(v) => handleDeviceChange(selectValueToDeviceId(v))}
             disabled={type === "builtin" || type === "openclaw"}
           >
             <SelectTrigger aria-label={t("agentBackends.fields.device")}>
@@ -1794,44 +1874,152 @@ function BackendEditor({
   );
 }
 
-function BackendTypeSegmented({
+// 类型选择器：两列卡片，每张只放「logo + 名称 + 一个徽标」。
+// 不放整句说明 —— 徽标只承载「选之前才有用、选之后就看不到」的事实
+// （CLI 装没装 / 内置只能跑本机），其余前置条件选中后表单自己会呈现。
+function BackendTypePicker({
   value,
   onChange,
-  disabled,
+  probes,
 }: {
   value: BackendType;
   onChange: (v: BackendType) => void;
-  disabled?: boolean;
+  probes: Partial<Record<BackendType, CLIProbe>>;
 }) {
   const { t } = useTranslation();
-  const items = Object.keys(backendTypeMeta) as BackendType[];
+  const groupRef = React.useRef<HTMLDivElement>(null);
+
+  // radiogroup 的键盘契约：方向键换选项并把焦点带过去（Tab 只进出整组）。
+  function moveSelection(delta: number) {
+    const from = BACKEND_TYPE_ORDER.indexOf(value);
+    const total = BACKEND_TYPE_ORDER.length;
+    const next = BACKEND_TYPE_ORDER[(from + delta + total) % total];
+    onChange(next);
+    groupRef.current
+      ?.querySelector<HTMLButtonElement>(`[data-backend-type="${next}"]`)
+      ?.focus();
+  }
+
   return (
-    <ToggleGroup
-      type="single"
-      variant="outline"
-      value={value}
-      onValueChange={(next) => {
-        if (next) onChange(next as BackendType);
-      }}
-      className="grid w-full grid-cols-3 gap-1"
+    <div
+      ref={groupRef}
+      role="radiogroup"
       aria-label={t("agentBackends.fields.type")}
+      // 对话框是 w-full max-w-xl —— 窗口窄于 sm 时它跟着缩，两列会把
+      // 「Claude Code CLI + 未安装」挤到截断，所以窄窗退回单列。
+      className="grid grid-cols-1 gap-1.5 sm:grid-cols-2"
+      onKeyDown={(e) => {
+        if (e.key === "ArrowDown" || e.key === "ArrowRight") {
+          e.preventDefault();
+          moveSelection(1);
+        } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
+          e.preventDefault();
+          moveSelection(-1);
+        }
+      }}
     >
-      {items.map((backendType) => (
-        <ToggleGroupItem
-          key={backendType}
-          value={backendType}
-          disabled={disabled || backendTypeMeta[backendType].disabled}
-          role="button"
-          aria-pressed={value === backendType}
-          className="min-w-0 px-1.5 text-xs"
-        >
-          <span aria-hidden="true">
-            <AgentBackendLogo backendType={backendType} className="size-4" />
-          </span>
-          {t(`agentBackends.backendType.${backendType}.label`)}
-        </ToggleGroupItem>
-      ))}
-    </ToggleGroup>
+      {BACKEND_TYPE_ORDER.map((backendType) => {
+        const checked = value === backendType;
+        return (
+          <button
+            key={backendType}
+            type="button"
+            role="radio"
+            aria-checked={checked}
+            data-backend-type={backendType}
+            disabled={backendTypeMeta[backendType].disabled}
+            // roving tabindex：整组只有选中项可 Tab 聚焦。
+            tabIndex={checked ? 0 : -1}
+            onClick={() => onChange(backendType)}
+            className={cn(
+              "flex min-w-0 items-center gap-2 rounded-md border px-2.5 py-2 text-left outline-none transition-colors",
+              "focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+              "disabled:pointer-events-none disabled:opacity-50",
+              checked
+                ? "border-primary bg-primary-soft"
+                : "border-border bg-card hover:border-border-strong hover:bg-accent/60",
+              // 5 个选项排两列会空一格,让网关独占末行收尾。单列时不能加 span-2:
+              // 那会在 1 列的网格里撑出一条隐式列,把整行顶出容器。
+              backendType === "openclaw" && "sm:col-span-2",
+            )}
+          >
+            <span aria-hidden="true">
+              <AgentBackendLogo backendType={backendType} className="size-4" />
+            </span>
+            <span className="min-w-0 flex-1 truncate text-xs font-semibold">
+              {t(`agentBackends.backendType.${backendType}.label`)}
+            </span>
+            <BackendTypeBadge type={backendType} probe={probes[backendType]} />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function BackendTypeBadge({
+  type,
+  probe,
+}: {
+  type: BackendType;
+  probe?: CLIProbe;
+}) {
+  const { t } = useTranslation();
+  // 内置引擎的意外之处是「运行设备」会被禁用 —— 提前说，省得用户选完才发现派不出去。
+  if (type === "builtin") {
+    return (
+      <span className="shrink-0 rounded-full border border-border bg-secondary px-1.5 text-2xs text-muted-foreground">
+        {t("agentBackends.backendType.builtin.badge")}
+      </span>
+    );
+  }
+  // 网关不给徽标：它要填什么，选中之后表单自己会说。
+  if (!isCliBackend(type) || !probe) return null;
+
+  const tone =
+    probe.state === "installed"
+      ? "border-status-running/30 bg-status-running-bg text-status-running"
+      : probe.state === "probing"
+        ? "border-border bg-secondary text-muted-foreground"
+        : "border-status-waiting/30 bg-status-waiting-bg text-status-waiting";
+  return (
+    <span
+      // e2e 用它断言探测结论，避免拿 i18n 文案当定位符。
+      data-probe-state={probe.state}
+      className={cn(
+        "flex shrink-0 items-center gap-1 rounded-full border px-1.5 text-2xs",
+        tone,
+      )}
+      title={probe.state === "installed" ? probe.path : undefined}
+    >
+      {probe.state === "probing" ? (
+        <Loader2 className="size-2.5 animate-spin" aria-hidden="true" />
+      ) : null}
+      {t(`agentBackends.backendType.probe.${probe.state}`)}
+    </span>
+  );
+}
+
+// 编辑态：类型创建后不可改。渲染整组再 disabled 只是白占地方，换成一行只读摘要。
+function BackendTypeReadonly({ type }: { type: BackendType }) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex flex-col gap-1.5 text-xs">
+      <div className="flex items-baseline gap-2">
+        <span className="font-medium">{t("agentBackends.fields.type")}</span>
+        <span className="text-2xs text-muted-foreground">
+          {t("agentBackends.fields.typeLocked")}
+        </span>
+      </div>
+      <div className="flex items-center gap-2 rounded-md border border-border bg-secondary px-2.5 py-2">
+        <span aria-hidden="true">
+          <AgentBackendLogo backendType={type} className="size-4" />
+        </span>
+        <span className="min-w-0 flex-1 truncate text-xs font-semibold">
+          {t(`agentBackends.backendType.${type}.label`)}
+        </span>
+      </div>
+    </div>
   );
 }
 
