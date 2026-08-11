@@ -64,6 +64,24 @@ func TestProviderTypeHelpers(t *testing.T) {
 	assert.False(t, ant.IsOpenAICompatible())
 }
 
+func TestProviderEnabledState(t *testing.T) {
+	t.Run("IsEnabled reflects independent enabled flag", func(t *testing.T) {
+		assert.True(t, (&LLMProvider{Enabled: EnabledOn}).IsEnabled())
+		assert.False(t, (&LLMProvider{Enabled: EnabledOff}).IsEnabled())
+		assert.False(t, (*LLMProvider)(nil).IsEnabled())
+	})
+
+	t.Run("HasDefaultModel reports non-empty default_model_key", func(t *testing.T) {
+		assert.True(t, (&LLMProvider{DefaultModelKey: "mk-1"}).HasDefaultModel())
+		assert.False(t, (&LLMProvider{DefaultModelKey: ""}).HasDefaultModel())
+		assert.False(t, (*LLMProvider)(nil).HasDefaultModel())
+	})
+
+	t.Run("TableName binds llm_providers", func(t *testing.T) {
+		assert.Equal(t, "llm_providers", (&LLMProvider{}).TableName())
+	})
+}
+
 func TestMaskedAPIKey(t *testing.T) {
 	cases := []struct {
 		in   string

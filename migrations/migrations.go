@@ -34,5 +34,6 @@ func migrationList() []*gormigrate.Migration {
 		migration202608080011(), // 执行目标 + 本机路径（R15/R15e/R15b/R10/决策 26）
 		migration202608080012(), // 同步基础设施（R1 同步元数据 / R5/R7/R2a 队列表）
 		migration202608100001(), // chat_messages 恢复标记索引 (role, device_id)
+		migration202608110001(), // llm_provider_models：Provider 1→N 稳定模型 + 默认/目标列 + 旧路由结构化
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 )
 
@@ -25,11 +26,19 @@ func setupLLMProviderRepoTest(t *testing.T) (context.Context, sqlmock.Sqlmock, l
 	return ctx, mock, llm_provider_repo.NewLLMProvider()
 }
 
-// providerRows 构造一行 sqlmock 返回值，避免每个用例重复列声明。
+// providerRows 构造一行 sqlmock 返回值（llm_providers 新 schema：无 model/max_output/
+// context_window，新增 enabled + default_model_key）。
 func providerRows() *sqlmock.Rows {
 	return sqlmock.NewRows([]string{
-		"id", "type", "name", "api_key", "base_url", "model",
-		"max_output", "context_window", "status", "createtime", "updatetime",
+		"id", "type", "name", "api_key", "base_url", "enabled",
+		"default_model_key", "provider_key", "status", "createtime", "updatetime",
+	})
+}
+
+func modelRows() *sqlmock.Rows {
+	return sqlmock.NewRows([]string{
+		"id", "provider_id", "model_key", "model_id", "name",
+		"context_window", "max_output", "enabled", "status", "createtime", "updatetime",
 	})
 }
 
@@ -39,10 +48,11 @@ func TestLLMProviderRepo_Create(t *testing.T) {
 
 		convey.Convey("写入成功并回填自增 ID", func() {
 			p := &llm_provider_entity.LLMProvider{
-				Type:   string(llm_provider_entity.TypeAnthropic),
-				Name:   "claude",
-				APIKey: "sk-test",
-				Status: consts.ACTIVE,
+				Type:    string(llm_provider_entity.TypeAnthropic),
+				Name:    "claude",
+				APIKey:  "sk-test",
+				Enabled: llm_provider_entity.EnabledOn,
+				Status:  consts.ACTIVE,
 			}
 			mock.ExpectBegin()
 			mock.ExpectExec("INSERT INTO `llm_providers`").
@@ -73,10 +83,10 @@ func TestLLMProviderRepo_Find(t *testing.T) {
 	convey.Convey("Find", t, func() {
 		ctx, mock, repo := setupLLMProviderRepoTest(t)
 
-		convey.Convey("命中时返回实体", func() {
+		convey.Convey("命中时返回实体（含 enabled/default_model_key）", func() {
 			rows := providerRows().AddRow(
-				1, string(llm_provider_entity.TypeAnthropic), "claude", "sk-test", "", "claude-sonnet-4-6",
-				4096, 200000, consts.ACTIVE, int64(0), int64(0),
+				1, string(llm_provider_entity.TypeAnthropic), "claude", "sk-test", "",
+				llm_provider_entity.EnabledOn, "mk-1", "uuid-1", consts.ACTIVE, int64(0), int64(0),
 			)
 			mock.ExpectQuery("SELECT \\* FROM `llm_providers` WHERE id = \\? AND status = \\? ORDER BY `llm_providers`.`id` LIMIT \\?").
 				WithArgs(int64(1), consts.ACTIVE, 1).
@@ -87,6 +97,8 @@ func TestLLMProviderRepo_Find(t *testing.T) {
 			assert.NotNil(t, got)
 			assert.Equal(t, "claude", got.Name)
 			assert.Equal(t, "sk-test", got.APIKey)
+			assert.Equal(t, llm_provider_entity.EnabledOn, got.Enabled)
+			assert.Equal(t, "mk-1", got.DefaultModelKey)
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 
@@ -120,8 +132,8 @@ func TestLLMProviderRepo_FindByName(t *testing.T) {
 
 		convey.Convey("命中时返回实体", func() {
 			rows := providerRows().AddRow(
-				5, string(llm_provider_entity.TypeOpenAIChat), "openai", "sk-1", "", "",
-				0, 0, consts.ACTIVE, int64(0), int64(0),
+				5, string(llm_provider_entity.TypeOpenAIChat), "openai", "sk-1", "",
+				llm_provider_entity.EnabledOn, "", "uuid-openai", consts.ACTIVE, int64(0), int64(0),
 			)
 			mock.ExpectQuery("SELECT \\* FROM `llm_providers` WHERE name = \\? AND status = \\? ORDER BY `llm_providers`.`id` LIMIT \\?").
 				WithArgs("openai", consts.ACTIVE, 1).
@@ -153,8 +165,8 @@ func TestLLMProviderRepo_List(t *testing.T) {
 
 		convey.Convey("按 id 升序过滤 status=ACTIVE", func() {
 			rows := providerRows().
-				AddRow(1, string(llm_provider_entity.TypeAnthropic), "a", "k1", "", "", 0, 0, consts.ACTIVE, int64(0), int64(0)).
-				AddRow(2, string(llm_provider_entity.TypeOpenAIChat), "b", "k2", "", "", 0, 0, consts.ACTIVE, int64(0), int64(0))
+				AddRow(1, string(llm_provider_entity.TypeAnthropic), "a", "k1", "", 1, "mk-a", "ka", consts.ACTIVE, int64(0), int64(0)).
+				AddRow(2, string(llm_provider_entity.TypeOpenAIChat), "b", "k2", "", 1, "mk-b", "kb", consts.ACTIVE, int64(0), int64(0))
 			mock.ExpectQuery("SELECT \\* FROM `llm_providers` WHERE status = \\? ORDER BY id ASC").
 				WithArgs(consts.ACTIVE).
 				WillReturnRows(rows)
@@ -214,8 +226,8 @@ func TestLLMProviderRepo_FindByKey(t *testing.T) {
 		ctx, mock, repo := setupLLMProviderRepoTest(t)
 
 		convey.Convey("命中", func() {
-			rows := sqlmock.NewRows([]string{"id", "provider_key", "type", "name", "status"}).
-				AddRow(int64(5), "uuid-abc", "anthropic", "huu-glm", 1)
+			rows := sqlmock.NewRows([]string{"id", "provider_key", "type", "name", "enabled", "status"}).
+				AddRow(int64(5), "uuid-abc", "anthropic", "huu-glm", 1, 1)
 			mock.ExpectQuery("SELECT \\* FROM `llm_providers` WHERE provider_key = \\? ORDER BY `llm_providers`.`id` LIMIT \\?").
 				WithArgs("uuid-abc", 1).WillReturnRows(rows)
 
@@ -250,9 +262,9 @@ func TestLLMProviderRepo_BatchFindByKey(t *testing.T) {
 		})
 
 		convey.Convey("命中多行时按 provider_key 索引", func() {
-			rows := sqlmock.NewRows([]string{"id", "provider_key", "type", "name", "status"}).
-				AddRow(int64(1), "key-1", "anthropic", "prov-1", 1).
-				AddRow(int64(2), "key-2", "openai-chat", "prov-2", 1)
+			rows := sqlmock.NewRows([]string{"id", "provider_key", "type", "name", "enabled", "status"}).
+				AddRow(int64(1), "key-1", "anthropic", "prov-1", 1, 1).
+				AddRow(int64(2), "key-2", "openai-chat", "prov-2", 1, 1)
 			mock.ExpectQuery("SELECT \\* FROM `llm_providers` WHERE provider_key IN \\(\\?,\\?\\) AND status = \\?").
 				WithArgs("key-1", "key-2", consts.ACTIVE).
 				WillReturnRows(rows)
@@ -289,13 +301,417 @@ func TestLLMProviderRepo_Update(t *testing.T) {
 			mock.ExpectCommit()
 
 			err := repo.Update(ctx, &llm_provider_entity.LLMProvider{
-				ID:     8,
-				Type:   string(llm_provider_entity.TypeOpenAIChat),
-				Name:   "renamed",
-				APIKey: "sk-new",
-				Status: consts.ACTIVE,
+				ID:              8,
+				Type:            string(llm_provider_entity.TypeOpenAIChat),
+				Name:            "renamed",
+				APIKey:          "sk-new",
+				Enabled:         llm_provider_entity.EnabledOn,
+				DefaultModelKey: "mk-1",
+				Status:          consts.ACTIVE,
 			})
 			assert.NoError(t, err)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	})
+}
+
+// ── Model CRUD ──────────────────────────────────────────────────────────────
+
+func TestLLMProviderRepo_CreateModel(t *testing.T) {
+	convey.Convey("CreateModel", t, func() {
+		ctx, mock, repo := setupLLMProviderRepoTest(t)
+
+		convey.Convey("写入成功并回填自增 ID", func() {
+			m := &llm_provider_model_entity.LLMProviderModel{
+				ProviderID: 3,
+				ModelKey:   "mk-1",
+				ModelID:    "claude-sonnet-4-6",
+				Enabled:    llm_provider_model_entity.EnabledOn,
+				Status:     consts.ACTIVE,
+			}
+			mock.ExpectBegin()
+			mock.ExpectExec("INSERT INTO `llm_provider_models`").
+				WillReturnResult(sqlmock.NewResult(9, 1))
+			mock.ExpectCommit()
+
+			assert.NoError(t, repo.CreateModel(ctx, m))
+			assert.Equal(t, int64(9), m.ID)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+
+		convey.Convey("驱动报错时透传并回滚", func() {
+			mock.ExpectBegin()
+			mock.ExpectExec("INSERT INTO `llm_provider_models`").
+				WillReturnError(errors.New("boom"))
+			mock.ExpectRollback()
+
+			err := repo.CreateModel(ctx, &llm_provider_model_entity.LLMProviderModel{
+				ProviderID: 3, ModelKey: "mk-1", ModelID: "x", Status: consts.ACTIVE,
+			})
+			assert.EqualError(t, err, "boom")
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	})
+}
+
+func TestLLMProviderRepo_UpdateModel(t *testing.T) {
+	convey.Convey("UpdateModel", t, func() {
+		ctx, mock, repo := setupLLMProviderRepoTest(t)
+
+		convey.Convey("model_key 不可变：UPDATE 不包含 model_key 列", func() {
+			// 枚举 GORM Save+Omit(model_key) 的 SET 列，逐字不含 model_key —— 一旦
+			// 实现把 model_key 写进 UPDATE，这条 regex 匹配不到 → RED。
+			mock.ExpectBegin()
+			mock.ExpectExec("UPDATE `llm_provider_models` SET " +
+				"`provider_id`=\\?,`model_id`=\\?,`name`=\\?,`context_window`=\\?,`max_output`=\\?," +
+				"`enabled`=\\?,`status`=\\?,`createtime`=\\?,`updatetime`=\\? WHERE `id` = \\?" +
+				"").
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectCommit()
+
+			err := repo.UpdateModel(ctx, &llm_provider_model_entity.LLMProviderModel{
+				ID:         4,
+				ProviderID: 3,
+				ModelKey:   "mk-immutable",
+				ModelID:    "claude-haiku-4-5",
+				Name:       "haiku",
+				Status:     consts.ACTIVE,
+			})
+			assert.NoError(t, err)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+
+		convey.Convey("驱动报错时透传并回滚", func() {
+			mock.ExpectBegin()
+			mock.ExpectExec("UPDATE `llm_provider_models` SET").
+				WillReturnError(errors.New("write failed"))
+			mock.ExpectRollback()
+
+			err := repo.UpdateModel(ctx, &llm_provider_model_entity.LLMProviderModel{
+				ID: 4, ProviderID: 3, ModelKey: "mk", ModelID: "x", Status: consts.ACTIVE,
+			})
+			assert.EqualError(t, err, "write failed")
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	})
+}
+
+func TestLLMProviderRepo_FindModel(t *testing.T) {
+	convey.Convey("FindModel", t, func() {
+		ctx, mock, repo := setupLLMProviderRepoTest(t)
+
+		convey.Convey("命中时返回实体", func() {
+			rows := modelRows().AddRow(
+				9, 3, "mk-1", "claude-sonnet-4-6", "sonnet", 200000, 4096,
+				llm_provider_model_entity.EnabledOn, consts.ACTIVE, int64(0), int64(0),
+			)
+			mock.ExpectQuery("SELECT \\* FROM `llm_provider_models` WHERE id = \\? AND status = \\? ORDER BY `llm_provider_models`.`id` LIMIT \\?").
+				WithArgs(int64(9), consts.ACTIVE, 1).
+				WillReturnRows(rows)
+
+			got, err := repo.FindModel(ctx, 9)
+			assert.NoError(t, err)
+			assert.NotNil(t, got)
+			assert.Equal(t, "mk-1", got.ModelKey)
+			assert.Equal(t, "claude-sonnet-4-6", got.ModelID)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+
+		convey.Convey("未命中返回 nil 而非错误", func() {
+			mock.ExpectQuery("SELECT \\* FROM `llm_provider_models` WHERE id = \\? AND status = \\?").
+				WithArgs(int64(99), consts.ACTIVE, 1).
+				WillReturnError(gorm.ErrRecordNotFound)
+
+			got, err := repo.FindModel(ctx, 99)
+			assert.NoError(t, err)
+			assert.Nil(t, got)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	})
+}
+
+func TestLLMProviderRepo_FindModelByKey(t *testing.T) {
+	convey.Convey("FindModelByKey", t, func() {
+		ctx, mock, repo := setupLLMProviderRepoTest(t)
+
+		convey.Convey("命中（含 enabled=0 的停用模型，用于 fixed-model 失效提示）", func() {
+			rows := modelRows().AddRow(
+				9, 3, "mk-1", "claude-sonnet-4-6", "sonnet", 200000, 4096,
+				llm_provider_model_entity.EnabledOff, consts.ACTIVE, int64(0), int64(0),
+			)
+			mock.ExpectQuery("SELECT \\* FROM `llm_provider_models` WHERE model_key = \\? AND status = \\? ORDER BY `llm_provider_models`.`id` LIMIT \\?").
+				WithArgs("mk-1", consts.ACTIVE, 1).
+				WillReturnRows(rows)
+
+			got, err := repo.FindModelByKey(ctx, "mk-1")
+			assert.NoError(t, err)
+			assert.NotNil(t, got)
+			assert.Equal(t, llm_provider_model_entity.EnabledOff, got.Enabled)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+
+		convey.Convey("未命中返回 nil", func() {
+			mock.ExpectQuery("SELECT \\* FROM `llm_provider_models`").
+				WithArgs("missing", consts.ACTIVE, 1).
+				WillReturnError(gorm.ErrRecordNotFound)
+
+			got, err := repo.FindModelByKey(ctx, "missing")
+			assert.NoError(t, err)
+			assert.Nil(t, got)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	})
+}
+
+func TestLLMProviderRepo_ListModels(t *testing.T) {
+	convey.Convey("ListModels", t, func() {
+		ctx, mock, repo := setupLLMProviderRepoTest(t)
+
+		convey.Convey("按 id 升序过滤 provider + status=ACTIVE", func() {
+			rows := modelRows().
+				AddRow(1, 3, "mk-1", "a", "A", 0, 0, 1, consts.ACTIVE, int64(0), int64(0)).
+				AddRow(2, 3, "mk-2", "b", "B", 0, 0, 1, consts.ACTIVE, int64(0), int64(0))
+			mock.ExpectQuery("SELECT \\* FROM `llm_provider_models` WHERE provider_id = \\? AND status = \\? ORDER BY id ASC").
+				WithArgs(int64(3), consts.ACTIVE).
+				WillReturnRows(rows)
+
+			got, err := repo.ListModels(ctx, 3)
+			assert.NoError(t, err)
+			assert.Len(t, got, 2)
+			assert.Equal(t, "mk-1", got[0].ModelKey)
+			assert.Equal(t, "mk-2", got[1].ModelKey)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+
+		convey.Convey("驱动报错时透传", func() {
+			mock.ExpectQuery("SELECT \\* FROM `llm_provider_models` WHERE provider_id = \\? AND status = \\?").
+				WithArgs(int64(3), consts.ACTIVE).
+				WillReturnError(sql.ErrConnDone)
+
+			got, err := repo.ListModels(ctx, 3)
+			assert.ErrorIs(t, err, sql.ErrConnDone)
+			assert.Nil(t, got)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	})
+}
+
+func TestLLMProviderRepo_DeleteModel(t *testing.T) {
+	convey.Convey("DeleteModel", t, func() {
+		ctx, mock, repo := setupLLMProviderRepoTest(t)
+
+		convey.Convey("软删除：UPDATE status=DELETE WHERE id=?", func() {
+			mock.ExpectBegin()
+			mock.ExpectExec("UPDATE `llm_provider_models` SET `status`=\\?(,`updatetime`=\\?)? WHERE id = \\?").
+				WithArgs(consts.DELETE, int64(6)).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectCommit()
+
+			assert.NoError(t, repo.DeleteModel(ctx, 6))
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	})
+}
+
+// ── 原子操作 ────────────────────────────────────────────────────────────────
+
+func TestLLMProviderRepo_CreateWithModels(t *testing.T) {
+	convey.Convey("CreateWithModels", t, func() {
+		ctx, mock, repo := setupLLMProviderRepoTest(t)
+
+		convey.Convey("Provider + Models + 默认模型在同一事务提交", func() {
+			p := &llm_provider_entity.LLMProvider{
+				Type: string(llm_provider_entity.TypeAnthropic), Name: "claude", Status: consts.ACTIVE,
+			}
+			models := []*llm_provider_model_entity.LLMProviderModel{
+				{ModelKey: "mk-1", ModelID: "claude-sonnet-4-6", Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+				{ModelKey: "mk-2", ModelID: "claude-haiku-4-5", Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+			}
+
+			mock.ExpectBegin()
+			mock.ExpectExec("INSERT INTO `llm_providers`").
+				WillReturnResult(sqlmock.NewResult(7, 1))
+			mock.ExpectExec("INSERT INTO `llm_provider_models`").
+				WillReturnResult(sqlmock.NewResult(9, 1))
+			mock.ExpectExec("INSERT INTO `llm_provider_models`").
+				WillReturnResult(sqlmock.NewResult(10, 1))
+			mock.ExpectExec("UPDATE `llm_providers` SET `default_model_key`=\\? WHERE id = \\?").
+				WithArgs("mk-1", int64(7)).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectCommit()
+
+			err := repo.CreateWithModels(ctx, p, models, "mk-1")
+			assert.NoError(t, err)
+			assert.Equal(t, int64(7), p.ID)
+			assert.Equal(t, int64(7), models[0].ProviderID)
+			assert.Equal(t, int64(7), models[1].ProviderID)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+
+		convey.Convey("任一步失败整体回滚，不留半批状态", func() {
+			p := &llm_provider_entity.LLMProvider{
+				Type: string(llm_provider_entity.TypeAnthropic), Name: "claude", Status: consts.ACTIVE,
+			}
+			models := []*llm_provider_model_entity.LLMProviderModel{
+				{ModelKey: "mk-1", ModelID: "claude-sonnet-4-6", Status: consts.ACTIVE},
+			}
+
+			mock.ExpectBegin()
+			mock.ExpectExec("INSERT INTO `llm_providers`").
+				WillReturnResult(sqlmock.NewResult(7, 1))
+			mock.ExpectExec("INSERT INTO `llm_provider_models`").
+				WillReturnError(errors.New("constraint failed"))
+			mock.ExpectRollback()
+
+			err := repo.CreateWithModels(ctx, p, models, "mk-1")
+			assert.EqualError(t, err, "constraint failed")
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	})
+}
+
+func TestLLMProviderRepo_BatchImportModels(t *testing.T) {
+	convey.Convey("BatchImportModels", t, func() {
+		ctx, mock, repo := setupLLMProviderRepoTest(t)
+
+		convey.Convey("批量导入在同一事务提交，不留半批", func() {
+			models := []*llm_provider_model_entity.LLMProviderModel{
+				{ProviderID: 3, ModelKey: "mk-a", ModelID: "a", Status: consts.ACTIVE},
+				{ProviderID: 3, ModelKey: "mk-b", ModelID: "b", Status: consts.ACTIVE},
+			}
+
+			mock.ExpectBegin()
+			mock.ExpectExec("INSERT INTO `llm_provider_models`").
+				WillReturnResult(sqlmock.NewResult(1, 1))
+			mock.ExpectExec("INSERT INTO `llm_provider_models`").
+				WillReturnResult(sqlmock.NewResult(2, 1))
+			mock.ExpectCommit()
+
+			assert.NoError(t, repo.BatchImportModels(ctx, models))
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+
+		convey.Convey("空列表直接返回，不产生 SQL", func() {
+			assert.NoError(t, repo.BatchImportModels(ctx, nil))
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+
+		convey.Convey("中途失败整体回滚", func() {
+			models := []*llm_provider_model_entity.LLMProviderModel{
+				{ProviderID: 3, ModelKey: "mk-a", ModelID: "a", Status: consts.ACTIVE},
+				{ProviderID: 3, ModelKey: "mk-b", ModelID: "b", Status: consts.ACTIVE},
+			}
+
+			mock.ExpectBegin()
+			mock.ExpectExec("INSERT INTO `llm_provider_models`").
+				WillReturnResult(sqlmock.NewResult(1, 1))
+			mock.ExpectExec("INSERT INTO `llm_provider_models`").
+				WillReturnError(errors.New("dup model_id"))
+			mock.ExpectRollback()
+
+			err := repo.BatchImportModels(ctx, models)
+			assert.EqualError(t, err, "dup model_id")
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	})
+}
+
+func TestLLMProviderRepo_SetDefaultModel(t *testing.T) {
+	convey.Convey("SetDefaultModel", t, func() {
+		ctx, mock, repo := setupLLMProviderRepoTest(t)
+
+		convey.Convey("原子更新 default_model_key", func() {
+			mock.ExpectBegin()
+			mock.ExpectExec("UPDATE `llm_providers` SET `default_model_key`=\\?(,`updatetime`=\\?)? WHERE id = \\?").
+				WithArgs("mk-2", int64(3)).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectCommit()
+
+			assert.NoError(t, repo.SetDefaultModel(ctx, 3, "mk-2"))
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+
+		convey.Convey("驱动报错时透传并回滚", func() {
+			mock.ExpectBegin()
+			mock.ExpectExec("UPDATE `llm_providers` SET `default_model_key`=\\? WHERE id = \\?").
+				WithArgs("mk-2", int64(3)).
+				WillReturnError(errors.New("db down"))
+			mock.ExpectRollback()
+
+			err := repo.SetDefaultModel(ctx, 3, "mk-2")
+			assert.EqualError(t, err, "db down")
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	})
+}
+
+// ── 引用影响计数 ────────────────────────────────────────────────────────────
+
+func TestLLMProviderRepo_CountProviderReferences(t *testing.T) {
+	convey.Convey("CountProviderReferences", t, func() {
+		ctx, mock, repo := setupLLMProviderRepoTest(t)
+
+		convey.Convey("返回 Backend / Session / Route 三路计数", func() {
+			mock.ExpectQuery("SELECT count\\(\\*\\) FROM `agent_backends` WHERE llm_provider_key = \\? AND status = \\?").
+				WithArgs("uuid-1", consts.ACTIVE).
+				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(2)))
+			mock.ExpectQuery("SELECT count\\(\\*\\) FROM `chat_sessions` WHERE provider_key = \\? AND status = \\?").
+				WithArgs("uuid-1", consts.ACTIVE).
+				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(5)))
+			mock.ExpectQuery("SELECT count\\(\\*\\) FROM `agent_backends` WHERE status = \\? AND model_routes LIKE \\?").
+				WithArgs(consts.ACTIVE, "%uuid-1%").
+				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(1)))
+
+			got, err := repo.CountProviderReferences(ctx, "uuid-1")
+			assert.NoError(t, err)
+			assert.Equal(t, int64(2), got.Backends)
+			assert.Equal(t, int64(5), got.Sessions)
+			assert.Equal(t, int64(1), got.Routes)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+
+		convey.Convey("驱动报错时透传", func() {
+			mock.ExpectQuery("SELECT count\\(\\*\\) FROM `agent_backends` WHERE llm_provider_key = \\? AND status = \\?").
+				WithArgs("uuid-1", consts.ACTIVE).
+				WillReturnError(sql.ErrConnDone)
+
+			_, err := repo.CountProviderReferences(ctx, "uuid-1")
+			assert.ErrorIs(t, err, sql.ErrConnDone)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	})
+}
+
+func TestLLMProviderRepo_CountModelReferences(t *testing.T) {
+	convey.Convey("CountModelReferences", t, func() {
+		ctx, mock, repo := setupLLMProviderRepoTest(t)
+
+		convey.Convey("返回 Backend / Session / Route 三路计数", func() {
+			mock.ExpectQuery("SELECT count\\(\\*\\) FROM `agent_backends` WHERE llm_model_key = \\? AND status = \\?").
+				WithArgs("mk-1", consts.ACTIVE).
+				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(1)))
+			mock.ExpectQuery("SELECT count\\(\\*\\) FROM `chat_sessions` WHERE model_key = \\? AND status = \\?").
+				WithArgs("mk-1", consts.ACTIVE).
+				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(3)))
+			mock.ExpectQuery("SELECT count\\(\\*\\) FROM `agent_backends` WHERE status = \\? AND model_routes LIKE \\?").
+				WithArgs(consts.ACTIVE, "%mk-1%").
+				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(0)))
+
+			got, err := repo.CountModelReferences(ctx, "mk-1")
+			assert.NoError(t, err)
+			assert.Equal(t, int64(1), got.Backends)
+			assert.Equal(t, int64(3), got.Sessions)
+			assert.Equal(t, int64(0), got.Routes)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+
+		convey.Convey("驱动报错时透传", func() {
+			mock.ExpectQuery("SELECT count\\(\\*\\) FROM `agent_backends` WHERE llm_model_key = \\? AND status = \\?").
+				WithArgs("mk-1", consts.ACTIVE).
+				WillReturnError(sql.ErrConnDone)
+
+			_, err := repo.CountModelReferences(ctx, "mk-1")
+			assert.ErrorIs(t, err, sql.ErrConnDone)
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 	})
