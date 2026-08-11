@@ -4050,28 +4050,26 @@ describe("ChatPanel · T31 R18 浏览器开新轮的 user 行插入", () => {
 
     const handler = getAutonomousHandler(1);
     act(() => {
-      handler!(
-        {
-          kind: "autonomous_started",
-          sessionId: 1,
-          stream: "chat:event:1:52",
-          trigger: "catch_up",
-          userMessages: [
-            {
-              id: 50,
-              role: "user",
-              blocks: [{ type: "text", text: "浏览器发来的消息" }],
-              sourceDevice: "sha256:web-device",
-              sourceDeviceName: "Chrome · macOS",
-            },
-          ],
-          assistantMessage: {
-            id: 52,
-            role: "assistant",
-            blocks: [],
+      handler!({
+        kind: "autonomous_started",
+        sessionId: 1,
+        stream: "chat:event:1:52",
+        trigger: "catch_up",
+        userMessages: [
+          {
+            id: 50,
+            role: "user",
+            blocks: [{ type: "text", text: "浏览器发来的消息" }],
+            sourceDevice: "sha256:web-device",
+            sourceDeviceName: "Chrome · macOS",
           },
-        } as unknown as import("@/hooks/use-chat-stream").ChatStreamEvent,
-      );
+        ],
+        assistantMessage: {
+          id: 52,
+          role: "assistant",
+          blocks: [],
+        },
+      } as unknown as import("@/hooks/use-chat-stream").ChatStreamEvent);
     });
 
     expect(setMessagesSpy).toHaveBeenCalled();
@@ -4102,15 +4100,13 @@ describe("ChatPanel · T31 R18 浏览器开新轮的 user 行插入", () => {
 
     const handler = getAutonomousHandler(2);
     act(() => {
-      handler!(
-        {
-          kind: "autonomous_started",
-          sessionId: 2,
-          stream: "chat:event:2:62",
-          trigger: "background_task",
-          assistantMessage: { id: 62, role: "assistant", blocks: [] },
-        } as unknown as import("@/hooks/use-chat-stream").ChatStreamEvent,
-      );
+      handler!({
+        kind: "autonomous_started",
+        sessionId: 2,
+        stream: "chat:event:2:62",
+        trigger: "background_task",
+        assistantMessage: { id: 62, role: "assistant", blocks: [] },
+      } as unknown as import("@/hooks/use-chat-stream").ChatStreamEvent);
     });
 
     const updater = setMessagesSpy.mock.calls.at(-1)![0] as (
