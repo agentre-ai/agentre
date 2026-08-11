@@ -4,10 +4,27 @@ package peer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 )
+
+type inboundSessionAdapter interface {
+	ListPeerSessions(context.Context) (*wire.SessionListResult, error)
+	AttachPeerSession(context.Context, wire.SessionAttachParams, chat_svc.PeerSessionSubscriber) (wire.SessionAttachResult, error)
+}
+
+type connPeerSessionSubscriber struct {
+	conn *rpc.Conn
+}
+
+func (s connPeerSessionSubscriber) Notify(method string, params any) error {
+	return s.conn.Notify(method, params)
+}
+
+func (s connPeerSessionSubscriber) Done() <-chan struct{} { return s.conn.Done() }
 
 // Inbound keeps the desktop registered through one reconnecting relay link and
 // turns relay-initiated virtual channels into private JSON-RPC registries.
@@ -60,6 +77,8 @@ func (p *Inbound) serve(ctx context.Context) {
 func RegisterInboundMethods(registry *rpc.Registry) {
 	registry.Register("auth.account", authenticateAccount)
 	registry.Register(wire.MethodCapabilities, requireAccount(capabilities))
+	registry.Register(wire.MethodSessionList, requireAccount(listSessions))
+	registry.Register(wire.MethodSessionAttach, requireAccount(attachSession))
 }
 
 // authenticateAccount completes the existing account-handshake vocabulary.
@@ -98,4 +117,43 @@ func capabilities(_ context.Context, raw json.RawMessage) (any, error) {
 		return nil, rpc.ErrInvalidParams
 	}
 	return wire.CapabilitiesResult{}, nil
+}
+
+func listSessions(ctx context.Context, raw json.RawMessage) (any, error) {
+	var params struct{}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil, rpc.ErrInvalidParams
+	}
+	adapter, ok := chat_svc.Chat().(inboundSessionAdapter)
+	if !ok || adapter == nil {
+		return nil, rpc.ErrInternal
+	}
+	result, err := adapter.ListPeerSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func attachSession(ctx context.Context, raw json.RawMessage) (any, error) {
+	var params wire.SessionAttachParams
+	if err := json.Unmarshal(raw, &params); err != nil || params.SessionID <= 0 {
+		return nil, rpc.ErrInvalidParams
+	}
+	conn := rpc.ConnFromContext(ctx)
+	if conn == nil {
+		return nil, rpc.ErrUnauthorized
+	}
+	adapter, ok := chat_svc.Chat().(inboundSessionAdapter)
+	if !ok || adapter == nil {
+		return nil, rpc.ErrInternal
+	}
+	result, err := adapter.AttachPeerSession(ctx, params, connPeerSessionSubscriber{conn: conn})
+	if err != nil {
+		if errors.Is(err, chat_svc.ErrPeerSessionNotFound) {
+			return nil, rpc.ErrSessionNotFound
+		}
+		return nil, err
+	}
+	return result, nil
 }

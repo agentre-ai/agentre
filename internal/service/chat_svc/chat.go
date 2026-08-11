@@ -172,13 +172,14 @@ func NewChat(emitter Emitter) ChatSvc {
 		emitter = NoopEmitter{}
 	}
 	s := &chatSvc{
-		emitter:       emitter,
-		locks:         &sync.Map{},
-		activeCancels: &sync.Map{},
-		aborted:       &sync.Map{},
-		turnObservers: &sync.Map{},
-		toolApprovals: map[int64][]*chatblocks.ToolApprovalBlock{},
-		gateway:       defaultGateway,
+		emitter:         emitter,
+		locks:           &sync.Map{},
+		activeCancels:   &sync.Map{},
+		aborted:         &sync.Map{},
+		turnObservers:   &sync.Map{},
+		peerSubscribers: map[int64]map[uint64]PeerSessionSubscriber{},
+		toolApprovals:   map[int64][]*chatblocks.ToolApprovalBlock{},
+		gateway:         defaultGateway,
 	}
 	s.dispatcher = newPackageDispatcher(s)
 	return s
@@ -250,6 +251,12 @@ type chatSvc struct {
 	// 服务端 turn 完成观察口(不经 Wails);调度方在 Send 前 ObserveTurn 订阅,
 	// finalize / failTurn 各回灌恰好一条终态用于释放调度位 + 判定 quiesce。
 	turnObservers *sync.Map
+	// peerSubscribers keeps remote account peers attached to each desktop-owned
+	// session. The desktop Wails emitter is deliberately separate, so attaching
+	// a peer adds presence instead of replacing the local UI's stream.
+	peerSubscribersMu    sync.Mutex
+	peerSubscribers      map[int64]map[uint64]PeerSessionSubscriber
+	nextPeerSubscriberID uint64
 	// autoWatchers：sessionID(int64) → struct{}。startAutonomousWatcher 用它防同一
 	// session 重复起 watcher goroutine(每会话一个,惰性启动);watcher 在底层
 	// AutonomousTurns channel close(子进程 evict / CloseSession)时退出并清这条。

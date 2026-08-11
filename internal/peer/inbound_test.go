@@ -11,13 +11,28 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/syncmeta_entity"
 	"github.com/agentre-ai/agentre/internal/peer"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo/mock_agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo/mock_chat_repo"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 )
 
 // Given a signed-in desktop App owns an inbound relay link, when the first
@@ -63,6 +78,7 @@ func TestInbound_GivenRelayReconnectAndShutdown_WhenAuthorizedPeerCallsCapabilit
 		Random:            func() float64 { return 1 },
 		HeartbeatInterval: time.Hour,
 	})
+	registerInboundPeerChat(t)
 	inbound := peer.NewInbound(link)
 	ctx, cancel := context.WithCancel(context.Background())
 	runDone := make(chan error, 1)
@@ -90,6 +106,20 @@ func TestInbound_GivenRelayReconnectAndShutdown_WhenAuthorizedPeerCallsCapabilit
 	require.NotNil(t, unauthenticated.Error)
 	assert.Equal(t, rpc.ErrUnauthorized.Code, unauthenticated.Error.Code)
 
+	unauthenticatedList := relayRequest(t, ws, "desktop-peer", rpc.Frame{
+		JSONRPC: "2.0", ID: json.RawMessage(`11`), Method: wire.MethodSessionList,
+		Params: mustJSON(t, struct{}{}),
+	})
+	require.NotNil(t, unauthenticatedList.Error)
+	assert.Equal(t, rpc.ErrUnauthorized.Code, unauthenticatedList.Error.Code)
+
+	unauthenticatedAttach := relayRequest(t, ws, "desktop-peer", rpc.Frame{
+		JSONRPC: "2.0", ID: json.RawMessage(`12`), Method: wire.MethodSessionAttach,
+		Params: mustJSON(t, wire.SessionAttachParams{SessionID: 1}),
+	})
+	require.NotNil(t, unauthenticatedAttach.Error)
+	assert.Equal(t, rpc.ErrUnauthorized.Code, unauthenticatedAttach.Error.Code)
+
 	authenticated := relayRequest(t, ws, "desktop-peer", rpc.Frame{
 		JSONRPC: "2.0", ID: json.RawMessage(`2`), Method: "auth.account",
 		Params: mustJSON(t, rpc.AccountParams{Credential: "same-account-device-jwt", DeviceFingerprint: "sha256:peer"}),
@@ -103,11 +133,87 @@ func TestInbound_GivenRelayReconnectAndShutdown_WhenAuthorizedPeerCallsCapabilit
 	require.Nil(t, capabilities.Error)
 	assert.NotEmpty(t, capabilities.Result, "the existing runtime method must reach the desktop peer registry")
 
+	// The desktop session adapter uses the established runtime.session.* wire
+	// family; these two calls must reach it after the same account handshake.
+	listed := relayRequest(t, ws, "desktop-peer", rpc.Frame{
+		JSONRPC: "2.0", ID: json.RawMessage(`4`), Method: wire.MethodSessionList,
+		Params: mustJSON(t, struct{}{}),
+	})
+	require.Nil(t, listed.Error, "an authorized peer must list desktop sessions")
+	var list wire.SessionListResult
+	require.NoError(t, json.Unmarshal(listed.Result, &list))
+	require.Equal(t, []wire.SessionSummary{{
+		SessionID:       1,
+		PeerFingerprint: "sha256:desktop",
+		AgentID:         7,
+		Title:           "Ship the release",
+		AgentSyncID:     "01HXAGENTIDENTITY0000000000",
+		BackendType:     string(agent_backend_entity.TypeClaudeCode),
+		LifecycleState:  wire.SessionLifecycleRunning,
+		WaitingForInput: true,
+		UpdatedAt:       1710000000000,
+	}}, list.Sessions, "desktop rows carry every required summary field without a degraded fallback")
+
+	attached := relayRequest(t, ws, "desktop-peer", rpc.Frame{
+		JSONRPC: "2.0", ID: json.RawMessage(`5`), Method: wire.MethodSessionAttach,
+		Params: mustJSON(t, wire.SessionAttachParams{SessionID: 1}),
+	})
+	require.Nil(t, attached.Error, "an authorized peer must attach a desktop session")
+	var attachment wire.SessionAttachResult
+	require.NoError(t, json.Unmarshal(attached.Result, &attachment))
+	assert.Equal(t, wire.SessionAttachResult{
+		SessionID: 1, BackendType: string(agent_backend_entity.TypeClaudeCode), LifecycleState: wire.SessionLifecycleRunning,
+	}, attachment)
+
 	stop()
 	require.NoError(t, ws.SetReadDeadline(time.Now().Add(time.Second)))
 	_, _, err := ws.ReadMessage()
 	require.Error(t, err, "desktop relay registration remained connected after App shutdown")
 	releaseRelay.Do(func() { close(holdRelay) })
+}
+
+func registerInboundPeerChat(t *testing.T) {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	agents := mock_agent_repo.NewMockAgentRepo(ctrl)
+	backends := mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl)
+	sessions := mock_chat_repo.NewMockSessionRepo(ctrl)
+	device := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+	prevChat := chat_svc.Chat()
+	prevAgents := agent_repo.Agent()
+	prevBackends := agent_backend_repo.AgentBackend()
+	prevSessions := chat_repo.Session()
+	prevDevice := remote_device_svc.Default()
+	agent_repo.RegisterAgent(agents)
+	agent_backend_repo.RegisterAgentBackend(backends)
+	chat_repo.RegisterSession(sessions)
+	remote_device_svc.SetDefault(device)
+	chat_svc.RegisterChat(chat_svc.NewChat(chat_svc.NoopEmitter{}))
+	t.Cleanup(func() {
+		chat_svc.RegisterChat(prevChat)
+		agent_repo.RegisterAgent(prevAgents)
+		agent_backend_repo.RegisterAgentBackend(prevBackends)
+		chat_repo.RegisterSession(prevSessions)
+		remote_device_svc.SetDefault(prevDevice)
+		ctrl.Finish()
+	})
+
+	agent := &agent_entity.Agent{
+		ID: 7, Name: "Release captain", AgentBackendID: 11, Status: consts.ACTIVE,
+		SyncMeta: syncmeta_entity.SyncMeta{SyncID: "01HXAGENTIDENTITY0000000000"},
+	}
+	device.EXPECT().DeviceFingerprint().Return("sha256:desktop", nil)
+	agents.EXPECT().List(gomock.Any()).Return([]*agent_entity.Agent{agent}, nil)
+	sessions.EXPECT().ListByAgentPagedIncludingGroups(gomock.Any(), int64(7), 0, gomock.Any()).Return([]*chat_entity.Session{{
+		ID: 1, AgentID: 7, Title: "Ship the release", AgentStatus: "waiting", LastMessageAt: 1710000000000, Status: consts.ACTIVE,
+	}}, nil)
+	sessions.EXPECT().Find(gomock.Any(), int64(1)).Return(&chat_entity.Session{
+		ID: 1, AgentID: 7, Title: "Ship the release", AgentStatus: "waiting", Status: consts.ACTIVE,
+	}, nil)
+	agents.EXPECT().Find(gomock.Any(), int64(7)).Return(agent, nil)
+	backends.EXPECT().Find(gomock.Any(), int64(11)).Return(&agent_backend_entity.AgentBackend{
+		ID: 11, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE,
+	}, nil).AnyTimes()
 }
 
 func relayRequest(t *testing.T, conn *websocket.Conn, channelID string, request rpc.Frame) rpc.Frame {
