@@ -36,7 +36,9 @@ func TestProviderLookup_FindByKey_HappyPath(t *testing.T) {
 	assert.Equal(t, "fixture-ant-key", p.APIKey)
 	assert.Equal(t, "https://api.anthropic.com", p.BaseURL)
 	assert.Equal(t, "anthropic-main", p.Name)
-	assert.Equal(t, "claude-sonnet-4-6", p.Model)
+	// daemon 尚无 Models 目录（task 6 才迁移），单模型 meta.Model 不能冒充 DefaultModelKey：
+	// 实体不再携带 Model 字段，也不凭空填 default_model_key。
+	assert.Empty(t, p.DefaultModelKey)
 	assert.True(t, p.IsActive())
 	assert.Equal(t, llm_provider_entity.TypeAnthropic, llm_provider_entity.ProviderType(p.Type))
 }

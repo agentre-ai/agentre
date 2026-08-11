@@ -35,13 +35,14 @@ func (l *ProviderLookup) FindByKey(ctx context.Context, key string) (*llm_provid
 	if meta.APIKey == "" {
 		return nil, fmt.Errorf("provider %q apiKey not configured", key)
 	}
+	// 单模型已从实体移除（task 1）；daemon 的单模型状态仍留在 meta.Model（task 6 才迁移），
+	// 这里不再映射，也不凭空填 DefaultModelKey。
 	return &llm_provider_entity.LLMProvider{
 		ProviderKey: key,
 		Type:        meta.Type,
 		Name:        meta.Name,
 		APIKey:      meta.APIKey,
 		BaseURL:     meta.BaseURL,
-		Model:       meta.Model,
 		Status:      consts.ACTIVE,
 	}, nil
 }

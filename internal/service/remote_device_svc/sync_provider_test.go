@@ -12,6 +12,7 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/daemon/handlers"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/mock_agentruntime"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 	llmrepomock "github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
@@ -35,20 +36,27 @@ func TestRemoteDeviceSvc_SyncProvider(t *testing.T) {
 		svc := remote_device_svc.New(deviceRepo, dial, kc, pool)
 
 		provider := &llm_provider_entity.LLMProvider{
-			ProviderKey: "prov-1",
-			Name:        "Anthropic Prod",
-			Type:        string(llm_provider_entity.TypeAnthropic),
-			BaseURL:     "https://api.anthropic.com",
-			Model:       "claude-sonnet-4-6",
-			APIKey:      "sk-secret",
-			Updatetime:  1716000500,
-			Status:      consts.ACTIVE,
+			ProviderKey:     "prov-1",
+			Name:            "Anthropic Prod",
+			Type:            string(llm_provider_entity.TypeAnthropic),
+			BaseURL:         "https://api.anthropic.com",
+			DefaultModelKey: "model-key-1",
+			APIKey:          "sk-secret",
+			Updatetime:      1716000500,
+			Status:          consts.ACTIVE,
+		}
+		defaultModel := &llm_provider_model_entity.LLMProviderModel{
+			ModelKey: "model-key-1",
+			ModelID:  "claude-sonnet-4-6",
+			Enabled:  llm_provider_model_entity.EnabledOn,
+			Status:   consts.ACTIVE,
 		}
 
 		Convey("copies local provider metadata and API key to remote llm.upsert", func() {
 			lease := svcmock.NewMockLease(ctrl)
 			client := mock_agentruntime.NewMockDaemonClientPort(ctrl)
 			providerRepo.EXPECT().FindByKey(gomock.Any(), "prov-1").Return(provider, nil)
+			providerRepo.EXPECT().FindModelByKey(gomock.Any(), "model-key-1").Return(defaultModel, nil)
 			pool.EXPECT().Borrow(gomock.Any(), int64(42)).Return(lease, nil)
 			lease.EXPECT().Client().Return(client)
 			client.EXPECT().
@@ -60,6 +68,7 @@ func TestRemoteDeviceSvc_SyncProvider(t *testing.T) {
 					So(got.Name, ShouldEqual, "Anthropic Prod")
 					So(got.Type, ShouldEqual, "anthropic")
 					So(got.BaseURL, ShouldEqual, "https://api.anthropic.com")
+					// 默认模型的 ModelID，而不是 default_model_key。
 					So(got.Model, ShouldEqual, "claude-sonnet-4-6")
 					So(got.APIKey, ShouldEqual, "sk-secret")
 					So(got.UpdatedAt, ShouldEqual, int64(1716000500))
@@ -86,10 +95,78 @@ func TestRemoteDeviceSvc_SyncProvider(t *testing.T) {
 			So(err, ShouldNotBeNil)
 		})
 
+		Convey("sends an empty model when the provider has no default model", func() {
+			noDefault := &llm_provider_entity.LLMProvider{
+				ProviderKey: "prov-1",
+				Name:        "Anthropic Prod",
+				Type:        string(llm_provider_entity.TypeAnthropic),
+				APIKey:      "sk-secret",
+				Status:      consts.ACTIVE,
+			}
+			lease := svcmock.NewMockLease(ctrl)
+			client := mock_agentruntime.NewMockDaemonClientPort(ctrl)
+			providerRepo.EXPECT().FindByKey(gomock.Any(), "prov-1").Return(noDefault, nil)
+			// 无默认模型 → 不查模型表，直接发空 model。
+			pool.EXPECT().Borrow(gomock.Any(), int64(42)).Return(lease, nil)
+			lease.EXPECT().Client().Return(client)
+			client.EXPECT().
+				Call(gomock.Any(), "llm.upsert", gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, _ string, params, result any) error {
+					got, ok := params.(handlers.LLMUpsertParams)
+					require.True(t, ok)
+					So(got.Model, ShouldEqual, "")
+					_, ok = result.(*handlers.OK)
+					require.True(t, ok)
+					return nil
+				})
+			lease.EXPECT().Release()
+
+			err := svc.SyncProvider(context.Background(), 42, "prov-1")
+			So(err, ShouldBeNil)
+		})
+
+		Convey("sends an empty model when the default model is disabled", func() {
+			disabled := &llm_provider_model_entity.LLMProviderModel{
+				ModelKey: "model-key-1",
+				ModelID:  "claude-sonnet-4-6",
+				Enabled:  llm_provider_model_entity.EnabledOff,
+				Status:   consts.ACTIVE,
+			}
+			lease := svcmock.NewMockLease(ctrl)
+			client := mock_agentruntime.NewMockDaemonClientPort(ctrl)
+			providerRepo.EXPECT().FindByKey(gomock.Any(), "prov-1").Return(provider, nil)
+			providerRepo.EXPECT().FindModelByKey(gomock.Any(), "model-key-1").Return(disabled, nil)
+			pool.EXPECT().Borrow(gomock.Any(), int64(42)).Return(lease, nil)
+			lease.EXPECT().Client().Return(client)
+			client.EXPECT().
+				Call(gomock.Any(), "llm.upsert", gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, _ string, params, result any) error {
+					got, ok := params.(handlers.LLMUpsertParams)
+					require.True(t, ok)
+					So(got.Model, ShouldEqual, "")
+					_, ok = result.(*handlers.OK)
+					require.True(t, ok)
+					return nil
+				})
+			lease.EXPECT().Release()
+
+			err := svc.SyncProvider(context.Background(), 42, "prov-1")
+			So(err, ShouldBeNil)
+		})
+
+		Convey("propagates an error when resolving the default model fails", func() {
+			providerRepo.EXPECT().FindByKey(gomock.Any(), "prov-1").Return(provider, nil)
+			providerRepo.EXPECT().FindModelByKey(gomock.Any(), "model-key-1").Return(nil, errors.New("db boom"))
+
+			err := svc.SyncProvider(context.Background(), 42, "prov-1")
+			So(err, ShouldNotBeNil)
+		})
+
 		Convey("releases the lease and leaves cache untouched when remote upsert fails", func() {
 			lease := svcmock.NewMockLease(ctrl)
 			client := mock_agentruntime.NewMockDaemonClientPort(ctrl)
 			providerRepo.EXPECT().FindByKey(gomock.Any(), "prov-1").Return(provider, nil)
+			providerRepo.EXPECT().FindModelByKey(gomock.Any(), "model-key-1").Return(defaultModel, nil)
 			pool.EXPECT().Borrow(gomock.Any(), int64(42)).Return(lease, nil)
 			lease.EXPECT().Client().Return(client)
 			client.EXPECT().

@@ -38,6 +38,11 @@ func (s *service) SyncProvider(ctx context.Context, deviceID int64, providerKey 
 		return i18n.NewError(ctx, code.LLMProviderNotFound)
 	}
 
+	defaultModelID, err := providerDefaultModelID(ctx, p)
+	if err != nil {
+		return err
+	}
+
 	lease, err := s.pool.Borrow(ctx, deviceID)
 	if err != nil {
 		return mapSyncBorrowError(ctx, err)
@@ -45,7 +50,7 @@ func (s *service) SyncProvider(ctx context.Context, deviceID int64, providerKey 
 	defer lease.Release()
 
 	var ok handlers.OK
-	if err := lease.Client().Call(ctx, "llm.upsert", providerToUpsertParams(p), &ok); err != nil {
+	if err := lease.Client().Call(ctx, "llm.upsert", providerToUpsertParams(p, defaultModelID), &ok); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return i18n.NewError(ctx, code.RemoteDeviceTimeout)
 		}
@@ -59,13 +64,29 @@ func (s *service) SyncProvider(ctx context.Context, deviceID int64, providerKey 
 	return nil
 }
 
-func providerToUpsertParams(p *llm_provider_entity.LLMProvider) handlers.LLMUpsertParams {
+// providerDefaultModelID 解析 Provider 当前启用的默认模型的 ModelID（spec：同步默认模型）。
+// 无默认模型、默认模型缺失或停用时返回空串，保持 daemon 单模型字段「没有就空」的既有语义。
+func providerDefaultModelID(ctx context.Context, p *llm_provider_entity.LLMProvider) (string, error) {
+	if p == nil || !p.HasDefaultModel() {
+		return "", nil
+	}
+	m, err := llm_provider_repo.LLMProvider().FindModelByKey(ctx, p.DefaultModelKey)
+	if err != nil {
+		return "", err
+	}
+	if m == nil || !m.IsEnabled() {
+		return "", nil
+	}
+	return m.ModelID, nil
+}
+
+func providerToUpsertParams(p *llm_provider_entity.LLMProvider, defaultModelID string) handlers.LLMUpsertParams {
 	return handlers.LLMUpsertParams{
 		ProviderKey: p.ProviderKey,
 		Name:        p.Name,
 		Type:        p.Type,
 		BaseURL:     p.BaseURL,
-		Model:       p.Model,
+		Model:       defaultModelID,
 		APIKey:      p.APIKey,
 		UpdatedAt:   p.Updatetime,
 	}
