@@ -333,12 +333,16 @@ func synthesizePeerHistory(sessionID int64, messages []*chat_entity.Message) ([]
 func peerEventForStoredBlock(message *chat_entity.Message, block cagoblocks.StoredBlock) (agentruntime.Event, bool, error) {
 	if message.Role == "user" && (block.Type == "text" || block.Type == "display_text") {
 		var data struct {
-			Text string `json:"text"`
+			Text             string `json:"text"`
+			SourceDevice     string `json:"sourceDevice"`
+			SourceDeviceName string `json:"sourceDeviceName"`
 		}
 		if err := json.Unmarshal(block.Data, &data); err != nil {
 			return nil, false, err
 		}
-		return agentruntime.UserMessageEvent{Text: data.Text}, true, nil
+		return agentruntime.UserMessageEvent{
+			Text: data.Text, SourceDevice: data.SourceDevice, SourceDeviceName: data.SourceDeviceName,
+		}, true, nil
 	}
 	if message.Role != "assistant" {
 		return nil, false, nil

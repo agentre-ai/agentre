@@ -253,6 +253,9 @@ type chatSvc struct {
 	// peerPublications keeps remote account peers in a separate ordered stream,
 	// so attachment adds presence without replacing the desktop Wails emitter.
 	peerPublications sync.Map
+	// peerSteerSources maps an existing queued steer to its authenticated caller
+	// until that queue entry is consumed; it is metadata, never a second queue.
+	peerSteerSources sync.Map
 	// autoWatchers：sessionID(int64) → struct{}。startAutonomousWatcher 用它防同一
 	// session 重复起 watcher goroutine(每会话一个,惰性启动);watcher 在底层
 	// AutonomousTurns channel close(子进程 evict / CloseSession)时退出并清这条。
@@ -880,6 +883,7 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 	if err != nil {
 		return ChatMessage{}, err
 	}
+	source := peerMessageSourceOf(m)
 	out := ChatMessage{
 		ID:                  m.ID,
 		SessionID:           m.SessionID,
@@ -895,6 +899,8 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 		ErrorText:           m.ErrorText,
 		Seq:                 m.Seq,
 		Createtime:          m.Createtime,
+		SourceDevice:        source.Device,
+		SourceDeviceName:    source.Name,
 		Blocks:              make([]ChatBlock, 0, len(bs)),
 	}
 	// 预扫一遍,把 SubagentStateBlock 按 ParentToolCallID 索引起来,
@@ -1596,6 +1602,7 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 		gateOwned = false
 	}
 	return s.startTurn(ctx, sess, a, be, prov, userBlocksForSend(text, imageBlocks), nil /*preTxHook*/, nil /*replacement*/, "" /*forkAnchor*/, turnExtras{
+		peerSource:             req.peerSource,
 		emitTurnStartedBypass:  req.EmitTurnStartedBypass,
 		providerFallbackNotice: providerFallbackNotice,
 	}, prelocked)
@@ -1952,6 +1959,10 @@ func (s *chatSvc) AgentBackendHasCapability(ctx context.Context, agentID int64, 
 //   - ChatSteerUnsupported: 后端不实现 Steerer
 //   - ChatSteerInternal: 实现层 I/O 失败
 func (s *chatSvc) Enqueue(ctx context.Context, req *EnqueueRequest) (*EnqueueResponse, error) {
+	return s.enqueue(ctx, req)
+}
+
+func (s *chatSvc) enqueue(ctx context.Context, req *EnqueueRequest) (*EnqueueResponse, error) {
 	if req == nil || req.SessionID <= 0 {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
@@ -1996,6 +2007,9 @@ func (s *chatSvc) Enqueue(ctx context.Context, req *EnqueueRequest) (*EnqueueRes
 			zap.String("backendType", be.Type),
 			zap.Error(err))
 		return nil, i18n.NewError(ctx, code.ChatSteerInternal)
+	}
+	if req.peerSource.Device != "" {
+		s.peerSteerSources.Store(queuedID, req.peerSource)
 	}
 	_, cancellable := runner.(agentruntime.SteerCanceler)
 	return &EnqueueResponse{
@@ -3249,6 +3263,9 @@ func (s *chatSvc) codexRollbackAnchor(ctx context.Context, sess *chat_entity.Ses
 // turnExtras 是从 SendRequest 透传到 runTurn 的领域无关可选项;普通会话一律零值。
 // 在同一会话的自动续轮(auto-continue)里需要保持不变,所以随 runTurn 一路携带。
 type turnExtras struct {
+	// peerSource marks the normal persisted user row as having been submitted
+	// by an attached account peer. Local sends keep this zero value.
+	peerSource peerMessageSource
 	// emitTurnStartedBypass: 见 SendRequest.EmitTurnStartedBypass。startTurn 在建好
 	// assistant 消息后, 经会话级旁路把 per-turn 流名推给已打开的查看者。
 	emitTurnStartedBypass bool
@@ -3311,6 +3328,12 @@ func (s *chatSvc) startTurn(
 
 	userMsg := &chat_entity.Message{SessionID: sess.ID, Role: "user", DeviceID: be.DeviceID}
 	_ = userMsg.SetBlocks(userBlocks)
+	if err := persistPeerMessageSource(userMsg, extras.peerSource); err != nil {
+		lock.Unlock()
+		return nil, operationFailedWithCause(ctx, err,
+			zap.Int64("sessionId", sess.ID),
+			zap.String("sourceDevice", extras.peerSource.Device))
+	}
 
 	model := ""
 	if prov != nil {
@@ -3488,10 +3511,24 @@ func (s *chatSvc) startTurn(
 	// Send 响应拿到,该会话已打开(可能在后台)的 ChatPanel 拿不到 → 不接流、不翻 running。
 	// 复用 autonomous 会话级旁路把流名 + 新 assistant 行推给它,让它走与自主轮相同的
 	// openStream 路径实时渲染。前端 Send 默认不带此标志,避免发起者重复 openStream 双开流。
+	if extras.peerSource.Device != "" {
+		s.publishPeerEvent(sess.ID, agentruntime.UserMessageEvent{
+			Text:             firstTextBlock(userBlocks),
+			SourceDevice:     extras.peerSource.Device,
+			SourceDeviceName: extras.peerSource.Name,
+		})
+	}
 	if extras.emitTurnStartedBypass {
+		var userMessages []ChatMessage
+		if extras.peerSource.Device != "" {
+			if user := chatMessageForEvent(sess, userMsg); user != nil {
+				userMessages = []ChatMessage{*user}
+			}
+		}
 		s.emitter.Emit(ctx, AutonomousStreamName(sess.ID), ChatStreamEvent{
 			Kind:             StreamAutonomousStarted,
 			Stream:           stream,
+			UserMessages:     userMessages,
 			AssistantMessage: chatMessageForEvent(sess, assistantMsg),
 		})
 	}
@@ -4457,10 +4494,19 @@ func (s *chatSvc) persistAutoContinueTurn(
 	model string,
 	pending []agentruntime.ConsumedSteer,
 ) (*chat_entity.Message, *chat_entity.Message, *ChatStreamEvent, error) {
+	pending = s.withPeerSteerSources(pending)
 	merged := joinSteerTexts(pending)
 	newUser := &chat_entity.Message{SessionID: sess.ID, Role: "user", DeviceID: be.DeviceID}
 	if err := newUser.SetBlocks([]blocks.ContentBlock{&blocks.TextBlock{Text: merged}}); err != nil {
 		return nil, nil, nil, fmt.Errorf("set merged user blocks: %w", err)
+	}
+	for _, steer := range pending {
+		if steer.SourcePeer != "" {
+			if err := persistPeerMessageSource(newUser, peerMessageSource{Device: steer.SourcePeer, Name: steer.SourceName}); err != nil {
+				return nil, nil, nil, err
+			}
+			break
+		}
 	}
 	newAssistant := &chat_entity.Message{
 		SessionID:  sess.ID,
@@ -4544,7 +4590,7 @@ func (s *chatSvc) persistConsumedSteers(
 	model string,
 	steers []agentruntime.ConsumedSteer,
 ) (*chat_entity.Message, *ChatStreamEvent, error) {
-	steers = nonEmptyConsumedSteers(steers)
+	steers = s.withPeerSteerSources(nonEmptyConsumedSteers(steers))
 	if len(steers) == 0 {
 		return nil, nil, nil
 	}
@@ -4578,6 +4624,9 @@ func (s *chatSvc) persistConsumedSteers(
 				Seq:       nextSeq + i,
 			}
 			if err := msg.SetBlocks([]blocks.ContentBlock{&blocks.TextBlock{Text: steer.Text}}); err != nil {
+				return err
+			}
+			if err := persistPeerMessageSource(msg, peerMessageSource{Device: steer.SourcePeer, Name: steer.SourceName}); err != nil {
 				return err
 			}
 			if err := chat_repo.Message().Create(txCtx, msg); err != nil {

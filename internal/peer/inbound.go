@@ -16,6 +16,10 @@ type inboundSessionAdapter interface {
 	ListPeerSessions(context.Context) (*wire.SessionListResult, error)
 	AttachPeerSession(context.Context, wire.SessionAttachParams, chat_svc.PeerSessionSubscriber) (wire.SessionAttachResult, error)
 	PullPeerSession(context.Context, wire.SessionPullParams, chat_svc.PeerSessionSubscriber) (wire.SessionPullResult, error)
+	RunPeerSession(context.Context, wire.RunParams, chat_svc.PeerSessionSource) (*chat_svc.SendResponse, error)
+	EnqueuePeerSession(context.Context, wire.SteerParams, chat_svc.PeerSessionSource) (*chat_svc.EnqueueResponse, error)
+	AnswerPeerUserQuestion(context.Context, wire.SubmitAnswerParams) (chat_svc.PeerSessionControlResult, error)
+	AnswerPeerToolPermission(context.Context, wire.SubmitToolPermissionParams) (chat_svc.PeerSessionControlResult, error)
 }
 
 type connPeerSessionSubscriber struct {
@@ -86,6 +90,10 @@ func RegisterInboundMethods(registry *rpc.Registry) {
 	registry.Register(wire.MethodSessionList, requireAccount(listSessions))
 	registry.Register(wire.MethodSessionAttach, requireAccount(attachSession))
 	registry.Register(wire.MethodSessionPull, requireAccount(pullSession))
+	registry.Register(wire.MethodRun, requireAccount(runSession))
+	registry.Register(wire.MethodSteer, requireAccount(steerSession))
+	registry.Register(wire.MethodSubmitAnswer, requireAccount(submitAnswer))
+	registry.Register(wire.MethodSubmitToolPermission, requireAccount(submitToolPermission))
 }
 
 // authenticateAccount completes the existing account-handshake vocabulary.
@@ -163,6 +171,93 @@ func pullSession(ctx context.Context, raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	return result, nil
+}
+
+const peerExecutionUnavailableCode = -32015
+
+func peerSource(ctx context.Context, requestedName string) (chat_svc.PeerSessionSource, error) {
+	conn := rpc.ConnFromContext(ctx)
+	if conn == nil || conn.Auth().DeviceFingerprint == "" {
+		return chat_svc.PeerSessionSource{}, rpc.ErrUnauthorized
+	}
+	return chat_svc.PeerSessionSource{Device: conn.Auth().DeviceFingerprint, Name: requestedName}, nil
+}
+
+func runSession(ctx context.Context, raw json.RawMessage) (any, error) {
+	var params wire.RunParams
+	if err := json.Unmarshal(raw, &params); err != nil || params.SessionID <= 0 || params.UserText == "" {
+		return nil, rpc.ErrInvalidParams
+	}
+	source, err := peerSource(ctx, params.SourceDeviceName)
+	if err != nil {
+		return nil, err
+	}
+	adapter, ok := chat_svc.Chat().(inboundSessionAdapter)
+	if !ok || adapter == nil {
+		return nil, rpc.ErrInternal
+	}
+	result, err := adapter.RunPeerSession(ctx, params, source)
+	if err != nil {
+		if errors.Is(err, chat_svc.ErrPeerSessionNotFound) {
+			return nil, rpc.ErrSessionNotFound
+		}
+		if errors.Is(err, chat_svc.ErrPeerExecutionUnavailable) {
+			result, resultErr := chat_svc.PeerSessionExecutionResult(err)
+			if resultErr != nil {
+				return nil, resultErr
+			}
+			data, marshalErr := json.Marshal(result)
+			if marshalErr != nil {
+				return nil, rpc.ErrInternal
+			}
+			return nil, &rpc.Error{Code: peerExecutionUnavailableCode, Message: err.Error(), Data: data}
+		}
+		return nil, err
+	}
+	return wire.RunAck{SessionID: result.SessionID}, nil
+}
+
+func steerSession(ctx context.Context, raw json.RawMessage) (any, error) {
+	var params wire.SteerParams
+	if err := json.Unmarshal(raw, &params); err != nil || params.SessionID <= 0 || params.Text == "" {
+		return nil, rpc.ErrInvalidParams
+	}
+	source, err := peerSource(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	adapter, ok := chat_svc.Chat().(inboundSessionAdapter)
+	if !ok || adapter == nil {
+		return nil, rpc.ErrInternal
+	}
+	if _, err := adapter.EnqueuePeerSession(ctx, params, source); err != nil {
+		return nil, err
+	}
+	return wire.OK{}, nil
+}
+
+func submitAnswer(ctx context.Context, raw json.RawMessage) (any, error) {
+	var params wire.SubmitAnswerParams
+	if err := json.Unmarshal(raw, &params); err != nil || params.SessionID <= 0 || params.RequestID == "" {
+		return nil, rpc.ErrInvalidParams
+	}
+	adapter, ok := chat_svc.Chat().(inboundSessionAdapter)
+	if !ok || adapter == nil {
+		return nil, rpc.ErrInternal
+	}
+	return adapter.AnswerPeerUserQuestion(ctx, params)
+}
+
+func submitToolPermission(ctx context.Context, raw json.RawMessage) (any, error) {
+	var params wire.SubmitToolPermissionParams
+	if err := json.Unmarshal(raw, &params); err != nil || params.SessionID <= 0 || params.RequestID == "" {
+		return nil, rpc.ErrInvalidParams
+	}
+	adapter, ok := chat_svc.Chat().(inboundSessionAdapter)
+	if !ok || adapter == nil {
+		return nil, rpc.ErrInternal
+	}
+	return adapter.AnswerPeerToolPermission(ctx, params)
 }
 
 func attachSession(ctx context.Context, raw json.RawMessage) (any, error) {

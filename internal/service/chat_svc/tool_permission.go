@@ -103,10 +103,14 @@ func (s *chatSvc) AnswerToolPermission(ctx context.Context, req *AnswerToolPermi
 	if err != nil || a == nil {
 		return nil, i18n.NewError(ctx, code.AgentNotFound)
 	}
-	if a.AgentBackendID <= 0 {
+	backendID := a.AgentBackendID
+	if sess.ExecAgentBackendID > 0 {
+		backendID = sess.ExecAgentBackendID
+	}
+	if backendID <= 0 {
 		return nil, i18n.NewError(ctx, code.AgentBackendRequired)
 	}
-	be, err := agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
+	be, err := agent_backend_repo.AgentBackend().Find(ctx, backendID)
 	if err != nil || be == nil {
 		return nil, i18n.NewError(ctx, code.AgentBackendNotFound)
 	}

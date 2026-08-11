@@ -764,6 +764,9 @@ type SendRequest struct {
 	// (前端 Send 响应)能拿到流名。
 	// 前端 Send 默认 false: 发起者自己已从响应拿到流名, 重复推会双开流。子 agent 调用用; 普通会话空。
 	EmitTurnStartedBypass bool `json:"-"`
+	// peerSource is populated only by the account-peer adapter. Keeping it out
+	// of Wails JSON prevents a local caller from forging a source pill.
+	peerSource peerMessageSource
 }
 type SendImage struct {
 	Name    string `json:"name,omitempty"`
@@ -900,6 +903,9 @@ type RegenerateRequest struct {
 type EnqueueRequest struct {
 	SessionID int64  `json:"sessionId"`
 	Text      string `json:"text"`
+	// peerSource is private to the authenticated peer adapter; local enqueue
+	// calls retain their current source-free behavior.
+	peerSource peerMessageSource
 }
 
 // EnqueueResponse 把刚入队消息的稳定 ID 回传给前端。前端按它显示 chip 并
