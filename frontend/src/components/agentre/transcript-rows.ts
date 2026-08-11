@@ -525,17 +525,36 @@ function localCommandRow(entry: LocalCommandEntry): TranscriptRow {
   };
 }
 
-export function buildTranscriptRows({
-  displayMessages,
-  autonomousIds,
-  localCommands,
-  liveByMessageId,
-  cache,
-  sourceByMessageId,
-}: BuildTranscriptRowsArgs): TranscriptRowsResult {
+/** SettledTranscriptRows = 不含任何 live 内容的完整重建结果 + 行组边界。
+ * 它在 ChatTranscript 里只依赖 messages(流式中稳定),可整体 memoize。 */
+export type SettledTranscriptRows = TranscriptRowsResult & {
+  /** messageId → 该消息行组在 rows 里的 [start, length)。live overlay 据此 splice。 */
+  groupByMessageId: ReadonlyMap<number, { start: number; length: number }>;
+  /** messageId → 消息对象。overlay 重建 live 行时按 id 取对象,避免每 chunk 全表扫描。 */
+  messageByMessageId: ReadonlyMap<number, chat_svc.ChatMessage>;
+};
+
+/**
+ * buildRows 是三层公共 API 共享的核心:带/不带 liveByMessageId 的完整重建,
+ * 顺带记录行组边界(groupByMessageId)与消息索引(messageByMessageId)。
+ * 带 live 时 group 长度反映 live 行(调用方不应依赖 —— 只有 settled 版本对外暴露)。
+ */
+function buildRows(args: BuildTranscriptRowsArgs): SettledTranscriptRows {
+  const {
+    displayMessages,
+    autonomousIds,
+    localCommands,
+    liveByMessageId,
+    cache,
+    sourceByMessageId,
+  } = args;
   // 阶段一:按 displayMessages 顺序产出各消息的行组(缓存/live 逻辑与历史一致),
   // 同时记下每组的 createtime,供阶段二归并 —— 消息组顺序原样保留,无重排可能。
   const messageGroups: { rows: TranscriptRow[]; createtime: number }[] = [];
+  const messageByMessageId = new Map<number, chat_svc.ChatMessage>();
+  for (const m of displayMessages) {
+    messageByMessageId.set(m.id, m);
+  }
   for (const m of displayMessages) {
     const autonomous = autonomousIds.has(m.id);
     // R17:来源标识只属于「非本机发出的用户消息」—— 其它角色恒 undefined。
@@ -587,6 +606,7 @@ export function buildTranscriptRows({
 
   const rows: TranscriptRow[] = [];
   const firstRowIndexByMessageId = new Map<number, number>();
+  const groupByMessageId = new Map<number, { start: number; length: number }>();
   const rowIndexByKey = new Map<string, number>();
   const pushRow = (row: TranscriptRow) => {
     rowIndexByKey.set(row.key, rows.length);
@@ -600,10 +620,15 @@ export function buildTranscriptRows({
 
   for (const [groupIdx, group] of messageGroups.entries()) {
     flushCommands(groupIdx);
-    // 消息组首行下标对准 firstRowIndexByMessageId(只收真实消息行,messageId >= 0)。
+    // 消息组首行下标对准 firstRowIndexByMessageId(只收真实消息行,messageId >= 0),
+    // 同时记下行组边界供 live overlay splice。
     const firstRow = group.rows[0];
     if (firstRow && firstRow.messageId >= 0) {
       firstRowIndexByMessageId.set(firstRow.messageId, rows.length);
+      groupByMessageId.set(firstRow.messageId, {
+        start: rows.length,
+        length: group.rows.length,
+      });
     }
     for (const row of group.rows) {
       pushRow(row);
@@ -612,7 +637,122 @@ export function buildTranscriptRows({
   // 末尾桶:晚于所有消息的命令。
   flushCommands(messageGroups.length);
 
-  return { firstRowIndexByMessageId, rowIndexByKey, rows };
+  return {
+    firstRowIndexByMessageId,
+    groupByMessageId,
+    messageByMessageId,
+    rowIndexByKey,
+    rows,
+  };
+}
+
+/**
+ * buildSettledTranscriptRows:不含 live 内容的完整重建。rows / 两张索引图 / 行组边界
+ * 只依赖 displayMessages + autonomousIds + localCommands + sourceByMessageId + cache,
+ * 在流式中全部引用稳定 —— ChatTranscript 把它 memoize 在 messages 上,每 chunk 不再重建。
+ */
+export function buildSettledTranscriptRows(
+  args: Omit<BuildTranscriptRowsArgs, "liveByMessageId">,
+): SettledTranscriptRows {
+  return buildRows({ ...args, liveByMessageId: undefined });
+}
+
+/**
+ * applyLiveTranscriptRows:在已 memoize 的 settled 之上叠加 live 内容。
+ *
+ * 快速路径(live 消息是 rows 的尾部连续后缀 —— 流式常态):只重建 live 消息的行组,
+ * 其余行与 settled 共享同一引用(行组件 memo 恒命中),firstRowIndexByMessageId 原样
+ * 复用、rowIndexByKey 只做 O(live) 的增量替换 —— 不再每 chunk O(全量) 重建两张索引图。
+ *
+ * 不满足快速路径条件(live 在中间 / 尾部还有本地命令 / live id 不在消息表里)时回退
+ * 到 buildRows 完整重建,输出与历史逐项一致。
+ */
+export function applyLiveTranscriptRows(
+  settled: SettledTranscriptRows,
+  args: BuildTranscriptRowsArgs,
+): TranscriptRowsResult {
+  const { liveByMessageId } = args;
+  if (!liveByMessageId || liveByMessageId.size === 0) {
+    // 无 live:零拷贝返回 settled(messages 不变时引用稳定 → 下游 useMemo/effect 不触发)。
+    return {
+      firstRowIndexByMessageId: settled.firstRowIndexByMessageId,
+      rowIndexByKey: settled.rowIndexByKey,
+      rows: settled.rows,
+    };
+  }
+
+  const liveGroups: {
+    content: LiveRowContent;
+    length: number;
+    m: chat_svc.ChatMessage;
+    start: number;
+  }[] = [];
+  for (const [messageId, content] of liveByMessageId) {
+    const m = settled.messageByMessageId.get(messageId);
+    const g = settled.groupByMessageId.get(messageId);
+    if (!m || !g) return buildRows({ ...args, liveByMessageId }); // live id 异常 → 回退
+    liveGroups.push({ content, length: g.length, m, start: g.start });
+  }
+  // 按消息顺序(settled 行序)。
+  liveGroups.sort((a, b) => a.start - b.start);
+
+  // 快速路径条件:live 组构成 settled.rows 的尾部连续后缀(中间无其它消息、无尾部命令)。
+  // 第一个 live 组前面可以有非 live 前缀(它在 rows 里任意位置),只要各组相邻、
+  // 且最后一组的尾部正好落在 settled.rows.length 上。
+  let ok = liveGroups.length > 0;
+  let prevEnd = liveGroups[0]?.start ?? 0;
+  for (const g of liveGroups) {
+    if (g.start !== prevEnd) {
+      ok = false;
+      break;
+    }
+    prevEnd = g.start + g.length;
+  }
+  if (!ok || prevEnd !== settled.rows.length) {
+    return buildRows({ ...args, liveByMessageId }); // 尾部有命令 / live 在中间 → 回退
+  }
+
+  const prefixLen = liveGroups[0].start;
+  // 只重建 live 消息的行组(live 内容每 chunk 都在变,必须现场重建)。
+  const liveRows: TranscriptRow[] = [];
+  for (const { content, m } of liveGroups) {
+    const autonomous = args.autonomousIds.has(m.id);
+    const sourceDevice =
+      m.role === "user" ? args.sourceByMessageId?.get(m.id) : undefined;
+    liveRows.push(...buildMessageRows(m, autonomous, sourceDevice, content));
+  }
+  // 前缀与 settled 共享引用(浅拷贝数组,元素仍是同一批 row 对象)。
+  const rows = settled.rows.slice(0, prefixLen).concat(liveRows);
+
+  // rowIndexByKey:复制 settled 的,剔除被替换掉的 settled 组 key,再写入 live 行 key。
+  // firstRowIndexByMessageId 在尾部后缀场景下不受影响,原样复用。
+  const rowIndexByKey = new Map(settled.rowIndexByKey);
+  for (const g of liveGroups) {
+    for (let i = g.start; i < g.start + g.length; i++) {
+      rowIndexByKey.delete(settled.rows[i].key);
+    }
+  }
+  for (let i = 0; i < liveRows.length; i++) {
+    rowIndexByKey.set(liveRows[i].key, prefixLen + i);
+  }
+
+  return {
+    firstRowIndexByMessageId: settled.firstRowIndexByMessageId,
+    rowIndexByKey,
+    rows,
+  };
+}
+
+/** 兼容入口:完整重建(等价于 settled + applyLive),供测试与一次性调用方使用。 */
+export function buildTranscriptRows(
+  args: BuildTranscriptRowsArgs,
+): TranscriptRowsResult {
+  const {
+    groupByMessageId: _g,
+    messageByMessageId: _m,
+    ...result
+  } = buildRows(args);
+  return result;
 }
 
 // estimateRowSize:按 item 类型估行高,供虚拟器 estimateSize 用。真实高度由

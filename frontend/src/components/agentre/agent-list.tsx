@@ -1,9 +1,23 @@
 import * as React from "react";
-import { ChevronDown, Pin, Plus } from "lucide-react";
+import {
+  ChevronDown,
+  ExternalLink,
+  Pencil,
+  Pin,
+  Plus,
+  Trash2,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { cn } from "@/lib/utils";
 
 import type { AttentionReason } from "@/stores/attention-store";
@@ -44,6 +58,11 @@ type SessionRowProps = React.ComponentProps<"button"> & {
   status: AgentStatus;
   title: string;
   trailingLabel: string;
+  // 会话行右键菜单（可选）：任一 handler 存在即在行上渲染 ContextMenu；
+  // 不传时保持纯按钮 —— 项目页（SessionGroup 不传这些 props）沿用旧行为。
+  onOpenInNewTab?: () => void;
+  onRenameSession?: () => void;
+  onDeleteSession?: () => void;
 };
 
 function SessionRow({
@@ -54,12 +73,19 @@ function SessionRow({
   status,
   title,
   trailingLabel,
+  onOpenInNewTab,
+  onRenameSession,
+  onDeleteSession,
   ...props
 }: SessionRowProps) {
+  const { t } = useTranslation();
   const config = statusConfig[status];
   const hiddenFromAccessibility = ariaHidden === true || ariaHidden === "true";
+  const hasContextMenu = Boolean(
+    onOpenInNewTab || onRenameSession || onDeleteSession,
+  );
 
-  return (
+  const row = (
     <button
       type="button"
       aria-hidden={ariaHidden}
@@ -96,6 +122,29 @@ function SessionRow({
         {trailingLabel}
       </span>
     </button>
+  );
+
+  if (!hasContextMenu) return row;
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={onRenameSession}>
+          <Pencil className="size-4" aria-hidden="true" />
+          <span>{t("chatPage.sessionMenu.rename")}</span>
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={onOpenInNewTab}>
+          <ExternalLink className="size-4" aria-hidden="true" />
+          <span>{t("chatPage.sessionMenu.openInNewTab")}</span>
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem variant="destructive" onSelect={onDeleteSession}>
+          <Trash2 className="size-4" aria-hidden="true" />
+          <span>{t("chatPage.sessionMenu.delete")}</span>
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
@@ -141,6 +190,11 @@ type AgentGroupProps = React.ComponentProps<"article"> & {
   // 渲染「查看全部 N 个会话」按钮关联的 popover content；
   // 由父组件提供，避免 agent-list 依赖 chat 业务（依赖反转）。
   renderSessionsPopover?: (close: () => void) => React.ReactNode;
+  // 会话行右键菜单（可选）：任一 handler 提供才渲染 ContextMenu；
+  // 不传时 SessionGroup / SessionRow 保持旧行为（项目页等）。
+  onOpenInNewTab?: (sessionId: number) => void;
+  onRenameSession?: (sessionId: number, title: string) => void;
+  onDeleteSession?: (sessionId: number) => void;
 };
 
 function AgentGroup({
@@ -164,6 +218,9 @@ function AgentGroup({
   totalSessions,
   attentionSessions = [],
   renderSessionsPopover,
+  onOpenInNewTab,
+  onRenameSession,
+  onDeleteSession,
   ...props
 }: AgentGroupProps) {
   const { t } = useTranslation();
@@ -184,6 +241,9 @@ function AgentGroup({
       renderSessionsPopover={renderSessionsPopover}
       attentionSessions={attentionSessions}
       attentionAriaLabel={t("agentList.attentionAria", { name })}
+      onOpenInNewTab={onOpenInNewTab}
+      onRenameSession={onRenameSession}
+      onDeleteSession={onDeleteSession}
       {...props}
       renderHeader={({ expanded, toggle }) => (
         <div

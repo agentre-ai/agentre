@@ -18,8 +18,18 @@ export type QueuedMessage = {
   cancellable: boolean;
 };
 
+// DroppedQueue 记录「回合收尾时还没被 AI 消费、原本会静默丢弃」的排队条目。
+// sessionId 记录来源会话，restoreDropped 按它把条目放回原队列。
+export type DroppedQueue = {
+  sessionId: number;
+  items: QueuedMessage[];
+  at: number;
+} | null;
+
 type State = {
   queuedBySession: Map<number, QueuedMessage[]>;
+  // 最近一次被「标记为丢弃」的排队条目（同一时刻最多一条）。null = 无。
+  dropped: DroppedQueue;
 };
 
 type Actions = {
@@ -28,12 +38,20 @@ type Actions = {
   consume: (sessionId: number, ids?: string[]) => QueuedMessage[];
   // clear 清空指定 session 的所有排队条目（finishStream 路径）。
   clear: (sessionId: number) => void;
+  // markDropped 把指定 session 的排队条目整体挪进 dropped 并清空队列（回合收尾
+  // 未消费路径）。队列为空时 no-op，不清任何东西，也不覆盖已有 dropped。
+  markDropped: (sessionId: number) => void;
+  // dismissDropped 丢弃 dropped 记录（用户选择「丢弃」）。
+  dismissDropped: () => void;
+  // restoreDropped 把 dropped 条目按原 session 追加回排队队列（用户选择「恢复为草稿」）。
+  restoreDropped: () => void;
   // 测试隔离用，生产代码不该调。
   __reset: () => void;
 };
 
 export const useQueuedMessagesStore = create<State & Actions>((set, get) => ({
   queuedBySession: new Map(),
+  dropped: null,
 
   append: (sessionId, msg) =>
     set((state) => {
@@ -78,5 +96,29 @@ export const useQueuedMessagesStore = create<State & Actions>((set, get) => ({
       return { queuedBySession: next };
     }),
 
-  __reset: () => set({ queuedBySession: new Map() }),
+  markDropped: (sessionId) =>
+    set((state) => {
+      const items = state.queuedBySession.get(sessionId);
+      if (!items || items.length === 0) return state;
+      const next = new Map(state.queuedBySession);
+      next.delete(sessionId);
+      return {
+        queuedBySession: next,
+        dropped: { sessionId, items, at: Date.now() },
+      };
+    }),
+
+  dismissDropped: () => set({ dropped: null }),
+
+  restoreDropped: () =>
+    set((state) => {
+      if (!state.dropped) return state;
+      const { sessionId, items } = state.dropped;
+      const cur = state.queuedBySession.get(sessionId) ?? [];
+      const next = new Map(state.queuedBySession);
+      next.set(sessionId, [...cur, ...items]);
+      return { queuedBySession: next, dropped: null };
+    }),
+
+  __reset: () => set({ queuedBySession: new Map(), dropped: null }),
 }));

@@ -87,7 +87,7 @@ function ResizableSidebar({
       aria-label={ariaLabel}
       style={{ width: `${width}px` }}
       className={cn(
-        "relative hidden shrink-0 flex-col bg-sidebar lg:flex",
+        "relative flex shrink-0 flex-col bg-sidebar",
         edge === "left" ? "border-l border-border" : "border-r border-border",
         className,
       )}
@@ -103,7 +103,7 @@ function ResizableSidebar({
         title={t("resizableSidebar.resizeTitle")}
         onPointerDown={startDrag}
         className={cn(
-          "absolute inset-y-0 z-20 hidden w-2 cursor-col-resize touch-none select-none lg:block",
+          "absolute inset-y-0 z-20 block w-2 cursor-col-resize touch-none select-none",
           edge === "left" ? "-left-1" : "-right-1",
           // 视觉上是一条 1px 高亮条，hover / drag 时着色。
           "after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-transparent after:transition-colors after:content-['']",

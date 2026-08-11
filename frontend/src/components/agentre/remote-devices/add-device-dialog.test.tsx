@@ -45,6 +45,38 @@ describe("AddDeviceDialog", () => {
     expect(screen.getByText("6-character pairing code")).toBeInTheDocument();
   });
 
+  it("shows visible validation errors for an invalid URL and short code", () => {
+    render(
+      <AddDeviceDialog open onClose={() => {}} onSubmit={async () => {}} />,
+    );
+
+    // No errors while fields are empty.
+    expect(
+      screen.queryByText(
+        "Address must end with /rpc, e.g. ws://192.168.1.100:7456/rpc",
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Pairing code must be exactly 6 characters"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/192\.168/), {
+      target: { value: "ws://192.168.1.100:7456" },
+    });
+    expect(
+      screen.getByText(
+        "Address must end with /rpc, e.g. ws://192.168.1.100:7456/rpc",
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("ABC2DE"), {
+      target: { value: "ABCDE" },
+    });
+    expect(
+      screen.getByText("Pairing code must be exactly 6 characters"),
+    ).toBeInTheDocument();
+  });
+
   it("submits the request and resets on success", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const onClose = vi.fn();

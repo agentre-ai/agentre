@@ -144,9 +144,15 @@ test-frontend: generate
 e2e:
 	cd e2e && pnpm test
 
-# 临时功能验证:跑 e2e/scratch/ 里的一次性 spec(不提交)。约定/用法见 e2e/README.md。
+# 临时功能验证:跑 e2e/scratch/ 里的一次性 spec(不提交)。约定/用法见 e2e/README.md §6。
+# 必须显式指定目标,避免遗留 spec 被静默重跑:
+#   make e2e-scratch TASK="scratch/<task-name>/"     # 场景目录(递归拾取 verify.spec.ts)
+#   make e2e-scratch TASK="scratch/poke.spec.ts"     # 单个文件
+# 快速内循环(起一次 app、反复改 spec 重跑,不重建不起新 app)见 e2e/README.md §4:
+#   AGENTRE_E2E_REUSE=1 make e2e-scratch TASK="scratch/<task-name>/"
 e2e-scratch:
-	cd e2e && pnpm run test:scratch
+	@test -n "$(TASK)" || { echo "error: make e2e-scratch 需要 TASK=scratch/<task-name>/ (或 scratch/ 下文件路径); 例: make e2e-scratch TASK=\"scratch/poke.spec.ts\""; exit 1; }
+	cd e2e && pnpm run test:scratch "$(TASK)"
 
 # 工作区多端同步的本地端到端:真桌面端 + 真 agentre-server + Go 模拟对端。
 # 需要 agentre-server 的 PostgreSQL / Redis 可达(不跑容器),不进 CI。见 e2e/README.md §10。

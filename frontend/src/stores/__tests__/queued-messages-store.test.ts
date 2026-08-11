@@ -74,4 +74,105 @@ describe("queued-messages-store", () => {
     useQueuedMessagesStore.getState().clear(999);
     expect(useQueuedMessagesStore.getState().queuedBySession).toBe(before);
   });
+
+  it("markDropped moves a non-empty queue into dropped and clears it", () => {
+    useQueuedMessagesStore
+      .getState()
+      .append(1, { id: "a", text: "hello", cancellable: true });
+    useQueuedMessagesStore
+      .getState()
+      .append(1, { id: "b", text: "world", cancellable: false });
+
+    useQueuedMessagesStore.getState().markDropped(1);
+
+    expect(useQueuedMessagesStore.getState().queuedBySession.has(1)).toBe(
+      false,
+    );
+    const dropped = useQueuedMessagesStore.getState().dropped;
+    expect(dropped?.sessionId).toBe(1);
+    expect(dropped?.items.map((m) => m.id)).toEqual(["a", "b"]);
+    expect(typeof dropped?.at).toBe("number");
+  });
+
+  it("markDropped on an empty queue is a no-op (nothing to drop)", () => {
+    const before = useQueuedMessagesStore.getState().queuedBySession;
+    useQueuedMessagesStore.getState().markDropped(1);
+    expect(useQueuedMessagesStore.getState().queuedBySession).toBe(before);
+    expect(useQueuedMessagesStore.getState().dropped).toBeNull();
+  });
+
+  it("dismissDropped clears the dropped record", () => {
+    useQueuedMessagesStore
+      .getState()
+      .append(1, { id: "a", text: "hello", cancellable: true });
+    useQueuedMessagesStore.getState().markDropped(1);
+    expect(useQueuedMessagesStore.getState().dropped).not.toBeNull();
+
+    useQueuedMessagesStore.getState().dismissDropped();
+
+    expect(useQueuedMessagesStore.getState().dropped).toBeNull();
+    expect(useQueuedMessagesStore.getState().queuedBySession.has(1)).toBe(
+      false,
+    );
+  });
+
+  it("restoreDropped appends dropped items back into the original session", () => {
+    useQueuedMessagesStore
+      .getState()
+      .append(1, { id: "a", text: "hello", cancellable: true });
+    useQueuedMessagesStore.getState().markDropped(1);
+    // 其它会话的队列不受影响
+    useQueuedMessagesStore
+      .getState()
+      .append(2, { id: "z", text: "other", cancellable: true });
+
+    useQueuedMessagesStore.getState().restoreDropped();
+
+    expect(useQueuedMessagesStore.getState().dropped).toBeNull();
+    const restored = useQueuedMessagesStore.getState().queuedBySession.get(1);
+    expect(restored?.map((m) => m.id)).toEqual(["a"]);
+    // 会话 2 的队列原样保留
+    expect(
+      useQueuedMessagesStore
+        .getState()
+        .queuedBySession.get(2)
+        ?.map((m) => m.id),
+    ).toEqual(["z"]);
+  });
+
+  it("restoreDropped appends after existing queued items of that session", () => {
+    useQueuedMessagesStore
+      .getState()
+      .append(1, { id: "a", text: "first", cancellable: true });
+    useQueuedMessagesStore.getState().markDropped(1);
+    // 恢复前又有新的排队条目进来
+    useQueuedMessagesStore
+      .getState()
+      .append(1, { id: "b", text: "newer", cancellable: true });
+
+    useQueuedMessagesStore.getState().restoreDropped();
+
+    expect(
+      useQueuedMessagesStore
+        .getState()
+        .queuedBySession.get(1)
+        ?.map((m) => m.id),
+    ).toEqual(["b", "a"]);
+  });
+
+  it("restoreDropped / dismissDropped with nothing dropped are referential no-ops", () => {
+    const before = useQueuedMessagesStore.getState().queuedBySession;
+    useQueuedMessagesStore.getState().restoreDropped();
+    useQueuedMessagesStore.getState().dismissDropped();
+    expect(useQueuedMessagesStore.getState().queuedBySession).toBe(before);
+  });
+
+  it("__reset clears dropped too", () => {
+    useQueuedMessagesStore
+      .getState()
+      .append(1, { id: "a", text: "x", cancellable: true });
+    useQueuedMessagesStore.getState().markDropped(1);
+    useQueuedMessagesStore.getState().__reset();
+    expect(useQueuedMessagesStore.getState().dropped).toBeNull();
+  });
 });

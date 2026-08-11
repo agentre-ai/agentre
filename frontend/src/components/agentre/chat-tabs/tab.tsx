@@ -127,11 +127,24 @@ export const Tab = React.forwardRef<
         </span>
       ) : null}
       {status === "running" ? (
-        <Loader2
-          data-testid="tab-spinner"
-          className="size-3 animate-spin text-status-running"
-          aria-hidden="true"
-        />
+        <span className="inline-flex items-center gap-0.5">
+          <Loader2
+            data-testid="tab-spinner"
+            className="size-3 animate-spin text-status-running"
+            aria-hidden="true"
+          />
+          <button
+            type="button"
+            aria-label={t("chatTabs.actions.closeTab")}
+            className="inline-flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose();
+            }}
+          >
+            <X className="size-2.5" aria-hidden="true" />
+          </button>
+        </span>
       ) : (
         <button
           type="button"

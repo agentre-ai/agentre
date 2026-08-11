@@ -75,6 +75,16 @@ function sameRect(
   );
 }
 
+function focusNextAfterEditor(editorElement: HTMLElement): void {
+  const focusable = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  );
+  const editorIndex = focusable.indexOf(editorElement);
+  focusable[editorIndex + 1]?.focus();
+}
+
 export function useLocalCommandHistoryMenu({
   editor,
   scope,
@@ -320,6 +330,14 @@ export function useLocalCommandHistoryMenu({
   const onClearKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLButtonElement>) => {
       switch (event.key) {
+        case "Tab":
+          event.preventDefault();
+          if (event.shiftKey) {
+            focusEditorOption(state.selectedIndex);
+          } else if (editor) {
+            focusNextAfterEditor(editor.view.dom);
+          }
+          break;
         case "ArrowDown":
           event.preventDefault();
           focusEditorOption(0);
@@ -335,7 +353,14 @@ export function useLocalCommandHistoryMenu({
           break;
       }
     },
-    [dismiss, editor, focusEditorOption, state.items.length, state.query],
+    [
+      dismiss,
+      editor,
+      focusEditorOption,
+      state.items.length,
+      state.query,
+      state.selectedIndex,
+    ],
   );
 
   const onKeyDown = useCallback(

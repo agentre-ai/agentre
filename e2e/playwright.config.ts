@@ -9,18 +9,27 @@ import { join } from "node:path";
 // process) never wrote.
 const dataDir = join(tmpdir(), "agentre-e2e-data");
 
+// Keep-alive (fast inner loop) mode: AGENTRE_E2E_REUSE=1 — reuse a hand-started
+// `wails dev -tags e2e` on :34216 and keep the temp data dir that app owns (no wipe, no rebuild,
+// no app restart between iterations). Default (unset) stays hermetic: fresh data dir + Playwright
+// manages its own webServer. The runner (run-e2e.mjs) reads the same flag to fail fast when no
+// server is up and to skip teardown. See e2e/README.md §4.
+const reuseExisting = process.env.AGENTRE_E2E_REUSE === "1";
+
 // Only the main runner (TEST_WORKER_INDEX undefined), not workers, prepares a fresh dir — and it
 // runs before the webServer launches. Workers reuse the same path to read the db the app wrote.
-if (process.env.TEST_WORKER_INDEX === undefined) {
+// In reuse mode the caller owns the data dir and the running app: never wipe it out from under
+// the server, or the DB oracle and the app diverge.
+if (process.env.TEST_WORKER_INDEX === undefined && !reuseExisting) {
   rmSync(dataDir, { recursive: true, force: true });
   mkdirSync(dataDir, { recursive: true });
-  // `wails dev` needs frontend/dist to exist for the //go:embed (mirrors `make dev`). Done here
-  // in Node — not via shell `mkdir -p`/`touch` — so the webServer command stays shell-agnostic
-  // and runs on native Windows (cmd) too.
-  const distDir = join(__dirname, "..", "frontend", "dist");
-  mkdirSync(distDir, { recursive: true });
-  writeFileSync(join(distDir, ".keep"), "");
 }
+// `wails dev` needs frontend/dist to exist for the //go:embed (mirrors `make dev`). Done here
+// in Node — not via shell `mkdir -p`/`touch` — so the webServer command stays shell-agnostic
+// and runs on native Windows (cmd) too. Idempotent, so it stays unconditional in both modes.
+const distDir = join(__dirname, "..", "frontend", "dist");
+mkdirSync(distDir, { recursive: true });
+writeFileSync(join(distDir, ".keep"), "");
 
 process.env.AGENTRE_DATA_DIR = dataDir;
 process.env.AGENTRE_ENV = "test";
@@ -37,7 +46,15 @@ export default defineConfig({
   expect: { timeout: 15_000 },
   fullyParallel: false,
   workers: 1,
-  reporter: [["list"], ["html", { open: "never" }]],
+  // HTML report only in CI — a passing local poke shouldn't leave a multi-hundred-KB
+  // playwright-report/ behind. Local runs use the list reporter; failures still retain traces +
+  // screenshots (use.trace / use.screenshot below). Force a local HTML report with `CI=1`.
+  reporter: process.env.CI
+    ? [
+        ["list"],
+        ["html", { open: "never" }],
+      ]
+    : [["list"]],
   use: {
     baseURL: BASE_URL,
     trace: "retain-on-failure",
@@ -53,7 +70,9 @@ export default defineConfig({
     command: `wails dev -tags e2e -devserver ${DEVSERVER} > "${WEBSERVER_LOG}" 2>&1`,
     cwd: "..",
     url: BASE_URL,
-    reuseExistingServer: !process.env.CI,
+    // Reuse mode forces reuse; otherwise reuse a local dev server already on :34216 (never in
+    // CI, which must get a fresh hermetic server each job).
+    reuseExistingServer: reuseExisting || !process.env.CI,
     timeout: 240_000,
     stdout: "ignore",
     stderr: "ignore",

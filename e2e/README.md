@@ -17,7 +17,7 @@ SQLite**. The external agent boundary does **not** run for real: a real turn spa
 | | **Committed core-flow suite** | **Ad-hoc functional verification** |
 |---|---|---|
 | Lives in | `e2e/tests/*.spec.ts` (committed) | `e2e/scratch/**/*.spec.ts` — flat quick looks or nested scenarios (**gitignored**) |
-| Run with | `make e2e` | `make e2e-scratch` |
+| Run with | `make e2e` | `make e2e-scratch TASK="scratch/<name>/"` |
 | Lifetime | permanent regression guard | throwaway — write, run, observe, delete |
 | What goes here | **only core / critical flows** | "I just built X — does it work in the real app?" |
 
@@ -125,11 +125,26 @@ cd e2e && pnpm test --debug     # Playwright inspector
 cd e2e && pnpm test --headed    # watch the browser
 ```
 
-Do not hand-start a reusable Wails server against the fixed e2e data directory: loading the Playwright config prepares that directory for a fresh run, so a separately running app and the DB oracle can diverge.
+Do not hand-start a reusable Wails server against the fixed e2e data directory **without the keep-alive flag** (below): a plain run prepares that directory for a fresh start, so a separately running app and the DB oracle can diverge.
 
-The HTML report lands at `e2e/playwright-report/` (gitignored); traces are
-`retain-on-failure`, screenshots `only-on-failure`. webServer output → `$TMPDIR/agentre-e2e-webserver.log`.
-e2e is **not** part of `make test` / `make check` — it runs only on demand.
+**Fast inner loop (keep-alive).** Every normal run pays the full start-up tax (Go compile + vite + app boot + re-seed, ~30 s even with the fake). When iterating on a scratch spec — tweak, re-run, observe — reuse one already-running app instead:
+
+```bash
+# 1. start the app once, leave it running (any terminal) — the env overrides are mandatory: they
+#    point the app at the e2e temp data dir (the same ones playwright.config.ts injects), so the
+#    server never touches your real ~/Library/Application Support/agentre:
+mkdir -p "$TMPDIR/agentre-e2e-data"
+AGENTRE_DATA_DIR="$TMPDIR/agentre-e2e-data" AGENTRE_ENV=test AGENTRE_PROXY_PORT=0 \
+  wails dev -tags e2e -devserver localhost:34216 > "$TMPDIR/agentre-e2e-webserver.log" 2>&1
+# 2. iterate: each run reuses the running app — no rebuild, no data-dir wipe, ~5 s
+cd e2e && AGENTRE_E2E_REUSE=1 pnpm run test:scratch "scratch/<task>/"
+# or via make (AGENTRE_E2E_REUSE propagates through):
+AGENTRE_E2E_REUSE=1 make e2e-scratch TASK="scratch/<task>/"
+```
+
+`AGENTRE_E2E_REUSE=1` switches `playwright.config.ts` and `run-e2e.mjs` into **reuse mode**: the temp data dir is **not** wiped (the running app owns it), `reuseExistingServer` is forced on, and the runner performs **no teardown** (no orphan-vite reap, no temp-dir removal) so the app survives for the next iteration. It is an explicit "I started the server" contract: the runner fails fast unless **both** `:34216` is listening **and** `$TMPDIR/agentre-e2e-data/agentre.db` exists (a server up on the real data dir — e.g. started without `AGENTRE_DATA_DIR` — would silently seed your real DB, so it is rejected with the command above). Kill the dev server yourself when done. The default (flag unset) is unchanged and fully hermetic: a fresh data dir each run, with Playwright managing and tearing down its own server.
+
+The HTML report lands at `e2e/playwright-report/` (gitignored) **in CI only** — a local run uses the list reporter and keeps traces/screenshots on failure (`CI=1` forces a local HTML report). webServer output → `$TMPDIR/agentre-e2e-webserver.log`. e2e is **not** part of `make test` / `make check` — it runs only on demand.
 
 **In CI:** the committed suite runs on every PR / push to `main` / `develop/*` as the `E2E` job
 (`.github/workflows/ci.yml`, `ubuntu-22.04`). It installs xvfb + GTK/WebKit + the wails CLI,
@@ -213,10 +228,7 @@ in mind when changing it.
 
 ## 8. Extending the harness
 
-- **Fake a new event** (tool call / error) → branch the fake `Run` on a prompt prefix (e.g. an
-  `@e2e:…` directive) to emit `ToolCall` / `ErrorEvent` from the sealed `agentruntime.Event` set.
-  **Not implemented yet** — it's the intended seam; add it red→green (with a fake-runtime unit
-  test) when a spec first needs it.
+- **Fake a new event** (tool call / error) → branch the fake `Run` on a prompt-prefix directive, `e2e-<name>:<args>` in the user's message. This seam is **already implemented** for several flows (each red→green with a fake-runtime unit test): `e2e-subagent-call:<agent>:<prompt>` (calls the injected `/mcp/subagent/` `agent_call`), `e2e-org-create-dept:<name>` and `e2e-hook-create:<name>` (approved write tools on the injected `/mcp/org/` / `/mcp/hook/`), `e2e-ask:<question>` (AskUserQuestion expiry), `e2e-bg-task:<label>` (background-turn → CLI auto-continue), `e2e-long-thinking:<runes>` (long thinking stream), and `e2e-assert-system:<needle>` (system-prompt assertion). Add a new one the same way — red→green with a fake-runtime unit test — when a spec first needs it.
 - **Fake an injected MCP tool call** → when the real backend would call an injected MCP tool, the
   fake makes the same HTTP `tools/call` like a real CLI. **Done for the `org` / `subagent` / `hook` tools**:
   when the agent has the relevant tool enabled, the real backend injects the MCP server, so the
@@ -236,11 +248,11 @@ in mind when changing it.
 | `e2e/playwright.config.ts` | base harness: temp dir + env + `frontend/dist` prep, webServer (`wails dev -tags e2e -devserver 34216`) | yes |
 | `e2e/playwright.scratch.config.ts` | extends base, `testDir: ./scratch` for throwaway specs | yes |
 | `e2e/fixtures/db.ts` | read-only `node:sqlite` DB oracle (`runningSessionCount`, …) | yes |
-| `e2e/tests/*.spec.ts` | committed **core-flow** specs (chat smoke/reload plus approved org/subagent tool flows) | yes |
+| `e2e/tests/*.spec.ts` | committed **core-flow** specs (chat smoke/reload, git-preview tabs, plus approved org/subagent tool flows) | yes |
 | `e2e/scratch/**/*.spec.ts` | throwaway specs, either flat quick looks or `<task-name>/verify.spec.ts` scenarios | **no (gitignored)** |
 | `e2e/scratch/README.md` | scratch convention + starter template | yes |
 | `e2e/package.json` → `setup` / `test` / `test:scratch` / `test:sync` | one-time install+Chromium / run suite / run scratch / run the sync suite (§10) | yes |
-| `Makefile` → `e2e` / `e2e-scratch` / `e2e-sync` | thin aliases for `cd e2e && pnpm test` / `pnpm run test:scratch` / `pnpm run test:sync` | yes |
+| `Makefile` → `e2e` / `e2e-scratch` / `e2e-sync` | thin aliases for `cd e2e && pnpm test` / `pnpm run test:scratch` (requires `TASK=scratch/…`) / `pnpm run test:sync` | yes |
 | `e2e/fakes/install.go` (`//go:build e2e`) / `install_noop.go` (`//go:build !e2e`) | register the fake + seed / no-op | yes |
 | `e2e/fakes/login.go` (`//go:build e2e`) | seed a logged-in desktop from env, for §10 only (no-op without it) | yes |
 | `e2e/run-e2e-sync.mjs` / `playwright.sync.config.ts` / `sync/` / `fixtures/sync.ts` | the sync suite: runner, config, specs, oracles (§10) | yes |

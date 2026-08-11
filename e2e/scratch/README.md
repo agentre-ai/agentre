@@ -11,10 +11,15 @@ gotchas: **[e2e/README.md](../README.md)** (§6).
 ## Run
 
 ```bash
-make e2e-scratch             # recursively runs every e2e/scratch/**/*.spec.ts via the live harness
-# or a single file (still through the runner, so cleanup happens):
-cd e2e && pnpm run test:scratch scratch/<file>.spec.ts
+make e2e-scratch TASK="scratch/<task-name>/"   # scenario dir (recursively picks up verify.spec.ts) — TASK is required
+make e2e-scratch TASK="scratch/poke.spec.ts"   # single file
+# or straight through the runner (cleanup still happens):
+cd e2e && pnpm run test:scratch "scratch/<task-name>/"
 ```
+
+`make e2e-scratch` requires an explicit `TASK` — it never silently re-runs every leftover spec.
+Fast inner loop: `AGENTRE_E2E_REUSE=1 make e2e-scratch TASK=...` reuses one hand-started
+`wails dev -tags e2e` instead of rebuilding and restarting the app — see [e2e/README.md](../README.md) §4.
 
 Reuses the same harness as the committed suite: launches `wails dev -tags e2e` on port 34216
 with a temp data dir + `AGENTRE_ENV=test`. A native Agentre window opens (expected). webServer

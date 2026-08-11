@@ -485,6 +485,79 @@ func TestSubagentTracker_ResultBeforeCallAndFinalRecovery(t *testing.T) {
 	assert.Equal(t, "completed", info.Runs[0].Status)
 }
 
+func TestSubagentTracker_UsageFeedsPerRunAndAggregateTotalTokens(t *testing.T) {
+	t.Run("flat single snapshots report usage in real time", func(t *testing.T) {
+		inv, ok := classifySubagentInvocation([]byte(`{"task":"inspect","profile":"read-only"}`))
+		require.True(t, ok)
+		tracker := newSubagentTracker("outer", inv)
+
+		// Given a flat progress frame whose details carry a cumulative usage object,
+		// when the tracker consumes it, then the run reports the total token count.
+		_, changed := tracker.consumeUpdate([]byte(`{"details":{"messages":[
+			{"role":"assistant","model":"observed","content":[{"type":"text","text":"working"}],"stopReason":"toolUse"}
+		],"usage":{"input":100,"output":20,"cacheRead":5,"cacheWrite":3,"cost":{"total":0.01},"contextTokens":128,"turns":1}}}`))
+		require.True(t, changed)
+		assert.Equal(t, 128, tracker.info().TotalTokens, "single run total is reflected on the aggregate")
+
+		// Given a later frame with a larger cumulative usage, then the run total updates.
+		_, changed = tracker.consumeUpdate([]byte(`{"details":{"messages":[
+			{"role":"assistant","model":"observed","content":[{"type":"text","text":"working"}],"stopReason":"toolUse"}
+		],"usage":{"input":200,"output":40,"cacheRead":10,"cacheWrite":6,"cost":{"total":0.02},"contextTokens":256,"turns":2}}}`))
+		require.True(t, changed)
+		assert.Equal(t, 256, tracker.info().TotalTokens)
+	})
+
+	t.Run("zero-usage frames never wipe recorded totals", func(t *testing.T) {
+		inv, ok := classifySubagentInvocation([]byte(`{"task":"inspect","profile":"read-only"}`))
+		require.True(t, ok)
+		tracker := newSubagentTracker("outer", inv)
+
+		_, changed := tracker.consumeUpdate([]byte(`{"details":{"messages":[],"usage":{"input":100,"output":20,"cacheRead":5,"cacheWrite":3,"cost":{"total":0.01},"contextTokens":128,"turns":1}}}`))
+		require.True(t, changed)
+		assert.Equal(t, 128, tracker.info().TotalTokens)
+
+		// A progress frame whose usage decodes to zero (or is absent) must not erase
+		// the accumulated total; the producer's own frames are monotonic.
+		_, _ = tracker.consumeUpdate([]byte(`{"details":{"messages":[],"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":{"total":0},"contextTokens":0,"turns":0}}}`))
+		assert.Equal(t, 128, tracker.info().TotalTokens, "zero usage does not overwrite a recorded total")
+
+		_, _ = tracker.consumeUpdate([]byte(`{"details":{"messages":[]}}`))
+		assert.Equal(t, 128, tracker.info().TotalTokens, "missing usage does not wipe a recorded total")
+	})
+
+	t.Run("parallel runs keep per-run totals and aggregate sums them", func(t *testing.T) {
+		inv, ok := classifySubagentInvocation([]byte(`{"tasks":[
+			{"agent":"a","task":"one"},
+			{"agent":"b","task":"two"}
+		]}`))
+		require.True(t, ok)
+		tracker := newSubagentTracker("outer", inv)
+
+		_, changed := tracker.consumeUpdate([]byte(`{"details":{"mode":"parallel","results":[
+			{"messages":[],"usage":{"input":90,"output":10,"cacheRead":0,"cacheWrite":0,"cost":{"total":0},"contextTokens":100,"turns":1}},
+			{"messages":[],"usage":{"input":30,"output":5,"cacheRead":2,"cacheWrite":1,"cost":{"total":0},"contextTokens":38,"turns":1}}
+		]}}`))
+		require.True(t, changed)
+		assert.Equal(t, 100, tracker.runs[0].totalTokens)
+		assert.Equal(t, 38, tracker.runs[1].totalTokens)
+		assert.Equal(t, 138, tracker.info().TotalTokens, "aggregate sums every run's total tokens")
+	})
+
+	t.Run("final flat snapshot carries usage into the terminal snapshot", func(t *testing.T) {
+		inv, ok := classifySubagentInvocation([]byte(`{"task":"inspect","profile":"read-only"}`))
+		require.True(t, ok)
+		tracker := newSubagentTracker("outer", inv)
+
+		_, changed := tracker.consumeFinal([]byte(`{"messages":[
+			{"role":"assistant","model":"observed","content":[{"type":"text","text":"done"}],"stopReason":"stop"}
+		],"exitCode":0,"usage":{"input":500,"output":60,"cacheRead":30,"cacheWrite":10,"cost":{"total":0.05},"contextTokens":600,"turns":3}}`), false, "outer")
+		require.True(t, changed)
+		info := tracker.info()
+		assert.Equal(t, "completed", info.Runs[0].Status)
+		assert.Equal(t, 600, info.TotalTokens)
+	})
+}
+
 func TestSubagentTracker_NullToolResultContentIsMalformedRatherThanEmpty(t *testing.T) {
 	inv, ok := classifySubagentInvocation([]byte(`{"task":"inspect","profile":"read-only"}`))
 	require.True(t, ok)

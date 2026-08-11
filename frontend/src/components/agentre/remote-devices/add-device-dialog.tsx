@@ -126,6 +126,11 @@ export function AddDeviceDialog({ open, onClose, onSubmit }: Props) {
             disabled={submitting}
             aria-invalid={url.length > 0 && !urlValid}
           />
+          {url.length > 0 && !urlValid ? (
+            <span className="text-xs text-destructive">
+              {t("remoteDevices.add.fields.urlInvalid")}
+            </span>
+          ) : null}
         </label>
 
         <label className="flex flex-col gap-1.5">
@@ -143,6 +148,11 @@ export function AddDeviceDialog({ open, onClose, onSubmit }: Props) {
           <span className="text-xs text-muted-foreground">
             {t("remoteDevices.add.fields.pairingCodeHint")}
           </span>
+          {code.length > 0 && codeValid === false ? (
+            <span className="text-xs text-destructive">
+              {t("remoteDevices.add.fields.codeInvalid")}
+            </span>
+          ) : null}
         </label>
 
         <label className="flex flex-col gap-1.5">

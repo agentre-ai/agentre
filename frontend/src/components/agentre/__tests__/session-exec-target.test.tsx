@@ -92,10 +92,12 @@ function renderLine(
   overrides: Partial<{
     overrideBackendId: number | null;
     onOverride: (id: number | null) => void;
+    onOverrideBackendType: (type: string | null) => void;
     projectId: number;
   }> = {},
 ) {
   const onOverride = overrides.onOverride ?? vi.fn();
+  const onOverrideBackendType = overrides.onOverrideBackendType ?? vi.fn();
   render(
     <MemoryRouter>
       <NewSessionExecTargetLine
@@ -104,10 +106,11 @@ function renderLine(
         projectId={overrides.projectId ?? 0}
         overrideBackendId={overrides.overrideBackendId ?? null}
         onOverride={onOverride}
+        onOverrideBackendType={onOverrideBackendType}
       />
     </MemoryRouter>,
   );
-  return { onOverride };
+  return { onOverride, onOverrideBackendType };
 }
 
 // 改选浮层由点击「将在 X 上运行」那一行的 chip 打开（不再有独立的"改选"按钮）。
@@ -256,6 +259,81 @@ describe("NewSessionExecTargetLine", () => {
     const pickableRow = within(picker).getByText("claude-fable-5");
     await userEvent.click(pickableRow);
     expect(onOverride).toHaveBeenCalledWith(51);
+  });
+
+  it("reselect popover: 选中候选后浮层自动关闭（用户点完即可直接发问）", async () => {
+    stubWails(
+      [
+        { agentBackendId: 51, available: true },
+        { agentBackendId: 52, available: true },
+      ],
+      [
+        { id: 51, deviceId: "", name: "claude-fable-5" },
+        { id: 52, deviceId: "3", deviceName: "构建机", online: true },
+      ],
+    );
+    renderLine();
+    await screen.findByTestId("new-session-exec-target-line");
+
+    const picker = await openPicker();
+    await userEvent.click(within(picker).getByText("claude-fable-5"));
+    // 选完即关：浮层不再留在屏幕上，用户不用再点外部/Escape 才能继续发问。
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("exec-target-picker"),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("改选后把实际生效档的 backend type 报给父级（跨类型改选时权限 mode 集合要跟随实际后端）", async () => {
+    stubWails(
+      [
+        { agentBackendId: 51, available: true },
+        { agentBackendId: 52, available: true },
+      ],
+      [
+        { id: 51, deviceId: "", type: "claudecode", name: "claude-fable-5" },
+        {
+          id: 52,
+          deviceId: "3",
+          deviceName: "构建机",
+          online: true,
+          type: "codex",
+          name: "codex-builder",
+        },
+      ],
+    );
+    const onOverrideBackendType = vi.fn();
+    // 受控父级：onOverride 要把新 id 反射回 overrideBackendId，否则 effect 看不到改选。
+    function ControlledLine() {
+      const [id, setId] = React.useState<number | null>(null);
+      return (
+        <NewSessionExecTargetLine
+          agentId={7}
+          agentName="开发"
+          projectId={0}
+          overrideBackendId={id}
+          onOverride={(v) => setId(v)}
+          onOverrideBackendType={onOverrideBackendType}
+        />
+      );
+    }
+    render(
+      <MemoryRouter>
+        <ControlledLine />
+      </MemoryRouter>,
+    );
+    await screen.findByTestId("new-session-exec-target-line");
+
+    // 未改选时向父级报 null（跟随 agent 主后端）。
+    expect(onOverrideBackendType).toHaveBeenLastCalledWith(null);
+
+    // 改选到 codex 后端后，向父级报 "codex"，父级据此切换 permission mode caps。
+    const picker = await openPicker();
+    await userEvent.click(within(picker).getByText("codex-builder"));
+    await waitFor(() => {
+      expect(onOverrideBackendType).toHaveBeenLastCalledWith("codex");
+    });
   });
 
   // (a) 改选浮层每档带那台机器上的项目路径——选机器时真正要判断的是「换过去在

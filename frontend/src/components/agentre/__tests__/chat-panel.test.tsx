@@ -80,6 +80,11 @@ const componentMocks = vi.hoisted(() => ({
   localCommandMenuActive: false,
   cycleMode: vi.fn(),
   setMode: vi.fn(),
+  // ChatComposer 的命令式句柄桩:ChatPanel 经 composerRef 调 restoreDraft/clearDraft。
+  composerHandle: {
+    restoreDraft: vi.fn(),
+    clearDraft: vi.fn(),
+  },
   // 控制 useSessionCapabilities 桩返回的 caps;测试按 backend 切换 switchableDuringTurn。
   capsSwitchableDuringTurn: true,
   capsAllowedModes: ["default", "plan", "acceptEdits", "bypassPermissions"],
@@ -133,9 +138,13 @@ vi.mock("@/hooks/use-project-tree", () => ({
 const mockSessionStore: {
   messages: Array<Record<string, unknown>>;
   session: Record<string, unknown> | null;
+  loading: boolean;
+  error: string | null;
 } = {
   messages: [],
   session: null,
+  loading: false,
+  error: null,
 };
 
 // setMessagesSpy 允许断言 setMessages 是否被调用（T29 subagent_activity_started）
@@ -147,8 +156,8 @@ vi.mock("@/hooks/use-chat-session", () => ({
   useChatSession: () => ({
     session: mockSessionStore.session,
     messages: mockSessionStore.messages,
-    loading: false,
-    error: null,
+    loading: mockSessionStore.loading,
+    error: mockSessionStore.error,
     reload: reloadSpy,
     setMessages: setMessagesSpy,
   }),
@@ -170,31 +179,43 @@ vi.mock("@/hooks/use-cc-usage", () => ({
 // ── child component mocks ──────────────────────────────────────────────────
 
 // ChatComposer / ChatTranscript 各自有大量依赖（TipTap / prism 等），mock 成最简桩。
+// ChatComposer 用 forwardRef 把 ChatPanel 传下来的 composerRef 指向测试桩,
+// 让 doSend 失败路径的 restoreDraft/clearDraft 调用可被断言。
 vi.mock("../chat", async () => {
   const React = await import("react");
   return {
-    ChatComposer: (props: {
-      localCommandHistoryScope?: unknown;
-      onSubmit?: (text: string) => void;
-      permissionModeSlot?: React.ReactNode;
-      modelSlot?: React.ReactNode;
-      topSlot?: React.ReactNode;
-    }) => {
-      componentMocks.chatComposerProps.push(props as Record<string, unknown>);
-      return React.createElement(
-        React.Fragment,
-        null,
-        props.topSlot,
-        props.permissionModeSlot,
-        props.modelSlot,
-        componentMocks.localCommandMenuActive && props.localCommandHistoryScope
-          ? React.createElement("div", {
-              "data-testid": "local-command-history-menu",
-              role: "listbox",
-            })
-          : null,
-      );
-    },
+    ChatComposer: React.forwardRef(
+      (
+        props: {
+          localCommandHistoryScope?: unknown;
+          onSubmit?: (text: string) => void;
+          permissionModeSlot?: React.ReactNode;
+          modelSlot?: React.ReactNode;
+          topSlot?: React.ReactNode;
+        },
+        ref: React.Ref<unknown>,
+      ) => {
+        componentMocks.chatComposerProps.push(props as Record<string, unknown>);
+        if (ref) {
+          (ref as React.MutableRefObject<unknown>).current =
+            componentMocks.composerHandle;
+        }
+        return React.createElement(
+          React.Fragment,
+          null,
+          props.topSlot,
+          props.permissionModeSlot,
+          props.modelSlot,
+          componentMocks.localCommandMenuActive &&
+            props.localCommandHistoryScope
+            ? React.createElement("div", {
+                "data-testid": "local-command-history-menu",
+                role: "listbox",
+              })
+            : null,
+        );
+      },
+    ),
     ChatTranscript: (props: Record<string, unknown>) => {
       componentMocks.chatTranscriptProps.push(props);
       return React.createElement("div", { "data-testid": "chat-transcript" });
@@ -321,6 +342,9 @@ function resetStore() {
   __resetChatPanelScrollStateForTesting();
   __resetCatchUpStateForTesting();
   mockSessionStore.messages = [];
+  mockSessionStore.session = null;
+  mockSessionStore.loading = false;
+  mockSessionStore.error = null;
   useChatStreamsStore.getState().streams.clear();
   useSessionConnStore.getState().__reset();
   runtimeMocks.EventsOff.mockReset();
@@ -333,6 +357,8 @@ function resetStore() {
   componentMocks.chatComposerProps.length = 0;
   componentMocks.chatTranscriptProps.length = 0;
   componentMocks.permissionModePillProps.length = 0;
+  componentMocks.composerHandle.restoreDraft.mockClear();
+  componentMocks.composerHandle.clearDraft.mockClear();
   componentMocks.permissionMode = "plan";
   componentMocks.localCommandMenuActive = false;
   // 默认 claudecode-like caps(允许 turn 中切 mode);Codex 测试用例显式置 false。
@@ -4664,5 +4690,210 @@ describe("ChatPanel · 新会话 tab 输入守卫（非可对话 Agent）", () =
     expect(screen.queryByTestId("new-session-guard")).toBeNull();
     const composer = componentMocks.chatComposerProps.at(-1);
     expect(composer?.disabled).toBeFalsy();
+  });
+});
+
+// ─── 会话加载失败 UX:不再静默关闭 tab,而是渲染错误卡(Retry / Close) ───────────
+
+describe("ChatPanel · session load failure UX", () => {
+  it("Given a session load error, When the panel renders, Then an error card with Retry/Close is shown and the tab stays open", () => {
+    resetStore();
+    mockSessionStore.session = null;
+    mockSessionStore.messages = [];
+    mockSessionStore.error = "Chat session not found";
+    mockSessionStore.loading = false;
+    const onDeleted = vi.fn();
+    render(<ChatPanel active sessionId={42} onSessionDeleted={onDeleted} />);
+
+    // 错误卡渲染,不是静默关 tab
+    expect(screen.getByText("Couldn't load session")).toBeInTheDocument();
+    expect(screen.getByText("Chat session not found")).toBeInTheDocument();
+    // not-found 专属提示
+    expect(
+      screen.getByText("This session no longer exists or has been deleted."),
+    ).toBeInTheDocument();
+    expect(onDeleted).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Close session" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Given a non-not-found load error, When the panel renders, Then no not-found hint is shown", () => {
+    resetStore();
+    mockSessionStore.session = null;
+    mockSessionStore.messages = [];
+    mockSessionStore.error = "backend unavailable";
+    mockSessionStore.loading = false;
+    render(<ChatPanel active sessionId={42} />);
+
+    expect(screen.getByText("Couldn't load session")).toBeInTheDocument();
+    expect(screen.getByText("backend unavailable")).toBeInTheDocument();
+    expect(
+      screen.queryByText("This session no longer exists or has been deleted."),
+    ).toBeNull();
+  });
+
+  it("Given a load error, When Close is clicked, Then the tab closes via onSessionDeleted", () => {
+    resetStore();
+    mockSessionStore.session = null;
+    mockSessionStore.messages = [];
+    mockSessionStore.error = "boom";
+    mockSessionStore.loading = false;
+    const onDeleted = vi.fn();
+    render(<ChatPanel active sessionId={42} onSessionDeleted={onDeleted} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close session" }));
+    expect(onDeleted).toHaveBeenCalledOnce();
+  });
+
+  it("Given a load error, When Retry is clicked, Then reloadSession is invoked", () => {
+    resetStore();
+    mockSessionStore.session = null;
+    mockSessionStore.messages = [];
+    mockSessionStore.error = "boom";
+    mockSessionStore.loading = false;
+    render(<ChatPanel active sessionId={42} />);
+    reloadSpy.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(reloadSpy).toHaveBeenCalledOnce();
+  });
+
+  it("Given the session is loading with no content yet, When the panel renders, Then a loading skeleton with status role is shown", () => {
+    resetStore();
+    mockSessionStore.session = null;
+    mockSessionStore.messages = [];
+    mockSessionStore.loading = true;
+    mockSessionStore.error = null;
+    render(<ChatPanel active sessionId={42} />);
+
+    expect(
+      screen.getByRole("status", { name: "Loading session…" }),
+    ).toBeInTheDocument();
+    // 骨架占位期间不渲染 transcript
+    expect(screen.queryByTestId("chat-transcript")).toBeNull();
+  });
+
+  it("Given a loaded session with existing messages, When loading is true (turn-end reload), Then no skeleton is shown", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    mockSessionStore.messages = [
+      { blocks: [{ text: "hi", type: "text" }], id: 1, role: "user" },
+    ];
+    mockSessionStore.loading = true;
+    mockSessionStore.error = null;
+    render(<ChatPanel active sessionId={42} />);
+
+    expect(
+      screen.queryByRole("status", { name: "Loading session…" }),
+    ).toBeNull();
+    expect(screen.getByTestId("chat-transcript")).toBeInTheDocument();
+  });
+});
+
+// ─── 发送失败草稿恢复:restoreDraft 被调用,notice 挂 Retry / Discard ───────────
+
+describe("ChatPanel · send failure draft restore", () => {
+  const image = {
+    dataUrl: "data:image/png;base64,AQID",
+    mediaType: "image/png",
+    name: "shot.png",
+  };
+
+  it("Given SendChatMessage rejects, When a message with images is submitted, Then restoreDraft is invoked with the exact text + images", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42, agentId: 9 });
+    appMocks.SendChatMessage.mockRejectedValue(
+      new Error("operation failed\ndatabase is locked"),
+    );
+    render(<ChatPanel active sessionId={42} />);
+    const onSubmit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((msg: unknown) => void)
+      | undefined;
+    expect(onSubmit).toBeDefined();
+
+    act(() => {
+      onSubmit?.({ text: "hello world", images: [image] });
+    });
+
+    await waitFor(() =>
+      expect(componentMocks.composerHandle.restoreDraft).toHaveBeenCalledWith(
+        "hello world",
+        [image],
+      ),
+    );
+    // notice 保留草稿 + Retry / Discard
+    expect(screen.getByText(/Send failed — draft kept/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Retry send" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Discard draft" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Given the notice offers Discard, When it is clicked, Then clearDraft is invoked and the notice closes", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42, agentId: 9 });
+    appMocks.SendChatMessage.mockRejectedValue(new Error("boom"));
+    render(<ChatPanel active sessionId={42} />);
+    const onSubmit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((msg: unknown) => void)
+      | undefined;
+
+    act(() => {
+      onSubmit?.({ text: "draft me" });
+    });
+    await waitFor(() =>
+      expect(componentMocks.composerHandle.restoreDraft).toHaveBeenCalled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard draft" }));
+    expect(componentMocks.composerHandle.clearDraft).toHaveBeenCalledOnce();
+    await waitFor(() =>
+      expect(screen.queryByText(/Send failed — draft kept/)).toBeNull(),
+    );
+  });
+
+  it("Given the notice offers Retry, When it is clicked, Then the same message is re-sent", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42, agentId: 9 });
+    appMocks.SendChatMessage.mockRejectedValueOnce(new Error("first attempt"));
+    render(<ChatPanel active sessionId={42} />);
+    const onSubmit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((msg: unknown) => void)
+      | undefined;
+
+    act(() => {
+      onSubmit?.({ text: "retry me" });
+    });
+    await waitFor(() =>
+      expect(componentMocks.composerHandle.restoreDraft).toHaveBeenCalledWith(
+        "retry me",
+        [],
+      ),
+    );
+    expect(appMocks.SendChatMessage).toHaveBeenCalledTimes(1);
+
+    appMocks.SendChatMessage.mockResolvedValueOnce({
+      assistantMessageId: 102,
+      sessionId: 42,
+      stream: "chat:42:102",
+      userMessageId: 101,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Retry send" }));
+
+    await waitFor(() =>
+      expect(appMocks.SendChatMessage).toHaveBeenCalledTimes(2),
+    );
+    expect(appMocks.SendChatMessage.mock.calls[1]?.[0]).toMatchObject({
+      agentId: 9,
+      sessionId: 42,
+      text: "retry me",
+    });
+    await waitFor(() =>
+      expect(screen.queryByText(/Send failed — draft kept/)).toBeNull(),
+    );
   });
 });

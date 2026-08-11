@@ -754,6 +754,7 @@ function AppLayout() {
   const reconcileMissingSessions = useChatTabsStore(
     (s) => s.reconcileMissingSessions,
   );
+  const openSession = useChatTabsStore((s) => s.openSession);
   useEffect(() => {
     if (agents.length === 0) return;
     const existing = new Set<number>();
@@ -827,10 +828,17 @@ function AppLayout() {
         </div>
 
         <AppStatusBar
-          agentSummary={statusBarState.agentSummary}
-          attentionSummary={statusBarState.attentionSummary}
+          agentCount={statusBarState.agentCount}
+          runningCount={statusBarState.runningCount}
+          approvalCount={statusBarState.approvalIds.length}
+          unreadCount={statusBarState.unreadIds.length}
+          attentionIds={[
+            ...statusBarState.approvalIds,
+            ...statusBarState.unreadIds,
+          ]}
           status={statusBarState.indicatorStatus}
           version={appVersion}
+          onAttentionClick={(sessionId) => openSession(sessionId)}
         />
         <PaletteScopeBridge />
         <CommandPalette />

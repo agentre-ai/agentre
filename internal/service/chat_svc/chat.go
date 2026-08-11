@@ -2341,8 +2341,15 @@ func createPermissionMode(ctx context.Context, be *agent_backend_entity.AgentBac
 		return "", nil
 	}
 	backendType := agent_backend_entity.BackendType(be.Type)
-	if strings.TrimSpace(raw) != "" {
-		return validateRequestedPermissionMode(ctx, backendType, raw)
+	// raw 是前端偏好, 可能来自 agent 主后端的 mode 集合(空会话态改选执行目标到另一
+	// 个类型后, 前端按主后端推导出的 mode 对实际后端不合法)。后端是唯一知道实际
+	// 后端的地方, 在这里做边界归一: 合法就尊重, 不合法就当作没给, 回落到下面的默认
+	// 派生, 而不是硬报 ChatPermissionModeInvalid —— 否则一次合法改选连第一条消息都
+	// 发不出去。真正需要拒绝非法 mode 的入口是 SetPermissionMode 那条 IPC 线。
+	if requested := strings.TrimSpace(raw); requested != "" {
+		if mode, err := validateRequestedPermissionMode(ctx, backendType, requested); err == nil {
+			return mode, nil
+		}
 	}
 	// claudecode + admin 配 bypass 时, 交互式新会话以 plan 起手: CLI 仍按 bypass 启动(由
 	// runtime resolveLaunchMode 保证), session.PermissionMode=plan 让前端 pill 显

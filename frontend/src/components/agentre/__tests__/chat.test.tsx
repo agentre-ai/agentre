@@ -40,6 +40,7 @@ vi.mock("../../../../wailsjs/runtime/runtime", async () => {
 import {
   ChatComposer,
   ChatTranscript,
+  type ChatComposerHandle,
   type ChatTranscriptHandle,
   formatResetIn,
   formatTokens,
@@ -441,6 +442,48 @@ describe("ChatComposer context meter", () => {
     const fill = progress.firstElementChild;
     expect(fill).toHaveClass("bg-status-waiting");
     expect(fill).toHaveStyle({ width: "80%" });
+  });
+});
+
+describe("ChatComposer imperative draft restore", () => {
+  it("Given a send failure, When restoreDraft is called, Then the text and image attachments come back", async () => {
+    const ref = React.createRef<ChatComposerHandle>();
+    render(<ChatComposer ref={ref} onSubmit={vi.fn()} />);
+    const image = {
+      dataUrl: "data:image/png;base64,AQID",
+      mediaType: "image/png",
+      name: "restored.png",
+    };
+
+    act(() => {
+      ref.current?.restoreDraft("restored draft", [image]);
+    });
+
+    // 文本回到编辑器
+    expect(screen.getByRole("textbox")).toHaveTextContent("restored draft");
+    // 图片附件恢复
+    expect(await screen.findByAltText("restored.png")).toBeInTheDocument();
+  });
+
+  it("Given a restored draft, When clearDraft is called, Then text and images are cleared", async () => {
+    const ref = React.createRef<ChatComposerHandle>();
+    render(<ChatComposer ref={ref} onSubmit={vi.fn()} />);
+    const image = {
+      dataUrl: "data:image/png;base64,AQID",
+      mediaType: "image/png",
+      name: "clear.png",
+    };
+    act(() => {
+      ref.current?.restoreDraft("to clear", [image]);
+    });
+    expect(await screen.findByAltText("clear.png")).toBeInTheDocument();
+
+    act(() => {
+      ref.current?.clearDraft();
+    });
+
+    expect(screen.queryByAltText("clear.png")).toBeNull();
+    expect(screen.getByRole("textbox")).not.toHaveTextContent("to clear");
   });
 });
 

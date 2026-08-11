@@ -1,5 +1,6 @@
-import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AgentSession } from "../agent-list";
 import { SessionGroup } from "../session-group";
@@ -129,5 +130,62 @@ describe("SessionGroup attention bubble in expanded state", () => {
     expect(bubble).not.toBeNull();
     expect(within(bubble!).getByText("unread-1")).toBeTruthy();
     expect(within(bubble!).getByText("approve-2")).toBeTruthy();
+  });
+});
+
+describe("SessionGroup session row context menu", () => {
+  it("renders a right-click context menu on a session row and fires the bound handlers", async () => {
+    const onOpenInNewTab = vi.fn();
+    const onRenameSession = vi.fn();
+    const onDeleteSession = vi.fn();
+    const idle = ordinarySession(2);
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+
+    render(
+      <SessionGroup
+        defaultExpanded
+        sessions={[idle]}
+        renderHeader={() => <div data-testid="header" />}
+        onOpenInNewTab={onOpenInNewTab}
+        onRenameSession={onRenameSession}
+        onDeleteSession={onDeleteSession}
+      />,
+    );
+
+    const row = screen.getByRole("button", { name: /idle-2/ });
+
+    // 改名：右键 → 菜单 → 点「改名」→ handler 收到 (sessionId, title)。
+    await user.pointer({ keys: "[MouseRight]", target: row });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
+    expect(onRenameSession).toHaveBeenCalledWith(2, "idle-2");
+
+    // 新标签打开。
+    await user.pointer({ keys: "[MouseRight]", target: row });
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Open in new tab" }),
+    );
+    expect(onOpenInNewTab).toHaveBeenCalledWith(2);
+
+    // 删除。
+    await user.pointer({ keys: "[MouseRight]", target: row });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));
+    expect(onDeleteSession).toHaveBeenCalledWith(2);
+  });
+
+  it("does not render a context menu when no handlers are provided (projects page keeps old behavior)", async () => {
+    const idle = ordinarySession(2);
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+
+    render(
+      <SessionGroup
+        defaultExpanded
+        sessions={[idle]}
+        renderHeader={() => <div data-testid="header" />}
+      />,
+    );
+
+    const row = screen.getByRole("button", { name: /idle-2/ });
+    await user.pointer({ keys: "[MouseRight]", target: row });
+    expect(screen.queryByRole("menuitem", { name: "Rename" })).toBeNull();
   });
 });

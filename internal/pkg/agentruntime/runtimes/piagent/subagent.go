@@ -241,6 +241,7 @@ type trackedRun struct {
 	pendingResults    map[string]trackedResult
 	lastAssistantText string
 	activity          bool
+	totalTokens       int
 }
 
 type trackedResult struct {
@@ -301,10 +302,12 @@ func (t *subagentTracker) spawn() canonical.AgentSpawn {
 func (t *subagentTracker) info() agentruntime.SubagentInfo {
 	runs := make([]agentruntime.SubagentRun, len(t.runs))
 	toolUses := 0
+	totalTokens := 0
 	lastToolName := ""
 	for i := range t.runs {
 		runs[i] = t.runs[i].info
 		toolUses += runs[i].ToolUses
+		totalTokens += t.runs[i].totalTokens
 		if runs[i].LastToolName != "" {
 			lastToolName = runs[i].LastToolName
 		}
@@ -320,6 +323,7 @@ func (t *subagentTracker) info() agentruntime.SubagentInfo {
 		Prompt:          first.Task,
 		LastToolName:    lastToolName,
 		ToolUses:        toolUses,
+		TotalTokens:     totalTokens,
 		Status:          status,
 		Mode:            string(t.invocation.Mode),
 		Runs:            runs,
@@ -450,6 +454,7 @@ type decodedSnapshot struct {
 	agentSource   string
 	errorMessage  string
 	summary       string
+	totalTokens   int
 	emptyOfficial bool
 }
 
@@ -646,6 +651,7 @@ func decodeSnapshotMap(object map[string]json.RawMessage, messages []json.RawMes
 		readTrimmedString(object["summary"]),
 		readTrimmedString(object["output"]),
 	)
+	snapshot.totalTokens = readUsageTotalTokens(object["usage"])
 	return snapshot
 }
 
@@ -689,6 +695,26 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// readUsageTotalTokens 从子代理 details 的 usage 对象里提取总 token 数。usage
+// 由 pi 侧的 subagent 工具（如 dev-kit）实时累计上报：input/output/cacheRead/
+// cacheWrite 是跨轮累加量，求和即该子代理消耗的总 token 数。缺省/畸形字段按 0
+// 处理，由调用方决定是否覆盖（0 不抹已有进度）。
+func readUsageTotalTokens(raw json.RawMessage) int {
+	if len(raw) == 0 || isJSONNull(raw) {
+		return 0
+	}
+	var usage struct {
+		Input      int `json:"input"`
+		Output     int `json:"output"`
+		CacheRead  int `json:"cacheRead"`
+		CacheWrite int `json:"cacheWrite"`
+	}
+	if json.Unmarshal(raw, &usage) != nil {
+		return 0
+	}
+	return usage.Input + usage.Output + usage.CacheRead + usage.CacheWrite
+}
+
 func (t *subagentTracker) applySnapshotMetadata(index int, snapshot decodedSnapshot, final bool) {
 	run := &t.runs[index]
 	if snapshotHasActivity(snapshot) {
@@ -700,6 +726,11 @@ func (t *subagentTracker) applySnapshotMetadata(index int, snapshot decodedSnaps
 	}
 	if snapshot.model != "" && run.info.Model == "" {
 		run.info.Model = snapshot.model
+	}
+	// usage 快照单调递增，但缺失/异常帧会解成 0；0 不覆盖已记录的累计值（与
+	// chat_svc SubagentProgress/Done 的 R4 守卫同一约定）。
+	if snapshot.totalTokens > 0 {
+		run.totalTokens = snapshot.totalTokens
 	}
 	t.applyStopReason(run, snapshot.stopReason)
 	if snapshot.stopReason == "" && (snapshot.status == "failed" || snapshot.status == "canceled") {

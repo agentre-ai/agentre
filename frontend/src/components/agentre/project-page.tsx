@@ -3,6 +3,7 @@ import type { TFunction } from "i18next";
 import {
   Briefcase,
   ChevronDown,
+  ChevronRight,
   FolderCog,
   GitMerge,
   MessagesSquare,
@@ -30,6 +31,7 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
+import { ContextMenu as ContextMenuPrimitive } from "radix-ui";
 
 import { useSessionStatusOverlay } from "@/hooks/use-live-session-status";
 import { reloadProjectTreeCache } from "@/hooks/use-project-tree";
@@ -39,6 +41,13 @@ import {
 } from "@/lib/attention-display";
 import { relativeTime } from "@/lib/relative-time";
 import { Button } from "@/components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -160,6 +169,8 @@ function ProjectsPage() {
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [filter, setFilter] = React.useState("");
+  // R2x「运行中」筛选 chips：false=全部，true=只留 subtree 有 running/bg_running 的项目。
+  const [runningFilter, setRunningFilter] = React.useState(false);
   const [selection, setSelection] = React.useState<ProjectSelection | null>(
     null,
   );
@@ -215,6 +226,37 @@ function ProjectsPage() {
     walk(tree);
     return n;
   }, [tree]);
+
+  // 运行中项目集合：自身会话里有 running / bg_running attention reason 的项目 id。
+  // 高亮与「运行中」筛选 chips 共用同一判定。live status overlay（useSessionStatusOverlay）
+  // 与 ProjectCard 的 attentionRows 一致 —— 会话刚转 running 时快照未刷新也能立刻反映。
+  const allSessionRows = React.useMemo(() => {
+    const out: ProjectSessionWithProject[] = [];
+    for (const [pid, list] of sessions) {
+      for (const s of list) out.push({ ...s, projectID: pid });
+    }
+    return out;
+  }, [sessions]);
+  const overlaidSessionRows = useSessionStatusOverlay(allSessionRows);
+  const runningProjectIDs = React.useMemo(() => {
+    const out = new Set<number>();
+    for (const s of overlaidSessionRows) {
+      const pid = s.projectID;
+      if (pid <= 0) continue;
+      const reason = computeAttention({
+        // Wails boundary: ProjectSessionItem.agentStatus is string; cast to AgentStatus.
+        agentStatus: (s.agentStatus as AgentStatus) || "idle",
+        needsAttention: s.needsAttention ?? false,
+        lastMessageAt: s.lastMessageAt,
+        lastReadAt: s.lastReadAt ?? 0,
+        // bgRunning 后端暂未下发（ProjectSessionItem 无此字段），防御性读取：
+        // 一旦下发即可参与 running/bg_running 判定。
+        bgRunning: Boolean((s as { bgRunning?: boolean }).bgRunning),
+      });
+      if (reason === "running" || reason === "bg_running") out.add(pid);
+    }
+    return out;
+  }, [overlaidSessionRows]);
 
   // 把命令面板的「新会话」上下文桥接到 project-page：
   //   1) selection 切到某项目时，把 {projectID, projectName} 写到 new-chat-context-store
@@ -366,7 +408,7 @@ function ProjectsPage() {
     void refresh();
   }, [refresh]);
 
-  const dragDisabled = filter.trim().length > 0;
+  const dragDisabled = filter.trim().length > 0 || runningFilter;
   const handleProjectDragEnd = React.useCallback(
     (event: DragEndEvent) => {
       if (dragDisabled) return;
@@ -466,6 +508,35 @@ function ProjectsPage() {
               </button>
             ) : null}
           </div>
+          {/* R2x「运行中」筛选 chips —— 全部 / 运行中。 */}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              aria-pressed={!runningFilter}
+              onClick={() => setRunningFilter(false)}
+              className={cn(
+                "cursor-pointer rounded-full px-2.5 py-0.5 text-2xs transition-colors",
+                !runningFilter
+                  ? "bg-primary-soft font-medium text-primary-text"
+                  : "bg-rail text-muted-foreground hover:bg-rail/70",
+              )}
+            >
+              {t("projects.filter.chips.all")}
+            </button>
+            <button
+              type="button"
+              aria-pressed={runningFilter}
+              onClick={() => setRunningFilter(true)}
+              className={cn(
+                "cursor-pointer rounded-full px-2.5 py-0.5 text-2xs transition-colors",
+                runningFilter
+                  ? "bg-primary-soft font-medium text-primary-text"
+                  : "bg-rail text-muted-foreground hover:bg-rail/70",
+              )}
+            >
+              {t("projects.filter.chips.running")}
+            </button>
+          </div>
           {reorderError ? (
             <div role="status" className="px-0.5 text-2xs text-destructive">
               {reorderError}
@@ -511,6 +582,8 @@ function ProjectsPage() {
                   nodes={tree}
                   depth={0}
                   filter={filter}
+                  runningFilter={runningFilter}
+                  runningProjectIDs={runningProjectIDs}
                   sessions={sessions}
                   selection={selection}
                   onSelect={selectOnTab}
@@ -612,6 +685,21 @@ function nodeMatches(
   return false;
 }
 
+// nodeSubtreeHasRunning —— 该节点自身或其任一后代项目的会话里有 running / bg_running
+// attention reason。运行中品牌高亮与「运行中」筛选 chips 共用同一判定（runningProjectIDs
+// 由 ProjectsPage 用与 ProjectCard.attentionRows 一致的 computeAttention 预计算）。
+function nodeSubtreeHasRunning(
+  node: ProjectTreeNode,
+  runningProjectIDs: Set<number>,
+): boolean {
+  const pid = node.project?.id ?? 0;
+  if (pid > 0 && runningProjectIDs.has(pid)) return true;
+  for (const child of node.children ?? []) {
+    if (nodeSubtreeHasRunning(child, runningProjectIDs)) return true;
+  }
+  return false;
+}
+
 function collectSubtreeSessions(
   node: ProjectTreeNode,
   sessions: Map<number, ProjectSessionItem[]>,
@@ -701,6 +789,9 @@ type ProjectCardProps = {
   node: ProjectTreeNode;
   depth: number;
   filter: string;
+  // R2x「运行中」：true 时只显示 subtree 有 running/bg_running 的项目（祖先保留）。
+  runningFilter: boolean;
+  runningProjectIDs: Set<number>;
   sessions: Map<number, ProjectSessionItem[]>;
   selection: ProjectSelection | null;
   onSelect: (sel: ProjectSelection | null, opts?: { newTab?: boolean }) => void;
@@ -844,6 +935,8 @@ function ProjectCard({
   node,
   depth,
   filter,
+  runningFilter,
+  runningProjectIDs,
   sessions,
   selection,
   onSelect,
@@ -960,6 +1053,8 @@ function ProjectCard({
   );
 
   if (!project) return null;
+  const hasRunning = nodeSubtreeHasRunning(node, runningProjectIDs);
+  if (runningFilter && !hasRunning) return null;
   if (!nodeMatches(node, filter, sessions)) return null;
   const children = node.children ?? [];
   // 头部活跃数包含当前项目与后代项目的 attention 会话；父项目折叠时也能提示
@@ -1063,6 +1158,8 @@ function ProjectCard({
           nodes={children}
           depth={depth + 1}
           filter={filter}
+          runningFilter={runningFilter}
+          runningProjectIDs={runningProjectIDs}
           sessions={sessions}
           selection={selection}
           onSelect={onSelect}
@@ -1129,153 +1226,199 @@ function ProjectCard({
           ) : undefined
         }
         renderHeader={({ expanded, toggle }) => (
-          <div
-            className={cn(
-              "group/proj flex items-center gap-1.5 rounded-md text-xs hover:bg-sidebar-active-bg",
-              isSub ? "px-1.5 py-1" : "px-2 py-1.5",
-              drag && "cursor-grab active:cursor-grabbing",
-            )}
-            {...(drag?.listeners ?? {})}
-          >
-            <button
-              type="button"
-              className="flex min-w-0 flex-1 items-center gap-1.5 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-              onClick={toggle}
-              aria-expanded={expanded}
-            >
-              <ChevronDown
+          <ContextMenu>
+            <ContextMenuTrigger asChild>
+              <div
                 className={cn(
-                  "text-muted-foreground transition-transform duration-150 ease-out motion-reduce:transition-none",
-                  isSub ? "size-3" : "size-3.5",
-                  !expanded && "-rotate-90",
+                  "group/proj flex items-center gap-1.5 rounded-md text-xs hover:bg-sidebar-active-bg",
+                  isSub ? "px-1.5 py-1" : "px-2 py-1.5",
+                  drag && "cursor-grab active:cursor-grabbing",
+                  // R2x 运行中品牌高亮：brand-soft 底色 + 左侧 running 竖条。
+                  hasRunning && "bg-primary-soft relative",
                 )}
-                aria-hidden="true"
-              />
-              <AgentAvatar
-                name={project.name}
-                initials={project.name.charAt(0)}
-                color={(project.color as AgentColor) || "agent-1"}
-                avatarIcon={project.icon || "folder"}
-                size="sm"
-                className={cn(
-                  isDeep
-                    ? "size-3.5 rounded-sm"
-                    : isSub
-                      ? "size-4 rounded-sm"
-                      : "size-6 rounded-md",
-                )}
-              />
-              <span
-                className={cn(
-                  "min-w-0 flex-1 truncate text-left",
-                  isDeep
-                    ? "font-mono text-[9px] font-medium uppercase tracking-widest text-subtle-foreground"
-                    : isSub
-                      ? "font-mono text-2xs font-semibold uppercase tracking-wider text-muted-foreground"
-                      : "text-[15px] font-semibold",
-                  // R10：全部未配置时逐行角标撤掉，改由名字变灰 + 树顶那一条整体
-                  // 说明来承担；只有一部分未配置时反过来——角标已经说清楚了，
-                  // 名字不再变灰。见 allMissing 注释。
-                  project.localPathMissing && allMissing
-                    ? "text-muted-foreground"
-                    : "",
-                )}
+                {...(drag?.listeners ?? {})}
               >
-                {project.name}
-              </span>
-              {activeCount > 0 ? (
-                <span
-                  className="inline-flex items-center gap-1 font-mono text-2xs text-status-running"
-                  title={t("projects.session.activeCount", {
-                    count: activeCount,
-                  })}
-                >
+                {hasRunning ? (
                   <span
+                    data-testid="project-running-indicator"
                     aria-hidden="true"
-                    className="inline-block size-1.5 rounded-full bg-status-running"
+                    className="absolute left-0 top-1/2 h-[60%] w-[3px] -translate-y-1/2 rounded-full bg-status-running"
                   />
-                  {activeCount}
-                </span>
-              ) : null}
-              {project.localPathMissing && !allMissing ? (
-                <span
-                  data-testid="project-local-path-missing-badge"
-                  className="inline-flex shrink-0 items-center rounded-sm border border-border px-1.5 py-0.5 text-2xs font-medium text-muted-foreground"
-                >
-                  {t("projects.localPath.badge")}
-                </span>
-              ) : null}
-            </button>
-            <NewSessionMenu
-              project={project}
-              onPick={(agentID) =>
-                onSelect({
-                  kind: "new",
-                  projectID: project.id,
-                  agentID,
-                })
-              }
-            />
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
+                ) : null}
                 <button
                   type="button"
-                  aria-label={t("projects.actions.more", {
-                    name: project.name,
-                  })}
-                  className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/proj:opacity-100 focus:opacity-100 focus-visible:opacity-100"
+                  className="flex min-w-0 flex-1 items-center gap-1.5 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                  onClick={toggle}
+                  aria-expanded={expanded}
                 >
-                  <MoreVertical className="size-3" aria-hidden="true" />
+                  <ChevronDown
+                    className={cn(
+                      "text-muted-foreground transition-transform duration-150 ease-out motion-reduce:transition-none",
+                      isSub ? "size-3" : "size-3.5",
+                      !expanded && "-rotate-90",
+                    )}
+                    aria-hidden="true"
+                  />
+                  <AgentAvatar
+                    name={project.name}
+                    initials={project.name.charAt(0)}
+                    color={(project.color as AgentColor) || "agent-1"}
+                    avatarIcon={project.icon || "folder"}
+                    size="sm"
+                    className={cn(
+                      isDeep
+                        ? "size-3.5 rounded-sm"
+                        : isSub
+                          ? "size-4 rounded-sm"
+                          : "size-6 rounded-md",
+                    )}
+                  />
+                  <span
+                    className={cn(
+                      "min-w-0 flex-1 truncate text-left",
+                      isDeep
+                        ? "font-mono text-[9px] font-medium uppercase tracking-widest text-subtle-foreground"
+                        : isSub
+                          ? "font-mono text-2xs font-semibold uppercase tracking-wider text-muted-foreground"
+                          : "text-[15px] font-semibold",
+                      // R10：全部未配置时逐行角标撤掉，改由名字变灰 + 树顶那一条整体
+                      // 说明来承担；只有一部分未配置时反过来——角标已经说清楚了，
+                      // 名字不再变灰。见 allMissing 注释。
+                      project.localPathMissing && allMissing
+                        ? "text-muted-foreground"
+                        : "",
+                    )}
+                  >
+                    {project.name}
+                  </span>
+                  {activeCount > 0 ? (
+                    <span
+                      className="inline-flex items-center gap-1 font-mono text-2xs text-status-running"
+                      title={t("projects.session.activeCount", {
+                        count: activeCount,
+                      })}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className="inline-block size-1.5 rounded-full bg-status-running"
+                      />
+                      {activeCount}
+                    </span>
+                  ) : null}
+                  {project.localPathMissing && !allMissing ? (
+                    <span
+                      data-testid="project-local-path-missing-badge"
+                      className="inline-flex shrink-0 items-center rounded-sm border border-border px-1.5 py-0.5 text-2xs font-medium text-muted-foreground"
+                    >
+                      {t("projects.localPath.badge")}
+                    </span>
+                  ) : null}
                 </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onSelect={() => onOpenSettings(project.id)}>
-                  <Settings className="size-3.5" aria-hidden="true" />
-                  {t("projectSettings.title")}
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => onAddSubProject(project.id)}>
-                  <Plus className="size-3.5" aria-hidden="true" />
-                  {t("projects.actions.newSubProject")}
-                </DropdownMenuItem>
-                <NewTerminalSubMenu
-                  projectID={project.id}
-                  onPick={(deviceID, deviceName) =>
+                <NewSessionMenu
+                  project={project}
+                  onPick={(agentID) =>
                     onSelect({
-                      kind: "open-terminal",
+                      kind: "new",
                       projectID: project.id,
-                      deviceID,
-                      deviceName,
+                      agentID,
                     })
                   }
                 />
-                {project.localPathMissing ? (
-                  <>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label={t("projects.actions.more", {
+                        name: project.name,
+                      })}
+                      className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/proj:opacity-100 focus:opacity-100 focus-visible:opacity-100"
+                    >
+                      <MoreVertical className="size-3" aria-hidden="true" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      onSelect={() => onOpenSettings(project.id)}
+                    >
+                      <Settings className="size-3.5" aria-hidden="true" />
+                      {t("projectSettings.title")}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => onAddSubProject(project.id)}
+                    >
+                      <Plus className="size-3.5" aria-hidden="true" />
+                      {t("projects.actions.newSubProject")}
+                    </DropdownMenuItem>
+                    <NewTerminalSubMenu
+                      projectID={project.id}
+                      onPick={(deviceID, deviceName) =>
+                        onSelect({
+                          kind: "open-terminal",
+                          projectID: project.id,
+                          deviceID,
+                          deviceName,
+                        })
+                      }
+                    />
+                    {project.localPathMissing ? (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onSelect={() => onSpecifyPath(project.id)}
+                        >
+                          <FolderCog className="size-3.5" aria-hidden="true" />
+                          {t("projects.localPath.specifyPath")}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={() => onMergeInto(project.id, project.name)}
+                        >
+                          <GitMerge className="size-3.5" aria-hidden="true" />
+                          {t("projects.localPath.mergeIntoExisting")}
+                        </DropdownMenuItem>
+                      </>
+                    ) : null}
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
-                      onSelect={() => onSpecifyPath(project.id)}
+                      variant="destructive"
+                      onSelect={() => onDelete(project.id, project.name)}
                     >
-                      <FolderCog className="size-3.5" aria-hidden="true" />
-                      {t("projects.localPath.specifyPath")}
+                      <Trash2 className="size-3.5" aria-hidden="true" />
+                      {t("projects.actions.deleteProject")}
                     </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onSelect={() => onMergeInto(project.id, project.name)}
-                    >
-                      <GitMerge className="size-3.5" aria-hidden="true" />
-                      {t("projects.localPath.mergeIntoExisting")}
-                    </DropdownMenuItem>
-                  </>
-                ) : null}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  variant="destructive"
-                  onSelect={() => onDelete(project.id, project.name)}
-                >
-                  <Trash2 className="size-3.5" aria-hidden="true" />
-                  {t("projects.actions.deleteProject")}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </ContextMenuTrigger>
+            <ContextMenuContent className="min-w-[180px]">
+              <ContextMenuItem onSelect={() => onOpenSettings(project.id)}>
+                <Settings className="size-3.5" aria-hidden="true" />
+                {t("projectSettings.title")}
+              </ContextMenuItem>
+              <ContextMenuItem onSelect={() => onAddSubProject(project.id)}>
+                <Plus className="size-3.5" aria-hidden="true" />
+                {t("projects.actions.newSubProject")}
+              </ContextMenuItem>
+              <ProjectContextTerminalSubMenu
+                projectID={project.id}
+                onPick={(deviceID, deviceName) =>
+                  onSelect({
+                    kind: "open-terminal",
+                    projectID: project.id,
+                    deviceID,
+                    deviceName,
+                  })
+                }
+              />
+              <ContextMenuSeparator />
+              <ContextMenuItem
+                variant="destructive"
+                onSelect={() => onDelete(project.id, project.name)}
+              >
+                <Trash2 className="size-3.5" aria-hidden="true" />
+                {t("projects.actions.deleteProject")}
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
         )}
       />
     </div>
@@ -1449,6 +1592,64 @@ function NewSessionMenu({ project, onPick }: NewSessionMenuProps) {
   );
 }
 
+// useProjectTerminalLocations —— 「新建终端」共享逻辑：懒加载该项目已配置的
+// location，结合 device 在线 / 路径可用性。NewTerminalSubMenu（⋯ 菜单）与
+// ProjectContextTerminalSubMenu（右键菜单）共用同一套判定。
+function useProjectTerminalLocations(projectID: number) {
+  const { devices } = useRemoteDevices();
+  const [configured, setConfigured] = React.useState<Set<string> | null>(null);
+  const loadLocations = React.useCallback(() => {
+    void WailsApp.ProjectLocationList(projectID).then((rows) =>
+      setConfigured(new Set((rows ?? []).map((r) => r.deviceId))),
+    );
+  }, [projectID]);
+  return { devices, configured, loadLocations };
+}
+
+// shadcn context-menu 未导出 Sub 组件，这里就地包一层 radix 原语，
+// 样式与 dropdown-menu 的 Sub 一致，供右键「新建终端」子菜单使用。
+function ContextMenuSub({
+  ...props
+}: React.ComponentProps<typeof ContextMenuPrimitive.Sub>) {
+  return <ContextMenuPrimitive.Sub data-slot="context-menu-sub" {...props} />;
+}
+
+function ContextMenuSubTrigger({
+  className,
+  children,
+  ...props
+}: React.ComponentProps<typeof ContextMenuPrimitive.SubTrigger>) {
+  return (
+    <ContextMenuPrimitive.SubTrigger
+      data-slot="context-menu-sub-trigger"
+      className={cn(
+        "flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[state=open]:bg-accent data-[state=open]:text-accent-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 [&_svg:not([class*='text-'])]:text-muted-foreground",
+        className,
+      )}
+      {...props}
+    >
+      {children}
+      <ChevronRight className="ml-auto size-4" />
+    </ContextMenuPrimitive.SubTrigger>
+  );
+}
+
+function ContextMenuSubContent({
+  className,
+  ...props
+}: React.ComponentProps<typeof ContextMenuPrimitive.SubContent>) {
+  return (
+    <ContextMenuPrimitive.SubContent
+      data-slot="context-menu-sub-content"
+      className={cn(
+        "z-50 min-w-[8rem] overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-lg data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
 // NewTerminalSubMenu —— ProjectCard「更多操作」里的「新建终端」子菜单。
 // 打开时 lazy 加载该项目已配置的 location，结合 device 在线状态决定可选性。
 export function NewTerminalSubMenu({
@@ -1459,13 +1660,8 @@ export function NewTerminalSubMenu({
   onPick: (deviceID: string, deviceName?: string) => void;
 }) {
   const { t } = useTranslation();
-  const { devices } = useRemoteDevices();
-  const [configured, setConfigured] = React.useState<Set<string> | null>(null);
-  const loadLocations = React.useCallback(() => {
-    void WailsApp.ProjectLocationList(projectID).then((rows) =>
-      setConfigured(new Set((rows ?? []).map((r) => r.deviceId))),
-    );
-  }, [projectID]);
+  const { devices, configured, loadLocations } =
+    useProjectTerminalLocations(projectID);
   return (
     <DropdownMenuSub
       onOpenChange={(open) => {
@@ -1511,6 +1707,66 @@ export function NewTerminalSubMenu({
         })}
       </DropdownMenuSubContent>
     </DropdownMenuSub>
+  );
+}
+
+// ProjectContextTerminalSubMenu —— 项目头部右键 ContextMenu 里的「新建终端」子菜单。
+// 行为与 NewTerminalSubMenu 一致（lazy 加载 ProjectLocationList + device 在线/路径）。
+function ProjectContextTerminalSubMenu({
+  projectID,
+  onPick,
+}: {
+  projectID: number;
+  onPick: (deviceID: string, deviceName?: string) => void;
+}) {
+  const { t } = useTranslation();
+  const { devices, configured, loadLocations } =
+    useProjectTerminalLocations(projectID);
+  return (
+    <ContextMenuSub
+      onOpenChange={(open) => {
+        if (open && configured === null) loadLocations();
+      }}
+    >
+      <ContextMenuSubTrigger>
+        <TerminalSquare className="size-3.5" aria-hidden="true" />
+        {t("projects.terminal.new")}
+      </ContextMenuSubTrigger>
+      <ContextMenuSubContent>
+        <ContextMenuItem onSelect={() => onPick("", undefined)}>
+          {t("projects.terminal.local")}
+        </ContextMenuItem>
+        {devices.length > 0 ? <ContextMenuSeparator /> : null}
+        {devices.map((d) => {
+          const id = String(d.id);
+          const hasPath = configured?.has(id) ?? false;
+          const disabled = !d.online || !hasPath;
+          return (
+            <ContextMenuItem
+              key={id}
+              disabled={disabled}
+              title={
+                !d.online
+                  ? t("projects.terminal.deviceOffline")
+                  : !hasPath
+                    ? t("projects.terminal.pathNotConfigured")
+                    : undefined
+              }
+              onSelect={() => {
+                if (!disabled) onPick(id, d.name);
+              }}
+            >
+              {d.name}
+              {!d.online
+                ? t("projects.terminal.offlineSuffix")
+                : !hasPath
+                  ? t("projects.terminal.pathMissingSuffix")
+                  : ""}
+            </ContextMenuItem>
+          );
+        })}
+      </ContextMenuSubContent>
+    </ContextMenuSub>
   );
 }
 

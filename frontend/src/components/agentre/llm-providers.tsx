@@ -71,41 +71,20 @@ type ModelInfo = llm_provider_svc.ModelInfo;
 type ProviderType = "anthropic" | "openai-chat" | "openai-response";
 
 type ProviderTypeMeta = {
-  badge: string;
   defaultBaseUrl: string;
-  tone: "dark" | "green" | "blue";
 };
 
 const providerTypeMeta: Record<ProviderType, ProviderTypeMeta> = {
   anthropic: {
-    badge: "A",
     defaultBaseUrl: "https://api.anthropic.com",
-    tone: "dark",
   },
   "openai-chat": {
-    // 两个 openai 变体首字母都是 O，用 OC/OR 区分。
-    badge: "OC",
     defaultBaseUrl: "https://api.openai.com/v1",
-    tone: "green",
   },
   "openai-response": {
-    badge: "OR",
     defaultBaseUrl: "https://api.openai.com/v1",
-    tone: "blue",
   },
 };
-
-function badgeToneClass(tone: ProviderTypeMeta["tone"]): string {
-  switch (tone) {
-    case "green":
-      return "bg-agent-3 text-primary-foreground";
-    case "blue":
-      return "bg-agent-2 text-primary-foreground";
-    case "dark":
-    default:
-      return "bg-foreground text-background";
-  }
-}
 
 type EditorState =
   | { kind: "closed" }
@@ -1048,23 +1027,18 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
                     ProviderType,
                     (typeof providerTypeMeta)[ProviderType],
                   ][]
-                ).map(([key, info]) => (
+                ).map(([key]) => (
                   <SelectItem key={key} value={key}>
-                    <span
-                      aria-hidden="true"
-                      className={cn(
-                        "inline-flex size-[16px] shrink-0 items-center justify-center rounded-sm font-mono text-2xs font-bold",
-                        badgeToneClass(info.tone),
-                      )}
-                    >
-                      {info.badge}
-                    </span>
+                    <LlmProviderLogo
+                      providerType={key}
+                      className="size-4 rounded-sm"
+                    />
                     <span className="flex min-w-0 flex-col">
                       <span className="text-sm font-medium leading-tight">
                         {t(`llmProviders.providerType.${key}.label`)}
                       </span>
                       <span className="font-mono text-2xs text-muted-foreground leading-tight">
-                        {info.defaultBaseUrl}
+                        {providerTypeMeta[key].defaultBaseUrl}
                       </span>
                     </span>
                   </SelectItem>

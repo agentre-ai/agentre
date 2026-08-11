@@ -1168,14 +1168,16 @@ function buildSession({
   id,
   title,
   lastMessageAt,
+  agentStatus = "idle",
 }: {
   id: number;
   title: string;
   lastMessageAt: number;
+  agentStatus?: string;
 }) {
   return {
     agentID: 7,
-    agentStatus: "idle",
+    agentStatus,
     id,
     lastMessageAt,
     lastReadAt: lastMessageAt, // 默认已读, 不让 unread 把行抢去 attention bubble
@@ -1801,4 +1803,290 @@ it("projectSessionToAgentSession: bg_running session shows the background pill, 
   );
   expect(s.trailingLabel).toBe(reasonToPillText("bg_running"));
   expect(s.trailingLabel).not.toBe("running");
+});
+
+// 运行中项目品牌高亮 + 运行中筛选 chips（项目侧栏 UX）。
+// 高亮基于 runningProjectIDs（subtree 里任一 running/bg_running attention reason），
+// 筛选 chips「全部 / 运行中」复用同一判定，保持祖先项目可见。
+describe("ProjectsPage running highlight + 运行中 filter chips", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    useSessionReadStore.setState({ overrides: new Map() });
+    useChatAgentsStore.getState().__reset();
+    useChatTabsStore.setState({ tabs: [], activeTabId: null });
+
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    appMocks.ProjectGet.mockResolvedValue({
+      project: null,
+      directMembers: [],
+      inheritedMembers: [],
+    });
+    appMocks.ProjectLocationList.mockResolvedValue([]);
+    appMocks.RemoteDeviceList.mockResolvedValue([]);
+    appMocks.ProjectListSessions.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  function runningTree() {
+    return [
+      {
+        project: {
+          color: "agent-1",
+          icon: "folder",
+          id: 1,
+          name: "Agentre",
+          parentID: 0,
+          path: "/tmp/agentre",
+        },
+        children: [
+          {
+            project: {
+              color: "agent-2",
+              icon: "folder",
+              id: 2,
+              name: "backend",
+              parentID: 1,
+              path: "/tmp/agentre/backend",
+            },
+            children: [],
+          },
+          {
+            project: {
+              color: "agent-3",
+              icon: "folder",
+              id: 3,
+              name: "web",
+              parentID: 1,
+              path: "/tmp/agentre/web",
+            },
+            children: [],
+          },
+        ],
+      },
+    ];
+  }
+
+  it("Given a project with a running session, Then its header gets the brand-soft highlight and a running indicator", async () => {
+    appMocks.ProjectListTree.mockResolvedValue(runningTree());
+    appMocks.ProjectListSessions.mockImplementation(async (pid: number) =>
+      pid === 2
+        ? [
+            buildSession({
+              id: 24,
+              title: "Child running",
+              lastMessageAt: 5000,
+              agentStatus: "running",
+            }),
+          ]
+        : [],
+    );
+
+    renderProjectsPage();
+
+    await screen.findByText("backend");
+    // 运行中的 backend 与其祖先 Agentre 都被高亮（subtree 判定）。
+    const indicators = screen.getAllByTestId("project-running-indicator");
+    expect(indicators).toHaveLength(2);
+    for (const el of indicators) {
+      expect(el.parentElement).toHaveClass("bg-primary-soft");
+    }
+  });
+
+  it("Given only idle sessions, Then no running highlight is applied", async () => {
+    appMocks.ProjectListTree.mockResolvedValue(runningTree());
+    appMocks.ProjectListSessions.mockImplementation(async (pid: number) =>
+      pid === 2
+        ? [
+            buildSession({
+              id: 25,
+              title: "Idle child",
+              lastMessageAt: 5000,
+            }),
+          ]
+        : [],
+    );
+
+    renderProjectsPage();
+
+    await screen.findByText("Idle child");
+    expect(
+      screen.queryByTestId("project-running-indicator"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Given the running filter, When 运行中 is selected, Then only projects with running descendants remain and ancestors stay visible", async () => {
+    const user = setupUser();
+    appMocks.ProjectListTree.mockResolvedValue(runningTree());
+    appMocks.ProjectListSessions.mockImplementation(async (pid: number) =>
+      pid === 2
+        ? [
+            buildSession({
+              id: 26,
+              title: "Child running",
+              lastMessageAt: 5000,
+              agentStatus: "running",
+            }),
+          ]
+        : [],
+    );
+
+    renderProjectsPage();
+
+    await screen.findByText("backend");
+    // 默认「全部」chip 激活，三行都在。
+    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByText("backend")).toBeInTheDocument();
+    expect(screen.getByText("web")).toBeInTheDocument();
+    expect(screen.getByText("Agentre")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Running" }));
+
+    // 运行中的 backend 保留，祖先 Agentre 保留，非运行的 web 隐藏。
+    expect(screen.getByText("backend")).toBeInTheDocument();
+    expect(screen.getByText("Agentre")).toBeInTheDocument();
+    expect(screen.queryByText("web")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Running" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await user.click(screen.getByRole("button", { name: "All" }));
+    expect(screen.getByText("web")).toBeInTheDocument();
+  });
+});
+
+// 项目头部右键 ContextMenu —— 镜像 ⋯ DropdownMenu 的四项操作。
+describe("ProjectsPage project header context menu", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    useSessionReadStore.setState({ overrides: new Map() });
+    useChatAgentsStore.getState().__reset();
+    useChatTabsStore.setState({ tabs: [], activeTabId: null });
+
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    appMocks.ProjectListSessions.mockResolvedValue([]);
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: {
+          color: "agent-1",
+          icon: "folder",
+          id: 1,
+          name: "Agentre",
+          parentID: 0,
+          path: "/tmp/agentre",
+        },
+        children: [],
+      },
+    ]);
+    appMocks.ProjectLocationList.mockResolvedValue([]);
+    appMocks.RemoteDeviceList.mockResolvedValue([]);
+    appMocks.ProjectGet.mockResolvedValue({
+      project: {
+        color: "agent-1",
+        description: "",
+        icon: "folder",
+        id: 1,
+        name: "Agentre",
+        parentID: 0,
+        path: "/tmp/agentre",
+      },
+      directMembers: [],
+      inheritedMembers: [],
+    });
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  async function openContextMenu(user: ReturnType<typeof userEvent.setup>) {
+    await user.pointer({
+      keys: "[MouseRight]",
+      target: screen.getByText("Agentre"),
+    });
+  }
+
+  it("Given a right-click on a project header, Then a context menu shows 项目设置/新建子项目/新建终端/删除项目", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderProjectsPage();
+    await screen.findByText("Agentre");
+
+    await openContextMenu(user);
+
+    expect(
+      screen.getByRole("menuitem", { name: /Project Settings/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("menuitem", { name: /New Sub-project/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("menuitem", { name: /New Terminal/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("menuitem", { name: /Delete Project/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("When 项目设置 is clicked, Then the ProjectSettingsDrawer opens", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderProjectsPage();
+    await screen.findByText("Agentre");
+
+    await openContextMenu(user);
+    await user.click(
+      screen.getByRole("menuitem", { name: /Project Settings/ }),
+    );
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("When 新建子项目 is clicked, Then the create-subproject dialog opens", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderProjectsPage();
+    await screen.findByText("Agentre");
+
+    await openContextMenu(user);
+    await user.click(screen.getByRole("menuitem", { name: /New Sub-project/ }));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("When 新建终端 → 本地 is clicked, Then a local terminal tab opens", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderProjectsPage();
+    await screen.findByText("Agentre");
+
+    await openContextMenu(user);
+    await user.hover(await screen.findByText("New Terminal"));
+    fireEvent.click(await screen.findByText("Local"));
+
+    await waitFor(() => {
+      const state = useChatTabsStore.getState();
+      const active = state.tabs.find((t) => t.id === state.activeTabId);
+      expect(active?.meta).toMatchObject({
+        kind: "terminal",
+        projectId: 1,
+        deviceId: "",
+      });
+    });
+  });
+
+  it("When 删除项目 is clicked, Then the DeleteProjectDialog opens", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderProjectsPage();
+    await screen.findByText("Agentre");
+
+    await openContextMenu(user);
+    await user.click(screen.getByRole("menuitem", { name: /Delete Project/ }));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
 });

@@ -20,8 +20,10 @@ describe("deriveAppStatusBarState", () => {
     );
 
     expect(state).toMatchObject({
-      agentSummary: "2 agents · 2 running",
-      attentionSummary: null,
+      agentCount: 2,
+      runningCount: 2,
+      approvalIds: [],
+      unreadIds: [],
       indicatorStatus: "running",
     });
   });
@@ -34,11 +36,14 @@ describe("deriveAppStatusBarState", () => {
       new Map(),
     );
 
-    expect(state.agentSummary).toBe("1 agent · 1 running");
+    expect(state.agentCount).toBe(1);
+    expect(state.runningCount).toBe(1);
+    expect(state.approvalIds).toEqual([]);
+    expect(state.unreadIds).toEqual([]);
     expect(state.indicatorStatus).toBe("running");
   });
 
-  it("surfaces approvals and unread sessions as an orange attention summary", () => {
+  it("collects approval and unread session ids for attention", () => {
     const state = deriveAppStatusBarState(
       [
         {
@@ -54,8 +59,10 @@ describe("deriveAppStatusBarState", () => {
       new Map(),
     );
 
-    expect(state.agentSummary).toBe("1 agent · 1 running");
-    expect(state.attentionSummary).toBe("1 approval · 1 unread");
+    expect(state.agentCount).toBe(1);
+    expect(state.runningCount).toBe(1);
+    expect(state.approvalIds).toEqual([1]);
+    expect(state.unreadIds).toEqual([2]);
     expect(state.indicatorStatus).toBe("waiting");
   });
 
@@ -67,7 +74,8 @@ describe("deriveAppStatusBarState", () => {
       new Map([[1, 200]]),
     );
 
-    expect(state.attentionSummary).toBeNull();
+    expect(state.approvalIds).toEqual([]);
+    expect(state.unreadIds).toEqual([]);
     expect(state.indicatorStatus).toBe("idle");
   });
 });

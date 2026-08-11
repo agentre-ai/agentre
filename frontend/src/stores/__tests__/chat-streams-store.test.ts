@@ -276,6 +276,35 @@ describe("chat-streams-store", () => {
     expect(useSessionStatusStore.getState().statuses.get(7)?.doneTick).toBe(2);
   });
 
+  it("finishStream moves never-consumed queued messages into dropped instead of silently clearing them", () => {
+    const { openStream, finishStream } = useChatStreamsStore.getState();
+    useQueuedMessagesStore
+      .getState()
+      .append(7, { id: "qid-1", text: "queued first", cancellable: true });
+    useQueuedMessagesStore
+      .getState()
+      .append(7, { id: "qid-2", text: "queued second", cancellable: false });
+
+    openStream(baseStream(7));
+    finishStream(7, 1, { kind: "done" });
+
+    // 队列被清空(不再挂在 queuedBySession)
+    expect(useQueuedMessagesStore.getState().queuedBySession.has(7)).toBe(
+      false,
+    );
+    // 但内容被暂存进 dropped,没有静默丢失
+    const dropped = useQueuedMessagesStore.getState().dropped;
+    expect(dropped?.sessionId).toBe(7);
+    expect(dropped?.items.map((q) => q.id)).toEqual(["qid-1", "qid-2"]);
+  });
+
+  it("finishStream without queued messages leaves dropped untouched (no spurious record)", () => {
+    const { openStream, finishStream } = useChatStreamsStore.getState();
+    openStream(baseStream(7));
+    finishStream(7, 1, { kind: "done" });
+    expect(useQueuedMessagesStore.getState().dropped).toBeNull();
+  });
+
   it("consumeSteer removes consumed queued IDs and retargets the live assistant", () => {
     const { openStream, appendLiveText, consumeSteer } =
       useChatStreamsStore.getState();

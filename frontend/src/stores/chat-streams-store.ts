@@ -865,10 +865,12 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
   finishStream: (sessionId, assistantMessageId, event) =>
     set((state) => {
       const next = dropStream(state, sessionId, assistantMessageId);
-      // 排队消息属于「用户那一轮」。只有本会话再没有任何流在跑时才清空 —— 否则
+      // 排队消息属于「用户那一轮」。只有本会话再没有任何流在跑时才处理 —— 否则
       // 一条自主续轮收尾会把用户排给活跃用户轮的消息误清掉。
+      // 不再静默丢弃:回合收尾时还没被 steer_consumed 消费的排队条目挪进 dropped,
+      // 由 QueuedMessagesBar 提示用户「恢复为草稿 / 丢弃」,而不是无声清掉。
       if (!hasSessionStream(next, sessionId)) {
-        useQueuedMessagesStore.getState().clear(sessionId);
+        useQueuedMessagesStore.getState().markDropped(sessionId);
       }
       useSessionStatusStore.getState().bumpDone(sessionId, event as DoneEvent);
       return next;

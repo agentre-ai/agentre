@@ -5,6 +5,25 @@
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
     <link rel="icon" type="image/png" href="/favicon.png"/>
     <title>agentre</title>
+    <script>
+      // Apply the saved dark theme before first paint to avoid a light flash.
+      (function () {
+        try {
+          var theme = localStorage.getItem("agentre.theme");
+          var dark =
+            theme === "dark" ||
+            (theme !== "light" &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (dark) {
+            document.documentElement.classList.add("dark");
+            document.documentElement.dataset.theme = "dark";
+            document.documentElement.style.colorScheme = "dark";
+          }
+        } catch (e) {
+          // localStorage can be blocked in embedded webviews.
+        }
+      })();
+    </script>
 </head>
 <body>
 <div id="root"></div>

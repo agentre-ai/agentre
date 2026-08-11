@@ -43,6 +43,7 @@ import { useOptionalShortcutsContext } from "../shortcuts/shortcuts-provider";
 import { NotChattableDialog } from "../not-chattable";
 import { COMMAND_PREFIX, parseMode, type PaletteMode } from "./mode";
 import { chatSessionsSource } from "./sources/chat-sessions-source";
+import { navigationSource } from "./sources/navigation-source";
 import { newAgentSource } from "./sources/new-agent-source";
 import { newChatSource } from "./sources/new-chat-source";
 import { newProjectChatSource } from "./sources/new-project-chat-source";
@@ -62,6 +63,7 @@ function isProjectsRoute(pathname: string): boolean {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const SOURCES: CommandSource<any>[] = [
   chatSessionsSource,
+  navigationSource,
   newAgentSource,
   newChatSource,
   newProjectChatSource,

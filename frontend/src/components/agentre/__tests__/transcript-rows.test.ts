@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  applyLiveTranscriptRows,
   buildRenderItems,
   buildSourceByMessageId,
+  buildSettledTranscriptRows,
   buildTranscriptRows,
   estimateRowSize,
   estimateRowSizeWithSpacing,
@@ -949,5 +951,278 @@ describe("estimateRowSizeWithSpacing / isLastRowOfMessage", () => {
 
   it("越界下标返回安全兜底值(不抛异常)", () => {
     expect(estimateRowSizeWithSpacing([], 0)).toBeGreaterThan(0);
+  });
+});
+
+// ── M3(A) settled/live 拆分 ───────────────────────────────────────────────────
+// buildSettledTranscriptRows + applyLiveTranscriptRows 把「messages 稳定、只有 live
+// 内容在变」的流式 chunk 路径拆成两部分:settled(rows + 两张索引图,只依赖 messages,
+// 可在 ChatTranscript 里 memoize)+ live overlay(每 chunk 只重建 live 消息的行组,
+// 复用 settled 的稳定索引)。等价性不变量:applyLive(buildSettled(args), args) 必须与
+// 原来的 buildTranscriptRows(args) 逐字节一致 —— 这一组测试把它钉死。
+describe("buildSettledTranscriptRows + applyLiveTranscriptRows (M3 split)", () => {
+  const base = {
+    displayMessages: [
+      message(1, "user", [text("u1")]),
+      message(2, "assistant", [
+        text("a2"),
+        toolUse("toolu-2"),
+        toolResult("toolu-2"),
+      ]),
+      message(3, "user", [text("u3")]),
+      message(4, "assistant", []),
+    ],
+    autonomousIds: new Set<number>(),
+  };
+
+  // 单条 live 在尾部(流式常态):内容与完整重建逐项相等。
+  const liveTail = new Map<number, { liveTail: string }>([
+    [4, { liveTail: "growing" }],
+  ]);
+
+  function settledResult() {
+    return buildSettledTranscriptRows(base);
+  }
+
+  it("等价性:no-live 时 applyLive 原样返回 settled(同一引用,零拷贝)", () => {
+    const settled = settledResult();
+    const full = buildTranscriptRows(base);
+    const overlaid = applyLiveTranscriptRows(settled, {
+      ...base,
+      liveByMessageId: undefined,
+    });
+
+    // 引用级 no-op:无 live 时不新建数组 / 不重算索引图。
+    expect(overlaid.rows).toBe(settled.rows);
+    expect(overlaid.firstRowIndexByMessageId).toBe(
+      settled.firstRowIndexByMessageId,
+    );
+    expect(overlaid.rowIndexByKey).toBe(settled.rowIndexByKey);
+    // 且与完整重建语义一致。
+    expect(overlaid.rows.map((r) => r.key)).toEqual(
+      full.rows.map((r) => r.key),
+    );
+    expect(overlaid.rows.map((r) => r.messageId)).toEqual(
+      full.rows.map((r) => r.messageId),
+    );
+  });
+
+  it("等价性:单条 live 在尾部时与完整重建逐项相等", () => {
+    const settled = settledResult();
+    const full = buildTranscriptRows({ ...base, liveByMessageId: liveTail });
+    const overlaid = applyLiveTranscriptRows(settled, {
+      ...base,
+      liveByMessageId: liveTail,
+    });
+
+    expect(overlaid.rows.map((r) => r.key)).toEqual(
+      full.rows.map((r) => r.key),
+    );
+    expect(
+      overlaid.rows.map((r) => [
+        r.messageId,
+        r.item.type,
+        r.isFirstOfMessage,
+        r.isLastOfMessage,
+      ]),
+    ).toEqual(
+      full.rows.map((r) => [
+        r.messageId,
+        r.item.type,
+        r.isFirstOfMessage,
+        r.isLastOfMessage,
+      ]),
+    );
+    // live 行内容一致。
+    expect(overlaid.rows.at(-1)?.item).toMatchObject({
+      text: "growing",
+      streaming: true,
+    });
+  });
+
+  it("性能性质:非 live 行与 settled 共享同一 row 引用(live overlay 不重建它们)", () => {
+    const settled = settledResult();
+    const overlaid = applyLiveTranscriptRows(settled, {
+      ...base,
+      liveByMessageId: liveTail,
+    });
+
+    // 前 3 条消息不是 live → 逐行与 settled 引用相同(memo 恒命中)。
+    for (let i = 0; i < settled.rows.length - 1; i++) {
+      expect(overlaid.rows[i]).toBe(settled.rows[i]);
+    }
+    // 最后一条(live)被替换成新行。
+    expect(overlaid.rows.at(-1)).not.toBe(settled.rows.at(-1));
+  });
+
+  it("索引图稳定:live 在尾部时 firstRowIndexByMessageId 复用 settled 的同一引用", () => {
+    const settled = settledResult();
+    const overlaid = applyLiveTranscriptRows(settled, {
+      ...base,
+      liveByMessageId: liveTail,
+    });
+    expect(overlaid.firstRowIndexByMessageId).toBe(
+      settled.firstRowIndexByMessageId,
+    );
+    // rowIndexByKey 是新 map(live 行 key 被替换),但 settled 里非 live 行的条目不变。
+    for (const [k, v] of settled.rowIndexByKey) {
+      if (k.startsWith("message:4:")) continue;
+      expect(overlaid.rowIndexByKey.get(k)).toBe(v);
+    }
+  });
+
+  it("等价性:多条 live 都在尾部时与完整重建一致", () => {
+    const multi = {
+      ...base,
+      displayMessages: [
+        message(1, "user", [text("u1")]),
+        message(2, "assistant", []),
+        message(3, "assistant", []),
+      ],
+    };
+    const live = new Map([
+      [2, { liveTail: "a" }],
+      [
+        3,
+        { liveBlocks: [text("b"), toolUse("toolu-3"), toolResult("toolu-3")] },
+      ],
+    ]);
+    const full = buildTranscriptRows({ ...multi, liveByMessageId: live });
+    const settled = buildSettledTranscriptRows(multi);
+    const overlaid = applyLiveTranscriptRows(settled, {
+      ...multi,
+      liveByMessageId: live,
+    });
+
+    expect(overlaid.rows.map((r) => r.key)).toEqual(
+      full.rows.map((r) => r.key),
+    );
+    expect(overlaid.rows.map((r) => r.messageId)).toEqual(
+      full.rows.map((r) => r.messageId),
+    );
+  });
+
+  it("等价性:live 不在尾部(历史消息仍在流)时回退到完整重建,仍逐项一致", () => {
+    // 消息 2(live)后面还有消息 3、4 —— 不满足「live 是尾部连续后缀」。
+    const liveMid = new Map([[2, { liveTail: "mid-stream" }]]);
+    const full = buildTranscriptRows({ ...base, liveByMessageId: liveMid });
+    const settled = settledResult();
+    const overlaid = applyLiveTranscriptRows(settled, {
+      ...base,
+      liveByMessageId: liveMid,
+    });
+
+    expect(overlaid.rows.map((r) => r.key)).toEqual(
+      full.rows.map((r) => r.key),
+    );
+    expect(overlaid.rows.map((r) => r.messageId)).toEqual(
+      full.rows.map((r) => r.messageId),
+    );
+    // 回退路径产出的索引图是新鲜的(不能复用 settled 的,因为 live 组后还有消息)。
+    expect(overlaid.firstRowIndexByMessageId).not.toBe(
+      settled.firstRowIndexByMessageId,
+    );
+  });
+
+  it("等价性:live 尾部后面有本地命令时回退到完整重建,仍逐项一致", () => {
+    const cmds = [
+      {
+        command: "!ls",
+        createdAt: 50,
+        id: "cmd-1",
+        output: "",
+        sessionId: 1,
+        status: "done",
+      } as LocalCommandEntry,
+    ];
+    const args = { ...base, localCommands: cmds };
+    const full = buildTranscriptRows({ ...args, liveByMessageId: liveTail });
+    const settled = buildSettledTranscriptRows(args);
+    const overlaid = applyLiveTranscriptRows(settled, {
+      ...args,
+      liveByMessageId: liveTail,
+    });
+
+    expect(overlaid.rows.map((r) => r.key)).toEqual(
+      full.rows.map((r) => r.key),
+    );
+  });
+
+  it("groupByMessageId:每条消息的行组 [start,length) 与首行下标/行数一致", () => {
+    const settled = settledResult();
+    for (const m of base.displayMessages) {
+      const g = settled.groupByMessageId.get(m.id);
+      expect(g).toBeTruthy();
+      expect(g!.start).toBe(settled.firstRowIndexByMessageId.get(m.id));
+      // 组跨 [start, start+length) 且全部属于该消息。
+      for (let i = g!.start; i < g!.start + g!.length; i++) {
+        expect(settled.rows[i].messageId).toBe(m.id);
+      }
+      if (g!.start + g!.length < settled.rows.length) {
+        expect(settled.rows[g!.start + g!.length].messageId).not.toBe(m.id);
+      }
+    }
+  });
+
+  it("流式→落库 key 稳定性在拆分路径下仍然成立", () => {
+    // 流式形态:persisted 空,冻结块在 liveBlocks,尾巴在 liveTail。
+    const liveForm = {
+      displayMessages: [message(2, "assistant", [])],
+      autonomousIds: new Set<number>(),
+      liveByMessageId: new Map([
+        [
+          2,
+          {
+            liveBlocks: [
+              text("frozen"),
+              toolUse("toolu-1"),
+              toolResult("toolu-1"),
+            ],
+            liveTail: "tail",
+          },
+        ],
+      ]),
+    };
+    const { liveByMessageId, ...settledArgs } = liveForm;
+    const overlaid = applyLiveTranscriptRows(
+      buildSettledTranscriptRows(settledArgs),
+      { ...settledArgs, liveByMessageId },
+    );
+    // 落库形态:同样内容全部进 persisted blocks。
+    const persisted = buildTranscriptRows({
+      displayMessages: [
+        message(2, "assistant", [
+          text("frozen"),
+          toolUse("toolu-1"),
+          toolResult("toolu-1"),
+          text("tail"),
+        ]),
+      ],
+      autonomousIds: new Set(),
+    });
+
+    expect(overlaid.rows.map((r) => r.key)).toEqual(
+      persisted.rows.map((r) => r.key),
+    );
+  });
+
+  it("autonomous / sourceDevice 在 overlay 重建 live 行时仍正确传递", () => {
+    const args = {
+      displayMessages: [
+        message(1, "user", [text("hi")]),
+        message(2, "assistant", []),
+      ],
+      autonomousIds: new Set([2]),
+      sourceByMessageId: new Map([[1, "iPhone"]]),
+    };
+    const live = new Map([[2, { liveTail: "x" }]]);
+    const overlaid = applyLiveTranscriptRows(buildSettledTranscriptRows(args), {
+      ...args,
+      liveByMessageId: live,
+    });
+    expect(overlaid.rows.find((r) => r.messageId === 1)?.sourceDevice).toBe(
+      "iPhone",
+    );
+    expect(overlaid.rows.find((r) => r.messageId === 2)?.autonomous).toBe(true);
   });
 });

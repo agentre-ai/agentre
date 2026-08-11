@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { chat_svc } from "../../../../wailsjs/go/models";
@@ -883,5 +883,47 @@ describe("CommandPalette — 非可对话 agent：需要先配置 分组 + 选�
     expect(dialog).toBeTruthy();
     // no-backend 弹窗标题（task 2 文案）
     expect(screen.getByText("未绑后端 cannot chat yet")).toBeTruthy();
+  });
+});
+
+describe("CommandPalette — navigation source (BDD)", () => {
+  function LocationProbe() {
+    const location = useLocation();
+    return <div data-testid="location-probe">{location.pathname}</div>;
+  }
+
+  it("Given palette open in default mode, When selecting the Projects nav item, Then navigate('/projects') and the palette closes", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <LocationProbe />
+        <CommandPalette />
+      </MemoryRouter>,
+    );
+    await act(async () => {
+      useCommandPaletteStore.getState().toggle(); // 默认模式
+    });
+    await flush();
+
+    // nav 分组渲染（heading 与 Footer 的 "Navigate" 提示共用同一文案 → getAllByText）
+    expect(screen.getAllByText("Navigate").length).toBeGreaterThanOrEqual(1);
+    // 6 个导航目的地都在
+    for (const label of [
+      "Chat",
+      "Projects",
+      "Issues",
+      "Organization",
+      "Hooks",
+      "Settings",
+    ]) {
+      expect(screen.getByText(label)).toBeTruthy();
+    }
+
+    fireEvent.click(screen.getByText("Projects"));
+    await flush();
+
+    // 面板关闭 + 路由切到 /projects
+    expect(useCommandPaletteStore.getState().open).toBe(false);
+    expect(screen.getByTestId("location-probe").textContent).toBe("/projects");
   });
 });

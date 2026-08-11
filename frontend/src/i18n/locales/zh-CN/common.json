@@ -792,7 +792,8 @@
       "rename": "重命名失败：{{msg}}",
       "send": "发送失败：{{msg}}",
       "stop": "停止失败：{{msg}}",
-      "stopBackgroundTask": "停止后台任务失败：{{msg}}"
+      "stopBackgroundTask": "停止后台任务失败：{{msg}}",
+      "loadFailed": "加载会话失败：{{msg}}"
     },
     "execTarget": {
       "willRunPrefix": "将在",
@@ -892,7 +893,22 @@
       "stopInactiveTitle": "当前没有进行中的对话",
       "terminalTitle": "终端 (⌘`)"
     },
-    "untitled": "(未命名)"
+    "untitled": "(未命名)",
+    "loadError": {
+      "title": "无法加载会话",
+      "retry": "重试",
+      "close": "关闭会话",
+      "notFoundHint": "此会话不存在或已被删除。"
+    },
+    "sending": "正在发送…",
+    "sendRetry": {
+      "restored": "发送失败，草稿已保留",
+      "retry": "重试发送",
+      "discard": "放弃草稿"
+    },
+    "loading": {
+      "aria": "正在加载会话…"
+    }
   },
   "chatPage": {
     "add": {
@@ -901,7 +917,17 @@
       "newAgentChat": "新建 Agent 会话",
       "newAgentHint": "在组织架构里创建新的助手/员工"
     },
+    "empty": {
+      "title": "还没有对话",
+      "description": "创建一个 Agent，开始协作。",
+      "cta": "创建第一个 Agent"
+    },
     "filter": {
+      "chips": {
+        "all": "全部",
+        "running": "运行中",
+        "unread": "未读"
+      },
       "open": "筛选侧栏",
       "options": {
         "running": "运行中",
@@ -984,6 +1010,11 @@
       "clear": "清空筛选",
       "noMatches": "没有匹配 \"{{query}}\" 的 Agent",
       "placeholder": "搜索 Agent"
+    },
+    "sessionMenu": {
+      "delete": "删除",
+      "openInNewTab": "新标签打开",
+      "rename": "改名"
     },
     "sections": {
       "agents": "AGENTS",
@@ -1129,7 +1160,10 @@
       "commandPlaceholder": "输入命令…",
       "sessionPlaceholder": "搜索会话…"
     },
-    "title": "命令面板"
+    "title": "命令面板",
+    "nav": {
+      "heading": "导航"
+    }
   },
   "dataBackup": {
     "actions": {
@@ -1755,6 +1789,12 @@
       "loadFailed": "加载失败：{{error}}",
       "reorderFailed": "项目顺序保存失败：{{error}}"
     },
+    "filter": {
+      "chips": {
+        "all": "全部",
+        "running": "运行中"
+      }
+    },
     "localPath": {
       "badge": "未配置",
       "allMissingTitle": "这台设备还没有为任何项目配置路径",
@@ -1811,7 +1851,12 @@
     "count": "排队中 · {{count}} 条",
     "insertAfterAI": "AI 完成后插入",
     "notCancellable": "不可撤回（codex 后端）",
-    "notCancellableTitle": "codex turn/steer 协议一发即不可撤"
+    "notCancellableTitle": "codex turn/steer 协议一发即不可撤",
+    "dropped": {
+      "title": "回合结束时 {{count}} 条消息未发送",
+      "restore": "恢复为草稿",
+      "discard": "丢弃"
+    }
   },
   "projectMerge": {
     "title": "合并到已有项目",
@@ -1891,7 +1936,9 @@
         "displayNamePlaceholder": "留空则自动从地址派生",
         "pairingCode": "配对码",
         "pairingCodeHint": "6 字符配对码",
-        "url": "地址"
+        "url": "地址",
+        "urlInvalid": "地址需以 /rpc 结尾，例如 ws://192.168.1.100:7456/rpc",
+        "codeInvalid": "配对码必须是 6 位字符"
       },
       "instructions": {
         "prefix": "在远端执行",
@@ -2825,5 +2872,13 @@
     "noOutput": "无输出",
     "expand": "展开输出",
     "collapse": "折叠输出"
+  },
+  "statusBar": {
+    "agentSummary": "{{count}} 个 agent · {{running}} 个运行中",
+    "approval_one": "{{count}} 个待审批",
+    "approval_other": "{{count}} 个待审批",
+    "unread_one": "{{count}} 条未读",
+    "unread_other": "{{count}} 条未读",
+    "attentionAria": "{{summary}}，点击打开第一个待处理会话"
   }
 }

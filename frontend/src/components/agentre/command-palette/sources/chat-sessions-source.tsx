@@ -16,7 +16,6 @@ import type { AgentColor, AgentStatus } from "../../types";
 import { scoreItem } from "../score";
 import type { CommandSource, OnSelectCtx } from "../types";
 
-const TOP_N = 10;
 const ATTENTION_SCORE_BOOST = 5;
 
 export type ChatSessionItem = {
@@ -58,7 +57,7 @@ export function flattenSessions(agents: ChatAgentItem[]): ChatSessionItem[] {
   return flat;
 }
 
-function useItems(): { items: ChatSessionItem[]; loading: boolean } {
+export function useItems(): { items: ChatSessionItem[]; loading: boolean } {
   const { agents, loading } = useChatAgents();
   const baseItems = React.useMemo(() => flattenSessions(agents), [agents]);
   const allIds = React.useMemo(
@@ -81,7 +80,9 @@ function useItems(): { items: ChatSessionItem[]; loading: boolean } {
       if (a.active !== b.active) return a.active ? -1 : 1;
       return (b.lastMessageAt || 0) - (a.lastMessageAt || 0);
     });
-    return decorated.slice(0, TOP_N);
+    // 不再截断前 10 条：SourceGroup 会对全量列表评分并截到 50 条渲染，
+    // 因此更旧的会话也能被精确查询命中。
+    return decorated;
   }, [baseItems, attentionMap]);
 
   return { items, loading };

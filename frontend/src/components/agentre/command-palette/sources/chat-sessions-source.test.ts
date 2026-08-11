@@ -1,8 +1,20 @@
-import { describe, expect, it, vi } from "vitest";
+import { renderHook, waitFor } from "@testing-library/react";
+import { describe, beforeEach, expect, it, vi } from "vitest";
 
 import type { ChatAgentItem } from "@/hooks/use-chat-agents";
+import { useChatAgentsStore } from "@/stores/chat-agents-store";
 
-import { chatSessionsSource, flattenSessions } from "./chat-sessions-source";
+const appMocks = vi.hoisted(() => ({
+  ListChatAgents: vi.fn(),
+}));
+
+vi.mock("../../../../wailsjs/go/app/App", () => appMocks);
+
+import {
+  chatSessionsSource,
+  flattenSessions,
+  useItems,
+} from "./chat-sessions-source";
 
 type SessionLite = ChatAgentItem["sessions"][number];
 
@@ -189,5 +201,44 @@ describe("chatSessionsSource.onSelect", () => {
     ).not.toThrow();
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe("chatSessionsSource.useItems — no hard cap of 10", () => {
+  beforeEach(() => {
+    appMocks.ListChatAgents.mockReset();
+    useChatAgentsStore.getState().__reset();
+  });
+
+  it("returns ALL sorted sessions even beyond the first 10, so a later session is still findable", async () => {
+    // 12 个会话：lastMessageAt 递减 → 排序后 session-11（id 211）落第 12 位（最旧），
+    // 旧实现 slice(0, TOP_N) 会把它截掉，精确查询也永远命中不到。
+    const sessions = Array.from({ length: 12 }, (_, i) =>
+      mkSession({
+        id: 200 + i,
+        title: `session-${i}`,
+        lastMessageAt: 1000 - i,
+      }),
+    );
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [mkAgent({ id: 1, name: "Agent", sessions })],
+    });
+
+    const { result } = renderHook(() => useItems());
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    // 全量返回，不再截到 10 条
+    expect(result.current.items).toHaveLength(12);
+    // 最旧的会话（排序第 12 位）仍在列表里 —— 旧实现 slice(0, TOP_N) 会把它截掉
+    const target = result.current.items.find((i) => i.sessionId === 211);
+    expect(target).toBeDefined();
+    // 且精确查询能命中它（getScore > 0）
+    expect(chatSessionsSource.getScore("session-11", target!)).toBeGreaterThan(
+      0,
+    );
+    // 排序仍按 lastMessageAt 降序（最近消息在前：id 200 的 lastMessageAt=1000）
+    expect(result.current.items[0]!.sessionId).toBe(200);
   });
 });

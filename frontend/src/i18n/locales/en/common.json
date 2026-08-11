@@ -792,7 +792,8 @@
       "rename": "Rename failed: {{msg}}",
       "send": "Send failed: {{msg}}",
       "stop": "Stop failed: {{msg}}",
-      "stopBackgroundTask": "Failed to stop background task: {{msg}}"
+      "stopBackgroundTask": "Failed to stop background task: {{msg}}",
+      "loadFailed": "Failed to load session: {{msg}}"
     },
     "execTarget": {
       "willRunPrefix": "Will run on",
@@ -892,7 +893,22 @@
       "stopInactiveTitle": "No chat is currently running",
       "terminalTitle": "Terminal (⌘`)"
     },
-    "untitled": "(Untitled)"
+    "untitled": "(Untitled)",
+    "loadError": {
+      "title": "Couldn't load session",
+      "retry": "Retry",
+      "close": "Close session",
+      "notFoundHint": "This session no longer exists or has been deleted."
+    },
+    "sending": "Sending…",
+    "sendRetry": {
+      "restored": "Send failed — draft kept",
+      "retry": "Retry send",
+      "discard": "Discard draft"
+    },
+    "loading": {
+      "aria": "Loading session…"
+    }
   },
   "chatPage": {
     "add": {
@@ -901,7 +917,17 @@
       "newAgentChat": "New agent chat",
       "newAgentHint": "Create a new assistant/employee in the org chart"
     },
+    "empty": {
+      "title": "No conversations yet",
+      "description": "Create an agent to start collaborating.",
+      "cta": "Create your first agent"
+    },
     "filter": {
+      "chips": {
+        "all": "All",
+        "running": "Running",
+        "unread": "Unread"
+      },
       "open": "Filter sidebar",
       "options": {
         "running": "Running",
@@ -984,6 +1010,11 @@
       "clear": "Clear filter",
       "noMatches": "No agents match \"{{query}}\"",
       "placeholder": "Search Agent"
+    },
+    "sessionMenu": {
+      "delete": "Delete",
+      "openInNewTab": "Open in new tab",
+      "rename": "Rename"
     },
     "sections": {
       "agents": "AGENTS",
@@ -1129,7 +1160,10 @@
       "commandPlaceholder": "Type a command...",
       "sessionPlaceholder": "Search sessions..."
     },
-    "title": "Command Palette"
+    "title": "Command Palette",
+    "nav": {
+      "heading": "Navigate"
+    }
   },
   "dataBackup": {
     "actions": {
@@ -1755,6 +1789,12 @@
       "loadFailed": "Load failed: {{error}}",
       "reorderFailed": "Failed to save project order: {{error}}"
     },
+    "filter": {
+      "chips": {
+        "all": "All",
+        "running": "Running"
+      }
+    },
     "localPath": {
       "badge": "Not configured",
       "allMissingTitle": "This device hasn't configured a path for any project yet",
@@ -1811,7 +1851,12 @@
     "count": "Queued · {{count}}",
     "insertAfterAI": "Inserted after AI finishes",
     "notCancellable": "Not cancellable (codex backend)",
-    "notCancellableTitle": "codex turn/steer protocol is not cancellable after send"
+    "notCancellableTitle": "codex turn/steer protocol is not cancellable after send",
+    "dropped": {
+      "title": "{{count}} message(s) were not sent when the turn ended",
+      "restore": "Restore as draft",
+      "discard": "Discard"
+    }
   },
   "projectMerge": {
     "title": "Merge into existing project",
@@ -1891,7 +1936,9 @@
         "displayNamePlaceholder": "Leave empty to derive it from the address",
         "pairingCode": "Pairing Code",
         "pairingCodeHint": "6-character pairing code",
-        "url": "Address"
+        "url": "Address",
+        "urlInvalid": "Address must end with /rpc, e.g. ws://192.168.1.100:7456/rpc",
+        "codeInvalid": "Pairing code must be exactly 6 characters"
       },
       "instructions": {
         "prefix": "Run",
@@ -2825,5 +2872,13 @@
     "noOutput": "No output",
     "expand": "Expand output",
     "collapse": "Collapse output"
+  },
+  "statusBar": {
+    "agentSummary": "{{count}} agents · {{running}} running",
+    "approval_one": "{{count}} approval",
+    "approval_other": "{{count}} approvals",
+    "unread_one": "{{count}} unread",
+    "unread_other": "{{count}} unread",
+    "attentionAria": "{{summary}} — click to open the first session needing attention"
   }
 }

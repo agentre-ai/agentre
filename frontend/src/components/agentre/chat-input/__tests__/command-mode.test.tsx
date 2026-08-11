@@ -965,22 +965,39 @@ describe("AIChatInput command mode", () => {
       otherEditorRef.current!.commands.insertContent("!");
     });
 
-    await Promise.all([
-      firstInput.findByRole("option", { name: "git status" }),
-      secondInput.findByRole("option", { name: "git status" }),
-      otherInput.findByRole("option", { name: "other command" }),
-    ]);
+    await vi.waitFor(() => {
+      expect(screen.getAllByRole("listbox")).toHaveLength(3);
+    });
+    const menuFor = (input: ReturnType<typeof within>) => {
+      const listboxId = input
+        .getByRole("combobox")
+        .getAttribute("aria-controls");
+      const listbox = document.getElementById(listboxId!);
+      expect(listbox).not.toBeNull();
+      return within(listbox!.parentElement!);
+    };
+    const firstMenu = menuFor(firstInput);
+    const secondMenu = menuFor(secondInput);
+    const otherMenu = menuFor(otherInput);
+    expect(
+      firstMenu.getByRole("option", { name: "git status" }),
+    ).toBeInTheDocument();
+    expect(
+      secondMenu.getByRole("option", { name: "git status" }),
+    ).toBeInTheDocument();
+    expect(
+      otherMenu.getByRole("option", { name: "other command" }),
+    ).toBeInTheDocument();
 
     fireEvent.click(
-      firstInput.getByRole("button", {
+      firstMenu.getByRole("button", {
         name: "Clear history for current directory",
       }),
     );
 
-    expect(firstInput.queryByRole("listbox")).not.toBeInTheDocument();
-    expect(secondInput.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("listbox")).toHaveLength(1);
     expect(
-      otherInput.getByRole("option", { name: "other command" }),
+      otherMenu.getByRole("option", { name: "other command" }),
     ).toBeInTheDocument();
     expect(localCommandHistoryStore.list(repoScope)).toEqual([]);
     expect(localCommandHistoryStore.list(otherScope)).toEqual([

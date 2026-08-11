@@ -152,7 +152,6 @@ function BrandLogo({ brand, className }: LogoProps & { brand: Brand }) {
       data-brand={brand}
       className={cn(
         "inline-flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-sm",
-        (brand === "openai" || brand === "anthropic") && "bg-white p-0.5",
         className,
       )}
     >

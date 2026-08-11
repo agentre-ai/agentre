@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ChevronUp,
   CircleAlert,
   Minus,
   Monitor,
@@ -303,20 +304,57 @@ function AppTopBar({
 }
 
 type AppStatusBarProps = React.ComponentProps<"footer"> & {
-  agentSummary: string;
-  attentionSummary?: string | null;
+  agentCount: number;
+  runningCount: number;
+  approvalCount: number;
+  unreadCount: number;
+  attentionIds: number[];
+  onAttentionClick: (sessionId: number) => void;
   status: AgentStatus;
   version: string;
 };
 
 function AppStatusBar({
-  agentSummary,
-  attentionSummary,
+  agentCount,
+  runningCount,
+  approvalCount,
+  unreadCount,
+  attentionIds,
   className,
+  onAttentionClick,
   status,
   version,
   ...props
 }: AppStatusBarProps) {
+  const { t } = useTranslation();
+  const agentSummary = t("statusBar.agentSummary", {
+    count: agentCount,
+    running: runningCount,
+  });
+
+  const attentionParts: string[] = [];
+  if (approvalCount > 0) {
+    attentionParts.push(
+      t(
+        approvalCount === 1
+          ? "statusBar.approval_one"
+          : "statusBar.approval_other",
+        { count: approvalCount },
+      ),
+    );
+  }
+  if (unreadCount > 0) {
+    attentionParts.push(
+      t(unreadCount === 1 ? "statusBar.unread_one" : "statusBar.unread_other", {
+        count: unreadCount,
+      }),
+    );
+  }
+
+  const attentionSummary =
+    attentionParts.length > 0 ? attentionParts.join(" · ") : null;
+  const firstAttentionId = attentionIds[0];
+
   return (
     <footer
       className={cn(
@@ -329,16 +367,25 @@ function AppStatusBar({
         <StatusDot status={status} size="xs" />
         {agentSummary}
       </span>
-      {attentionSummary ? (
+      {attentionSummary !== null && firstAttentionId !== undefined ? (
         <>
           <span className="hidden text-border-strong sm:inline">·</span>
-          <span
-            className="flex min-w-0 items-center gap-1.5 font-medium text-status-waiting"
+          <button
+            type="button"
+            onClick={() => onAttentionClick(firstAttentionId)}
+            aria-label={t("statusBar.attentionAria", {
+              summary: attentionSummary,
+            })}
             title={attentionSummary}
+            className="group flex min-w-0 cursor-pointer items-center gap-1.5 rounded font-medium text-status-waiting transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           >
             <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" />
             <span className="min-w-0 truncate">{attentionSummary}</span>
-          </span>
+            <ChevronUp
+              className="size-3 shrink-0 opacity-60 transition-opacity group-hover:opacity-100"
+              aria-hidden="true"
+            />
+          </button>
         </>
       ) : null}
       <span className="min-w-0 flex-1" />

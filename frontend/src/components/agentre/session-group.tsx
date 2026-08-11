@@ -50,6 +50,12 @@ type SessionGroupProps = React.ComponentProps<"article"> & {
   // 主要给项目树的子项目递归用。
   renderAfterSessions?: React.ReactNode;
 
+  // 会话行右键菜单（可选）：任一 handler 提供才在 SessionRow 上渲染 ContextMenu。
+  // 项目页（ProjectCard）不传 → 保持旧行为（无右键菜单）。
+  onOpenInNewTab?: (sessionId: number) => void;
+  onRenameSession?: (sessionId: number, title: string) => void;
+  onDeleteSession?: (sessionId: number) => void;
+
   // 空态可定制（无会话时显示），传 null 关闭空态渲染。默认「暂无会话」。
   emptyLabel?: React.ReactNode;
 
@@ -71,6 +77,9 @@ function SessionGroup({
   collapsedAttentionSessions,
   renderAfterSessions,
   emptyLabel,
+  onOpenInNewTab,
+  onRenameSession,
+  onDeleteSession,
   attentionAriaLabel,
   ...props
 }: SessionGroupProps) {
@@ -151,6 +160,21 @@ function SessionGroup({
                       })
                   : undefined
               }
+              onOpenInNewTab={
+                onOpenInNewTab
+                  ? () => onOpenInNewTab(Number(session.id))
+                  : undefined
+              }
+              onRenameSession={
+                onRenameSession
+                  ? () => onRenameSession(Number(session.id), session.title)
+                  : undefined
+              }
+              onDeleteSession={
+                onDeleteSession
+                  ? () => onDeleteSession(Number(session.id))
+                  : undefined
+              }
             />
           ))}
         </div>
@@ -183,6 +207,22 @@ function SessionGroup({
                             onSessionSelect(session.id, {
                               newTab: isOpenInNewTabModifier(e),
                             })
+                        : undefined
+                    }
+                    onOpenInNewTab={
+                      onOpenInNewTab
+                        ? () => onOpenInNewTab(Number(session.id))
+                        : undefined
+                    }
+                    onRenameSession={
+                      onRenameSession
+                        ? () =>
+                            onRenameSession(Number(session.id), session.title)
+                        : undefined
+                    }
+                    onDeleteSession={
+                      onDeleteSession
+                        ? () => onDeleteSession(Number(session.id))
                         : undefined
                     }
                   />
