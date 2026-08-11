@@ -254,6 +254,7 @@ function SettingsNavButton({
       key={item.labelKey}
       type="button"
       variant="ghost"
+      data-testid={pageId ? `settings-nav-${pageId}` : undefined}
       aria-current={active ? "page" : undefined}
       className={cn(
         "h-[30px] shrink-0 justify-start gap-2 px-2.5 text-sm font-normal whitespace-nowrap text-foreground lg:w-full",

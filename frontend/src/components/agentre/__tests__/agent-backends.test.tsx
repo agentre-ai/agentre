@@ -566,7 +566,7 @@ describe("AgentBackendsPanel", () => {
       { target: { value: "本机 Pi" } },
     );
     await user.click(
-      within(dialog).getByRole("button", { name: /Pi Agent CLI/ }),
+      within(dialog).getByRole("radio", { name: /Pi Agent CLI/ }),
     );
 
     const input = within(dialog).getByPlaceholderText(
@@ -655,7 +655,7 @@ describe("AgentBackendsPanel", () => {
       { target: { value: "Pi 绑供应商" } },
     );
     await user.click(
-      within(dialog).getByRole("button", { name: /Pi Agent CLI/ }),
+      within(dialog).getByRole("radio", { name: /Pi Agent CLI/ }),
     );
 
     await user.click(
@@ -726,7 +726,7 @@ describe("AgentBackendsPanel", () => {
       { target: { value: "Pi 空模型" } },
     );
     await user.click(
-      within(dialog).getByRole("button", { name: /Pi Agent CLI/ }),
+      within(dialog).getByRole("radio", { name: /Pi Agent CLI/ }),
     );
     await user.click(
       within(dialog).getByRole("combobox", { name: "LLM Provider" }),
@@ -757,7 +757,7 @@ describe("AgentBackendsPanel", () => {
 
     // 切换到 Claude Code CLI 类型 → provider 默认为空（CLI 自身登录）。
     await user.click(
-      within(dialog).getByRole("button", { name: /Claude Code CLI/ }),
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
     );
 
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
@@ -791,7 +791,7 @@ describe("AgentBackendsPanel", () => {
       { target: { value: "本地 claude" } },
     );
     await user.click(
-      within(dialog).getByRole("button", { name: /Claude Code CLI/ }),
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
     );
 
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
@@ -826,7 +826,7 @@ describe("AgentBackendsPanel", () => {
       { target: { value: "远端 claude" } },
     );
     await user.click(
-      within(dialog).getByRole("button", { name: /Claude Code CLI/ }),
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
     );
 
     await user.click(
@@ -884,7 +884,7 @@ describe("AgentBackendsPanel", () => {
       { target: { value: "远端 claude" } },
     );
     await user.click(
-      within(editorDialog).getByRole("button", { name: /Claude Code CLI/ }),
+      within(editorDialog).getByRole("radio", { name: /Claude Code CLI/ }),
     );
     await user.click(
       within(editorDialog).getByRole("combobox", { name: "Runtime Device" }),
@@ -938,7 +938,7 @@ describe("AgentBackendsPanel", () => {
       { target: { value: "远端 claude" } },
     );
     await user.click(
-      within(editorDialog).getByRole("button", { name: /Claude Code CLI/ }),
+      within(editorDialog).getByRole("radio", { name: /Claude Code CLI/ }),
     );
     await user.click(
       within(editorDialog).getByRole("combobox", { name: "Runtime Device" }),
@@ -995,7 +995,7 @@ describe("AgentBackendsPanel", () => {
       { target: { value: "远端 claude" } },
     );
     await user.click(
-      within(editorDialog).getByRole("button", { name: /Claude Code CLI/ }),
+      within(editorDialog).getByRole("radio", { name: /Claude Code CLI/ }),
     );
     await user.click(
       within(editorDialog).getByRole("combobox", { name: "Runtime Device" }),
@@ -1062,7 +1062,7 @@ describe("AgentBackendsPanel", () => {
       { target: { value: "已同步 claude" } },
     );
     await user.click(
-      within(dialog).getByRole("button", { name: /Claude Code CLI/ }),
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
     );
     await user.click(
       within(dialog).getByRole("combobox", { name: "Runtime Device" }),
@@ -1149,7 +1149,7 @@ describe("AgentBackendsPanel", () => {
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(
-      within(dialog).getByRole("button", { name: /Claude Code CLI/ }),
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
     );
 
     await waitFor(() => {
@@ -1174,7 +1174,7 @@ describe("AgentBackendsPanel", () => {
     await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
-    await user.click(within(dialog).getByRole("button", { name: /Codex CLI/ }));
+    await user.click(within(dialog).getByRole("radio", { name: /Codex CLI/ }));
 
     await waitFor(() => {
       expect(resolveFn).toHaveBeenCalledWith(
@@ -1195,7 +1195,7 @@ describe("AgentBackendsPanel", () => {
     await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
-    await user.click(within(dialog).getByRole("button", { name: /Codex CLI/ }));
+    await user.click(within(dialog).getByRole("radio", { name: /Codex CLI/ }));
     await user.click(
       within(dialog).getByRole("combobox", { name: "Approval Policy" }),
     );
@@ -1227,7 +1227,7 @@ describe("AgentBackendsPanel", () => {
       within(dialog).getByPlaceholderText("Example: Local · Claude Code"),
       { target: { value: "codex xhigh" } },
     );
-    await user.click(within(dialog).getByRole("button", { name: /Codex CLI/ }));
+    await user.click(within(dialog).getByRole("radio", { name: /Codex CLI/ }));
 
     await user.click(
       within(dialog).getByRole("combobox", { name: "Reasoning Effort" }),
@@ -1264,7 +1264,7 @@ describe("AgentBackendsPanel", () => {
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(
-      within(dialog).getByRole("button", { name: /Claude Code CLI/ }),
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
     );
 
     // 给一点时机让 ResolveCLIPath 的 Promise 完成；命中分支已被其它用例覆盖，这里仅断终态。
@@ -1287,7 +1287,7 @@ describe("AgentBackendsPanel", () => {
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(
-      within(dialog).getByRole("button", { name: /Claude Code CLI/ }),
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
     );
 
     const input = within(dialog).getByPlaceholderText(
@@ -1298,10 +1298,12 @@ describe("AgentBackendsPanel", () => {
     // 用户手改了值，然后点按钮重识别 → 按钮要覆盖手填值。
     fireEvent.change(input, { target: { value: "/wrong/path" } });
     nextPath = "/second/claude";
+    // 打开对话框时会对三个 CLI 各探一次，所以只能比「点按钮前后」的增量，不能比总次数。
+    const callsBeforeDetect = resolveFn.mock.calls.length;
     await user.click(within(dialog).getByRole("button", { name: /Detect/ }));
 
     await waitFor(() => expect(input.value).toBe("/second/claude"));
-    expect(resolveFn).toHaveBeenCalledTimes(2);
+    expect(resolveFn.mock.calls.length).toBe(callsBeforeDetect + 1);
   });
 
   it("自动识别按钮未命中时显示 $PATH 提示且不改 input", async () => {
@@ -1316,7 +1318,7 @@ describe("AgentBackendsPanel", () => {
     await screen.findByRole("list", { name: "Agent backend list" });
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
-    await user.click(within(dialog).getByRole("button", { name: /Codex CLI/ }));
+    await user.click(within(dialog).getByRole("radio", { name: /Codex CLI/ }));
 
     const input = within(dialog).getByPlaceholderText(
       "/usr/local/bin/codex",
@@ -1421,7 +1423,7 @@ describe("AgentBackendsPanel", () => {
       { target: { value: "远端 claude" } },
     );
     await user.click(
-      within(dialog).getByRole("button", { name: /Claude Code CLI/ }),
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
     );
 
     // 选远端 device
@@ -1475,7 +1477,7 @@ describe("AgentBackendsPanel", () => {
 
     const dialog = await screen.findByRole("dialog");
     await user.click(
-      within(dialog).getByRole("button", { name: /Claude Code CLI/ }),
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
     );
 
     // 不改 device → 保持本地
@@ -1538,7 +1540,7 @@ describe("AgentBackendsPanel", () => {
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(
-      within(dialog).getByRole("button", { name: "OpenClaw Gateway" }),
+      within(dialog).getByRole("radio", { name: "OpenClaw Gateway" }),
     );
 
     await user.clear(within(dialog).getByLabelText("Name"));
@@ -1653,7 +1655,7 @@ describe("AgentBackendsPanel", () => {
     await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(
-      within(dialog).getByRole("button", { name: "OpenClaw Gateway" }),
+      within(dialog).getByRole("radio", { name: "OpenClaw Gateway" }),
     );
     expect(
       within(dialog).getByText(
@@ -1699,6 +1701,359 @@ describe("AgentBackendsPanel", () => {
   });
 });
 
+describe("Agent backend type picker", () => {
+  async function openCreateDialog(user: ReturnType<typeof userEvent.setup>) {
+    render(<AgentBackendsPanel />);
+    await screen.findByRole("list", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+    return screen.findByRole("dialog");
+  }
+
+  it("Given the create dialog, When it opens, Then the five types render as a single-choice radiogroup with the current type checked", async () => {
+    const user = userEvent.setup();
+    installAppMock();
+
+    const dialog = await openCreateDialog(user);
+    const group = within(dialog).getByRole("radiogroup", { name: "Type" });
+
+    expect(within(group).getAllByRole("radio")).toHaveLength(5);
+    expect(
+      within(group).getByRole("radio", { name: /Built-in Agent/ }),
+    ).toBeChecked();
+    expect(
+      within(group).getByRole("radio", { name: /Claude Code CLI/ }),
+    ).not.toBeChecked();
+
+    await user.click(
+      within(group).getByRole("radio", { name: /Claude Code CLI/ }),
+    );
+    expect(
+      within(group).getByRole("radio", { name: /Claude Code CLI/ }),
+    ).toBeChecked();
+    expect(
+      within(group).getByRole("radio", { name: /Built-in Agent/ }),
+    ).not.toBeChecked();
+  });
+
+  it("Given local CLIs on $PATH, When the create dialog opens, Then every CLI type is probed and shows an installed / not-installed badge", async () => {
+    const user = userEvent.setup();
+    const resolveFn = vi.fn((req: unknown) => {
+      const { type } = req as { type: string };
+      return Promise.resolve(
+        type === "piagent"
+          ? { path: "", found: false }
+          : { path: `/usr/local/bin/${type}`, found: true },
+      );
+    });
+    installAppMock({ ResolveAgentBackendCLIPath: resolveFn });
+
+    const dialog = await openCreateDialog(user);
+    const group = within(dialog).getByRole("radiogroup", { name: "Type" });
+
+    await waitFor(() => {
+      expect(
+        within(
+          within(group).getByRole("radio", { name: /Claude Code CLI/ }),
+        ).getByText("Installed"),
+      ).toBeInTheDocument();
+      expect(
+        within(
+          within(group).getByRole("radio", { name: /Pi Agent CLI/ }),
+        ).getByText("Not installed"),
+      ).toBeInTheDocument();
+    });
+
+    for (const type of ["claudecode", "codex", "piagent"]) {
+      expect(resolveFn).toHaveBeenCalledWith(
+        expect.objectContaining({ type, deviceId: "" }),
+      );
+    }
+  });
+
+  it("Given probes still in flight, When the create dialog has just opened, Then CLI types show a detecting badge and stay selectable", async () => {
+    const user = userEvent.setup();
+    let release: (v: { path: string; found: boolean }) => void = () => {};
+    installAppMock({
+      ResolveAgentBackendCLIPath: vi.fn(
+        () =>
+          new Promise<{ path: string; found: boolean }>((resolve) => {
+            release = resolve;
+          }),
+      ),
+    });
+
+    const dialog = await openCreateDialog(user);
+    const group = within(dialog).getByRole("radiogroup", { name: "Type" });
+    const codex = within(group).getByRole("radio", { name: /Codex CLI/ });
+
+    await waitFor(() =>
+      expect(within(codex).getByText(/Detecting/)).toBeInTheDocument(),
+    );
+    expect(codex).toBeEnabled();
+
+    await user.click(codex);
+    expect(
+      within(group).getByRole("radio", { name: /Codex CLI/ }),
+    ).toBeChecked();
+
+    release({ path: "/usr/local/bin/codex", found: true });
+  });
+
+  it("Given a probe that already answered, When that CLI type is selected, Then the path is reused without another round-trip", async () => {
+    const user = userEvent.setup();
+    const resolveFn = vi.fn((req: unknown) => {
+      const { type } = req as { type: string };
+      return Promise.resolve({ path: `/usr/local/bin/${type}`, found: true });
+    });
+    installAppMock({ ResolveAgentBackendCLIPath: resolveFn });
+
+    const dialog = await openCreateDialog(user);
+    const group = within(dialog).getByRole("radiogroup", { name: "Type" });
+    await waitFor(() =>
+      expect(
+        within(
+          within(group).getByRole("radio", { name: /Claude Code CLI/ }),
+        ).getByText("Installed"),
+      ).toBeInTheDocument(),
+    );
+
+    // 探测已经给出结论了，再点这个类型不该重新拨一次 —— 远端设备上这是一次真实的网络往返，
+    // 而方向键会逐个 onChange，代价按键盘步数累加。
+    const callsBeforeSelect = resolveFn.mock.calls.length;
+    await user.click(
+      within(group).getByRole("radio", { name: /Claude Code CLI/ }),
+    );
+
+    await waitFor(() => {
+      const input = within(dialog).getByPlaceholderText(
+        "/usr/local/bin/claude",
+      ) as HTMLInputElement;
+      expect(input.value).toBe("/usr/local/bin/claudecode");
+    });
+    expect(resolveFn.mock.calls.length).toBe(callsBeforeSelect);
+  });
+
+  it("Given non-CLI types, When the picker renders, Then Built-in carries a local-only badge and OpenClaw carries no badge", async () => {
+    const user = userEvent.setup();
+    installAppMock();
+
+    const dialog = await openCreateDialog(user);
+    const group = within(dialog).getByRole("radiogroup", { name: "Type" });
+
+    expect(
+      within(
+        within(group).getByRole("radio", { name: /Built-in Agent/ }),
+      ).getByText("Local only"),
+    ).toBeInTheDocument();
+    expect(
+      within(group).getByRole("radio", { name: /OpenClaw Gateway/ }),
+    ).toHaveAccessibleName("OpenClaw Gateway");
+  });
+
+  it("Given a remote device is selected, When the CLI probe re-runs, Then it targets that device and refreshes the badges", async () => {
+    const user = userEvent.setup();
+    const resolveFn = vi.fn((req: unknown) => {
+      const { type, deviceId } = req as { type: string; deviceId: string };
+      // 本机没装 codex，远端 linux-srv 装了 —— 徽标必须跟着设备变。
+      return Promise.resolve(
+        deviceId === "7" && type === "codex"
+          ? { path: "/opt/codex", found: true }
+          : { path: "", found: false },
+      );
+    });
+    installAppMock({
+      ResolveAgentBackendCLIPath: resolveFn,
+      RemoteDeviceList: vi.fn(() =>
+        Promise.resolve([{ id: 7, name: "linux-srv", online: true }]),
+      ),
+    });
+
+    const dialog = await openCreateDialog(user);
+    const group = within(dialog).getByRole("radiogroup", { name: "Type" });
+
+    await waitFor(() =>
+      expect(
+        within(
+          within(group).getByRole("radio", { name: /Codex CLI/ }),
+        ).getByText("Not installed"),
+      ).toBeInTheDocument(),
+    );
+
+    await user.click(
+      within(group).getByRole("radio", { name: /Claude Code CLI/ }),
+    );
+    await user.click(
+      within(dialog).getByRole("combobox", { name: "Runtime Device" }),
+    );
+    await user.click(screen.getByRole("option", { name: /linux-srv/ }));
+
+    await waitFor(() => {
+      expect(
+        within(
+          within(group).getByRole("radio", { name: /Codex CLI/ }),
+        ).getByText("Installed"),
+      ).toBeInTheDocument();
+    });
+    expect(resolveFn).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "codex", deviceId: "7" }),
+    );
+  });
+
+  it("Given an unreachable remote device, When the probe rejects, Then the badge says the probe failed instead of claiming the CLI is missing", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      ResolveAgentBackendCLIPath: vi.fn((req: unknown) => {
+        const { deviceId } = req as { deviceId: string };
+        return deviceId === "7"
+          ? Promise.reject(new Error("device offline"))
+          : Promise.resolve({ path: "", found: false });
+      }),
+      RemoteDeviceList: vi.fn(() =>
+        Promise.resolve([{ id: 7, name: "linux-srv", online: true }]),
+      ),
+    });
+
+    const dialog = await openCreateDialog(user);
+    const group = within(dialog).getByRole("radiogroup", { name: "Type" });
+
+    await user.click(
+      within(group).getByRole("radio", { name: /Claude Code CLI/ }),
+    );
+    await user.click(
+      within(dialog).getByRole("combobox", { name: "Runtime Device" }),
+    );
+    await user.click(screen.getByRole("option", { name: /linux-srv/ }));
+
+    await waitFor(() => {
+      expect(
+        within(
+          within(group).getByRole("radio", { name: /Codex CLI/ }),
+        ).getByText("Probe failed"),
+      ).toBeInTheDocument();
+    });
+    expect(
+      within(
+        within(group).getByRole("radio", { name: /Codex CLI/ }),
+      ).queryByText("Not installed"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Given the type field, When the create dialog renders, Then it precedes the name field", async () => {
+    const user = userEvent.setup();
+    installAppMock();
+
+    const dialog = await openCreateDialog(user);
+    const group = within(dialog).getByRole("radiogroup", { name: "Type" });
+    const nameInput = within(dialog).getByPlaceholderText(
+      "Example: Local · Claude Code",
+    );
+
+    expect(
+      group.compareDocumentPosition(nameInput) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("Given an untouched name, When the type changes, Then the name is prefilled from the type and keeps following further changes", async () => {
+    const user = userEvent.setup();
+    installAppMock();
+
+    const dialog = await openCreateDialog(user);
+    const group = within(dialog).getByRole("radiogroup", { name: "Type" });
+    const nameInput = within(dialog).getByPlaceholderText(
+      "Example: Local · Claude Code",
+    ) as HTMLInputElement;
+
+    await user.click(
+      within(group).getByRole("radio", { name: /Claude Code CLI/ }),
+    );
+    expect(nameInput.value).toBe("Local · Claude Code");
+
+    await user.click(within(group).getByRole("radio", { name: /Codex CLI/ }));
+    expect(nameInput.value).toBe("Local · Codex");
+  });
+
+  it("Given a name the user typed, When the type changes, Then the typed name is preserved", async () => {
+    const user = userEvent.setup();
+    installAppMock();
+
+    const dialog = await openCreateDialog(user);
+    const group = within(dialog).getByRole("radiogroup", { name: "Type" });
+    const nameInput = within(dialog).getByPlaceholderText(
+      "Example: Local · Claude Code",
+    ) as HTMLInputElement;
+
+    fireEvent.change(nameInput, { target: { value: "my backend" } });
+    await user.click(
+      within(group).getByRole("radio", { name: /Claude Code CLI/ }),
+    );
+
+    expect(nameInput.value).toBe("my backend");
+  });
+
+  it("Given an existing backend, When the edit dialog opens, Then the type is a read-only summary with a locked hint and no radiogroup", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      ListAgentBackends: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 1,
+              type: "claudecode",
+              name: "本机 claude",
+              llmProviderKey: "",
+              cliPath: "/usr/local/bin/claude",
+              agentCount: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+
+    await screen.findByText("本机 claude");
+    const row = screen
+      .getByText("本机 claude")
+      .closest('[role="listitem"]') as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /Edit/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).queryByRole("radiogroup", { name: "Type" }),
+    ).not.toBeInTheDocument();
+    expect(within(dialog).getByText("Claude Code CLI")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("Cannot be changed after creation"),
+    ).toBeInTheDocument();
+  });
+
+  it("Given keyboard focus inside the group, When arrow keys are pressed, Then the checked type moves without a mouse", async () => {
+    const user = userEvent.setup();
+    installAppMock();
+
+    const dialog = await openCreateDialog(user);
+    const group = within(dialog).getByRole("radiogroup", { name: "Type" });
+
+    within(group)
+      .getByRole("radio", { name: /Built-in Agent/ })
+      .focus();
+    await user.keyboard("{ArrowDown}");
+
+    expect(
+      within(group).getByRole("radio", { name: /OpenClaw Gateway/ }),
+    ).toBeChecked();
+    expect(
+      within(group).getByRole("radio", { name: /OpenClaw Gateway/ }),
+    ).toHaveFocus();
+
+    await user.keyboard("{ArrowUp}{ArrowUp}");
+    expect(
+      within(group).getByRole("radio", { name: /Pi Agent CLI/ }),
+    ).toBeChecked();
+  });
+});
 
 describe("truncateFlashText", () => {
   it("短文本原样返回，truncated=false", () => {
