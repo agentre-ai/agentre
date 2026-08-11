@@ -8,7 +8,7 @@
 
 **Objective:** 让用户能从零开始，在「远端设备」设置页按「安装 → 启动服务 → 配对」三步引导，把一台远端机器上的 agentred 安装、注册为后台服务并配对到桌面；发布流程产出可下载的 agentred 独立资产与安装脚本；agentred 提供后台服务生命周期管理命令。
 
-**Hard invariant:** 现有已配对设备的配对安全（6 位一次性配对码、TOFU 指纹、keychain token）、LAN/Relay 连接池、watcher 在线状态（`remote.device.state`）与设备列表行为一律不变；桌面端不新增对远端机器的 shell 访问通道，也不实时拉取远端服务状态；未执行任何引导操作的老用户，「远端设备」页原有能力不回归。
+**Hard invariant:** 现有已配对设备的配对安全（6 位一次性配对码、TOFU 指纹、keychain token）、LAN/Relay 连接池、watcher 在线状态（`remote.device.state`）与设备列表行为一律不变；桌面端不新增对远端机器的 shell 访问通道，也不实时拉取远端服务状态；Unix 本地 IPC 路径与权限不变，Windows named pipe 只能扩展同等的当前用户本机边界；用户从前台 `run` 切换到后台服务时，自定义数据目录、host/port/TLS/Relay server 配置不得丢失；未执行任何引导操作的老用户，「远端设备」页原有能力不回归。
 
 > 交互方向与信息层级已通过本地 mockup 确认（非功能占位，见 `.dev-kit/artifacts/2026-08-11-agentred-onboarding/mockups/`，不提交到 Git）。绑定决策以本文为准。
 
@@ -21,6 +21,8 @@
 5. **远端页初始加载失败被误显示成「还没有设备」。** `if (loading) return null`（`remote-devices-panel.tsx:43 / 89`）在加载时整体空白；首次 `reload()` 失败既无错误态，Promise rejection 还可能成为未处理 rejection，最终被当作用户没配设备。
 6. **引导里的命令不可复制。** `agentred pair` 等只是 `<code>`（`add-device-dialog.tsx:114`），而应用 body 默认 `user-select:none`，用户难以选中复制。
 7. **`cmd/agentred/README.md` 已过时。** 仍声称 stateless / no SQLite / single binary，与当前实现（daemon 持有独立 `agentred.db`、持久化 session journal）不符，误导安装与运维方式。
+8. **Windows agentred 目前只能交叉编译、不能运行。** `internal/daemon/ipc.go:25-29` 在 Windows 直接返回 `ipc: windows named pipe path not yet wired`，CLI 客户端也只会拨 Unix socket（`cmd/agentred/client.go:15-22`）；不补 named-pipe 本地 IPC，Windows 的 `run / status / pair / llm / service` 和发布资产都无法兑现。
+9. **后台服务没有可靠的运行配置来源。** 当前 `run` 只用本次 flag/环境构造 daemon options（`cmd/agentred/run.go:48-67`），未读写 `state.Listen`；`login --server` 也不持久化 Relay server。服务若只执行裸 `agentred run`，会丢失自定义 host/port/TLS/Relay 和非默认数据目录。
 
 ## Actors and user stories
 
@@ -34,12 +36,14 @@
 | # | Decision | Basis and rejected option |
 |---|---|---|
 | 1 | **三步引导放在「远端设备」页空态内（页面内步骤条展开）**，不新建独立页面或弹窗。 | 信息量大、需要跨步骤状态与命令复制，页面内步骤条最稳，且与设置页既有布局一致。Rejected: 弹窗 — 塞不下命令+清单；独立路由 — 打断设置页上下文。 |
-| 2 | **新增 agentred 后台服务闭环**：`service install/start/status/restart/stop/uninstall`；Linux 用 user 级 systemd（含 `loginctl enable-linger`）、macOS 用 launchd LaunchAgent、Windows 用计划任务，**均用户级、无需管理员权限**。 | 真正的闭环，跨平台一致，不要求 sudo。Rejected: 只做前台引导 — 运维门槛仍在；系统级 systemd / Windows Service — 需管理员，跨平台体验割裂。 |
-| 3 | **发布流程新增 agentred 独立资产构建**：release 与 nightly 各加一个 job，产出 `agentred-<version>-<goos>-<goarch>`（darwin/linux 用 tar.gz、windows 用 zip）+ `SHA256SUMS`，上传到同一个 GitHub Release。 | 桌面与远端不是同一台机器，打进桌面安装包无意义；独立资产是「可从正常通道获得」的前提。 |
-| 4 | **新增 `install.sh`（POSIX sh）与 `install.ps1`（Windows）作为发布资产**，UI 显示真实一键安装命令；脚本负责识别 OS/arch、下载对应资产、校验 SHA256SUMS、安装到可写路径（`/usr/local/bin`，不可写则 `~/.local/bin` 并提示 PATH）。 | 一键入口命令简短、可用。Rejected: 只显示手动下载命令 — 又长又易错；不校验 — 无法保证完整性。 |
-| 5 | **新增 `agentred --version`（semver + commit）**；daemon `/local/status` 增加 `version` 字段（向后兼容，老实现无该字段时正常）。安装步骤的验证清单用 `agentred --version`。 | 安装可验证、可排查。Rejected: 不做版本 — 装没装上、哪个版本无从判断。 |
+| 2 | **新增 agentred 后台服务闭环**：`service install/start/status/restart/stop/uninstall`；Linux 用 user 级 systemd（尝试 `loginctl enable-linger`）、macOS 用 launchd LaunchAgent、Windows 用用户级计划任务，默认不创建系统级服务。 | 真正的闭环，优先用户级以减少权限要求；Linux host policy 不允许 linger 时，注册仍成功但必须输出可执行的修复命令。Rejected: 只做前台引导 — 运维门槛仍在；系统级 systemd / Windows Service — 默认需要管理员，跨平台体验割裂。 |
+| 3 | **发布流程新增 agentred 独立资产构建**：release 与 nightly 各加一个 job，产出 `agentred-<version>-<goos>-<goarch>`（darwin/linux 用 tar.gz、windows 用 zip）+ `SHA256SUMS`，并保留 `SHA256SUMS.txt` 兼容现有桌面更新，上传到同一个 GitHub Release。 | 桌面与远端不是同一台机器，打进桌面安装包无意义；独立资产是「可从正常通道获得」的前提。Rejected: 只改 README — 仍没有可安装产物。 |
+| 4 | **新增 `install.sh`（POSIX sh）与 `install.ps1`（Windows）作为发布资产**，UI 显示真实一键安装命令；脚本负责识别 OS/arch、下载对应资产、校验 SHA256SUMS；Unix 安装到可写的 `/usr/local/bin`，不可写则 `~/.local/bin` 并提示 PATH；Windows 安装到 `%LOCALAPPDATA%\Programs\agentred\` 并写入用户 PATH。 | 一键入口命令简短、可用，Windows 不要求管理员 PowerShell。Rejected: 只显示手动下载命令 — 又长又易错；不校验 — 无法保证完整性。 |
+| 5 | **新增 `agentred --version`（semver + commit）**；daemon `/local/status` 增加 `version` 字段（向后兼容，老实现无该字段时正常），账号登录登记同一真实版本而非固定 `dev`。安装步骤的验证清单用 `agentred --version`。 | 安装可验证、可排查，账号设备版本也不能与二进制身份分叉。Rejected: 不做版本 — 装没装上、哪个版本无从判断。 |
 | 6 | **桌面端不实时拉取远端服务状态**：第二步只给命令 + 「在远端终端自行验证」清单；配对成功后在线状态由现有 watcher（`remote.device.state`）展示。 | 配对前桌面不知道远端地址、也无 shell 通道，实时探测不成立；配对后在线状态已存在。Rejected: 给 watcher 新增服务状态 RPC — 超本轮范围。 |
 | 7 | **远端页加载失败显示错误态 + 重试**，不再被当作空态。 | 消除「加载失败伪装成没有设备」。Rejected: 维持 `return null` — 掩盖故障。 |
+| 8 | **Windows 本地 IPC 扩展为当前用户 ACL 的 named pipe**，Unix socket 的路径、HTTP 路由和 JSON 形状保持不变；daemon 与 CLI 共享同一 endpoint 解析。 | 完整跨平台服务的必要前置。Rejected: 仍发布 Windows 资产但不接 IPC — 二进制启动即退出，属于不可用产物。 |
+| 9 | **agentred 运行配置收敛到 state**：显式 flag → 环境 → 持久化 state → 默认值；显式变更写回 state，`login --server` 持久化 Hub server URL；服务定义只运行当前二进制的 `run` 并固定解析后的 `AGENTRED_DATA_DIR`。 | 避免 systemd/launchd/计划任务各复制一套参数规则，也避免从前台切后台时丢配置。Rejected: 把当前 flags 全写进三种服务 manifest — 重复、易漂移。 |
 
 ## Design
 
@@ -49,7 +53,7 @@
 
 - **步骤 1 · 安装**：平台选择（Linux / macOS / Windows）。选中的平台决定显示的安装命令（带复制按钮，`data-selectable-text`，复制成功 toast）：
   - Linux / macOS：`curl -fsSL https://github.com/agentre-ai/agentre/releases/latest/download/install.sh | sh`
-  - Windows：`irm https://github.com/agentre-ai/agentre/releases/latest/download/install.ps1 | iex`（管理员 PowerShell）
+  - Windows：`irm https://github.com/agentre-ai/agentre/releases/latest/download/install.ps1 | iex`（普通 PowerShell）
   - 提供「手动安装」退路入口。点击「我已安装，下一步 →」进入步骤 2。
 - **步骤 2 · 启动服务**：运行方式切换「后台服务（推荐）/ 前台临时运行」。
   - 后台服务：`agentred service install --start`、`agentred service status`、`agentred service restart` 各带复制按钮；「确认服务已运行」清单（编号 1/2/3）：在远端终端运行 `agentred service status` 看到 `Daemon running`、确认监听地址含 `ws://…:7456/rpc`、保持服务运行。
@@ -68,16 +72,20 @@
 | `agentred service status` | 报告服务注册状态与运行状态（如 systemd `active` / launchd `loaded`+`running` / 计划任务状态），机器可读输出用于引导清单核对。 |
 | `agentred service uninstall` | 移除服务注册（并停止）；幂等。 |
 
-- 跨平台实现收敛到一个 `ServiceManager` 接口，按 GOOS 选择 systemd / launchd / 计划任务实现；`run`（前台）保持现状。
-- 命令输出为纯文本、稳定格式（首行状态词 + 细节行），非当前平台执行时给出清晰的不支持说明，退出码非 0 且带原因。
-- 服务启动实际就是以后台方式拉起 `agentred run`（含数据目录、监听配置不变）。
+- 跨平台实现收敛到一个 `ServiceManager` 接口，按 GOOS 选择 systemd / launchd / 计划任务实现；`run`（前台）保持现有命令面。
+- 命令输出为纯文本、稳定格式：`Daemon running` / `Daemon stopped` / `Service not installed` 为首行状态词，后接细节；失败退出码非 0 且带原因。
+- 服务启动实际就是以后台方式拉起当前二进制的 `agentred run`，设置解析后的 `AGENTRED_DATA_DIR`；host/port/TLS/Hub server 由 state 统一恢复。
+- `run` 的运行配置优先级为显式 flag → 环境 → 持久化 state → 默认值；显式变更写回 state；`login --server` 成功后持久化 Hub server URL。
+- Windows local IPC 使用当前用户 ACL 的 named pipe；`run / pair / status / llm` 的 HTTP 路径与 JSON 形状与 Unix 完全一致，CLI 与 daemon 共享 endpoint 解析，Unix socket 行为不变。
 
 ### C. 版本与发布
 
 - `agentred --version` 输出 `agentred <semver> (<commit>)`；版本经 ldflags 注入（`configs.Version` + `internal/buildinfo.CommitID`），与桌面一致。
 - daemon `/local/status` 应答新增 `version` 字段（老 daemon 无该字段时 `agentred status` 照常工作、不报错）。
-- `.github/workflows/release.yml` 与 `nightly.yml` 各新增 agentred 资产构建 job：复用现有 goos/goarch 矩阵（darwin/linux/windows × amd64/arm64），产出 `agentred-<version>-<platform>`（tar.gz / zip）+ `SHA256SUMS`，并上传 `install.sh` / `install.ps1`，随现有 Release 发布（nightly 传 nightly release）。
-- `install.sh` / `install.ps1` 行为：识别 OS/arch → 从当前发布通道下载对应 agentred 资产 → 校验 SHA256SUMS → 安装到 `/usr/local/bin`（不可写则 `~/.local/bin` 并提示加入 PATH）→ 以 `agentred --version` 完成确认。
+- `.github/workflows/release.yml` 与 `nightly.yml` 各新增 agentred 资产构建 job：复用现有 goos/goarch 矩阵（darwin/linux/windows × amd64/arm64），产出 `agentred-<version>-<platform>`（tar.gz / zip）+ `SHA256SUMS`，同时上传内容相同的 `SHA256SUMS.txt` 兼容现有 `update_svc`，并上传 `install.sh` / `install.ps1`，随现有 Release 发布（nightly 传 nightly release）。
+- Windows agentred 资产只在 named-pipe IPC 与计划任务服务可用后发布，不能发布“能构建但启动即失败”的二进制。
+- `install.sh` / `install.ps1` 行为：识别 OS/arch → 从当前发布通道下载对应 agentred 资产 → 校验 SHA256SUMS → Unix 安装到 `/usr/local/bin`（不可写则 `~/.local/bin` 并提示加入 PATH），Windows 安装到 `%LOCALAPPDATA%\Programs\agentred\` 并写入用户 PATH → 以 `agentred --version` 完成确认。
+- workflow 的 ldflags 统一使用完整模块路径 `github.com/agentre-ai/agentre/internal/buildinfo.CommitID`，release/nightly 与 Makefile 不各自维护不同版本注入规则。
 
 ### D. 页面状态与交互修复
 
@@ -105,16 +113,15 @@
 
 | Seam | 验证内容 | 参考 |
 |---|---|---|
-| Go：`agentred service` 命令层 | 子命令解析、参数（`--start`）传递、输出格式、非支持平台报错；注入 fake `ServiceManager` 断言调用序列 | 现有 `cmd/agentred` 无测试，新建 `service_test.go` |
-| Go：平台 ServiceManager 实现 | systemd unit / launchd plist / 计划任务参数的生成与内容断言（用接口 + 可注入命令执行器） | — |
-| Go：`agentred --version` 与 `/local/status` version 字段 | 版本输出格式；status 应答含 version、老实现无字段时兼容 | 现有 `internal/daemon/daemon_test.go`（真实 SQLite 例外） |
-| 前端：三步引导组件 | 空态显示步骤条；平台切换更新命令；复制；步骤流转；配对表单提交错误；加载中；加载失败显示错误态而非空态 | 现有 `remote-devices/*.test.ts(x)`（vitest + happy-dom + `vi.mock` wails） |
+| Go：构建身份与 local status | `--version` 稳定格式；`/local/status.version`；老 daemon 无字段兼容；账号登录登记真实版本 | `cmd/agentred/main_test.go`、`status_test.go`、`login_test.go`、`internal/daemon/daemon_test.go` |
+| Go：`agentred service` 命令层 | 子命令解析、`--start` 编排、稳定首行状态、错误与幂等；注入 fake `ServiceManager` 断言调用序列 | 新建 `cmd/agentred/service_test.go` |
+| Go：平台 ServiceManager 与配置 state | systemd unit / launchd plist / 计划任务参数生成；可注入命令执行器；显式 flag/环境/state/default 优先级；自定义配置切后台不丢失 | 参考 `internal/app/system_test.go` 与 `internal/pkg/agrctlinstall/install_test.go` |
+| Go：Windows local IPC | 公共 mux 路由不变；named-pipe endpoint 稳定且不暴露原始路径；Windows round trip；Unix socket 回归；windows/amd64 与 windows/arm64 交叉构建 | 现有 `internal/daemon/daemon_test.go` + 新平台测试 |
+| 安装脚本 | 先用本地 HTTP fixture + `AGENTRED_RELEASE_BASE_URL` / `AGENTRED_INSTALL_DIR` 让 checksum 成功、checksum 不匹配拒绝、fallback 安装目录、`--version` 确认自动变红/变绿；PowerShell 在 Windows runner 执行 | 新建 installer fixture/test seam，不再只靠目视 review |
+| 前端：加载状态机与三步引导 | loading/error/ready；错误重试且不误显示空态；平台切换更新命令；复制；步骤流转；配对失败保留输入；成功后衔接 Agent 后端 | 现有 `remote-devices/*.test.ts(x)`（vitest + happy-dom + `vi.mock` wails） |
 | 前端：i18n | 新键 zh-CN/en 同步、`t("…")` 静态键可解析 | 现有 `frontend/src/__tests__/i18n.test.ts` 守卫 |
-| 发布流水线（release/nightly workflow） | 无法自动化；wrap-up 时对 workflow 文件做 source review，验证 agentred 资产命名、SHA256SUMS、install 脚本上传齐全；不实际发 Release | 现有 `release.yml` / `nightly.yml` |
-| `install.sh` / `install.ps1` | 无法 TDD（shell）；wrap-up 时在本机真实 shell 各跑一次，验证下载、SHA256SUMS 校验、安装路径选择与 `agentred --version` 确认 | 无 prior art，新建脚本 |
-| 真实后台服务管理（systemd / launchd / 计划任务） | 本机平台手测（macOS 上验证 LaunchAgent 注册/启停）；非本机平台由接口测试覆盖参数生成 + source review | — |
-
-需要你确认的测试决定：agentred 的 `service` 命令与平台实现是否接受「接口 + 注入 fake 的单元测试为主、真实系统服务本机手测、其余平台 review」这一组合；安装脚本无法做自动化单测、只做 wrap-up 手动验证是否可以接受。
+| 发布流水线 | source review + 机械检查 agentred 六平台矩阵、依赖关系、资产名、两个 checksum 名、install 脚本与完整 ldflag 路径；不实际发布 Release | 现有 `release.yml` / `nightly.yml` |
+| 真实后台服务管理 | 自动测试保护 manifest/命令参数；wrap-up 在 macOS 真机验证 LaunchAgent install/start/status/restart/stop/uninstall；Linux systemd 与 Windows 计划任务由对应 CI runner/接口测试补充，手测仅补充、不替代 RED | — |
 
 ## Open questions
 
