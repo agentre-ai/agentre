@@ -8,8 +8,6 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
-	"runtime"
-	"strconv"
 	"strings"
 
 	"github.com/agentre-ai/agentre/internal/pkg/paths"
@@ -88,19 +86,7 @@ func newPlatformServiceManager() (ServiceManager, error) {
 		UserName:   currentUser.Username,
 		Runner:     execServiceCommandRunner{},
 	}
-	switch runtime.GOOS {
-	case "linux":
-		return newSystemdServiceManager(config), nil
-	case "darwin":
-		uid, err := strconv.Atoi(currentUser.Uid)
-		if err != nil {
-			return nil, fmt.Errorf("resolve current user id: %w", err)
-		}
-		config.UID = uid
-		return newLaunchdServiceManager(config), nil
-	default:
-		return &unsupportedServiceManager{platform: runtime.GOOS}, nil
-	}
+	return newOSServiceManager(config, currentUser)
 }
 
 func writeServiceFile(path string, body []byte) error {

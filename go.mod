@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
+	github.com/Microsoft/go-winio v0.6.1
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/cago-frame/agents v0.0.0-20260727021936-d7bfede861b9
 	github.com/cago-frame/cago v0.0.0-20260609091633-ba2f550b2729
@@ -22,6 +23,7 @@ require (
 	github.com/zalando/go-keyring v0.2.8
 	go.uber.org/mock v0.4.0
 	go.uber.org/zap v1.28.0
+	golang.org/x/sys v0.43.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gorm.io/gorm v1.25.12
 )
@@ -153,9 +155,9 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/arch v0.12.0 // indirect
 	golang.org/x/crypto v0.50.0 // indirect
+	golang.org/x/mod v0.34.0 // indirect
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/tools v0.43.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20251029180050-ab9386a59fda // indirect
