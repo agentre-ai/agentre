@@ -58,6 +58,43 @@ describe("useChatSession", () => {
     expect(live?.assistantMessageId).toBe(42);
   });
 
+  // 「块全是 notice」不足以判定旁白行:回退 notice 是后端追加进**这一轮自己**的
+  // assistant 消息(chat_svc runTurn finalize),零内容收尾时那条消息的块正好只剩它。
+  // 判据必须是「独立落库的切换 notice」(noticeKind==="switch"),与后端
+  // chat.go noticeOnlyMessage 同一口径 —— 否则这一轮被当旁白行跳过,压根不 openStream,
+  // 用户看不到任何流式内容。
+  it("reattaches to a turn whose only block is a provider fallback notice", async () => {
+    loadChatSession.mockResolvedValueOnce({
+      session: {
+        id: 9,
+        agentId: 1,
+        agentName: "Eng",
+        title: "x",
+        agentStatus: "running",
+        activeStream: "chat:event:9:41",
+        lastMessageAt: 0,
+        createtime: 0,
+      },
+      messages: [
+        { id: 40, sessionId: 9, role: "user", blocks: [], seq: 1 },
+        {
+          id: 41,
+          sessionId: 9,
+          role: "assistant",
+          blocks: [
+            { type: "notice", level: "info", providerKey: "gone-provider" },
+          ],
+          seq: 2,
+        },
+      ],
+    });
+    const { result } = renderHook(() => useChatSession(9));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const live = streamForMessage(useChatStreamsStore.getState(), 9, 41);
+    expect(live?.assistantMessageId).toBe(41);
+  });
+
   // Bug: 中途重开运行中的会话时,pending tool_approval 卡来自 LoadSession overlay
   // (后端把内存 pending 块 overlay 进末条 assistant 消息投影 → 渲染走 messages 路径)。
   // 用户点批准/拒绝后 resolved 事件只反扫 liveBlocks → no-op → 卡片永远 pending。

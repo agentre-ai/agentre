@@ -481,18 +481,75 @@ func (s *chatSvc) sessionLiteFromEntity(sess *chat_entity.Session) ChatSessionLi
 	}
 }
 
+// noticeOnlyMessage 报告一条消息是不是「只承载供应商切换 notice 的旁白行」。
+//
+// 切换 notice 是独立落库的一条消息(session_provider.go 的 appendProviderSwitchNotice):
+// role 是 assistant、块只有一个 NoticeBlock,但它不是一轮对话 —— 用户可以在轮中切换
+// 供应商(决策 8),NextSeq 就把它排在**在跑的那条 assistant 之后**。所以凡是「末条
+// assistant = 在跑的那一轮」的推导都必须跳过它。
+//
+// 判据是 kind == switch,而不是「块全是 notice」:回退 notice 由 runTurn 追加进**这一轮
+// 自己**的 assistant 消息,零内容收尾(发完立刻点停止)时那条消息的块正好只剩它 ——
+// 按「块全是 notice」判,一轮真实对话就会被当成旁白行跳过。
+//
+// 没有块 ≠ 旁白行:轮刚起时 assistant 行的 BlocksJSON 恒为 "[]",那是真实的一轮,必须
+// 认到它。解码失败同样不算旁白行 —— 一条读不出块的消息宁可当成真实轮,也不该把在跑的
+// turn 让给它后面的行。
+// 与前端 lib/notice-message.ts 的 isNoticeOnlyMessage 同一口径(那边跳的是同一批行)。
+func noticeOnlyMessage(m *chat_entity.Message) bool {
+	if m == nil {
+		return false
+	}
+	bs, err := m.GetBlocks()
+	if err != nil || len(bs) == 0 {
+		return false
+	}
+	for _, b := range bs {
+		var text string
+		switch tb := b.(type) {
+		case blocks.NoticeBlock:
+			text = tb.Text
+		case *blocks.NoticeBlock:
+			if tb == nil {
+				return false
+			}
+			text = tb.Text
+		default:
+			return false
+		}
+		if p, ok := decodeProviderNotice(text); !ok || p.Kind != providerNoticeKindSwitch {
+			return false
+		}
+	}
+	return true
+}
+
+// lastTurnAssistantIndex 返回最后一条**真实** assistant 消息的下标(没有 → -1)。
+// 供应商切换 notice 那类旁白行跳过,见 noticeOnlyMessage。
+// 先筛 role 再解块:旁白行必是 assistant,user 行不必为此付一次 blocks 解码。
+func lastTurnAssistantIndex(msgs []*chat_entity.Message) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i] == nil || msgs[i].Role != "assistant" {
+			continue
+		}
+		if noticeOnlyMessage(msgs[i]) {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
 // activeStreamName 给 LoadSession 用:turn 进行中时,让中途打开该会话的前端能重挂到
 // per-turn 实时流。per-turn 流名只在用户主动 Send 时由响应给出;子 agent 调用轮 / 自主轮等"非
-// 前端发起"的 turn 前端拿不到这个名字 —— 这里按在跑 turn 的(末条)assistant 消息把它重建出来,
-// 前端据此 openStream 续看。无活跃 turn / 还没建出 assistant 消息时返回空串。
+// 前端发起"的 turn 前端拿不到这个名字 —— 这里按在跑 turn 的(末条真实)assistant 消息把它
+// 重建出来,前端据此 openStream 续看。无活跃 turn / 还没建出 assistant 消息时返回空串。
 func activeStreamName(activeTurn bool, sessionID int64, msgs []*chat_entity.Message) string {
 	if !activeTurn {
 		return ""
 	}
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i] != nil && msgs[i].Role == "assistant" {
-			return StreamName(sessionID, msgs[i].ID)
-		}
+	if i := lastTurnAssistantIndex(msgs); i >= 0 {
+		return StreamName(sessionID, msgs[i].ID)
 	}
 	return ""
 }
@@ -629,15 +686,15 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		}
 		resp.Messages = append(resp.Messages, cm)
 	}
-	// 进行中 turn 上挂起/已决的审批 block 还没 finalize 进消息行,overlay 到末条
+	// 进行中 turn 上挂起/已决的审批 block 还没 finalize 进消息行,overlay 到末条**真实**
 	// assistant 消息的投影,中途打开会话也能看到审批卡(finalize 时会真正落库)。
+	// 用 msgs 的下标定位(resp.Messages 与它逐条 1:1 投影),与 ActiveStream 同一口径 ——
+	// 两处若各挑各的行,前端就会把审批卡搬到一条没人 emit 的流上,resolved 反扫落空、
+	// 卡片永远 pending。旁白行(供应商切换 notice)不是一轮,见 lastTurnAssistantIndex。
 	if pend := s.snapshotToolApprovals(sess.ID); len(pend) > 0 {
-		for i := len(resp.Messages) - 1; i >= 0; i-- {
-			if resp.Messages[i].Role == "assistant" {
-				for _, b := range pend {
-					resp.Messages[i].Blocks = append(resp.Messages[i].Blocks, toolApprovalBlockToChatBlock(b))
-				}
-				break
+		if i := lastTurnAssistantIndex(msgs); i >= 0 {
+			for _, b := range pend {
+				resp.Messages[i].Blocks = append(resp.Messages[i].Blocks, toolApprovalBlockToChatBlock(b))
 			}
 		}
 	}

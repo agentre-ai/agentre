@@ -25,6 +25,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo/mock_chat_repo"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
+	chatblocks "github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
 )
 
 // directRunRunner 记录下发的 RunRequest 并回一个固定实际模型，供 runTurn 直连测试用。
@@ -292,4 +293,61 @@ func TestSessionProviderOverride_FallbackNoticeOmitsNameWhenProviderGone(t *test
 
 	require.NotNil(t, notice)
 	assert.JSONEq(t, `{"providerKey":"gone-key"}`, notice.Text)
+}
+
+// TestLoadSession_OverlaysApprovalOntoInFlightTurnNotNoticeRow 钉死:轮中切换供应商会把
+// 一条只承载 notice 的旁白行(appendProviderSwitchNotice,role=assistant,NextSeq 排在
+// 在跑的 assistant 之后)追加进 transcript。LoadSession 里两处「末条 assistant」推导都
+// 必须跳过它:
+//   - ActiveStream 指到旁白行 → 重挂的前端订上一条没人 emit 的流名,余下的流式内容全
+//     看不见、也等不到终态;
+//   - 待决审批 overlay 挂到旁白行 → 前端把 pending 卡搬到那一行,resolved 事件按在跑
+//     那条的 id 反扫 liveBlocks 落空 → 卡片永远 pending。
+//
+// producer 侧钉死:前端跳过旁白行的那一半(use-chat-session)单独修不好这个 —— 后端
+// 一旦把审批块塞进旁白行,那行就不再「只有 notice」,前端反而正好挑中它。
+func TestLoadSession_OverlaysApprovalOntoInFlightTurnNotNoticeRow(t *testing.T) {
+	m, ctx := setupDirectRunTest(t)
+	s := NewChat(NoopEmitter{}).(*chatSvc)
+
+	noticeRow := &chat_entity.Message{ID: 43, SessionID: 9, Role: "assistant", Seq: 3}
+	require.NoError(t, noticeRow.SetBlocks([]blocks.ContentBlock{blocks.NoticeBlock{
+		Level: "info", Text: encodeProviderSwitch("session-key", "中转 · GLM 5.2"),
+	}}))
+
+	m.session.EXPECT().Find(ctx, int64(9)).Return(&chat_entity.Session{
+		ID: 9, AgentID: 7, AgentStatus: "running", Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(ctx, int64(7)).Return(nil, nil)
+	m.message.EXPECT().List(ctx, int64(9)).Return([]*chat_entity.Message{
+		{ID: 41, SessionID: 9, Role: "user", BlocksJSON: "[]", Seq: 1},
+		{ID: 42, SessionID: 9, Role: "assistant", BlocksJSON: "[]", Seq: 2},
+		noticeRow,
+	}, nil)
+
+	// 活跃 turn + 一条挂起审批:LoadSession 的 overlay 分支的两个前提。
+	s.activeCancels.Store(int64(9), &activeTurnControl{})
+	s.toolApprovals[9] = []*chatblocks.ToolApprovalBlock{
+		{RequestID: "org-1", ToolName: "org_create_department", Status: "pending"},
+	}
+
+	resp, err := s.LoadSession(ctx, &LoadSessionRequest{SessionID: 9})
+	require.NoError(t, err)
+
+	assert.Equal(t, StreamName(9, 42), resp.Session.ActiveStream,
+		"重挂的流名要指向在跑的那一轮,不是切换 notice 的旁白行")
+	require.Len(t, resp.Messages, 3)
+	assert.True(t, hasToolApprovalBlock(resp.Messages[1]),
+		"待决审批 overlay 挂在在跑的 assistant(42)上")
+	assert.False(t, hasToolApprovalBlock(resp.Messages[2]),
+		"旁白行不该被塞进审批卡 —— 塞了它就不再『只有 notice』,前端的跳过也就跟着失效")
+}
+
+func hasToolApprovalBlock(cm ChatMessage) bool {
+	for _, b := range cm.Blocks {
+		if b.Type == "tool_approval" {
+			return true
+		}
+	}
+	return false
 }

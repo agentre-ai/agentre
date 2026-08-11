@@ -46,6 +46,7 @@ import i18n from "@/i18n";
 import { reasonToDisplayStatus } from "@/lib/attention-display";
 import { copyTextWithToast } from "@/lib/clipboard-toast";
 import { splitErrorDetail } from "@/lib/error-detail";
+import { isNoticeOnlyMessage } from "@/lib/notice-message";
 import {
   findProjectColorToken,
   findProjectPath,
@@ -433,8 +434,12 @@ function applyStreamError(
   if (message) return upsertMessage(messages, message);
   if (!error) return messages;
 
+  // 末条**真实** assistant:供应商切换 notice 的旁白行跳过(与 use-chat-session /
+  // ChatTranscript / 后端 lastTurnAssistantIndex 同一口径)。轮中切换供应商会把它排在
+  // 在跑的那条之后,errorText 落到旁白行 = 出错的那一轮看着没出错、旁白行反而红了。
   let idx = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
+    if (isNoticeOnlyMessage(messages[i])) continue;
     if (messages[i].role === "assistant") {
       idx = i;
       break;
