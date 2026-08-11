@@ -9,16 +9,55 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const appMocks = vi.hoisted(() => ({
-  CreateLLMProvider: vi.fn(),
-  DeleteLLMProvider: vi.fn(),
   ListLLMProviders: vi.fn(),
-  LookupLLMModel: vi.fn(),
-  PreviewLLMModels: vi.fn(),
-  TestLLMProvider: vi.fn(),
+  CreateLLMProvider: vi.fn(),
   UpdateLLMProvider: vi.fn(),
+  DeleteLLMProvider: vi.fn(),
+  ListLLMModels: vi.fn(),
+  PreviewLLMModels: vi.fn(),
+  ImportLLMModels: vi.fn(),
+  TestLLMProvider: vi.fn(),
+  LookupLLMModel: vi.fn(),
+  UpdateLLMModel: vi.fn(),
+  DeleteLLMModel: vi.fn(),
+  SetLLMModelDefault: vi.fn(),
+  SetLLMModelEnabled: vi.fn(),
+  SetLLMProviderEnabled: vi.fn(),
+  LLMModelRefCounts: vi.fn(),
+  LLMProviderRefCounts: vi.fn(),
 }));
 
 vi.mock("../../../../wailsjs/go/app/App", () => appMocks);
+
+vi.mock("../../../../wailsjs/go/models", () => {
+  class ModelClass {
+    static createFrom(source: Record<string, unknown> = {}) {
+      return new ModelClass(source);
+    }
+    constructor(init?: Record<string, unknown>) {
+      if (init) Object.assign(this, init);
+    }
+  }
+  const svc = {
+    ModelInput: ModelClass,
+    CreateProviderRequest: ModelClass,
+    UpdateProviderRequest: ModelClass,
+    DeleteProviderRequest: ModelClass,
+    DeleteModelRequest: ModelClass,
+    TestConnectionRequest: ModelClass,
+    ListModelsRequest: ModelClass,
+    PreviewModelsRequest: ModelClass,
+    LookupModelRequest: ModelClass,
+    ImportModelsRequest: ModelClass,
+    SetModelDefaultRequest: ModelClass,
+    SetModelEnabledRequest: ModelClass,
+    SetProviderEnabledRequest: ModelClass,
+    UpdateModelRequest: ModelClass,
+    ModelRefCountsRequest: ModelClass,
+    ProviderRefCountsRequest: ModelClass,
+  };
+  return { llm_provider_svc: svc };
+});
 
 import { LlmProvidersPanel } from "../llm-providers";
 
@@ -27,18 +66,94 @@ type AnyFn = (...args: unknown[]) => unknown;
 type AppMockShape = {
   CreateLLMProvider: AnyFn;
   DeleteLLMProvider: AnyFn;
+  DeleteLLMModel: AnyFn;
+  ImportLLMModels: AnyFn;
+  ListLLMModels: AnyFn;
   ListLLMProviders: AnyFn;
+  LLMModelRefCounts: AnyFn;
+  LLMProviderRefCounts: AnyFn;
   LookupLLMModel: AnyFn;
   PreviewLLMModels: AnyFn;
+  SetLLMModelDefault: AnyFn;
+  SetLLMModelEnabled: AnyFn;
+  SetLLMProviderEnabled: AnyFn;
   TestLLMProvider: AnyFn;
+  UpdateLLMModel: AnyFn;
   UpdateLLMProvider: AnyFn;
 };
 
+type ProviderItem = {
+  baseUrl: string;
+  defaultModelKey: string;
+  enabled: boolean;
+  hasApiKey: boolean;
+  id: number;
+  maskedApiKey: string;
+  name: string;
+  providerKey: string;
+  type: string;
+};
+
+type ModelItem = {
+  contextWindow: number;
+  enabled: boolean;
+  id: number;
+  isDefault: boolean;
+  maxOutput: number;
+  modelId: string;
+  modelKey: string;
+  name: string;
+  providerId: number;
+  providerKey: string;
+};
+
+function makeProvider(overrides: Partial<ProviderItem> = {}): ProviderItem {
+  return {
+    id: 1,
+    type: "anthropic",
+    providerKey: "pk-1",
+    name: "Anthropic",
+    baseUrl: "https://api.anthropic.com",
+    maskedApiKey: "sk-••••••9XQ2",
+    hasApiKey: true,
+    enabled: true,
+    defaultModelKey: "mk-default",
+    ...overrides,
+  };
+}
+
+function makeModel(overrides: Partial<ModelItem> = {}): ModelItem {
+  return {
+    id: 11,
+    providerId: 1,
+    providerKey: "pk-1",
+    modelKey: "mk-default",
+    modelId: "claude-sonnet-4-5",
+    name: "Sonnet",
+    contextWindow: 200000,
+    maxOutput: 64000,
+    enabled: true,
+    isDefault: true,
+    ...overrides,
+  };
+}
+
 function installAppMock(overrides: Partial<AppMockShape> = {}) {
   const base: AppMockShape = {
-    CreateLLMProvider: vi.fn(() => Promise.resolve({ item: { id: 1 } })),
-    DeleteLLMProvider: vi.fn(() => Promise.resolve({})),
     ListLLMProviders: vi.fn(() => Promise.resolve({ items: [] })),
+    CreateLLMProvider: vi.fn(() =>
+      Promise.resolve({ item: makeProvider({ id: 99 }) }),
+    ),
+    UpdateLLMProvider: vi.fn(() => Promise.resolve({ item: makeProvider() })),
+    DeleteLLMProvider: vi.fn(() => Promise.resolve({})),
+    ListLLMModels: vi.fn(() => Promise.resolve({ items: [] })),
+    PreviewLLMModels: vi.fn(() => Promise.resolve({ items: [] })),
+    ImportLLMModels: vi.fn(() =>
+      Promise.resolve({ items: [], imported: 0, updated: 0 }),
+    ),
+    TestLLMProvider: vi.fn(() =>
+      Promise.resolve({ ok: true, message: "", modelCount: 0 }),
+    ),
     LookupLLMModel: vi.fn(() =>
       Promise.resolve({
         known: false,
@@ -47,11 +162,19 @@ function installAppMock(overrides: Partial<AppMockShape> = {}) {
         maxOutput: 0,
       }),
     ),
-    PreviewLLMModels: vi.fn(() => Promise.resolve({ items: [] })),
-    TestLLMProvider: vi.fn(() =>
-      Promise.resolve({ ok: true, message: "", modelCount: 0 }),
+    UpdateLLMModel: vi.fn(() => Promise.resolve({ item: makeModel() })),
+    DeleteLLMModel: vi.fn(() => Promise.resolve({})),
+    SetLLMModelDefault: vi.fn(() => Promise.resolve({ item: makeProvider() })),
+    SetLLMModelEnabled: vi.fn(() => Promise.resolve({ item: makeModel() })),
+    SetLLMProviderEnabled: vi.fn(() =>
+      Promise.resolve({ item: makeProvider() }),
     ),
-    UpdateLLMProvider: vi.fn(() => Promise.resolve({ item: { id: 1 } })),
+    LLMModelRefCounts: vi.fn(() =>
+      Promise.resolve({ counts: { backends: 0, sessions: 0, routes: 0 } }),
+    ),
+    LLMProviderRefCounts: vi.fn(() =>
+      Promise.resolve({ counts: { backends: 0, sessions: 0, routes: 0 } }),
+    ),
   };
   const merged = { ...base, ...overrides };
   for (const key of Object.keys(appMocks) as Array<keyof typeof appMocks>) {
@@ -68,592 +191,457 @@ afterEach(() => {
 });
 
 describe("LlmProvidersPanel", () => {
-  it("closes the dialog and shows a panel-level flash on successful create", async () => {
-    const user = userEvent.setup();
-    installAppMock({
-      CreateLLMProvider: vi.fn(() =>
-        Promise.resolve({ item: { id: 1, providerKey: "9b1c-uuid" } }),
-      ),
-      ListLLMProviders: vi
-        .fn()
-        .mockResolvedValueOnce({ items: [] })
-        .mockResolvedValueOnce({
-          items: [
-            {
-              id: 1,
-              type: "anthropic",
-              name: "Test",
-              providerKey: "9b1c-uuid",
-              baseUrl: "",
-              maskedApiKey: "sk-•••",
-              hasApiKey: true,
-              model: "",
-              maxOutput: 0,
-              contextWindow: 0,
-              createtime: 0,
-              updatetime: 0,
-            },
-          ],
-        }),
-    });
-    render(<LlmProvidersPanel />);
-
-    await screen.findByRole("table", { name: "LLM provider list" });
-    await user.click(screen.getByRole("button", { name: "New Provider" }));
-
-    const dialog = await screen.findByRole("dialog");
-    // The create dialog no longer surfaces the generated Provider Key.
-    expect(
-      within(dialog).queryByRole("textbox", { name: "Provider Key" }),
-    ).not.toBeInTheDocument();
-
-    fireEvent.change(
-      screen.getByPlaceholderText("Example: production / local Ollama"),
-      { target: { value: "Test" } },
-    );
-    fireEvent.change(
-      screen.getByPlaceholderText(
-        "sk-... or self-hosted token. Leave empty for anonymous access.",
-      ),
-      { target: { value: "sk-test" } },
-    );
-
-    await user.click(screen.getByRole("button", { name: "Save" }));
-
-    // Success closes the dialog.
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    });
-
-    // Panel-level success flash appears.
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      'Provider "Test" added',
-    );
-  });
-
-  it("shows the created provider row in the table after the dialog closes", async () => {
-    const user = userEvent.setup();
-    installAppMock({
-      CreateLLMProvider: vi.fn(() =>
-        Promise.resolve({ item: { id: 1, providerKey: "created-key" } }),
-      ),
-      ListLLMProviders: vi
-        .fn()
-        .mockResolvedValueOnce({ items: [] })
-        .mockResolvedValueOnce({
-          items: [
-            {
-              id: 1,
-              type: "anthropic",
-              name: "Created",
-              providerKey: "created-key",
-              baseUrl: "",
-              maskedApiKey: "sk-•••",
-              hasApiKey: true,
-              model: "",
-              maxOutput: 0,
-              contextWindow: 0,
-              createtime: 0,
-              updatetime: 0,
-            },
-          ],
-        }),
-    });
-    render(<LlmProvidersPanel />);
-
-    await screen.findByRole("table", { name: "LLM provider list" });
-    await user.click(screen.getByRole("button", { name: "New Provider" }));
-
-    fireEvent.change(
-      screen.getByPlaceholderText("Example: production / local Ollama"),
-      { target: { value: "Created" } },
-    );
-    fireEvent.change(
-      screen.getByPlaceholderText(
-        "sk-... or self-hosted token. Leave empty for anonymous access.",
-      ),
-      { target: { value: "sk-test" } },
-    );
-
-    await user.click(screen.getByRole("button", { name: "Save" }));
-
-    // The new row appears in the provider table, not inside the dialog.
-    const table = await screen.findByRole("table", {
-      name: "LLM provider list",
-    });
-    await waitFor(() => {
-      expect(within(table).getByText("Created")).toBeInTheDocument();
-    });
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  });
-
-  it("shows create failures inside the dialog", async () => {
-    const user = userEvent.setup();
-    installAppMock({
-      CreateLLMProvider: vi.fn(() => Promise.reject(new Error("name exists"))),
-    });
-    render(<LlmProvidersPanel />);
-
-    await screen.findByRole("table", { name: "LLM provider list" });
-    await user.click(screen.getByRole("button", { name: "New Provider" }));
-
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.change(
-      screen.getByPlaceholderText("Example: production / local Ollama"),
-      { target: { value: "Duplicate" } },
-    );
-    fireEvent.change(
-      screen.getByPlaceholderText(
-        "sk-... or self-hosted token. Leave empty for anonymous access.",
-      ),
-      { target: { value: "sk-test" } },
-    );
-
-    await user.click(screen.getByRole("button", { name: "Save" }));
-
-    await waitFor(() => {
-      expect(within(dialog).getByRole("alert")).toHaveTextContent(
-        "Save failed: name exists",
-      );
-    });
-
-    expect(
-      screen.getAllByRole("alert").filter((alert) => !dialog.contains(alert)),
-    ).toHaveLength(0);
-  });
-
-  it("copies providerKey to clipboard", async () => {
-    const user = userEvent.setup();
-    installAppMock({
-      ListLLMProviders: vi.fn(() =>
-        Promise.resolve({
-          items: [
-            {
-              id: 1,
-              type: "anthropic",
-              name: "Prod",
-              providerKey: "copy-uuid-test",
-              baseUrl: "",
-              maskedApiKey: "sk-•••",
-              hasApiKey: true,
-              model: "claude-opus-4-7",
-              maxOutput: 0,
-              contextWindow: 0,
-              createtime: 0,
-              updatetime: 0,
-            },
-          ],
-        }),
-      ),
-    });
-
-    const writeText = vi.fn(() => Promise.resolve());
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
-
-    render(<LlmProvidersPanel />);
-
-    // Open edit dialog for the existing provider (which has a providerKey).
-    const editBtn = await screen.findByRole("button", { name: /Edit Prod/ });
-    await user.click(editBtn);
-
-    const dialog = await screen.findByRole("dialog");
-    const copyBtn = within(dialog).getByRole("button", {
-      name: /Copy Provider Key/,
-    });
-    await user.click(copyBtn);
-
-    expect(writeText).toHaveBeenCalledWith("copy-uuid-test");
-  });
-
-  it("shows separate official logos for the provider and its model", async () => {
-    installAppMock({
-      ListLLMProviders: vi.fn(() =>
-        Promise.resolve({
-          items: [
-            {
-              id: 1,
-              type: "anthropic",
-              name: "Anthropic",
-              providerKey: "provider-logo-test",
-              baseUrl: "",
-              maskedApiKey: "sk-•••",
-              hasApiKey: true,
-              model: "claude-sonnet-4-6",
-              maxOutput: 0,
-              contextWindow: 0,
-              createtime: 0,
-              updatetime: 0,
-            },
-          ],
-        }),
-      ),
-    });
-
-    render(<LlmProvidersPanel />);
-    const table = await screen.findByRole("table", {
-      name: "LLM provider list",
-    });
-    expect(
-      within(table).getByRole("img", { name: "Anthropic" }),
-    ).toBeInTheDocument();
-    expect(
-      within(table).getByRole("img", { name: "Claude" }),
-    ).toBeInTheDocument();
-  });
-
-  it("shows the masked API key when editing a configured provider", async () => {
-    const user = userEvent.setup();
-    installAppMock({
-      ListLLMProviders: vi.fn(() =>
-        Promise.resolve({
-          items: [
-            {
-              id: 1,
-              type: "anthropic",
-              name: "Prod",
-              providerKey: "p-1",
-              baseUrl: "",
-              maskedApiKey: "sk-a••••••5678",
-              hasApiKey: true,
-              model: "",
-              maxOutput: 0,
-              contextWindow: 0,
-              createtime: 0,
-              updatetime: 0,
-            },
-          ],
-        }),
-      ),
-    });
-    render(<LlmProvidersPanel />);
-
-    await user.click(await screen.findByRole("button", { name: /Edit Prod/ }));
-    const dialog = await screen.findByRole("dialog");
-
-    const apiKeyInput = within(dialog).getByPlaceholderText(
-      "sk-... or self-hosted token. Leave empty for anonymous access.",
-    ) as HTMLInputElement;
-    expect(apiKeyInput).toHaveValue("sk-a••••••5678");
-    expect(
-      within(dialog).getByText(/Enter a new value to replace it/),
-    ).toBeInTheDocument();
-  });
-
-  it("sends apiKey:'' when saving an untouched masked API key", async () => {
-    const user = userEvent.setup();
+  it("Given providers of different types, When the panel loads, Then the nav groups them by type and shows connection config plus enabled/disabled status", async () => {
     const mocks = installAppMock({
       ListLLMProviders: vi.fn(() =>
         Promise.resolve({
           items: [
-            {
+            makeProvider({
               id: 1,
               type: "anthropic",
-              name: "Prod",
-              providerKey: "p-1",
-              baseUrl: "",
-              maskedApiKey: "sk-a••••••5678",
+              name: "Anthropic Official",
+              providerKey: "pk-anthropic",
+              baseUrl: "api.anthropic.com",
+              maskedApiKey: "sk-••••••9XQ2",
               hasApiKey: true,
-              model: "",
-              maxOutput: 0,
-              contextWindow: 0,
-              createtime: 0,
-              updatetime: 0,
-            },
-          ],
-        }),
-      ),
-    });
-    render(<LlmProvidersPanel />);
-
-    await user.click(await screen.findByRole("button", { name: /Edit Prod/ }));
-    const dialog = await screen.findByRole("dialog");
-
-    await user.click(within(dialog).getByRole("button", { name: "Save" }));
-
-    await waitFor(() => {
-      expect(mocks.UpdateLLMProvider).toHaveBeenCalledWith(
-        expect.objectContaining({ apiKey: "" }),
-      );
-    });
-  });
-
-  it("sends the newly typed API key when editing a configured provider", async () => {
-    const user = userEvent.setup();
-    const mocks = installAppMock({
-      ListLLMProviders: vi.fn(() =>
-        Promise.resolve({
-          items: [
-            {
-              id: 1,
-              type: "anthropic",
-              name: "Prod",
-              providerKey: "p-1",
-              baseUrl: "",
-              maskedApiKey: "sk-a••••••5678",
-              hasApiKey: true,
-              model: "",
-              maxOutput: 0,
-              contextWindow: 0,
-              createtime: 0,
-              updatetime: 0,
-            },
-          ],
-        }),
-      ),
-    });
-    render(<LlmProvidersPanel />);
-
-    await user.click(await screen.findByRole("button", { name: /Edit Prod/ }));
-    const dialog = await screen.findByRole("dialog");
-
-    const apiKeyInput = within(dialog).getByPlaceholderText(
-      "sk-... or self-hosted token. Leave empty for anonymous access.",
-    ) as HTMLInputElement;
-    fireEvent.change(apiKeyInput, { target: { value: "sk-new-key" } });
-    await user.click(within(dialog).getByRole("button", { name: "Save" }));
-
-    await waitFor(() => {
-      expect(mocks.UpdateLLMProvider).toHaveBeenCalledWith(
-        expect.objectContaining({ apiKey: "sk-new-key" }),
-      );
-    });
-  });
-
-  it("preserves the saved API key when the masked value has surrounding whitespace", async () => {
-    const user = userEvent.setup();
-    const mocks = installAppMock({
-      ListLLMProviders: vi.fn(() =>
-        Promise.resolve({
-          items: [
-            {
-              id: 1,
-              type: "anthropic",
-              name: "Prod",
-              providerKey: "p-1",
-              baseUrl: "",
-              maskedApiKey: "sk-a••••••5678",
-              hasApiKey: true,
-              model: "",
-              maxOutput: 0,
-              contextWindow: 0,
-              createtime: 0,
-              updatetime: 0,
-            },
-          ],
-        }),
-      ),
-    });
-    render(<LlmProvidersPanel />);
-
-    await user.click(await screen.findByRole("button", { name: /Edit Prod/ }));
-    const dialog = await screen.findByRole("dialog");
-    const apiKeyInput = within(dialog).getByPlaceholderText(
-      "sk-... or self-hosted token. Leave empty for anonymous access.",
-    ) as HTMLInputElement;
-    fireEvent.change(apiKeyInput, {
-      target: { value: "  sk-a••••••5678  " },
-    });
-    await user.click(within(dialog).getByRole("button", { name: "Save" }));
-
-    await waitFor(() => {
-      expect(mocks.UpdateLLMProvider).toHaveBeenCalledWith(
-        expect.objectContaining({ apiKey: "" }),
-      );
-    });
-  });
-
-  it("shows an empty API key with a hint when editing a provider without a key", async () => {
-    const user = userEvent.setup();
-    installAppMock({
-      ListLLMProviders: vi.fn(() =>
-        Promise.resolve({
-          items: [
-            {
+              enabled: true,
+            }),
+            makeProvider({
               id: 2,
-              type: "anthropic",
-              name: "NoKey",
-              providerKey: "p-2",
-              baseUrl: "",
+              type: "openai-chat",
+              name: "DeepSeek Proxy",
+              providerKey: "pk-deepseek",
+              baseUrl: "llm.intra.example",
               maskedApiKey: "",
               hasApiKey: false,
-              model: "",
-              maxOutput: 0,
-              contextWindow: 0,
-              createtime: 0,
-              updatetime: 0,
-            },
+              enabled: false,
+              defaultModelKey: "",
+            }),
           ],
         }),
       ),
     });
     render(<LlmProvidersPanel />);
 
-    await user.click(await screen.findByRole("button", { name: /Edit NoKey/ }));
-    const dialog = await screen.findByRole("dialog");
-
-    const apiKeyInput = within(dialog).getByPlaceholderText(
-      "sk-... or self-hosted token. Leave empty for anonymous access.",
-    ) as HTMLInputElement;
-    expect(apiKeyInput).toHaveValue("");
+    const nav = await screen.findByRole("complementary", {
+      name: "Provider list",
+    });
+    const anthropic = await within(nav).findByRole("button", {
+      name: /Anthropic Official/,
+    });
     expect(
-      within(dialog).getByText(/No API Key configured yet/),
+      within(anthropic).getByText("api.anthropic.com"),
     ).toBeInTheDocument();
+    expect(within(anthropic).getByText("Enabled")).toBeInTheDocument();
+
+    const deepseek = within(nav).getByRole("button", {
+      name: /DeepSeek Proxy/,
+    });
+    expect(within(deepseek).getByText("llm.intra.example")).toBeInTheDocument();
+    expect(within(deepseek).getByText("Disabled")).toBeInTheDocument();
+
+    // 每个类型有独立分组标题
+    expect(mocks.ListLLMModels).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 1 }),
+    );
   });
 
-  it("does not apply stale preview limits after the model changes", async () => {
-    const user = userEvent.setup();
-    let resolvePreview: (value: {
-      items: Array<{
-        contextWindow: number;
-        id: string;
-        maxOutput: number;
-      }>;
-    }) => void = () => undefined;
-    const preview = new Promise<{
-      items: Array<{
-        contextWindow: number;
-        id: string;
-        maxOutput: number;
-      }>;
-    }>((resolve) => {
-      resolvePreview = resolve;
-    });
-    installAppMock({
-      PreviewLLMModels: vi.fn(() => preview),
+  it("Given a provider is selected, When its workspace loads, Then the model rows render and the header shows connection status", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel(),
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
     });
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("table", { name: "LLM provider list" });
-    await user.click(screen.getByRole("button", { name: "New Provider" }));
-    fireEvent.change(
-      screen.getByPlaceholderText("Example: production / local Ollama"),
-      { target: { value: "Claude" } },
-    );
-    fireEvent.change(
-      screen.getByPlaceholderText(
-        "sk-... or self-hosted token. Leave empty for anonymous access.",
-      ),
-      { target: { value: "sk-test" } },
-    );
-    const modelInput = screen.getByPlaceholderText(
-      "Example: claude-opus-4-7 / gpt-4o-mini",
-    );
-    fireEvent.change(modelInput, { target: { value: "old-model" } });
-    await user.click(screen.getByTitle("Fetch provider models"));
-
-    fireEvent.change(modelInput, { target: { value: "new-model" } });
-    resolvePreview({
-      items: [
-        {
-          id: "old-model",
-          contextWindow: 200000,
-          maxOutput: 64000,
-        },
-      ],
+    const workspace = await screen.findByRole("region", {
+      name: /Anthropic models/,
     });
+    expect(
+      within(workspace).getByText("claude-sonnet-4-5"),
+    ).toBeInTheDocument();
+    expect(within(workspace).getByText("claude-opus-4-1")).toBeInTheDocument();
+    // 连接配置（endpoint + 掩码 key）在头部可见
+    expect(
+      within(workspace).getByText("https://api.anthropic.com"),
+    ).toBeInTheDocument();
+    expect(within(workspace).getByText("sk-••••••9XQ2")).toBeInTheDocument();
+    // 默认模型徽标
+    expect(within(workspace).getAllByText("Default").length).toBeGreaterThan(0);
+    expect(mocks.ListLLMModels).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 1 }),
+    );
+  });
+
+  it("Given a provider with a default model, When the header Test is clicked, Then TestLLMProvider is called with an empty modelKey", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(screen.getByRole("button", { name: "Test Anthropic" }));
 
     await waitFor(() => {
-      expect(
-        (screen.getByLabelText("Context Window") as HTMLInputElement).value,
-      ).toBe("");
-      expect(
-        (screen.getByLabelText("Max Output Tokens") as HTMLInputElement).value,
-      ).toBe("");
+      expect(mocks.TestLLMProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 1, modelKey: "" }),
+      );
     });
   });
 
-  it("accepts real model token limits that are not multiples of 1024", async () => {
+  it("Given a non-default model row, When its row Test is clicked, Then TestLLMProvider is called with the concrete modelKey", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel(),
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+    });
     const user = userEvent.setup();
-    const mocks = installAppMock();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("table", { name: "LLM provider list" });
-    await user.click(screen.getByRole("button", { name: "New Provider" }));
-
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.change(
-      screen.getByPlaceholderText("Example: production / local Ollama"),
-      {
-        target: { value: "Claude" },
-      },
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("button", {
+        name: "Test claude-opus-4-1",
+      }),
     );
-    fireEvent.change(
-      screen.getByPlaceholderText(
-        "sk-... or self-hosted token. Leave empty for anonymous access.",
-      ),
-      {
-        target: { value: "sk-test" },
-      },
-    );
-    fireEvent.change(
-      screen.getByPlaceholderText("Example: claude-opus-4-7 / gpt-4o-mini"),
-      {
-        target: { value: "claude-sonnet-4-6" },
-      },
-    );
-
-    const contextWindow = screen.getByLabelText(
-      "Context Window",
-    ) as HTMLInputElement;
-    const maxOutput = screen.getByLabelText(
-      "Max Output Tokens",
-    ) as HTMLInputElement;
-    fireEvent.change(contextWindow, { target: { value: "200000" } });
-    fireEvent.change(maxOutput, { target: { value: "64000" } });
-
-    expect(contextWindow).toBeValid();
-    expect(maxOutput).toBeValid();
-
-    await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
-      expect(mocks.CreateLLMProvider).toHaveBeenCalledWith(
+      expect(mocks.TestLLMProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 1, modelKey: "mk-opus" }),
+      );
+    });
+  });
+
+  it("Given a non-default enabled model, When its Set default radio is picked, Then SetLLMModelDefault is called with providerId and modelKey", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel(),
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("radio", {
+        name: "Set claude-opus-4-1 as default",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.SetLLMModelDefault).toHaveBeenCalledWith(
         expect.objectContaining({
-          name: "Claude",
-          model: "claude-sonnet-4-6",
-          contextWindow: 200000,
-          maxOutput: 64000,
+          providerId: 1,
+          modelKey: "mk-opus",
         }),
       );
     });
-
-    expect(dialog).not.toHaveTextContent("Save failed");
   });
 
-  it("uses the edited draft with an empty API key when refreshing models", async () => {
-    const user = userEvent.setup();
+  it("Given the default model, When delete or disable is attempted, Then the controls are blocked with a visible reason", async () => {
     const mocks = installAppMock({
       ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+    });
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    const deleteBtn = screen.getByRole("button", {
+      name: "Delete claude-sonnet-4-5",
+    });
+    expect(deleteBtn).toBeDisabled();
+    // 被阻止的原因通过 title / tooltip 可见
+    expect(deleteBtn).toHaveAttribute(
+      "title",
+      expect.stringMatching(/default model/i),
+    );
+
+    const enableSwitch = screen.getByRole("switch", {
+      name: "Enable claude-sonnet-4-5",
+    });
+    expect(enableSwitch).toBeDisabled();
+
+    expect(mocks.DeleteLLMModel).not.toHaveBeenCalled();
+    expect(mocks.SetLLMModelEnabled).not.toHaveBeenCalled();
+  });
+
+  it("Given a referenced model, When delete is requested, Then the dialog shows impact counts and blocks the deletion", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
         Promise.resolve({
           items: [
-            {
-              id: 7,
-              type: "anthropic",
-              name: "GLM",
-              providerKey: "provider-7",
-              baseUrl: "https://old.example/anthropic",
-              maskedApiKey: "configured-redacted",
-              hasApiKey: true,
-              model: "glm-old",
-              maxOutput: 0,
-              contextWindow: 0,
-              createtime: 0,
-              updatetime: 0,
-            },
+            makeModel(),
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              isDefault: false,
+            }),
           ],
+        }),
+      ),
+      LLMModelRefCounts: vi.fn(() =>
+        Promise.resolve({
+          counts: { backends: 1, sessions: 0, routes: 2 },
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("button", { name: "Delete claude-opus-4-1" }),
+    );
+
+    const dialog = await screen.findByRole("dialog", {
+      name: /Delete model/,
+    });
+    // 引用影响计数可见
+    expect(within(dialog).getByText(/referenced/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/1 backend/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/2 routes/i)).toBeInTheDocument();
+    // 没有删除确认按钮 → 不会发起删除
+    expect(
+      within(dialog).queryByRole("button", { name: "Delete" }),
+    ).not.toBeInTheDocument();
+    expect(mocks.DeleteLLMModel).not.toHaveBeenCalled();
+    // 引用计数按稳定 modelKey 查询
+    expect(mocks.LLMModelRefCounts).toHaveBeenCalledWith(
+      expect.objectContaining({ modelKey: "mk-opus" }),
+    );
+  });
+
+  it("Given an unreferenced model, When delete is confirmed, Then DeleteLLMModel is called", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel(),
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("button", { name: "Delete claude-opus-4-1" }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: "Delete model" }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.DeleteLLMModel).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 12 }),
+      );
+    });
+  });
+
+  it("Given a referenced model, When its Model ID is edited, Then the dialog shows impact counts and requires explicit confirmation before saving", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel(),
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+      LLMModelRefCounts: vi.fn(() =>
+        Promise.resolve({
+          counts: { backends: 1, sessions: 1, routes: 0 },
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("button", { name: "Edit claude-opus-4-1" }),
+    );
+
+    const dialog = await screen.findByRole("dialog", {
+      name: /Edit model/,
+    });
+    // 稳定 modelKey 只读展示，modelId 可编辑
+    expect(within(dialog).getByText("mk-opus")).toBeInTheDocument();
+    const modelIdInput = within(dialog).getByLabelText("Model ID");
+    expect(modelIdInput).toHaveValue("claude-opus-4-1");
+
+    // 未改 modelId 时不需要引用确认；改动后才出现影响提示
+    const save = within(dialog).getByRole("button", { name: "Save changes" });
+    fireEvent.change(modelIdInput, { target: { value: "claude-opus-4-2" } });
+
+    expect(
+      within(dialog).getByText(/This model is referenced/i),
+    ).toBeInTheDocument();
+    const confirmBox = within(dialog).getByRole("checkbox", {
+      name: /I understand the impact/i,
+    });
+    expect(save).toBeDisabled();
+
+    await user.click(confirmBox);
+    expect(save).toBeEnabled();
+    await user.click(save);
+
+    await waitFor(() => {
+      expect(mocks.UpdateLLMModel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 12,
+          modelId: "claude-opus-4-2",
+          confirmReference: true,
+        }),
+      );
+    });
+    // 引用计数按稳定 modelKey 查询
+    expect(mocks.LLMModelRefCounts).toHaveBeenCalledWith(
+      expect.objectContaining({ modelKey: "mk-opus" }),
+    );
+  });
+
+  it("Given an unreferenced model, When its Model ID is edited, Then UpdateLLMModel saves without reference confirmation", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel(),
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("button", { name: "Edit claude-opus-4-1" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: /Edit model/,
+    });
+    fireEvent.change(within(dialog).getByLabelText("Model ID"), {
+      target: { value: "claude-opus-4-2" },
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Save changes" }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.UpdateLLMModel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 12,
+          modelId: "claude-opus-4-2",
+          confirmReference: false,
+        }),
+      );
+    });
+  });
+
+  it("Given a provider workspace, When Discover is opened, Then PreviewModels is scanned and selected discoveries are imported via ImportModels", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [makeModel({ modelId: "deepseek-chat" })],
         }),
       ),
       PreviewLLMModels: vi.fn(() =>
         Promise.resolve({
           items: [
             {
-              id: "glm-new",
-              vendor: "anthropic",
-              contextWindow: 0,
-              maxOutput: 0,
+              id: "deepseek-chat",
+              vendor: "deepseek",
+              contextWindow: 64000,
+              maxOutput: 4096,
+              modalities: [],
+              thinking: false,
+              knownInCago: false,
+            },
+            {
+              id: "deepseek-v3.2",
+              vendor: "deepseek",
+              contextWindow: 128000,
+              maxOutput: 8192,
               modalities: [],
               thinking: false,
               knownInCago: false,
@@ -662,25 +650,259 @@ describe("LlmProvidersPanel", () => {
         }),
       ),
     });
+    const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await user.click(await screen.findByRole("button", { name: /Edit GLM/ }));
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.change(
-      within(dialog).getByDisplayValue("https://old.example/anthropic"),
-      { target: { value: "https://new.example/anthropic" } },
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(screen.getByRole("button", { name: "Discover models" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: /Discover/,
+    });
+    // 扫描使用已保存连接（apiKey 为空 → 沿用保存值）
+    expect(mocks.PreviewLLMModels).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 1, apiKey: "" }),
     );
-    await user.click(within(dialog).getByTitle("Fetch provider models"));
+    // 已存在项标记为跳过
+    expect(within(dialog).getByText(/deepseek-chat/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Already exists/)).toBeInTheDocument();
+
+    await user.click(
+      within(dialog).getByRole("button", { name: "Import 1 model" }),
+    );
 
     await waitFor(() => {
-      expect(mocks.PreviewLLMModels).toHaveBeenCalledWith(
+      expect(mocks.ImportLLMModels).toHaveBeenCalledWith(
         expect.objectContaining({
-          id: 7,
-          type: "anthropic",
-          apiKey: "",
-          baseUrl: "https://new.example/anthropic",
+          providerId: 1,
+          models: expect.arrayContaining([
+            expect.objectContaining({ modelId: "deepseek-v3.2" }),
+          ]),
         }),
       );
     });
+  });
+
+  it("Given a provider with no default model, When its enable switch is used, Then it is disabled with a visible reason", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeProvider({
+              enabled: false,
+              defaultModelKey: "",
+            }),
+          ],
+        }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [makeModel({ isDefault: false })],
+        }),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    const enableSwitch = screen.getByRole("switch", {
+      name: "Enable Anthropic",
+    });
+    expect(enableSwitch).toBeDisabled();
+    expect(enableSwitch).toHaveAttribute(
+      "title",
+      expect.stringMatching(/default model/i),
+    );
+    expect(mocks.SetLLMProviderEnabled).not.toHaveBeenCalled();
+  });
+
+  it("Given a provider with an enabled default, When its enable switch is toggled off, Then SetLLMProviderEnabled is called", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(screen.getByRole("switch", { name: "Enable Anthropic" }));
+
+    await waitFor(() => {
+      expect(mocks.SetLLMProviderEnabled).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 1, enabled: false }),
+      );
+    });
+  });
+
+  it("Given a referenced provider, When delete is requested, Then the dialog blocks deletion but explains it can be disabled", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+      LLMProviderRefCounts: vi.fn(() =>
+        Promise.resolve({
+          counts: { backends: 2, sessions: 0, routes: 0 },
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(screen.getByRole("button", { name: "Delete Anthropic" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: /Delete provider/,
+    });
+    expect(within(dialog).getByText(/referenced/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/disabl/i)).toBeInTheDocument();
+    expect(
+      within(dialog).queryByRole("button", { name: "Delete provider" }),
+    ).not.toBeInTheDocument();
+    expect(mocks.DeleteLLMProvider).not.toHaveBeenCalled();
+    expect(mocks.LLMProviderRefCounts).toHaveBeenCalledWith(
+      expect.objectContaining({ providerKey: "pk-1" }),
+    );
+  });
+
+  it("Given an unreferenced provider, When delete is confirmed, Then DeleteLLMProvider is called", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(screen.getByRole("button", { name: "Delete Anthropic" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Delete provider" }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.DeleteLLMProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 1 }),
+      );
+    });
+  });
+
+  it("Given the create dialog, When a name, key and a manually added model with a default are provided, Then CreateLLMProvider sends models and defaultModelId", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() => Promise.resolve({ items: [] })),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("button", { name: "New Provider" });
+    await user.click(screen.getByRole("button", { name: "New Provider" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "New LLM Provider",
+    });
+    fireEvent.change(within(dialog).getByLabelText("Name"), {
+      target: { value: "My Provider" },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/^API Key$/), {
+      target: { value: "sk-test" },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/^Base URL/), {
+      target: { value: "https://api.example.com" },
+    });
+
+    // 手工添加一个模型并选择为默认
+    await user.click(within(dialog).getByRole("button", { name: "Add model" }));
+    fireEvent.change(within(dialog).getByLabelText("Model ID"), {
+      target: { value: "claude-sonnet-4-5" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Context"), {
+      target: { value: "200000" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Output"), {
+      target: { value: "64000" },
+    });
+    await user.click(
+      within(dialog).getByRole("radio", {
+        name: "Set claude-sonnet-4-5 as default",
+      }),
+    );
+
+    await user.click(within(dialog).getByRole("button", { name: "Create" }));
+
+    await waitFor(() => {
+      expect(mocks.CreateLLMProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "anthropic",
+          name: "My Provider",
+          apiKey: "sk-test",
+          baseUrl: "https://api.example.com",
+          defaultModelId: "claude-sonnet-4-5",
+          models: expect.arrayContaining([
+            expect.objectContaining({
+              modelId: "claude-sonnet-4-5",
+              contextWindow: 200000,
+              maxOutput: 64000,
+            }),
+          ]),
+        }),
+      );
+    });
+  });
+
+  it("Given a provider with models, When the connection is edited, Then UpdateLLMProvider preserves the saved API key when untouched", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("button", { name: "Edit Anthropic connection" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: /Edit connection/,
+    });
+    // 掩码 key 预填，保存时归一化为空（保留已保存值）
+    expect(within(dialog).getByLabelText(/^API Key$/)).toHaveValue(
+      "sk-••••••9XQ2",
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: "Save changes" }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.UpdateLLMProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 1, apiKey: "" }),
+      );
+    });
+  });
+
+  it("Given an empty provider list, When the panel loads, Then an empty state with a primary CTA is shown", async () => {
+    installAppMock();
+    render(<LlmProvidersPanel />);
+
+    expect(
+      await screen.findByRole("button", { name: "Add First Provider" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Given the provider list fails to load, When the panel mounts, Then an error flash is shown", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.reject(new Error("database locked")),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Load failed: database locked",
+    );
   });
 });

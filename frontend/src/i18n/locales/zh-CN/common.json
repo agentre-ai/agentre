@@ -1218,7 +1218,8 @@
     "skip": "跳过",
     "unassigned": "未指定",
     "unknownError": "未知错误",
-    "unsavedChanges": "未保存的修改"
+    "unsavedChanges": "未保存的修改",
+    "saveChanges": "保存更改"
   },
   "codeBlock": {
     "copyDone": "已复制代码",
@@ -1583,7 +1584,17 @@
       "providerKeyPlaceholder": "保存后自动生成",
       "showApiKey": "显示 API Key",
       "type": "类型",
-      "typePlaceholder": "选择供应商类型"
+      "typePlaceholder": "选择供应商类型",
+      "models": "模型",
+      "modelsDescription": "从远端发现或手动添加要随该供应商一起创建的模型。",
+      "fetchModels": "拉取模型",
+      "addModel": "添加模型",
+      "noModels": "还没有模型。点击“拉取模型”从远端发现，或“添加模型”手动填写。",
+      "modelIdPlaceholder": "例如：claude-opus-4-7",
+      "ctxShort": "上下文",
+      "outShort": "最大输出",
+      "removeModel": "移除 {{model}}",
+      "chooseDefaultHint": "标记一个模型作为默认模型；动态跟随 Provider 默认的目标会解析到它。"
     },
     "flash": {
       "created": "已新增供应商 \"{{name}}\"",
@@ -1592,7 +1603,15 @@
       "loadFailed": "加载失败：{{message}}",
       "saveFailed": "保存失败：{{message}}",
       "testFailed": "测试失败：{{message}}",
-      "updated": "已更新供应商 \"{{name}}\""
+      "updated": "已更新供应商 \"{{name}}\"",
+      "defaultSet": "已将 {{model}} 设为默认模型",
+      "modelEnabled": "已启用模型 {{model}}",
+      "modelDisabled": "已停用模型 {{model}}",
+      "providerEnabled": "已启用供应商 {{name}}",
+      "providerDisabled": "已停用供应商 {{name}}",
+      "imported": "已导入 {{imported}} 个模型，更新 {{updated}} 个",
+      "modelUpdated": "已更新模型 {{model}}",
+      "modelDeleted": "已删除模型 {{model}}"
     },
     "form": {
       "createAriaLabel": "新增 LLM 供应商",
@@ -1600,7 +1619,8 @@
       "createTitle": "新增 LLM 供应商",
       "editAriaLabel": "编辑 LLM 供应商",
       "editDescription": "更新凭证或默认模型；API Key 留空则保留原值",
-      "editTitle": "编辑：{{name}}"
+      "editTitle": "编辑连接 · {{name}}",
+      "createSubmit": "创建"
     },
     "models": {
       "empty": "供应商没有返回任何模型，请手动填写模型 id。",
@@ -1639,7 +1659,9 @@
       "failedTitle": "测试失败",
       "providerFailed": "\"{{name}}\" 连接失败：{{message}}",
       "providerSuccess": "\"{{name}}\" 调用成功，已发送 hi 并收到模型响应",
-      "successTitle": "测试成功"
+      "successTitle": "测试成功",
+      "rowSuccess": "模型 {{model}} 调用成功，已发送 hi 并收到模型响应",
+      "rowFailed": "模型 {{model}} 连接失败：{{message}}"
     },
     "toolbar": {
       "add": "新增供应商",
@@ -1649,7 +1671,123 @@
     "validation": {
       "apiKeyRequired": "API Key 不能为空",
       "modelRequired": "请先填写默认模型",
-      "nameRequired": "名称不能为空"
+      "nameRequired": "名称不能为空",
+      "modelIdRequired": "模型 ID 不能为空",
+      "duplicateModelId": "模型 ID {{modelId}} 重复",
+      "defaultRequired": "请选择一个模型作为默认模型"
+    },
+    "nav": {
+      "ariaLabel": "供应商列表",
+      "searchPlaceholder": "筛选供应商…",
+      "searchAria": "筛选供应商",
+      "add": "添加供应商",
+      "enabled": "已启用",
+      "disabled": "已停用",
+      "noMatch": "没有匹配的供应商"
+    },
+    "workspace": {
+      "ariaLabel": "{{name}} 模型工作区",
+      "enableNamed": "启用/停用 {{name}}",
+      "enabledShort": "已启用",
+      "disabledShort": "已停用",
+      "test": "测试",
+      "testNamed": "测试 {{name}}",
+      "testTitle": "测试连接（按默认模型发送最小请求）",
+      "editConnection": "编辑连接",
+      "editConnectionNamed": "编辑 {{name}} 连接",
+      "discover": "发现模型",
+      "discoverNamed": "发现模型",
+      "delete": "删除",
+      "deleteNamed": "删除 {{name}}",
+      "deleteTitle": "删除供应商（需二次确认）",
+      "cannotEnableNoDefault": "未设置可用的启用默认模型，无法启用该供应商",
+      "searchPlaceholder": "筛选模型 ID…",
+      "searchAria": "筛选模型",
+      "modelCount": "显示 {{shown}} / {{total}}",
+      "retry": "重试",
+      "loadingModels": "正在加载模型…",
+      "noModelsTitle": "还没有配置模型",
+      "noModelsDescription": "先从远端发现并导入，或手动添加一个模型 ID。",
+      "discoverModels": "发现模型",
+      "addModelManual": "手动添加模型"
+    },
+    "modelsTable": {
+      "ariaLabel": "模型列表",
+      "modelId": "模型 ID",
+      "context": "上下文",
+      "maxOutput": "最大输出",
+      "default": "默认",
+      "defaultBadge": "默认",
+      "enabled": "已启用",
+      "disabled": "已停用",
+      "setDefaultAria": "将 {{model}} 设为默认",
+      "currentDefaultAria": "{{model}} 是默认模型",
+      "testModelNamed": "测试 {{model}}",
+      "testTitle": "测试该模型（发送最小请求）",
+      "editModelNamed": "编辑 {{model}}",
+      "deleteModelNamed": "删除 {{model}}",
+      "deleteBlockedDefault": "默认模型：需先另设默认才能删除",
+      "deleteTitle": "删除（需二次确认）",
+      "disableBlockedDefault": "默认模型：需先另设默认才能停用",
+      "enableNamed": "启用/停用 {{model}}"
+    },
+    "delete": {
+      "providerTitle": "删除供应商 · {{name}}",
+      "modelTitle": "删除模型 · {{model}}",
+      "providerDescription": "删除会同时移除该供应商下的全部模型。",
+      "modelDescription": "删除模型前会检查引用影响。",
+      "checking": "正在检查引用影响…",
+      "blockedTitle": "删除被阻止",
+      "blockedProviderDetail": "该供应商正被 Backend / 会话 / 路由引用。你可以停用它，但不能删除它。",
+      "blockedModelDetail": "该模型正被 {{refs}} 引用，无法删除。",
+      "providerConfirmHint": "该供应商没有被引用。删除会同时移除其全部模型，且已使用的 ProviderKey / ModelKey 不会复用。",
+      "modelConfirmHint": "该模型没有被引用。删除后已保存的 fixed-model 目标会失效。",
+      "providerConfirmButton": "删除供应商",
+      "modelConfirmButton": "删除模型",
+      "refBackends": "个后端",
+      "refSessions": "个会话",
+      "refRoutes": "条路由",
+      "noRefs": "无引用"
+    },
+    "modelEdit": {
+      "ariaLabel": "编辑模型",
+      "title": "编辑模型 · {{model}}",
+      "description": "Model ID 是发送给上游的字符串；Model Key 是稳定标识符，创建后不可修改。",
+      "modelKey": "Model Key",
+      "modelKeyHint": "稳定标识符，供 Agent 后端、会话与路由引用；创建后不可修改。",
+      "modelId": "Model ID",
+      "name": "显示名称",
+      "namePlaceholder": "可选",
+      "contextWindow": "上下文窗口",
+      "maxOutput": "最大输出 Token",
+      "referenceImpactTitle": "该模型正被引用",
+      "referenceImpactDescription": "修改 Model ID 会影响 {{backends}} 个后端、{{sessions}} 个会话和 {{routes}} 条路由；从下一轮生效。",
+      "confirmLabel": "我了解影响，确认修改"
+    },
+    "discover": {
+      "title": "发现并导入模型 · {{name}}",
+      "description": "以下是远端列出的模型。勾选后一次性导入；与本地同 ID 的模型自动跳过并保持原配置。",
+      "searchPlaceholder": "搜索模型 ID…",
+      "searchAria": "搜索远端模型",
+      "count": "远端 {{remote}} · 新 {{new}} · 已存在 {{existing}}",
+      "retry": "重试",
+      "loading": "正在扫描模型目录…",
+      "empty": "远端没有返回任何模型",
+      "selectAllNew": "全选新模型",
+      "selectAllHint": "已存在项自动跳过",
+      "existingSkip": "已存在 · 跳过",
+      "new": "新",
+      "importSummary": "将导入 {{count}} 个新模型",
+      "importButton": "导入 {{count}} 个模型",
+      "importing": "正在导入…",
+      "importButton_one": "导入 {{count}} 个模型",
+      "importButton_other": "导入 {{count}} 个模型"
+    },
+    "addModel": {
+      "ariaLabel": "手动添加模型",
+      "title": "添加模型 · {{name}}",
+      "description": "手动添加一个上游未列出的私有、preview 或代理别名模型。",
+      "submit": "添加"
     }
   },
   "mentions": {

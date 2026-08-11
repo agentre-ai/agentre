@@ -1218,7 +1218,8 @@
     "skip": "Skip",
     "unassigned": "Unassigned",
     "unknownError": "Unknown error",
-    "unsavedChanges": "Unsaved changes"
+    "unsavedChanges": "Unsaved changes",
+    "saveChanges": "Save changes"
   },
   "codeBlock": {
     "copyDone": "Code copied",
@@ -1583,7 +1584,17 @@
       "providerKeyPlaceholder": "Generated after saving",
       "showApiKey": "Show API Key",
       "type": "Type",
-      "typePlaceholder": "Select provider type"
+      "typePlaceholder": "Select provider type",
+      "models": "Models",
+      "modelsDescription": "Discover or manually add the models created together with this provider.",
+      "fetchModels": "Fetch models",
+      "addModel": "Add model",
+      "noModels": "No models yet. Use Fetch models to discover from the remote, or Add model to enter one manually.",
+      "modelIdPlaceholder": "Example: claude-opus-4-7",
+      "ctxShort": "Context",
+      "outShort": "Output",
+      "removeModel": "Remove {{model}}",
+      "chooseDefaultHint": "Mark one model as the default; targets that follow the provider default resolve to it."
     },
     "flash": {
       "created": "Provider \"{{name}}\" added",
@@ -1592,7 +1603,15 @@
       "loadFailed": "Load failed: {{message}}",
       "saveFailed": "Save failed: {{message}}",
       "testFailed": "Test failed: {{message}}",
-      "updated": "Provider \"{{name}}\" updated"
+      "updated": "Provider \"{{name}}\" updated",
+      "defaultSet": "{{model}} is now the default model",
+      "modelEnabled": "Model {{model}} enabled",
+      "modelDisabled": "Model {{model}} disabled",
+      "providerEnabled": "Provider {{name}} enabled",
+      "providerDisabled": "Provider {{name}} disabled",
+      "imported": "Imported {{imported}} models, updated {{updated}}",
+      "modelUpdated": "Model {{model}} updated",
+      "modelDeleted": "Model {{model}} deleted"
     },
     "form": {
       "createAriaLabel": "New LLM provider",
@@ -1600,7 +1619,8 @@
       "createTitle": "New LLM Provider",
       "editAriaLabel": "Edit LLM provider",
       "editDescription": "Update credentials or the default model. Leave API Key empty to keep the current value.",
-      "editTitle": "Edit: {{name}}"
+      "editTitle": "Edit connection · {{name}}",
+      "createSubmit": "Create"
     },
     "models": {
       "empty": "The provider did not return any models. Enter the model id manually.",
@@ -1639,7 +1659,9 @@
       "failedTitle": "Test Failed",
       "providerFailed": "\"{{name}}\" connection failed: {{message}}",
       "providerSuccess": "\"{{name}}\" call succeeded. Sent hi and received a model response.",
-      "successTitle": "Test Passed"
+      "successTitle": "Test Passed",
+      "rowSuccess": "Model {{model}} call succeeded. Sent hi and received a model response.",
+      "rowFailed": "Model {{model}} connection failed: {{message}}"
     },
     "toolbar": {
       "add": "New Provider",
@@ -1649,7 +1671,123 @@
     "validation": {
       "apiKeyRequired": "API Key is required",
       "modelRequired": "Enter a default model first",
-      "nameRequired": "Name is required"
+      "nameRequired": "Name is required",
+      "modelIdRequired": "Model ID is required",
+      "duplicateModelId": "Model ID {{modelId}} is duplicated",
+      "defaultRequired": "Choose one model as the default"
+    },
+    "nav": {
+      "ariaLabel": "Provider list",
+      "searchPlaceholder": "Filter providers…",
+      "searchAria": "Filter providers",
+      "add": "Add Provider",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "noMatch": "No matching providers"
+    },
+    "workspace": {
+      "ariaLabel": "{{name}} models",
+      "enableNamed": "Enable {{name}}",
+      "enabledShort": "Enabled",
+      "disabledShort": "Disabled",
+      "test": "Test",
+      "testNamed": "Test {{name}}",
+      "testTitle": "Test connection (sends a minimal request using the default model)",
+      "editConnection": "Edit connection",
+      "editConnectionNamed": "Edit {{name}} connection",
+      "discover": "Discover models",
+      "discoverNamed": "Discover models",
+      "delete": "Delete",
+      "deleteNamed": "Delete {{name}}",
+      "deleteTitle": "Delete provider (requires confirmation)",
+      "cannotEnableNoDefault": "Set an enabled default model before enabling this provider",
+      "searchPlaceholder": "Filter model IDs…",
+      "searchAria": "Filter models",
+      "modelCount": "Showing {{shown}} / {{total}}",
+      "retry": "Retry",
+      "loadingModels": "Loading models…",
+      "noModelsTitle": "No models configured yet",
+      "noModelsDescription": "Discover and import models from the remote, or add a model ID manually.",
+      "discoverModels": "Discover models",
+      "addModelManual": "Add model manually"
+    },
+    "modelsTable": {
+      "ariaLabel": "Model list",
+      "modelId": "Model ID",
+      "context": "Context",
+      "maxOutput": "Max Output",
+      "default": "Default",
+      "defaultBadge": "Default",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "setDefaultAria": "Set {{model}} as default",
+      "currentDefaultAria": "{{model}} is default",
+      "testModelNamed": "Test {{model}}",
+      "testTitle": "Test this model (sends a minimal request)",
+      "editModelNamed": "Edit {{model}}",
+      "deleteModelNamed": "Delete {{model}}",
+      "deleteBlockedDefault": "Default model: set another default before deleting",
+      "deleteTitle": "Delete (requires confirmation)",
+      "disableBlockedDefault": "Default model: set another default before disabling",
+      "enableNamed": "Enable {{model}}"
+    },
+    "delete": {
+      "providerTitle": "Delete provider · {{name}}",
+      "modelTitle": "Delete model · {{model}}",
+      "providerDescription": "Deleting also removes every model under this provider.",
+      "modelDescription": "Reference impact is checked before deletion.",
+      "checking": "Checking reference impact…",
+      "blockedTitle": "Deletion blocked",
+      "blockedProviderDetail": "This provider is referenced by backends, sessions or routes. You can disable it, but not delete it.",
+      "blockedModelDetail": "This model is referenced by {{refs}} and cannot be deleted.",
+      "providerConfirmHint": "This provider has no references. Deleting also removes all its models, and the used ProviderKey / ModelKey are never reused.",
+      "modelConfirmHint": "This model has no references. Saved fixed-model targets pointing at it will become invalid.",
+      "providerConfirmButton": "Delete provider",
+      "modelConfirmButton": "Delete model",
+      "refBackends": "backends",
+      "refSessions": "sessions",
+      "refRoutes": "routes",
+      "noRefs": "no references"
+    },
+    "modelEdit": {
+      "ariaLabel": "Edit model",
+      "title": "Edit model · {{model}}",
+      "description": "Model ID is the string sent to the upstream; Model Key is the stable identifier and cannot be changed after creation.",
+      "modelKey": "Model Key",
+      "modelKeyHint": "Stable identifier referenced by agent backends, sessions and routes; cannot be changed after creation.",
+      "modelId": "Model ID",
+      "name": "Display name",
+      "namePlaceholder": "Optional",
+      "contextWindow": "Context Window",
+      "maxOutput": "Max Output Tokens",
+      "referenceImpactTitle": "This model is referenced",
+      "referenceImpactDescription": "Changing the Model ID affects {{backends}} backends, {{sessions}} sessions and {{routes}} routes; it takes effect from the next turn.",
+      "confirmLabel": "I understand the impact, confirm the change"
+    },
+    "discover": {
+      "title": "Discover and import models · {{name}}",
+      "description": "Models listed by the remote. Select and import in one batch; models with the same ID as a local one are skipped and keep their configuration.",
+      "searchPlaceholder": "Search model IDs…",
+      "searchAria": "Search remote models",
+      "count": "Remote {{remote}} · new {{new}} · existing {{existing}}",
+      "retry": "Retry",
+      "loading": "Scanning the model catalog…",
+      "empty": "The remote returned no models",
+      "selectAllNew": "Select all new models",
+      "selectAllHint": "Existing items are skipped",
+      "existingSkip": "Already exists · skip",
+      "new": "New",
+      "importSummary": "Will import {{count}} new models",
+      "importButton": "Import {{count}} models",
+      "importing": "Importing…",
+      "importButton_one": "Import {{count}} model",
+      "importButton_other": "Import {{count}} models"
+    },
+    "addModel": {
+      "ariaLabel": "Add model manually",
+      "title": "Add model · {{name}}",
+      "description": "Manually add a private, preview or proxy-alias model not listed upstream.",
+      "submit": "Add"
     }
   },
   "mentions": {
