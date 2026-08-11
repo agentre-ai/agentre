@@ -26,6 +26,33 @@ vi.mock("../../wailsjs/runtime/runtime", async () => {
   };
 });
 
+// 生成的 llm_provider_svc 命名空间在 vitest 的 SSR 变换下只保留了部分
+// Request 类（如 ModelInput 会缺失），而其它 domain 命名空间正常。这里只
+// 替换 llm_provider_svc，保持其余命名空间（chat_svc / agent_svc / ...）不变，
+// 使新 Provider 创建流程（ModelInput 构造）在 App 集成测试中可用。
+vi.mock("../../wailsjs/go/models", async () => {
+  const actual = await vi.importActual<
+    typeof import("../../wailsjs/go/models")
+  >("../../wailsjs/go/models");
+  class ModelClass {
+    static createFrom(source: Record<string, unknown> = {}) {
+      return new ModelClass(source);
+    }
+    constructor(init?: Record<string, unknown>) {
+      if (init) Object.assign(this, init);
+    }
+  }
+  // 任意 llm_provider_svc 类都落到 ModelClass，避免枚举遗漏新 DTO。
+  const svc = new Proxy(
+    {},
+    {
+      get: () => ModelClass,
+      has: () => true,
+    },
+  );
+  return { ...actual, llm_provider_svc: svc };
+});
+
 const themeStorageKey = "agentre.theme";
 const windowSizeStorageKey = "agentre.windowSize";
 const lastPathStorageKey = "agentre.lastPath";
@@ -53,28 +80,6 @@ type MockWailsRuntimeOptions = {
   platform?: string;
   size?: { h: number; w: number };
 };
-
-function expectHorizontalTableScroll(table: HTMLElement) {
-  const tableContainer = table.closest("[data-slot='table-container']");
-  const panel = table.closest("section");
-  const settingsPage = table.closest("[data-slot='settings-page']");
-
-  if (!(tableContainer instanceof HTMLElement)) {
-    throw new Error("Expected table to render inside a table container");
-  }
-
-  if (!(panel instanceof HTMLElement)) {
-    throw new Error("Expected table to render inside a panel");
-  }
-
-  if (!(settingsPage instanceof HTMLElement)) {
-    throw new Error("Expected table to render inside the settings page");
-  }
-
-  expect(settingsPage).toHaveClass("min-w-0");
-  expect(panel).toHaveClass("min-w-0");
-  expect(tableContainer).toHaveClass("min-w-0", "overflow-x-auto");
-}
 
 function fireSelectAllKey(
   target: Document | HTMLElement,
@@ -237,26 +242,67 @@ function mockLlmProviders() {
                 {
                   baseUrl: "",
                   createtime: 0,
+                  defaultModelKey: "mk-sonnet",
+                  enabled: true,
                   hasApiKey: true,
                   id: 1,
                   maskedApiKey: "sk-ant-•••••••••••••• xJ12",
-                  model: "claude-sonnet-4-6",
                   name: "Production",
+                  providerKey: "pk-production",
                   type: "anthropic",
                   updatetime: 0,
                 },
                 {
                   baseUrl: "http://localhost:11434/v1",
                   createtime: 0,
+                  defaultModelKey: "",
+                  enabled: false,
                   hasApiKey: false,
                   id: 2,
                   maskedApiKey: "",
-                  model: "llama3.2",
                   name: "Ollama 本机",
+                  providerKey: "pk-ollama",
                   type: "openai-chat",
                   updatetime: 0,
                 },
               ],
+            }),
+          ),
+          ListLLMModels: vi.fn(() =>
+            Promise.resolve({
+              items: [
+                {
+                  contextWindow: 200000,
+                  createtime: 0,
+                  enabled: true,
+                  id: 11,
+                  isDefault: true,
+                  maxOutput: 64000,
+                  modelId: "claude-sonnet-4-6",
+                  modelKey: "mk-sonnet",
+                  name: "Sonnet",
+                  providerId: 1,
+                  providerKey: "pk-production",
+                  updatetime: 0,
+                },
+              ],
+            }),
+          ),
+          CreateLLMProvider: vi.fn(() =>
+            Promise.resolve({
+              item: {
+                baseUrl: "https://api.example.com",
+                createtime: 0,
+                defaultModelKey: "mk-sonnet",
+                enabled: false,
+                hasApiKey: true,
+                id: 99,
+                maskedApiKey: "sk-ant-•••••••••••••• xJ12",
+                name: "Draft Anthropic",
+                providerKey: "pk-99",
+                type: "anthropic",
+                updatetime: 0,
+              },
             }),
           ),
           TestLLMProvider: vi.fn(() =>
@@ -1077,11 +1123,23 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(screen.getByRole("button", { name: "LLM Providers" }));
 
-    const providerTable = await screen.findByRole("table", {
-      name: "LLM provider list",
+    // 供应商导航按类型分组，展示端点 + 启用状态
+    const nav = await screen.findByRole("complementary", {
+      name: "Provider list",
     });
+    const production = await within(nav).findByRole("button", {
+      name: /Production/,
+    });
+    expect(
+      within(production).getByText("https://api.anthropic.com"),
+    ).toBeInTheDocument();
+    expect(within(production).getByText("Enabled")).toBeInTheDocument();
+    const ollama = within(nav).getByRole("button", { name: /Ollama 本机/ });
+    expect(
+      within(ollama).getByText("http://localhost:11434/v1"),
+    ).toBeInTheDocument();
+    expect(within(ollama).getByText("Disabled")).toBeInTheDocument();
 
-    expectHorizontalTableScroll(providerTable);
     expect(
       screen.getByRole("button", { name: "LLM Providers" }),
     ).toHaveAttribute("aria-current", "page");
@@ -1091,18 +1149,22 @@ describe("App", () => {
     expect(
       screen.queryByRole("list", { name: "Agent backend list" }),
     ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("list", { name: "LLM provider compact list" }),
-    ).not.toBeInTheDocument();
-    await waitFor(() => {
-      expect(within(providerTable).getByText("Production")).toBeInTheDocument();
-      expect(
-        within(providerTable).getByText("Ollama 本机"),
-      ).toBeInTheDocument();
-      expect(
-        within(providerTable).getByText("http://localhost:11434/v1"),
-      ).toBeInTheDocument();
+
+    // 选中供应商的工作区展示连接配置 + 默认模型行
+    const workspace = await screen.findByRole("region", {
+      name: /Production models/,
     });
+    expect(
+      within(workspace).getByText("https://api.anthropic.com"),
+    ).toBeInTheDocument();
+    expect(
+      within(workspace).getByText("sk-ant-•••••••••••••• xJ12"),
+    ).toBeInTheDocument();
+    expect(
+      within(workspace).getByText("claude-sonnet-4-6"),
+    ).toBeInTheDocument();
+    expect(within(workspace).getByText("mk-sonnet")).toBeInTheDocument();
+
     expect(
       screen.getByRole("button", { name: "New Provider" }),
     ).toBeInTheDocument();
@@ -1117,15 +1179,12 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(screen.getByRole("button", { name: "LLM Providers" }));
 
-    const providerTable = await screen.findByRole("table", {
-      name: "LLM provider list",
-    });
-    await waitFor(() => {
-      expect(within(providerTable).getByText("Production")).toBeInTheDocument();
+    const workspace = await screen.findByRole("region", {
+      name: /Production models/,
     });
 
     await user.click(
-      within(providerTable).getByRole("button", { name: "Test Production" }),
+      within(workspace).getByRole("button", { name: "Test Production" }),
     );
 
     const appBridge = (
@@ -1134,8 +1193,9 @@ describe("App", () => {
       }
     ).go?.app?.App;
 
+    // 空 modelKey → 测试 Provider 当前默认模型
     expect(appBridge?.TestLLMProvider).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 1 }),
+      expect.objectContaining({ id: 1, modelKey: "" }),
     );
     expect(
       await screen.findByText(
@@ -1144,7 +1204,7 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
-  it("tests a draft LLM provider from the create dialog", async () => {
+  it("creates an LLM provider with a default model from the create dialog", async () => {
     const user = userEvent.setup();
 
     mockLlmProviders();
@@ -1156,20 +1216,34 @@ describe("App", () => {
       await screen.findByRole("button", { name: "New Provider" }),
     );
 
-    const dialog = await screen.findByRole("form", {
-      name: "New LLM provider",
+    const dialog = await screen.findByRole("dialog", {
+      name: "New LLM Provider",
     });
     await user.type(within(dialog).getByLabelText("Name"), "Draft Anthropic");
+    await user.type(within(dialog).getByLabelText(/^API Key$/), "sk-draft");
     await user.type(
-      within(dialog).getByPlaceholderText(/sk-\.\.\./),
-      "sk-draft",
-    );
-    await user.type(
-      within(dialog).getByPlaceholderText(/claude-opus-4-7/),
-      "claude-sonnet-4-6",
+      within(dialog).getByLabelText(/^Base URL/),
+      "https://api.example.com",
     );
 
-    await user.click(within(dialog).getByRole("button", { name: "Test Call" }));
+    // 手工添加一个模型并选择为默认
+    await user.click(within(dialog).getByRole("button", { name: "Add model" }));
+    fireEvent.change(within(dialog).getByLabelText("Model ID"), {
+      target: { value: "claude-sonnet-4-6" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Context"), {
+      target: { value: "200000" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Output"), {
+      target: { value: "64000" },
+    });
+    await user.click(
+      within(dialog).getByRole("radio", {
+        name: "Set claude-sonnet-4-6 as default",
+      }),
+    );
+
+    await user.click(within(dialog).getByRole("button", { name: "Create" }));
 
     const appBridge = (
       window as unknown as {
@@ -1177,19 +1251,24 @@ describe("App", () => {
       }
     ).go?.app?.App;
 
-    expect(appBridge?.TestLLMProvider).toHaveBeenCalledWith(
+    expect(appBridge?.CreateLLMProvider).toHaveBeenCalledWith(
       expect.objectContaining({
-        apiKey: "sk-draft",
-        id: 0,
-        model: "claude-sonnet-4-6",
         type: "anthropic",
-        useDraft: true,
+        name: "Draft Anthropic",
+        apiKey: "sk-draft",
+        baseUrl: "https://api.example.com",
+        defaultModelId: "claude-sonnet-4-6",
+        models: expect.arrayContaining([
+          expect.objectContaining({
+            modelId: "claude-sonnet-4-6",
+            contextWindow: 200000,
+            maxOutput: 64000,
+          }),
+        ]),
       }),
     );
     expect(
-      await within(dialog).findByText(
-        "Call succeeded. Sent hi and received a model response.",
-      ),
+      await screen.findByText('Provider "Draft Anthropic" added'),
     ).toBeInTheDocument();
   });
 
