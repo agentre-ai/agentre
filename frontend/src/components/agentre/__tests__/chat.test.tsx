@@ -592,6 +592,25 @@ describe("ChatTranscript autonomous turn banner", () => {
     } as chat_svc.ChatMessage;
   }
 
+  // emptyMsg:轮刚起、内容还没落地的 assistant 行(autonomous_turn.go / Send 建行时
+  // BlocksJSON 恒为 "[]")。与 noticeMsg 的区别正是判定要认的那条界:没有块 ≠ 块全是
+  // notice。
+  function emptyMsg(id: number): chat_svc.ChatMessage {
+    return {
+      blocks: [] as ChatBlockData[],
+      completionTokens: 0,
+      createtime: new Date("2026-05-17T10:30:00Z").getTime(),
+      durationMs: 0,
+      errorText: "",
+      id,
+      model: "",
+      promptTokens: 0,
+      role: "assistant",
+      seq: id,
+      sessionId: 1,
+    } as chat_svc.ChatMessage;
+  }
+
   // noticeMsg:供应商切换/回退 notice 的落库形状——独立的 assistant 消息,blocks 只有
   // 一个 type: "notice" 块(session_provider.go 的 encodeProviderSwitch 同源同形)。
   function noticeMsg(id: number): chat_svc.ChatMessage {
@@ -718,6 +737,29 @@ describe("ChatTranscript autonomous turn banner", () => {
       />,
     );
     expect(screen.queryAllByRole("separator")).toHaveLength(0);
+  });
+
+  it("自主续轮刚起、内容还没落地(blocks 为空)时横幅就该在", () => {
+    // 决策 3 认的是「内容块**全部是 notice**」,空 blocks 不是 notice 行 —— 这条守的
+    // 是判定别把「还没有内容的消息」一并吞掉。真实形状:autonomous_turn.go 建自主轮
+    // assistant 行时 BlocksJSON 恒为 "[]",chat-panel 的 autonomous_started 分支立刻
+    // 把这条空消息插进 messages,横幅正要在这一刻出现,而不是等第一段文字流完。
+    const { container } = render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          msg(1, "user", "后台跑吧，完了叫我"),
+          msg(2, "assistant", "后台任务我先跑着，完了叫你。"),
+          emptyMsg(3),
+        ]}
+      />,
+    );
+    const pendingRow = container.querySelector('[data-message-id="3"]');
+    expect(pendingRow).not.toBeNull();
+    expect(
+      within(pendingRow as HTMLElement).getByRole("separator"),
+    ).toHaveTextContent(/auto-continued|自动继续/);
   });
 });
 
