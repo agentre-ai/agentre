@@ -1315,7 +1315,7 @@ const ChatTranscript = React.forwardRef<
   // 判定:assistant 轮且其在**完整 messages**里紧邻的前一条不是 user —— 正常轮是
   // user→assistant、auto-continue / steer 也是 user→assistant,只有自主续轮是
   // assistant→assistant(无 user 行)。用完整 messages(而非 displayMessages)算,
-  // 避免 compact 折叠把首条 assistant 误判成自主轮。会话首条(永不算,见下方 prevRole
+  // 避免 compact 折叠把首条 assistant 误判成自主轮。会话首条永不算(见下方 prevRole
   // 的 undefined 初值)。
   //
   // 只含 notice 块的消息(供应商切换/回退提示,规格决策 3)在这条判定里透明:它自己

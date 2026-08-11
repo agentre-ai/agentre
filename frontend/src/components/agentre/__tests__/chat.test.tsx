@@ -699,6 +699,26 @@ describe("ChatTranscript autonomous turn banner", () => {
     );
     expect(screen.queryAllByRole("separator")).toHaveLength(0);
   });
+
+  it("notice 垫在 user 与它的 assistant 回复之间,不把这一轮误判成自主续轮", () => {
+    // 决策 3 的另一半:notice 行「在判断其它消息的『紧邻前一条』时被跳过」。这里
+    // msg(3) 紧邻的前一条**真实**消息是 msg(1) 这条 user —— 正常轮,不该出 banner。
+    // 真实成因:用户发完消息、assistant 还没落地时在 pill 上切了供应商,切换 notice
+    // 就落在两者中间(NextSeq 排在在途 assistant 之后同理)。notice 若不透明,它会
+    // 顶替 user 成为「紧邻前一条」,把一条普通轮误判成自主续轮 —— 正是 R2 的形状。
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          msg(1, "user", "帮我查一下"),
+          noticeMsg(2),
+          msg(3, "assistant", "好的,我查到……"),
+        ]}
+      />,
+    );
+    expect(screen.queryAllByRole("separator")).toHaveLength(0);
+  });
 });
 
 describe("ChatTranscript virtualization", () => {
