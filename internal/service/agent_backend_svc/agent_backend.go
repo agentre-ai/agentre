@@ -402,7 +402,7 @@ func (s *agentBackendSvc) test(ctx context.Context, req *TestBackendRequest, tra
 		deps.Token = tok
 		deps.GatewayURL = s.gateway.URL()
 		if matchedProvider != nil {
-			deps.Model = matchedProvider.Model
+			deps.Model = providerDefaultModelID(ctx, matchedProvider)
 		}
 	}
 
@@ -849,11 +849,26 @@ func (s *agentBackendSvc) requireMatchingProvider(ctx context.Context, b *agent_
 		return nil, i18n.NewError(ctx, code.AgentBackendProviderTypeMismatch)
 	}
 	// piagent 绑定时必须能通过 --model agentre-<key>/<model> 命中该供应商下的模型，
-	// 因此要求 provider.Model 非空；其它 kind（builtin / claudecode / codex）不要求。
-	if kind.RequiresProviderModel() && strings.TrimSpace(p.Model) == "" {
+	// 因此要求 provider 当前能解析出非空的启用默认模型（provider-default）；
+	// 其它 kind（builtin / claudecode / codex）不要求。
+	if kind.RequiresProviderModel() && providerDefaultModelID(ctx, p) == "" {
 		return nil, i18n.NewError(ctx, code.AgentBackendProviderModelRequired)
 	}
 	return p, nil
+}
+
+// providerDefaultModelID 按 provider-default 语义返回 Provider 当前可执行的默认模型 ID。
+// 与 llm_provider_svc.ResolveTarget 的默认分支同一规则：Provider 未启用、未配置默认模型、
+// 或默认模型缺失 / 停用时返回空串。只取 ModelID，不透出 BaseURL / APIKey 等凭证。
+func providerDefaultModelID(ctx context.Context, p *llm_provider_entity.LLMProvider) string {
+	if p == nil || !p.IsEnabled() || !p.HasDefaultModel() {
+		return ""
+	}
+	m, err := llm_provider_repo.LLMProvider().FindModelByKey(ctx, p.DefaultModelKey)
+	if err != nil || m == nil || !m.IsEnabled() {
+		return ""
+	}
+	return m.ModelID
 }
 
 func (s *agentBackendSvc) validateRouteProviders(ctx context.Context, b *agent_backend_entity.AgentBackend) error {
@@ -913,7 +928,7 @@ func (s *agentBackendSvc) toItem(ctx context.Context, b *agent_backend_entity.Ag
 	if p != nil {
 		item.LLMProviderName = p.Name
 		item.LLMProviderType = p.Type
-		item.LLMProviderModel = p.Model
+		item.LLMProviderModel = providerDefaultModelID(ctx, p)
 		item.LLMProviderActive = p.IsActive()
 	}
 	if id, ok := b.DeviceIDInt(); ok {

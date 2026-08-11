@@ -15,6 +15,7 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
@@ -57,11 +58,12 @@ func setupSvcTest(t *testing.T) (
 
 func activeProvider(key string) *llm_provider_entity.LLMProvider {
 	return &llm_provider_entity.LLMProvider{
-		ProviderKey: key,
-		Type:        string(llm_provider_entity.TypeAnthropic),
-		Name:        "Production",
-		Model:       "claude-sonnet-4-6",
-		Status:      consts.ACTIVE,
+		ProviderKey:     key,
+		Type:            string(llm_provider_entity.TypeAnthropic),
+		Name:            "Production",
+		DefaultModelKey: "model-key-" + key,
+		Enabled:         llm_provider_entity.EnabledOn,
+		Status:          consts.ACTIVE,
 	}
 }
 
@@ -69,6 +71,29 @@ func activeProviderWithType(key string, typ llm_provider_entity.ProviderType) *l
 	p := activeProvider(key)
 	p.Type = string(typ)
 	return p
+}
+
+// activeDefaultModel 返回 provider 的启用默认模型记录（ModelID 与既有展示断言一致）。
+func activeDefaultModel(providerKey string) *llm_provider_model_entity.LLMProviderModel {
+	return defaultModelWithState(providerKey, "claude-sonnet-4-6", llm_provider_model_entity.EnabledOn)
+}
+
+// defaultModelWithState 构造一条属于 provider 的默认模型记录；enabled 由调用方决定，
+// 用于覆盖“默认模型已停用 → 不可解析”的边界。
+func defaultModelWithState(providerKey, modelID string, enabled int) *llm_provider_model_entity.LLMProviderModel {
+	return &llm_provider_model_entity.LLMProviderModel{
+		ModelKey: "model-key-" + providerKey,
+		ModelID:  modelID,
+		Enabled:  enabled,
+		Status:   consts.ACTIVE,
+	}
+}
+
+// expectDefaultModelResolution 注册 provider 默认模型解析的 FindModelByKey 期望，
+// times 反映该路径上会解析的次数（如 piagent 校验 + 展示各一次）。
+func expectDefaultModelResolution(providerMock *mock_llm_provider_repo.MockLLMProviderRepo, providerKey string, times int) {
+	providerMock.EXPECT().FindModelByKey(gomock.Any(), "model-key-"+providerKey).
+		Return(activeDefaultModel(providerKey), nil).Times(times)
 }
 
 type fakeBackendGateway struct {
@@ -102,6 +127,7 @@ func TestCreateBackend(t *testing.T) {
 		convey.Convey("成功创建 builtin", func() {
 			backendMock.EXPECT().FindByName(gomock.Any(), "默认助手").Return(nil, nil)
 			providerMock.EXPECT().FindByKey(gomock.Any(), "key-1").Return(activeProvider("key-1"), nil)
+			expectDefaultModelResolution(providerMock, "key-1", 1)
 			backendMock.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
 				DoAndReturn(func(_ context.Context, b *agent_backend_entity.AgentBackend) error {
 					b.ID = 42
@@ -155,6 +181,7 @@ func TestCreateBackend(t *testing.T) {
 		convey.Convey("成功创建 claudecode", func() {
 			backendMock.EXPECT().FindByName(gomock.Any(), "cc").Return(nil, nil)
 			providerMock.EXPECT().FindByKey(gomock.Any(), "key-1").Return(activeProvider("key-1"), nil)
+			expectDefaultModelResolution(providerMock, "key-1", 1)
 			backendMock.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
 				DoAndReturn(func(_ context.Context, b *agent_backend_entity.AgentBackend) error {
 					assert.Equal(t, string(agent_backend_entity.TypeClaudeCode), b.Type)
@@ -208,6 +235,7 @@ func TestCreateBackend(t *testing.T) {
 			backendMock.EXPECT().FindByName(gomock.Any(), "codex").Return(nil, nil)
 			providerMock.EXPECT().FindByKey(gomock.Any(), "key-2").
 				Return(activeProviderWithType("key-2", llm_provider_entity.TypeOpenAIResponse), nil)
+			expectDefaultModelResolution(providerMock, "key-2", 1)
 			backendMock.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
 				DoAndReturn(func(_ context.Context, b *agent_backend_entity.AgentBackend) error {
 					assert.Equal(t, string(agent_backend_entity.TypeCodex), b.Type)
@@ -283,6 +311,8 @@ func TestCreateBackend(t *testing.T) {
 				backendMock.EXPECT().FindByName(gomock.Any(), "pi").Return(nil, nil)
 				providerMock.EXPECT().FindByKey(gomock.Any(), "key-4").
 					Return(activeProviderWithType("key-4", typ), nil)
+				// piagent 校验（requireMatchingProvider）+ 展示（toItem）各解析一次默认模型。
+				expectDefaultModelResolution(providerMock, "key-4", 2)
 				backendMock.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
 					DoAndReturn(func(_ context.Context, b *agent_backend_entity.AgentBackend) error {
 						assert.Equal(t, string(agent_backend_entity.TypePiAgent), b.Type)
@@ -301,10 +331,10 @@ func TestCreateBackend(t *testing.T) {
 			}
 		})
 
-		convey.Convey("pi-agent 绑定 provider 但 Model 为空 → AgentBackendProviderModelRequired", func() {
+		convey.Convey("pi-agent 绑定 provider 但默认模型为空 → AgentBackendProviderModelRequired", func() {
 			backendMock.EXPECT().FindByName(gomock.Any(), "pi").Return(nil, nil)
 			p := activeProviderWithType("key-4", llm_provider_entity.TypeOpenAIResponse)
-			p.Model = ""
+			p.DefaultModelKey = ""
 			providerMock.EXPECT().FindByKey(gomock.Any(), "key-4").Return(p, nil)
 
 			_, err := svc.Create(ctx, &CreateBackendRequest{
@@ -317,10 +347,27 @@ func TestCreateBackend(t *testing.T) {
 			assert.Equal(t, code.AgentBackendProviderModelRequired, httpErr.Code)
 		})
 
-		convey.Convey("claudecode 绑定 Model 为空的 provider 仍可创建", func() {
+		convey.Convey("pi-agent 绑定 provider 但默认模型已停用 → AgentBackendProviderModelRequired", func() {
+			backendMock.EXPECT().FindByName(gomock.Any(), "pi").Return(nil, nil)
+			providerMock.EXPECT().FindByKey(gomock.Any(), "key-4").
+				Return(activeProviderWithType("key-4", llm_provider_entity.TypeOpenAIResponse), nil)
+			providerMock.EXPECT().FindModelByKey(gomock.Any(), "model-key-key-4").
+				Return(defaultModelWithState("key-4", "claude-sonnet-4-6", llm_provider_model_entity.EnabledOff), nil)
+
+			_, err := svc.Create(ctx, &CreateBackendRequest{
+				Type:           string(agent_backend_entity.TypePiAgent),
+				Name:           "pi",
+				LLMProviderKey: "key-4",
+			})
+			var httpErr *httputils.Error
+			require.ErrorAs(t, err, &httpErr)
+			assert.Equal(t, code.AgentBackendProviderModelRequired, httpErr.Code)
+		})
+
+		convey.Convey("claudecode 绑定无默认模型的 provider 仍可创建", func() {
 			backendMock.EXPECT().FindByName(gomock.Any(), "cc").Return(nil, nil)
 			p := activeProvider("key-1")
-			p.Model = ""
+			p.DefaultModelKey = ""
 			providerMock.EXPECT().FindByKey(gomock.Any(), "key-1").Return(p, nil)
 			backendMock.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
 				DoAndReturn(func(_ context.Context, b *agent_backend_entity.AgentBackend) error {
@@ -336,12 +383,14 @@ func TestCreateBackend(t *testing.T) {
 			})
 			assert.NoError(t, err)
 			assert.Equal(t, int64(49), resp.Item.ID)
+			// 展示侧：无默认模型 → 解析结果为空（目标已失效）。
+			assert.Equal(t, "", resp.Item.LLMProviderModel)
 		})
 
-		convey.Convey("codex 绑定 Model 为空的 provider 仍可创建", func() {
+		convey.Convey("codex 绑定无默认模型的 provider 仍可创建", func() {
 			backendMock.EXPECT().FindByName(gomock.Any(), "codex").Return(nil, nil)
 			p := activeProviderWithType("key-2", llm_provider_entity.TypeOpenAIResponse)
-			p.Model = ""
+			p.DefaultModelKey = ""
 			providerMock.EXPECT().FindByKey(gomock.Any(), "key-2").Return(p, nil)
 			backendMock.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
 				DoAndReturn(func(_ context.Context, b *agent_backend_entity.AgentBackend) error {
@@ -372,6 +421,7 @@ func TestUpdateBackend(t *testing.T) {
 			backendMock.EXPECT().Find(gomock.Any(), int64(5)).Return(existing, nil)
 			backendMock.EXPECT().FindByName(gomock.Any(), "new").Return(nil, nil)
 			providerMock.EXPECT().FindByKey(gomock.Any(), "key-2").Return(activeProvider("key-2"), nil)
+			expectDefaultModelResolution(providerMock, "key-2", 1)
 			backendMock.EXPECT().Update(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
 				DoAndReturn(func(_ context.Context, b *agent_backend_entity.AgentBackend) error {
 					assert.Equal(t, "new", b.Name)
@@ -477,6 +527,7 @@ func TestListBackends(t *testing.T) {
 		agentMock.EXPECT().CountByBackends(gomock.Any(), []int64{1, 2, 3}).
 			Return(map[int64]int64{1: 3}, nil)
 		providerMock.EXPECT().FindByKey(gomock.Any(), "key-1").Return(activeProvider("key-1"), nil)
+		expectDefaultModelResolution(providerMock, "key-1", 1)
 		providerMock.EXPECT().FindByKey(gomock.Any(), "key-7").Return(nil, nil)
 		// LLMProviderKey == "" 不应触发 FindByKey；如果调用则 mock 严格模式会失败。
 
@@ -535,8 +586,10 @@ func TestTestBackend_HappyPath(t *testing.T) {
 			token:  "tok-codex",
 		}
 		provider := activeProviderWithType("key-2", llm_provider_entity.TypeOpenAIResponse)
-		provider.Model = "gpt-5-codex"
 		providerMock.EXPECT().FindByKey(gomock.Any(), "key-2").Return(provider, nil)
+		// deps.Model 应取 provider 当前默认模型的 ModelID，而非旧单模型字段。
+		providerMock.EXPECT().FindModelByKey(gomock.Any(), "model-key-key-2").
+			Return(defaultModelWithState("key-2", "gpt-5-codex", llm_provider_model_entity.EnabledOn), nil)
 
 		var gotDeps ProbeDeps
 		proberMock.EXPECT().
@@ -611,6 +664,8 @@ func TestTestBackend_PiAgentBoundSkipsGateway(t *testing.T) {
 		// gateway 保持 nil；旧逻辑会在 `!IsBuiltin() && LLMProviderKey != ""`
 		// 分支报 GatewayUnavailable，piagent 绑定后应不再进该分支。
 		providerMock.EXPECT().FindByKey(gomock.Any(), "key-pi").Return(activeProvider("key-pi"), nil)
+		// piagent 绑定时必须能解析出启用默认模型，否则校验直接拒绝。
+		expectDefaultModelResolution(providerMock, "key-pi", 1)
 		proberMock.EXPECT().
 			Run(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{}), gomock.Any()).
 			Return("pong", nil)
@@ -934,6 +989,7 @@ func TestCreateBackend_RemoteDeviceValidation(t *testing.T) {
 		convey.Convey("device 存在 → 允许并回填 view", func() {
 			ctx, backendMock, providerMock, _, rd, _, svc := setupSvcTestWithRemoteDevice(t)
 			providerMock.EXPECT().FindByKey(gomock.Any(), "key-1").Return(activeProvider("key-1"), nil).AnyTimes()
+			expectDefaultModelResolution(providerMock, "key-1", 1)
 			backendMock.EXPECT().FindByName(gomock.Any(), "remote-cc").Return(nil, nil)
 			backendMock.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
 				func(_ context.Context, b *agent_backend_entity.AgentBackend) error { b.ID = 11; return nil },
@@ -951,6 +1007,7 @@ func TestCreateBackend_RemoteDeviceValidation(t *testing.T) {
 		convey.Convey("device 空 = 本地 → 不调 remote_device_svc", func() {
 			ctx, backendMock, providerMock, _, _, _, svc := setupSvcTestWithRemoteDevice(t)
 			providerMock.EXPECT().FindByKey(gomock.Any(), "key-1").Return(activeProvider("key-1"), nil).AnyTimes()
+			expectDefaultModelResolution(providerMock, "key-1", 1)
 			backendMock.EXPECT().FindByName(gomock.Any(), "local-cc").Return(nil, nil)
 			backendMock.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
 				func(_ context.Context, b *agent_backend_entity.AgentBackend) error { b.ID = 12; return nil },
