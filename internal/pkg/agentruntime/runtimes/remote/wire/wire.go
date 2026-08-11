@@ -227,9 +227,18 @@ type RunParams struct {
 	Title string `json:"title,omitempty"`
 	// AgentSyncID 是该会话所属 Agent 的账号级同步标识(块 1,决策 3 的 ULID,不是本地
 	// 自增 agent_id)。会话列表按它解析 Agent 名与头像(R5)。
-	AgentSyncID       string               `json:"agentSyncId,omitempty"`
-	SystemPrompt      string               `json:"systemPrompt,omitempty"`
-	ProviderSessionID string               `json:"providerSessionId,omitempty"`
+	AgentSyncID       string `json:"agentSyncId,omitempty"`
+	SystemPrompt      string `json:"systemPrompt,omitempty"`
+	ProviderSessionID string `json:"providerSessionId,omitempty"`
+	// FreshSession 声明这一轮**必须起全新会话**:即使 daemon 在自家落库里存了这条会话
+	// 的 provider_session_id,也不许续(挂账修复,2026-08-11)。决策 8 之后「空
+	// ProviderSessionID」的语义被重载成「用落库那份续话」,而 regenerate 与 provider 会话
+	// 失效恢复这两条路径的空字段本意是「全新」—— 两者在 wire 上不可区分,daemon 拿旧 id
+	// 顶掉:regenerate 退化成续旧上下文、gone 恢复永远撞同一个失效 id。本字段是那个
+	// 「全新」意图的显式出口。三种取值:ProviderSessionID 非空 = resume;空 +
+	// FreshSession=false(缺省)= 决策 8 续话(daemon 续落库那份);空 + FreshSession=true
+	// = 全新,忽略落库。浏览器续话不置它;桌面端在本地 sess.ProviderSessionID 为空时置它。
+	FreshSession      bool                 `json:"freshSession,omitempty"`
 	UserText          string               `json:"userText,omitempty"`
 	UserBlocks        []blocks.StoredBlock `json:"userBlocks,omitempty"`
 	History           []HistoryMessageWire `json:"history,omitempty"`

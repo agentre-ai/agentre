@@ -568,6 +568,7 @@ func buildRunParams(req agentruntime.RunRequest) (wire.RunParams, error) {
 		AgentSyncID:       req.AgentSyncID,
 		SystemPrompt:      req.SystemPrompt,
 		ProviderSessionID: req.ProviderSessionID,
+		FreshSession:      req.FreshSession,
 		UserText:          req.UserText,
 		UserBlocks:        userBlocks,
 		History:           history,

@@ -3816,10 +3816,13 @@ func (s *chatSvc) prepareTurnRun(
 		AgentSyncID:       a.SyncID,
 		SystemPrompt:      strings.Join(a.GetPrompt(), "\n"),
 		ProviderSessionID: sess.ProviderSessionID,
-		Compact:           compact,
-		ForkAnchor:        forkAnchor,
-		MCPServers:        appendTurnMCP(ctx, nil, a, sess.ID, runner.Capabilities().Has(capability.CapMCPTools)),
-		EnabledPlugins:    enabledPluginsForTurn(ctx, a, be.ID, runner.Capabilities().Has(capability.CapSkills)),
+		// 挂账修复(2026-08-11):本地没有可续的原生会话(regenerate 无锚点 / provider 会话
+		// 失效恢复 / 首轮)时声明 freshSession,远端 daemon 据此不拿落库旧 id 续话。
+		FreshSession:   strings.TrimSpace(sess.ProviderSessionID) == "",
+		Compact:        compact,
+		ForkAnchor:     forkAnchor,
+		MCPServers:     appendTurnMCP(ctx, nil, a, sess.ID, runner.Capabilities().Has(capability.CapMCPTools)),
+		EnabledPlugins: enabledPluginsForTurn(ctx, a, be.ID, runner.Capabilities().Has(capability.CapSkills)),
 	}
 	if userMsg != nil {
 		req.UserText = textOfMessage(userMsg)

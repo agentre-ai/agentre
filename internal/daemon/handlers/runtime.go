@@ -463,7 +463,10 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	// 提供。这里只改直连(非 Pi)路径 —— Pi 的 prepare/start 由已准备的身份自己带,不受
 	// 影响;调用方显式提供的值(重开 fork 等)优先于落库的那份。查不出行或读失败时保持
 	// 空,让 runtime 自己新建会话,不拿一个读不出来的库去换续话。
-	if strings.TrimSpace(req.ProviderSessionID) == "" && h.deps.SessionQuery != nil {
+	// 挂账修复(2026-08-11):FreshSession=true 声明这一轮**必须全新**(regenerate 无锚点
+	// 时 / provider 会话失效恢复),即使落库有旧 id 也不许续 —— 否则这两条路径的空字段
+	// 被重载成「续话」,regenerate 退化成续旧上下文、gone 恢复永远撞同一个失效 id。
+	if !p.FreshSession && strings.TrimSpace(req.ProviderSessionID) == "" && h.deps.SessionQuery != nil {
 		if row, err := h.deps.SessionQuery.Find(ctx, em.peer, em.peerSessionID); err == nil && row != nil && row.ProviderSessionID != "" {
 			req.ProviderSessionID = row.ProviderSessionID
 		}

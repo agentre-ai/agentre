@@ -1922,6 +1922,37 @@ func TestRuntime_Run_ContinuationResolvesStoredProviderSessionID(t *testing.T) {
 		"续话不需要调用方提供 providerSessionID,daemon 拿自己落库的那份续上")
 }
 
+// TestRuntime_Run_FreshSessionSkipsStoredProviderSessionID 覆盖挂账修复:决策 8 把「空
+// RunParams.ProviderSessionID」重载成「用落库那份续话」,但 regenerate 与 provider 会话
+// 失效恢复这两条路径的空字段本意是「起全新会话」。freshSession=true 显式声明这一轮不续
+// 任何落库的 provider_session_id —— daemon 必须把 ProviderSessionID 保持为空让 runtime
+// 新建,而不是拿落库的旧 id 顶掉(否则 regenerate 退化成续旧上下文、gone 恢复永远撞同
+// 一个失效 id)。
+func TestRuntime_Run_FreshSessionSkipsStoredProviderSessionID(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.Done{}
+		close(ch)
+		return ch, &agentruntime.RunResult{ProviderSessionID: "claude-abc123"}, nil
+	}
+	ctx, notif, _, h := setupRuntimeTestWithSessions(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)}
+	// 第一轮:daemon 从 result 收回 providerSessionID 并落库。
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 5, AgentID: 7, Cwd: "/work"})
+	require.NoError(t, err)
+	notif.waitFrames(t, 2)
+	require.Len(t, rt.runReqs, 1)
+
+	// 第二轮:调用方显式声明 freshSession —— 落库已有旧 id,也必须起全新会话。
+	_, err = h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 5, AgentID: 7, Cwd: "/work", FreshSession: true})
+	require.NoError(t, err)
+	notif.waitFrames(t, 2)
+	require.Len(t, rt.runReqs, 2)
+	assert.Equal(t, "", rt.runReqs[1].req.ProviderSessionID,
+		"freshSession=true 时 daemon 不得用落库的 provider_session_id 续话,必须保持为空起全新会话")
+}
+
 // TestRuntime_Run_AutonomousTurnMovesLifecycleBackToRunning 覆盖自主续轮:backend
 // 自发跑的一轮同样是「一轮执行中」,会话必须在这段时间报 running 而不是停在 idle ——
 // 否则重连的客户端会把一条正在产出事件的会话显示成闲置。

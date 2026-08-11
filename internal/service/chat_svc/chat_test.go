@@ -2026,6 +2026,64 @@ func TestSend_PersistsProviderSessionIDBeforeStreamDrains(t *testing.T) {
 	assert.True(t, persistedBeforeDrain, "provider session id must be persisted before the runtime event stream drains")
 }
 
+// TestSend_FreshSessionReflectsLocalProviderSessionID 覆盖挂账修复(2026-08-11)的
+// 生产者侧:chat_svc 在本地 sess.ProviderSessionID 为空(regenerate 无锚点 / provider 会话
+// 失效恢复同此)时,必须在 RunRequest 上声明 FreshSession=true,daemon 才不拿落库旧 id 续话;
+// 本地有可续的原生会话时保持 false,决策 8 的续话语义原样。
+func TestSend_FreshSessionReflectsLocalProviderSessionID(t *testing.T) {
+	convey.Convey("Given 本地 provider_session_id 有无两种状态, When Send, Then RunRequest.FreshSession 跟随", t, func() {
+		run := func(providerSessionID string) bool {
+			t.Setenv("AGENTRE_DATA_DIR", t.TempDir())
+			m := setupChatTest(t)
+			ctx := m.ctx
+			runner := &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}
+			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, runner)
+			t.Cleanup(restore)
+
+			sess := &chat_entity.Session{ID: 100, AgentID: 7, ProviderSessionID: providerSessionID, AgentStatus: "idle", Status: consts.ACTIVE}
+			backend := &agent_backend_entity.AgentBackend{ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE}
+			agent := &agent_entity.Agent{ID: 7, Name: "Claude", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`}
+
+			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(agent, nil)
+			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(backend, nil)
+			m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+			m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+			m.dbMock.ExpectBegin()
+			m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+			m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+					if msg.Role == "user" {
+						msg.ID = 1000
+					} else {
+						msg.ID = 1001
+					}
+					return nil
+				}).Times(2)
+			m.dbMock.ExpectCommit()
+
+			resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+			require.NoError(t, err)
+			chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+			select {
+			case req := <-runner.requests:
+				return req.FreshSession
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for runtime request")
+				return false
+			}
+		}
+
+		convey.Convey("本地无 provider_session_id → FreshSession=true", func() {
+			assert.True(t, run(""), "regenerate 无锚点 / 会话失效恢复:必须声明 freshSession,daemon 才不拿落库旧 id 续话")
+		})
+		convey.Convey("本地有 provider_session_id → FreshSession=false(resume)", func() {
+			assert.False(t, run("claude-abc123"), "本地有可续的原生会话时保持决策 8 续话语义")
+		})
+	})
+}
+
 type streamErrorRunner struct{ err error }
 
 func (streamErrorRunner) Capabilities() capability.Capabilities { return capability.Capabilities{} }
