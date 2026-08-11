@@ -112,6 +112,8 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      - name: Verify Windows agentred IPC and service management
+        run: go test ./cmd/agentred ./internal/pkg/agentredipc
       - name: Verify PowerShell installer
         shell: pwsh
         run: scripts/test-install.ps1

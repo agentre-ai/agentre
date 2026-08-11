@@ -115,7 +115,7 @@ func TestGivenServiceLifecycleActionsWhenExecutedThenTheyDelegateAndPrintStableS
 	}
 }
 
-func TestGivenRunningServiceWhenStatusIsRequestedThenLocalDaemonStatusUsesFrozenRenderer(t *testing.T) {
+func TestGivenRunningServiceWhenStatusIsRequestedThenStableHeaderPrecedesLocalDaemonDetails(t *testing.T) {
 	manager := &fakeServiceManager{status: ServiceStatus{Installed: true, Running: true}}
 	cmd := newServiceCmdWithDeps(serviceCommandDeps{
 		managerFactory: func() (ServiceManager, error) { return manager, nil },
@@ -135,7 +135,8 @@ func TestGivenRunningServiceWhenStatusIsRequestedThenLocalDaemonStatusUsesFrozen
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{"status"})
 	require.NoError(t, cmd.Execute())
-	assert.True(t, strings.HasPrefix(out.String(), "Daemon running, pid 42\n"))
+	assert.Equal(t, "Daemon running", strings.Split(strings.TrimSpace(out.String()), "\n")[0])
+	assert.Contains(t, out.String(), "PID: 42")
 	assert.Contains(t, out.String(), "Version: v1.2.3 (abcdef1)")
 }
 

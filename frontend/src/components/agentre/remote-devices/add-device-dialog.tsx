@@ -1,6 +1,8 @@
+import { Copy } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
+import { copyTextWithToast } from "@/lib/clipboard-toast";
 
 import { AgentreDialog } from "../app-dialog";
 import {
@@ -19,6 +21,7 @@ type Props = {
 export function AddDeviceDialog({ open, onClose, onSubmit }: Props) {
   const { t } = useTranslation();
   const pairing = useDevicePairingForm({ onSubmit });
+  const pairCommand = t("remoteDevices.onboarding.commands.pair");
 
   const handleClose = () => {
     if (pairing.submitting) return;
@@ -57,12 +60,31 @@ export function AddDeviceDialog({ open, onClose, onSubmit }: Props) {
         </>
       }
     >
-      <div className="rounded-md bg-secondary/50 px-3 py-2 text-xs text-muted-foreground">
-        {t("remoteDevices.add.instructions.prefix")}{" "}
-        <code data-selectable-text="true" className="select-text">
-          {t("remoteDevices.onboarding.commands.pair")}
-        </code>
-        {t("remoteDevices.add.instructions.suffix")}
+      <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/50 px-3 py-2 text-xs text-muted-foreground">
+        <span>
+          {t("remoteDevices.add.instructions.prefix")}{" "}
+          <code data-selectable-text="true" className="select-text">
+            {pairCommand}
+          </code>
+          {t("remoteDevices.add.instructions.suffix")}
+        </span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          className="shrink-0"
+          aria-label={t("remoteDevices.onboarding.copyLabel", {
+            label: pairCommand,
+          })}
+          onClick={() => {
+            void copyTextWithToast(pairCommand, {
+              successTitle: t("remoteDevices.onboarding.copySuccess"),
+            });
+          }}
+        >
+          <Copy data-icon="inline-start" aria-hidden="true" />
+          {t("common.copy")}
+        </Button>
       </div>
 
       <DevicePairingFields pairing={pairing} />

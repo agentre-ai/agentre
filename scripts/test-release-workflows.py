@@ -73,6 +73,10 @@ def main() -> None:
     for token in ("scripts/test-install.sh", "scripts/test-install.ps1", "scripts/test-release-workflows.py"):
         if token not in ci:
             raise AssertionError(f"CI does not run {token}")
+    windows = job_block(ci, "agentred-installer-windows")
+    for package in ("./cmd/agentred", "./internal/pkg/agentredipc"):
+        if package not in windows:
+            raise AssertionError(f"Windows CI does not run the platform tests in {package}")
 
     print("release workflow contract tests passed")
 

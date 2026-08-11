@@ -16,6 +16,10 @@ describe("AgentredOnboarding", () => {
       "href",
       "https://github.com/agentre-ai/agentre/releases/latest",
     );
+    expect(screen.getByText("agentred --version")).toHaveAttribute(
+      "data-selectable-text",
+      "true",
+    );
     await user.click(screen.getByRole("button", { name: "Installed, next" }));
 
     expect(

@@ -1,12 +1,36 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
+const { copyTextWithToast } = vi.hoisted(() => ({
+  copyTextWithToast: vi.fn().mockResolvedValue(true),
+}));
+
+vi.mock("@/lib/clipboard-toast", () => ({
+  copyTextWithToast,
+}));
+
 // Stub out use-remote-devices so the wailsjs transitive import is avoided.
 vi.mock("./use-remote-devices", () => ({}));
 
 import { AddDeviceDialog } from "./add-device-dialog";
 
 describe("AddDeviceDialog", () => {
+  it("copies the pairing command from the existing add-device flow", () => {
+    render(
+      <AddDeviceDialog open onClose={() => {}} onSubmit={async () => {}} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy agentred pair" }));
+
+    expect(copyTextWithToast).toHaveBeenCalledWith("agentred pair", {
+      successTitle: "Command copied",
+    });
+    expect(screen.getByText("agentred pair")).toHaveAttribute(
+      "data-selectable-text",
+      "true",
+    );
+  });
+
   it("配对 button stays disabled until URL + code are valid", () => {
     render(
       <AddDeviceDialog open onClose={() => {}} onSubmit={async () => {}} />,

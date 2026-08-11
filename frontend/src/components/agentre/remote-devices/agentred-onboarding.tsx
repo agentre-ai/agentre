@@ -37,6 +37,7 @@ export function AgentredOnboarding({ onSubmit }: AgentredOnboardingProps) {
     serviceInstall: t("remoteDevices.onboarding.commands.serviceInstall"),
     serviceRestart: t("remoteDevices.onboarding.commands.serviceRestart"),
     serviceStatus: t("remoteDevices.onboarding.commands.serviceStatus"),
+    version: t("remoteDevices.onboarding.commands.version"),
   };
   const installCommand =
     remoteOS === "windows" ? commands.installWindows : commands.installUnix;
@@ -163,6 +164,10 @@ export function AgentredOnboarding({ onSubmit }: AgentredOnboardingProps) {
                     : t("remoteDevices.onboarding.install.terminal")
                 }
                 command={installCommand}
+              />
+              <CommandCard
+                label={t("remoteDevices.onboarding.install.verify")}
+                command={commands.version}
               />
             </div>
 

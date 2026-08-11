@@ -136,7 +136,7 @@ func printServiceInspection(w io.Writer, status ServiceStatus, load serviceStatu
 	if status.Running && load != nil {
 		localStatus, err := load()
 		if err == nil {
-			printStatus(w, localStatus)
+			printServiceDaemonStatus(w, localStatus)
 			printServiceDetails(w, status.Details)
 			return
 		}
