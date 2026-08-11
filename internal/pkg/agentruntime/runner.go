@@ -412,12 +412,19 @@ type RunRequest struct {
 	AgentSyncID       string
 	SystemPrompt      string
 	ProviderSessionID string // 空 = 新建；非空 = resume
-	UserText          string
-	UserBlocks        []blocks.ContentBlock // 非空时为本轮用户输入权威 blocks；UserText 仅保留文本索引/兼容
-	History           []HistoryMessage      // 仅 builtin
-	GatewayURL        string                // 关联 provider 的 CLI 后端要；builtin 不用
-	GatewayToken      string                // 同上，一次性 token
-	Compact           bool                  // Codex 原生 compact turn；不创建普通 user prompt
+	// FreshSession 声明这一轮**必须起全新会话**(挂账修复 2026-08-11):即使远端 daemon
+	// 在自家落库里存了这条会话的 provider_session_id,也不许续。决策 8 之后「空
+	// ProviderSessionID」被重载成「用落库那份续话」,而 regenerate 无锚点 / provider 会话
+	// 失效恢复这两条路径的空字段本意是「全新」—— 两者在 wire 上不可区分,daemon 拿旧 id
+	// 顶掉就失效。chat_svc 在本地 sess.ProviderSessionID 为空(即没有可续的原生会话)时置
+	// true;本地 runner 忽略它,只有远端 daemon 的续话逻辑读它。
+	FreshSession bool
+	UserText     string
+	UserBlocks   []blocks.ContentBlock // 非空时为本轮用户输入权威 blocks；UserText 仅保留文本索引/兼容
+	History      []HistoryMessage      // 仅 builtin
+	GatewayURL   string                // 关联 provider 的 CLI 后端要；builtin 不用
+	GatewayToken string                // 同上，一次性 token
+	Compact      bool                  // Codex 原生 compact turn；不创建普通 user prompt
 
 	// MCPServers 非空 = 给本轮 CLI 注入额外 MCP tool server。仅声明 CapMCPTools
 	// 的 runtime(claudecode/codex)消费; 其它 runtime 忽略。org/subagent/hook 等工具经此注入。

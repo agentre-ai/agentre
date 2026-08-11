@@ -165,6 +165,20 @@ func buildGoldenFrames(t *testing.T) []goldenFrame {
 				SourceDeviceName: "Chrome · macOS",
 			},
 		},
+		// 挂账修复(2026-08-11)的 freshSession 场景:regenerate 无锚点 / provider 会话失效
+		// 恢复 —— 空 providerSessionId + FreshSession=true,daemon 据此起全新会话而不是拿
+		// 落库旧 id 续话。
+		{
+			name: "run-params-fresh",
+			body: RunParams{
+				Backend:        json.RawMessage(`{"backendType":"claudecode"}`),
+				AgentID:        agentID,
+				SessionID:      sid,
+				Cwd:            "/home/agent/proj",
+				FreshSession:   true,
+				PermissionMode: "default",
+			},
+		},
 		{name: "run-ack", body: runAck},
 		{name: "session-summary", body: newSummary},
 		{name: "session-summary-legacy", body: legacySummary},
