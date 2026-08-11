@@ -138,6 +138,15 @@ func (r *agentBackendRepo) ClaimRelative(ctx context.Context, fingerprint string
 				return err
 			}
 
+			// The unique (agent_id, sort_order) index includes the old target.
+			// Vacate those slots before inserting their replacements, as
+			// replaceExecTargets does for a changed target list.
+			for _, target := range originalTargets {
+				if err := tx.Where("id = ?", target.ID).Delete(&agent_entity.AgentExecTarget{}).Error; err != nil {
+					return err
+				}
+			}
+
 			claimedTargets := make([]*agent_entity.AgentExecTarget, 0, len(originalTargets))
 			for _, target := range originalTargets {
 				copyTarget := *target
@@ -149,11 +158,6 @@ func (r *agentBackendRepo) ClaimRelative(ctx context.Context, fingerprint string
 					return err
 				}
 				claimedTargets = append(claimedTargets, &copyTarget)
-			}
-			for _, target := range originalTargets {
-				if err := tx.Where("id = ?", target.ID).Delete(&agent_entity.AgentExecTarget{}).Error; err != nil {
-					return err
-				}
 			}
 			if err := tx.Model(&agent_backend_entity.AgentBackend{}).Where("id = ?", original.ID).
 				Update("status", consts.DELETE).Error; err != nil {

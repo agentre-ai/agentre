@@ -211,8 +211,8 @@ func TestAgentBackendRepo_ClaimRelative_ClonesTargetsAndTombstonesOriginals(t *t
 		WillReturnRows(sqlmock.NewRows([]string{"id", "agent_id", "agent_backend_id", "sort_order", "skills_json", "sync_id", "sync_account_id"}).
 			AddRow(int64(3), int64(9), int64(1), 0, `[]`, "target-old", int64(7)))
 	mock.ExpectExec("INSERT INTO `agent_backends`").WillReturnResult(sqlmock.NewResult(2, 1))
-	mock.ExpectExec("INSERT INTO `agent_exec_targets`").WillReturnResult(sqlmock.NewResult(4, 1))
 	mock.ExpectExec("DELETE FROM `agent_exec_targets` WHERE id = \\?").WithArgs(int64(3)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO `agent_exec_targets`").WillReturnResult(sqlmock.NewResult(4, 1))
 	mock.ExpectExec("UPDATE `agent_backends` SET `status`=\\?").WithArgs(consts.DELETE, int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
