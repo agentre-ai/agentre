@@ -198,6 +198,10 @@ func Install(ctx context.Context) {
 		}
 	}
 
+	// 「桌面端 + 浏览器对着同一台 agentred」那个场景要的那台已配对机器 + 用它的 Agent。
+	// 放在最后:它读的 CEO / backend 表到这里才播齐,而缺 env 时它整段 no-op。
+	installE2ERemoteAgentred(ctx)
+
 	logger.Ctx(ctx).Info("e2efakes.Install: e2e fakes installed",
 		zap.Int64("backendID", backendID), zap.Int64("agentID", ceo.ID))
 }
