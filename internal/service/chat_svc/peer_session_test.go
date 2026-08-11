@@ -31,6 +31,7 @@ type peerSessionTestDeps struct {
 	agent   *mock_agent_repo.MockAgentRepo
 	backend *mock_agent_backend_repo.MockAgentBackendRepo
 	session *mock_chat_repo.MockSessionRepo
+	message *mock_chat_repo.MockMessageRepo
 	device  *mock_remote_device_svc.MockRemoteDeviceSvc
 	svc     *chatSvc
 }
@@ -42,18 +43,21 @@ func setupPeerSessionTest(t *testing.T) *peerSessionTestDeps {
 		agent:   mock_agent_repo.NewMockAgentRepo(ctrl),
 		backend: mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl),
 		session: mock_chat_repo.NewMockSessionRepo(ctrl),
+		message: mock_chat_repo.NewMockMessageRepo(ctrl),
 		device:  mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl),
 		svc:     NewChat(NoopEmitter{}).(*chatSvc),
 	}
-	prevAgent, prevBackend, prevSession, prevDevice := agent_repo.Agent(), agent_backend_repo.AgentBackend(), chat_repo.Session(), remote_device_svc.Default()
+	prevAgent, prevBackend, prevSession, prevMessage, prevDevice := agent_repo.Agent(), agent_backend_repo.AgentBackend(), chat_repo.Session(), chat_repo.Message(), remote_device_svc.Default()
 	agent_repo.RegisterAgent(deps.agent)
 	agent_backend_repo.RegisterAgentBackend(deps.backend)
 	chat_repo.RegisterSession(deps.session)
+	chat_repo.RegisterMessage(deps.message)
 	remote_device_svc.SetDefault(deps.device)
 	t.Cleanup(func() {
 		agent_repo.RegisterAgent(prevAgent)
 		agent_backend_repo.RegisterAgentBackend(prevBackend)
 		chat_repo.RegisterSession(prevSession)
+		chat_repo.RegisterMessage(prevMessage)
 		remote_device_svc.SetDefault(prevDevice)
 		ctrl.Finish()
 	})
@@ -156,6 +160,7 @@ func TestAttachPeerSession_GivenLiveDesktopSession_ThenAddsAndCleansUpRemoteSubs
 	}, nil)
 	deps.agent.EXPECT().Find(ctx, int64(7)).Return(&agent_entity.Agent{ID: 7, AgentBackendID: 11, Status: consts.ACTIVE}, nil)
 	deps.backend.EXPECT().Find(ctx, int64(11)).Return(&agent_backend_entity.AgentBackend{ID: 11, Type: string(agent_backend_entity.TypeClaudeCode)}, nil)
+	deps.message.EXPECT().List(ctx, int64(41)).Return(nil, nil)
 
 	subscriber := &recordingPeerSubscriber{done: make(chan struct{})}
 	got, err := deps.svc.AttachPeerSession(ctx, wire.SessionAttachParams{SessionID: 41}, subscriber)

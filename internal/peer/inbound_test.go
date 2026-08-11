@@ -165,6 +165,15 @@ func TestInbound_GivenRelayReconnectAndShutdown_WhenAuthorizedPeerCallsCapabilit
 		SessionID: 1, BackendType: string(agent_backend_entity.TypeClaudeCode), LifecycleState: wire.SessionLifecycleRunning,
 	}, attachment)
 
+	pulled := relayRequest(t, ws, "desktop-peer", rpc.Frame{
+		JSONRPC: "2.0", ID: json.RawMessage(`6`), Method: wire.MethodSessionPull,
+		Params: mustJSON(t, wire.SessionPullParams{SessionID: 1}),
+	})
+	require.Nil(t, pulled.Error, "the attached peer must pull desktop history on the existing runtime.session.pull method")
+	var page wire.SessionPullResult
+	require.NoError(t, json.Unmarshal(pulled.Result, &page))
+	assert.Equal(t, int64(0), page.OldestSeq, "empty desktop transcript has no reclaimed prefix")
+
 	stop()
 	require.NoError(t, ws.SetReadDeadline(time.Now().Add(time.Second)))
 	_, _, err := ws.ReadMessage()
@@ -178,15 +187,18 @@ func registerInboundPeerChat(t *testing.T) {
 	agents := mock_agent_repo.NewMockAgentRepo(ctrl)
 	backends := mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl)
 	sessions := mock_chat_repo.NewMockSessionRepo(ctrl)
+	messages := mock_chat_repo.NewMockMessageRepo(ctrl)
 	device := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
 	prevChat := chat_svc.Chat()
 	prevAgents := agent_repo.Agent()
 	prevBackends := agent_backend_repo.AgentBackend()
 	prevSessions := chat_repo.Session()
+	prevMessages := chat_repo.Message()
 	prevDevice := remote_device_svc.Default()
 	agent_repo.RegisterAgent(agents)
 	agent_backend_repo.RegisterAgentBackend(backends)
 	chat_repo.RegisterSession(sessions)
+	chat_repo.RegisterMessage(messages)
 	remote_device_svc.SetDefault(device)
 	chat_svc.RegisterChat(chat_svc.NewChat(chat_svc.NoopEmitter{}))
 	t.Cleanup(func() {
@@ -194,6 +206,7 @@ func registerInboundPeerChat(t *testing.T) {
 		agent_repo.RegisterAgent(prevAgents)
 		agent_backend_repo.RegisterAgentBackend(prevBackends)
 		chat_repo.RegisterSession(prevSessions)
+		chat_repo.RegisterMessage(prevMessages)
 		remote_device_svc.SetDefault(prevDevice)
 		ctrl.Finish()
 	})
@@ -210,6 +223,7 @@ func registerInboundPeerChat(t *testing.T) {
 	sessions.EXPECT().Find(gomock.Any(), int64(1)).Return(&chat_entity.Session{
 		ID: 1, AgentID: 7, Title: "Ship the release", AgentStatus: "waiting", Status: consts.ACTIVE,
 	}, nil)
+	messages.EXPECT().List(gomock.Any(), int64(1)).Return(nil, nil)
 	agents.EXPECT().Find(gomock.Any(), int64(7)).Return(agent, nil)
 	backends.EXPECT().Find(gomock.Any(), int64(11)).Return(&agent_backend_entity.AgentBackend{
 		ID: 11, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE,

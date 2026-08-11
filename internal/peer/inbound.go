@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
@@ -14,6 +15,7 @@ import (
 type inboundSessionAdapter interface {
 	ListPeerSessions(context.Context) (*wire.SessionListResult, error)
 	AttachPeerSession(context.Context, wire.SessionAttachParams, chat_svc.PeerSessionSubscriber) (wire.SessionAttachResult, error)
+	PullPeerSession(context.Context, wire.SessionPullParams, chat_svc.PeerSessionSubscriber) (wire.SessionPullResult, error)
 }
 
 type connPeerSessionSubscriber struct {
@@ -25,6 +27,10 @@ func (s connPeerSessionSubscriber) Notify(method string, params any) error {
 }
 
 func (s connPeerSessionSubscriber) Done() <-chan struct{} { return s.conn.Done() }
+
+func (s connPeerSessionSubscriber) PeerSessionSubscriberKey() string {
+	return fmt.Sprintf("rpc-conn:%p", s.conn)
+}
 
 // Inbound keeps the desktop registered through one reconnecting relay link and
 // turns relay-initiated virtual channels into private JSON-RPC registries.
@@ -79,6 +85,7 @@ func RegisterInboundMethods(registry *rpc.Registry) {
 	registry.Register(wire.MethodCapabilities, requireAccount(capabilities))
 	registry.Register(wire.MethodSessionList, requireAccount(listSessions))
 	registry.Register(wire.MethodSessionAttach, requireAccount(attachSession))
+	registry.Register(wire.MethodSessionPull, requireAccount(pullSession))
 }
 
 // authenticateAccount completes the existing account-handshake vocabulary.
@@ -130,6 +137,29 @@ func listSessions(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	result, err := adapter.ListPeerSessions(ctx)
 	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func pullSession(ctx context.Context, raw json.RawMessage) (any, error) {
+	var params wire.SessionPullParams
+	if err := json.Unmarshal(raw, &params); err != nil || params.SessionID <= 0 || params.Cursor < 0 {
+		return nil, rpc.ErrInvalidParams
+	}
+	conn := rpc.ConnFromContext(ctx)
+	if conn == nil {
+		return nil, rpc.ErrUnauthorized
+	}
+	adapter, ok := chat_svc.Chat().(inboundSessionAdapter)
+	if !ok || adapter == nil {
+		return nil, rpc.ErrInternal
+	}
+	result, err := adapter.PullPeerSession(ctx, params, connPeerSessionSubscriber{conn: conn})
+	if err != nil {
+		if errors.Is(err, chat_svc.ErrPeerSessionNotFound) {
+			return nil, rpc.ErrSessionNotFound
+		}
 		return nil, err
 	}
 	return result, nil

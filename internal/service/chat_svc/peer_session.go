@@ -33,6 +33,13 @@ type PeerSessionSubscriber interface {
 	Done() <-chan struct{}
 }
 
+// PeerSessionSubscriberKeyer supplies a stable connection identity across the
+// attach and pull RPC calls. Subscribers without it fall back to pointer
+// identity for unit-test and in-process callers.
+type PeerSessionSubscriberKeyer interface {
+	PeerSessionSubscriberKey() string
+}
+
 // ListPeerSessions projects every desktop-owned top-level chat session into
 // the existing runtime.session.list wire shape. AgentSyncID refers to the
 // account Agent record, where the caller resolves the stored name and avatar.
@@ -106,7 +113,10 @@ func (s *chatSvc) AttachPeerSession(ctx context.Context, params wire.SessionAtta
 		return wire.SessionAttachResult{}, err
 	}
 
-	detach := s.addPeerSubscriber(session.ID, subscriber)
+	latestSeq, detach, err := s.attachPeerTranscript(ctx, session.ID, subscriber)
+	if err != nil {
+		return wire.SessionAttachResult{}, err
+	}
 	go func() {
 		<-subscriber.Done()
 		detach()
@@ -115,7 +125,7 @@ func (s *chatSvc) AttachPeerSession(ctx context.Context, params wire.SessionAtta
 		SessionID:      session.ID,
 		BackendType:    backendType,
 		LifecycleState: lifecycle,
-		LatestSeq:      0,
+		LatestSeq:      latestSeq,
 	}, nil
 }
 
@@ -186,38 +196,13 @@ func sessionID(session *chat_entity.Session) int64 {
 	return session.ID
 }
 
-func (s *chatSvc) addPeerSubscriber(sessionID int64, subscriber PeerSessionSubscriber) func() {
-	s.peerSubscribersMu.Lock()
-	if s.peerSubscribers == nil {
-		s.peerSubscribers = map[int64]map[uint64]PeerSessionSubscriber{}
-	}
-	s.nextPeerSubscriberID++
-	id := s.nextPeerSubscriberID
-	subscribers := s.peerSubscribers[sessionID]
-	if subscribers == nil {
-		subscribers = map[uint64]PeerSessionSubscriber{}
-		s.peerSubscribers[sessionID] = subscribers
-	}
-	subscribers[id] = subscriber
-	s.peerSubscribersMu.Unlock()
-
-	var once bool
-	return func() {
-		s.peerSubscribersMu.Lock()
-		defer s.peerSubscribersMu.Unlock()
-		if once {
-			return
-		}
-		once = true
-		delete(s.peerSubscribers[sessionID], id)
-		if len(s.peerSubscribers[sessionID]) == 0 {
-			delete(s.peerSubscribers, sessionID)
-		}
-	}
-}
-
 func (s *chatSvc) peerSubscriberCount(sessionID int64) int {
-	s.peerSubscribersMu.Lock()
-	defer s.peerSubscribersMu.Unlock()
-	return len(s.peerSubscribers[sessionID])
+	value, ok := s.peerPublications.Load(sessionID)
+	if !ok {
+		return 0
+	}
+	publication := value.(*peerSessionPublication)
+	publication.mu.Lock()
+	defer publication.mu.Unlock()
+	return len(publication.subscribers)
 }
