@@ -612,6 +612,30 @@ describe("ChatTranscript source device pill (R17)", () => {
     await act(async () => {});
     expect(screen.queryByText(/^From /)).toBeNull();
   });
+
+  // R18:浏览器在空闲会话上「开新一轮」跑起的一轮,user 行带发起方设备名到达转录 ——
+  // 渲染层复用同一枚 inline pill,不新造控件;本机消息零变化由上面两个守卫锁住。
+  it("renders the source pill for a browser-initiated round and keeps the user row before the assistant", async () => {
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          {
+            ...textMessage(1, "user", "帮我跑一下测试"),
+            sourceDevice: "sha256:web-device",
+            sourceDeviceName: "Chrome · macOS",
+          } as chat_svc.ChatMessage,
+          textMessage(2, "assistant", "好,正在跑"),
+        ]}
+      />,
+    );
+    expect(await screen.findByText("From Chrome · macOS")).toBeTruthy();
+    const body = document.body.textContent ?? "";
+    expect(body.indexOf("帮我跑一下测试")).toBeLessThan(
+      body.indexOf("好,正在跑"),
+    );
+  });
 });
 
 describe("ChatTranscript autonomous turn banner", () => {

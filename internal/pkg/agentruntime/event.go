@@ -208,6 +208,18 @@ type RuntimeStatus struct {
 	Status string
 }
 
+// UserMessageEvent (R18):一轮 **由某位带设备身份的发起方**在空闲会话上「开新一轮」时,
+// daemon 在事件流开头注入的标记,携带该轮的发起方用户文本与设备身份(指纹 + 显示名)。
+// 它是 daemon 到桌面端转录的唯一事实来源:桌面端据它在转录里落成一行用户消息 + 来源
+// 标识(「来自 <设备名>」),并据它区分「浏览器发起的一轮」与「自主续轮」(纯 assistant,
+// 没有这个标记)。本机(桌面端)发起的轮不携带 SourceDevice,daemon 不注入 —— 单端界面
+// 零变化。Text 是发起方的用户文本;SourceDeviceName 缺失时保持空,前端回退到指纹。
+type UserMessageEvent struct {
+	Text             string
+	SourceDevice     string
+	SourceDeviceName string
+}
+
 // Done turn 正常结束。
 type Done struct{}
 
@@ -236,6 +248,7 @@ func (ContextWindowUpdated) isEvent()   {}
 func (PlanUpdated) isEvent()            {}
 func (CompactBoundary) isEvent()        {}
 func (RuntimeStatus) isEvent()          {}
+func (UserMessageEvent) isEvent()       {}
 func (Done) isEvent()                   {}
 func (ErrorEvent) isEvent()             {}
 

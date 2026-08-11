@@ -254,7 +254,8 @@ in mind when changing it.
 | `e2e/package.json` → `setup` / `test` / `test:scratch` / `test:sync` | one-time install+Chromium / run suite / run scratch / run the sync suite (§10) | yes |
 | `Makefile` → `e2e` / `e2e-scratch` / `e2e-sync` | thin aliases for `cd e2e && pnpm test` / `pnpm run test:scratch` (requires `TASK=scratch/…`) / `pnpm run test:sync` | yes |
 | `e2e/fakes/install.go` (`//go:build e2e`) / `install_noop.go` (`//go:build !e2e`) | register the fake + seed / no-op | yes |
-| `e2e/fakes/login.go` (`//go:build e2e`) | seed a logged-in desktop from env, for §10 only (no-op without it) | yes |
+| `e2e/fakes/login.go` (`//go:build e2e`) | seed a logged-in desktop from env, for §10 / §11 only (no-op without it) | yes |
+| `e2e/fakes/remote.go` (`//go:build e2e`) | seed a paired agentred + an agent bound to it, for §11 only (no-op without it) | yes |
 | `e2e/run-e2e-sync.mjs` / `playwright.sync.config.ts` / `sync/` / `fixtures/sync.ts` | the sync suite: runner, config, specs, oracles (§10) | yes |
 | `internal/pkg/agentruntime/runtimes/fake/` | the deterministic fake runtime (entire package `//go:build e2e`) | yes |
 
@@ -313,3 +314,27 @@ Gotchas learned building it:
   tombstone's absent `project_sync_id` (the server's natural-key guard now skips
   deleted items). The spec deletes a project that has a path record, so it covers
   the cascade rather than the plain project tombstone alone.
+
+## 11. The dual-end run — this app **and** a browser on one agentred
+
+A fourth mode, and the only one this repo does not drive: it is orchestrated from
+the sibling `agentre-server` checkout (`cd agentre-server/e2e && pnpm dual`,
+`run-e2e-web.mjs --dual`). That runner starts a real server + a real `agentred`,
+seeds one throwaway account, and then brings up **two** ends against it — a
+browser and this app (`wails dev -tags e2e -devserver 34217`, its own temp data
+dir, the seeded login of §10). One Playwright test drives both.
+
+It exists for the handful of requirements that only two simultaneous ends can
+decide (`docs/specs/2026-08-10-web-session-access.md` R7 / R18 / R19 / R6 / R10):
+a browser's message must land in **this app's** transcript as a real user row
+carrying `chat.message.fromDevice`, not as a reply with no question.
+
+What this repo contributes:
+
+| Piece | Why |
+| --- | --- |
+| `e2e/fakes/remote.go` (`//go:build e2e`) | The app joins that agentred the way a claimed machine would: one `paired_agentreds` row (`AGENTRE_E2E_AGENTRED_FINGERPRINT` / `_URL`) + a claudecode backend bound to it + the `E2E Remote Agent` that uses it. Every turn with that agent therefore goes `remote.Runtime → ConnPool.Borrow → /v1/relay/client` — the browser's own endpoint. The paired row's URL points at a dead loopback port on purpose: `Borrow` races LAN-direct against relay, and only the relay leg is under test. It re-runs `bootstrap.InitRemoteDevice` first, because `login.go` **replaces** the `server_svc` singleton the connection pool captured at boot (a real login mutates that instance instead), and a pool still holding the old one dials with no access token |
+| `e2e/fakes/login.go` | the same seeded login §10 uses |
+
+Run it from `agentre-server/e2e`; its README owns the runner, the ports and the
+runtime gotchas the scenario had to be shaped around.

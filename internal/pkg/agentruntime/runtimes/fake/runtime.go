@@ -53,6 +53,13 @@ const OrgCreateDeptDirectivePrefix = "e2e-org-create-dept:"
 // ask 标 expired,前端卡片转「已失效」终态(无需任何工具,纯 runtime 事件)。
 const AskUserQuestionDirectivePrefix = "e2e-ask:"
 
+// ToolPermissionDirectivePrefix 触发「工具调用审批」接缝的用户指令:e2e-tool-permission:<toolName>。
+// fake emit 一条 ToolPermissionRequest 并阻塞到客户端 submitToolPermission 决策回来,
+// 再 emit ToolPermissionResolved 并继续回显收尾。它是 web 端到端里「批准一次工具调用」的
+// 接缝(桌面 e2e 的 org/subagent/hook 走 MCP 隧道,真身 handler 在桌面进程内;web 没有
+// 桌面,审批协议本身足够 —— ToolPermissionRequest/Resolved + ToolPermissionSink)。
+const ToolPermissionDirectivePrefix = "e2e-tool-permission:"
+
 // HookCreateDirectivePrefix 触发脚本 Hook 创作工具的用户指令:e2e-hook-create:<name>。
 // 需 agent 开启 hook 工具(注入 /mcp/hook/);hook_create 是写工具需审批,挂起等 UI 批准
 // (镜像 org_create_department 接缝)。
@@ -69,6 +76,22 @@ const BackgroundTaskDirectivePrefix = "e2e-bg-task:"
 // 卡死(thinking block 应只渲染有界尾巴,而非每个 chunk 重排整段文本)。仅 e2e 构建存在。
 const LongThinkingDirectivePrefix = "e2e-long-thinking:"
 
+// toolPermissionDecision 是 submitToolPermission 投回的审批结果。
+type toolPermissionDecision struct {
+	allowed     bool
+	alwaysAllow bool
+	denyReason  string
+}
+
+// pendingToolPermission 是一条正在等待审批的工具调用:waiter 快照(ToolPermissionSink 的读侧,
+// 供 runtime.session.pendingWaiters 回答)与决策投递 channel(ToolPermissionSink 的写侧)合一。
+type pendingToolPermission struct {
+	requestID string
+	toolName  string
+	input     json.RawMessage
+	done      chan toolPermissionDecision
+}
+
 // Runtime 实现 agentruntime.Runtime + agentruntime.AutonomousTurnSource(见 autoturn.go)。
 type Runtime struct {
 	// mu 保护 autoTurns。Run(每轮)与 AutonomousTurns(chat_svc 每会话订阅一次)
@@ -80,13 +103,22 @@ type Runtime struct {
 	// inTurn:sessionID → 进行中的用户轮数,镜像 claudecode 的 claudeActive.inTurn,
 	// 供 Steer 判定「有没有可注入的活跃用户轮」(见 autoturn.go)。
 	inTurn map[int64]int
+
+	// permMu 保护 permissions。ToolPermissionSink(SubmitToolPermission,来自 daemon 的
+	// RPC goroutine)与 WaiterLister(PendingWaiters,同样来自 RPC goroutine)、以及本轮
+	// 的 fanout goroutine 并发访问同一张表。
+	permMu sync.Mutex
+	// permissions:sessionID → 该会话此刻阻塞中的工具审批。fake 没有子进程 evict,一轮
+	// 结束后由该轮的 fanout goroutine 清掉(见 Run 的 defer),进程内不会泄漏。
+	permissions map[int64]*pendingToolPermission
 }
 
 // New 返回一个 fake runtime。
 func New() *Runtime {
 	return &Runtime{
-		autoTurns: make(map[int64]chan agentruntime.AutonomousTurn),
-		inTurn:    make(map[int64]int),
+		autoTurns:   make(map[int64]chan agentruntime.AutonomousTurn),
+		inTurn:      make(map[int64]int),
+		permissions: make(map[int64]*pendingToolPermission),
 	}
 }
 
@@ -225,6 +257,14 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 			}:
 			}
 		}
+		// 工具调用审批接缝:e2e-tool-permission:<toolName> → emit 一条 ToolPermissionRequest
+		// 并阻塞到 submitToolPermission 决策回来,再 emit ToolPermissionResolved 并继续收尾。
+		// 这是 web 端到端里「批准一次工具调用」的接缝(见 ToolPermissionDirectivePrefix 注释)。
+		if toolName, found := parseOnePartDirective(req.UserText, ToolPermissionDirectivePrefix); found {
+			if !r.blockOnToolPermission(ctx, out, req.SessionID, toolName) {
+				return
+			}
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -248,6 +288,101 @@ func findGroupToolServer(specs []agentruntime.MCPServerSpec, tool string) (agent
 		}
 	}
 	return agentruntime.MCPServerSpec{}, false
+}
+
+// blockOnToolPermission emit 一条 ToolPermissionRequest 并阻塞到 SubmitToolPermission 决策回来,
+// 再 emit ToolPermissionResolved。返回 false 表示 ctx 已取消、调用方应直接收尾(不投 Done)。
+func (r *Runtime) blockOnToolPermission(ctx context.Context, out chan<- agentruntime.Event, sessionID int64, toolName string) bool {
+	requestID := fmt.Sprintf("e2e-tp-%d", sessionID)
+	input, _ := json.Marshal(map[string]any{
+		"tool":   toolName,
+		"source": "e2e-tool-permission",
+	})
+	pending := &pendingToolPermission{
+		requestID: requestID,
+		toolName:  toolName,
+		input:     input,
+		done:      make(chan toolPermissionDecision, 1),
+	}
+	r.permMu.Lock()
+	r.permissions[sessionID] = pending
+	r.permMu.Unlock()
+	// 轮末(决策已投回 / ctx 取消)清掉这条 pending,避免 stale waiter 被下次
+	// pendingWaiters 报出去。
+	defer func() {
+		r.permMu.Lock()
+		delete(r.permissions, sessionID)
+		r.permMu.Unlock()
+	}()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case out <- agentruntime.ToolPermissionRequest{
+		RequestID:  requestID,
+		ToolCallID: fmt.Sprintf("e2e-tc-%d", sessionID),
+		ToolName:   toolName,
+		Input:      input,
+	}:
+	}
+	var decision toolPermissionDecision
+	select {
+	case <-ctx.Done():
+		return false
+	case decision = <-pending.done:
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case out <- agentruntime.ToolPermissionResolved{
+		RequestID:   requestID,
+		Allowed:     decision.allowed,
+		AlwaysAllow: decision.alwaysAllow,
+		DenyReason:  decision.denyReason,
+	}:
+	}
+	return true
+}
+
+// SubmitToolPermission 实现 agentruntime.ToolPermissionSink:把审批决策投回阻塞中的
+// 那条 e2e-tool-permission 接缝。waiter 已不存在(该轮已结束 / 被 ctx 取消 / 已答过)
+// 时幂等返回 nil —— daemon 的 idempotentSubmitResult 把「waiter gone」折叠成成功(R8)。
+func (r *Runtime) SubmitToolPermission(_ context.Context, sessionID int64, _ string, allow, alwaysAllowSession bool, denyReason string) error {
+	r.permMu.Lock()
+	pending := r.permissions[sessionID]
+	r.permMu.Unlock()
+	if pending == nil {
+		return nil
+	}
+	// 非阻塞投递:channel 容量 1,决策只投一次;已投过 / 没人在收都算幂等成功。
+	select {
+	case pending.done <- toolPermissionDecision{
+		allowed:     allow,
+		alwaysAllow: alwaysAllowSession,
+		denyReason:  denyReason,
+	}:
+		return nil
+	default:
+		return nil
+	}
+}
+
+// PendingWaiters 实现 agentruntime.WaiterLister:返回该会话此刻阻塞中的工具审批快照,
+// 供 daemon 的 runtime.session.pendingWaiters 回答。没在等 → 空快照。
+func (r *Runtime) PendingWaiters(_ context.Context, sessionID int64) agentruntime.WaiterSnapshot {
+	r.permMu.Lock()
+	pending := r.permissions[sessionID]
+	r.permMu.Unlock()
+	if pending == nil {
+		return agentruntime.WaiterSnapshot{}
+	}
+	return agentruntime.WaiterSnapshot{
+		ToolPermissions: []agentruntime.PendingToolPermission{{
+			RequestID: pending.requestID,
+			ToolName:  pending.toolName,
+			Input:     pending.input,
+		}},
+	}
 }
 
 func parseOnePartDirective(text, prefix string) (value string, ok bool) {

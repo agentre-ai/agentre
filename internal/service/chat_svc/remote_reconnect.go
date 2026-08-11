@@ -116,6 +116,7 @@ func (s *chatSvc) reconnectRemote(
 	s.remoteMu.Lock()
 	old := entry.lease
 	entry.lease = lease
+	entry.leased = true
 	if cur, ok := s.remoteCache[deviceID]; !ok || cur == entry {
 		if s.remoteCache == nil {
 			s.remoteCache = map[int64]*remoteRuntimeEntry{}
@@ -124,6 +125,8 @@ func (s *chatSvc) reconnectRemote(
 	}
 	s.remoteMu.Unlock()
 
+	// 旧那条还回去。引用早已归零的 entry 在 releaseRemoteRuntimeGeneration 里就还过
+	// 一次了,这里再还是 no-op —— Lease.Release() 按契约幂等。
 	if old != nil {
 		old.Release()
 	}

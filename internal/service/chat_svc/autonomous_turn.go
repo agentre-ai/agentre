@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cago-frame/agents/agent/blocks"
 	"github.com/cago-frame/cago/database/db"
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
@@ -53,6 +54,13 @@ func (s *chatSvc) startAutonomousWatcher(sessionID int64, be *agent_backend_enti
 //  4. 用 dispatcher drain at.Events(实时 stream chunk / tool / plan ...);
 //  5. 收尾:落 blocks + usage/model、翻 idle、emit StreamDone。
 //
+// R18 例外:浏览器在一条**空闲**会话上「开新一轮」跑起的一轮,daemon 在事件流开头注入
+// 一条 user_message 标记(带发起方设备身份)。它不是自主轮 —— 它在桌面端必须落成
+// **一行用户消息 + 一行 assistant**,用户消息带来源标识;若把标记当普通事件跳过,
+// 这一轮就会退化成「没有提问的回复」,与真·自主续轮在界面上同形。标记从事件流开头
+// 剥出(先读首条),事务里先建 user 行再建 assistant 行,emit 时随 StreamAutonomousStarted
+// 一起推给前端。
+//
 // 任何一步加载/落库失败 → log + 把 at.Events 抽干(别让 Session reader 阻塞)+ 返回。
 func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *agent_backend_entity.AgentBackend, at agentruntime.AutonomousTurn) {
 	sess, err := chat_repo.Session().Find(ctx, sessionID)
@@ -61,6 +69,15 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 			zap.Int64("sessionId", sessionID), zap.Error(err))
 		drainAndDiscard(at.Events)
 		return
+	}
+
+	// 先读首条事件:是 user_message 标记就把它剥出来,在事务里先落一行 user 消息。
+	first, hasFirst := <-at.Events
+	var prelude *agentruntime.UserMessageEvent
+	if hasFirst {
+		if um, ok := first.(agentruntime.UserMessageEvent); ok {
+			prelude = &um
+		}
 	}
 
 	assistantMsg := &chat_entity.Message{
@@ -72,11 +89,28 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 	if at.Result != nil && at.Result.Model != "" {
 		assistantMsg.Model = at.Result.Model
 	}
+	var userMsg *chat_entity.Message
 	if err := db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
 		txCtx := db.WithContextDB(ctx, tx)
 		nextSeq, err := chat_repo.Message().NextSeq(txCtx, sessionID)
 		if err != nil {
 			return err
+		}
+		// R18:浏览器发起的一轮先落 user 行(seq 在 assistant 之前),转录顺序才正确。
+		if prelude != nil {
+			userMsg = &chat_entity.Message{
+				SessionID: sessionID,
+				DeviceID:  be.DeviceID,
+				Role:      "user",
+				Seq:       nextSeq,
+			}
+			if err := userMsg.SetBlocks([]blocks.ContentBlock{&blocks.TextBlock{Text: prelude.Text}}); err != nil {
+				return err
+			}
+			if err := chat_repo.Message().Create(txCtx, userMsg); err != nil {
+				return err
+			}
+			nextSeq++
 		}
 		assistantMsg.Seq = nextSeq
 		if err := chat_repo.Message().Create(txCtx, assistantMsg); err != nil {
@@ -114,11 +148,28 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 		zap.Int64("sessionId", sessionID),
 		zap.Int64("assistantMsgId", assistantMsg.ID),
 		zap.String("trigger", at.Trigger))
+	// R18:浏览器发起的一轮,把刚落的 user 行随 started 事件带给前端(带来源标识)。
+	var userEvents []ChatMessage
+	if userMsg != nil {
+		um, err := toChatMessage(userMsg)
+		if err != nil {
+			logger.Ctx(ctx).Warn("chat_svc: driveAutonomousTurn encode user msg failed",
+				zap.Int64("sessionId", sessionID), zap.Error(err))
+		} else {
+			um.SessionID = sessionID
+			// R17 同款:来源标识随消息 DTO 带出 —— 本机/未知为空,前端看到空 sourceDevice
+			// 就不渲染;名字缺失时保持空,前端回退指纹(R19)。
+			um.SourceDevice = prelude.SourceDevice
+			um.SourceDeviceName = prelude.SourceDeviceName
+			userEvents = []ChatMessage{um}
+		}
+	}
 	// 会话级旁路:让前端插入新 assistant 行并 openStream 订阅 per-turn 流。
 	s.emitter.Emit(ctx, AutonomousStreamName(sessionID), ChatStreamEvent{
 		Kind:             StreamAutonomousStarted,
 		Stream:           stream,
 		Trigger:          at.Trigger,
+		UserMessages:     userEvents,
 		AssistantMessage: chatMessageForEvent(sess, assistantMsg),
 		CompletedTask:    completedRef,
 	})
@@ -126,6 +177,16 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 	acc := turn.New()
 	dispEmit := &dispatcherEmitter{svc: s}
 	turnCtx := s.newTurnContext(assistantMsg, sess, stream, be.Type)
+	// 首条若已是标记之外的普通事件,它仍要进 dispatcher(用户消息不进 assistant 内容)。
+	if hasFirst && prelude == nil {
+		if err := s.dispatcher.Apply(ctx, first, acc, dispEmit, nil, turnCtx); err != nil {
+			logger.Ctx(ctx).Warn("chat_svc: autonomous dispatcher Apply failed",
+				zap.String("eventType", fmt.Sprintf("%T", first)), zap.Error(err))
+		}
+		if shouldCheckpointAssistantAfterEvent(first) {
+			s.checkpointAssistantNew(ctx, assistantMsg, acc)
+		}
+	}
 	for ev := range at.Events {
 		if err := s.dispatcher.Apply(ctx, ev, acc, dispEmit, nil, turnCtx); err != nil {
 			logger.Ctx(ctx).Warn("chat_svc: autonomous dispatcher Apply failed",

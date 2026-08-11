@@ -27,15 +27,22 @@ import (
 //go:generate mockgen -source session.go -destination mock_session_repo/mock_session.go
 
 // DaemonSession 对应 daemon_sessions 的一行。复合主键 (PeerFingerprint, PeerSessionID)。
+//
+// Title / AgentSyncID 是 R7 的新列:会话标题与所属 Agent 的账号级同步标识,每轮由调用
+// 方携带、幂等覆盖;老会话缺字段时保持空串。ProviderSessionID 是决策 8 的新列:daemon
+// 每轮从 RunAck 路径收回并落库,续话不再需要调用方提供。
 type DaemonSession struct {
-	PeerFingerprint string `gorm:"column:peer_fingerprint;primaryKey"`
-	PeerSessionID   string `gorm:"column:peer_session_id;primaryKey"`
-	AgentID         int64  `gorm:"column:agent_id"`
-	Cwd             string `gorm:"column:cwd"`
-	BackendType     string `gorm:"column:backend_type"`
-	LifecycleState  string `gorm:"column:lifecycle_state"`
-	CreatedAt       int64  `gorm:"column:created_at"`
-	UpdatedAt       int64  `gorm:"column:updated_at"`
+	PeerFingerprint   string `gorm:"column:peer_fingerprint;primaryKey"`
+	PeerSessionID     string `gorm:"column:peer_session_id;primaryKey"`
+	AgentID           int64  `gorm:"column:agent_id"`
+	Cwd               string `gorm:"column:cwd"`
+	BackendType       string `gorm:"column:backend_type"`
+	LifecycleState    string `gorm:"column:lifecycle_state"`
+	Title             string `gorm:"column:title"`
+	AgentSyncID       string `gorm:"column:agent_sync_id"`
+	ProviderSessionID string `gorm:"column:provider_session_id"`
+	CreatedAt         int64  `gorm:"column:created_at"`
+	UpdatedAt         int64  `gorm:"column:updated_at"`
 }
 
 func (*DaemonSession) TableName() string { return "daemon_sessions" }
@@ -93,11 +100,13 @@ func (r *sessionRepo) Upsert(ctx context.Context, s *DaemonSession) error {
 		s.CreatedAt = now
 	}
 	s.UpdatedAt = now
-	// 主键冲突时更新元数据与生命周期,保留最初的 created_at。
+	// 主键冲突时更新元数据与生命周期,保留最初的 created_at。title / agent_sync_id /
+	// provider_session_id 一并幂等覆盖 —— 每轮起手都携带当轮的值(R7 / 决策 8)。
 	return db.Ctx(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "peer_fingerprint"}, {Name: "peer_session_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"agent_id", "cwd", "backend_type", "lifecycle_state", "updated_at",
+			"agent_id", "cwd", "backend_type", "lifecycle_state", "title", "agent_sync_id",
+			"provider_session_id", "updated_at",
 		}),
 	}).Create(s).Error
 }

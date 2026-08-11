@@ -303,6 +303,15 @@ func (e ErrorEvent) MarshalJSON() ([]byte, error) {
 	}{EventError, msg})
 }
 
+func (e UserMessageEvent) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Kind             EventKind `json:"kind"`
+		Text             string    `json:"text,omitempty"`
+		SourceDevice     string    `json:"sourceDevice,omitempty"`
+		SourceDeviceName string    `json:"sourceDeviceName,omitempty"`
+	}{EventUserMessage, e.Text, e.SourceDevice, e.SourceDeviceName})
+}
+
 // EventContextWindowUpdated 给 ContextWindowUpdated 事件做 wire discriminator。
 // 老 RuntimeEvent 时 ContextWindow 走 RunResult,因此 runner.go 的 EventKind 列表里
 // 没这个常量,这里补上。
@@ -613,6 +622,20 @@ func UnmarshalEvent(data []byte) (Event, error) {
 		return PlanUpdated{Plan: w.Plan}, nil
 	case EventDone:
 		return Done{}, nil
+	case EventUserMessage:
+		var w struct {
+			Text             string `json:"text"`
+			SourceDevice     string `json:"sourceDevice"`
+			SourceDeviceName string `json:"sourceDeviceName"`
+		}
+		if err := json.Unmarshal(data, &w); err != nil {
+			return nil, err
+		}
+		return UserMessageEvent{
+			Text:             w.Text,
+			SourceDevice:     w.SourceDevice,
+			SourceDeviceName: w.SourceDeviceName,
+		}, nil
 	case EventError:
 		var w struct {
 			Message string `json:"message"`

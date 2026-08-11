@@ -373,3 +373,80 @@ func toolCaptureServer(t *testing.T) (*httptest.Server, func() map[string][]map[
 		return out
 	}
 }
+
+// ToolPermission 审批接缝(web 端到端「批准一次工具调用」的接缝):
+// e2e-tool-permission:<tool> → ToolPermissionRequest → 阻塞 → submitToolPermission
+// 投回 → ToolPermissionResolved → Done。pendingWaiters 在这期间要报得出这条 waiter。
+func TestRun_ToolPermissionBlockingRoundTrip(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	r := New()
+	events, _, err := r.Run(ctx, agentruntime.RunRequest{
+		SessionID: 42,
+		UserText:  "e2e-tool-permission:bash",
+	})
+	require.NoError(t, err)
+
+	var text string
+	var sawRequest, sawResolved, sawDone bool
+	var request agentruntime.ToolPermissionRequest
+	// 先收文本回复 + ToolPermissionRequest;此时不应有 Done。
+	for !sawRequest {
+		select {
+		case ev := <-events:
+			switch e := ev.(type) {
+			case agentruntime.TextDelta:
+				text += e.Text
+			case agentruntime.ToolPermissionRequest:
+				sawRequest = true
+				request = e
+			case agentruntime.Done:
+				t.Fatal("Done 不该在审批通过前到达")
+			}
+		case <-ctx.Done():
+			t.Fatal("等待 ToolPermissionRequest 超时")
+		}
+	}
+	assert.Equal(t, "e2e-tp-42", request.RequestID)
+	assert.Equal(t, "bash", request.ToolName)
+
+	// 阻塞期间 pendingWaiters 必须报得出这条 waiter(R10 的「正在等待输入」)。
+	snap := r.PendingWaiters(ctx, 42)
+	require.Len(t, snap.ToolPermissions, 1)
+	assert.Equal(t, "e2e-tp-42", snap.ToolPermissions[0].RequestID)
+	assert.Equal(t, "bash", snap.ToolPermissions[0].ToolName)
+
+	// 投回允许决策 → ToolPermissionResolved + Done 随后来。
+	require.NoError(t, r.SubmitToolPermission(ctx, 42, "e2e-tp-42", true, false, ""))
+	for !sawDone {
+		select {
+		case ev := <-events:
+			switch e := ev.(type) {
+			case agentruntime.ToolPermissionResolved:
+				sawResolved = true
+				assert.Equal(t, "e2e-tp-42", e.RequestID)
+				assert.True(t, e.Allowed)
+				assert.False(t, e.AlwaysAllow)
+			case agentruntime.Done:
+				sawDone = true
+			}
+		case <-ctx.Done():
+			t.Fatal("等待 ToolPermissionResolved/Done 超时")
+		}
+	}
+	assert.True(t, sawResolved)
+	assert.Equal(t, ReplyPrefix+"e2e-tool-permission:bash", text)
+	// 决策已投回,pending 应已清空。
+	assert.Empty(t, r.PendingWaiters(ctx, 42).ToolPermissions)
+}
+
+// 同一 requestID 重复提交(daemon 的 idempotentSubmitResult 语义)与「waiter 已消失」
+// 都必须幂等成功,不能把一轮已经收尾的会话报成错误(R8)。
+func TestRun_SubmitToolPermission_IdempotentWhenWaiterGone(t *testing.T) {
+	ctx := context.Background()
+	r := New()
+	require.NoError(t, r.SubmitToolPermission(ctx, 999, "e2e-tp-999", true, false, ""),
+		"没有 pending 的会话提交审批必须幂等成功")
+	assert.Empty(t, r.PendingWaiters(ctx, 999).ToolPermissions)
+}

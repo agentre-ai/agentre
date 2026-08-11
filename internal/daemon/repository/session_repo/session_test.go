@@ -64,9 +64,9 @@ func TestSessionRepo_ListByPeer_ScopedToCaller(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 	repo := session_repo.NewSession()
 
-	rows := sqlmock.NewRows([]string{"peer_fingerprint", "peer_session_id", "agent_id", "cwd", "backend_type", "lifecycle_state", "created_at", "updated_at"}).
-		AddRow("peerA", "s1", 7, "/work", "claudecode", "running", 100, 200).
-		AddRow("peerA", "s2", 8, "/other", "codex", "idle", 100, 150)
+	rows := sqlmock.NewRows([]string{"peer_fingerprint", "peer_session_id", "agent_id", "cwd", "backend_type", "lifecycle_state", "title", "agent_sync_id", "provider_session_id", "created_at", "updated_at"}).
+		AddRow("peerA", "s1", 7, "/work", "claudecode", "running", "fix the bug", "01HXsync000000000000000000", "claude-abc123", 100, 200).
+		AddRow("peerA", "s2", 8, "/other", "codex", "idle", "", "", "", 100, 150)
 	mock.ExpectQuery("SELECT \\* FROM `daemon_sessions` WHERE peer_fingerprint = \\? ORDER BY updated_at DESC").
 		WithArgs("peerA").
 		WillReturnRows(rows)
@@ -78,6 +78,12 @@ func TestSessionRepo_ListByPeer_ScopedToCaller(t *testing.T) {
 	assert.Equal(t, "claudecode", got[0].BackendType)
 	assert.Equal(t, "running", got[0].LifecycleState)
 	assert.Equal(t, int64(7), got[0].AgentID)
+	assert.Equal(t, "fix the bug", got[0].Title)
+	assert.Equal(t, "01HXsync000000000000000000", got[0].AgentSyncID)
+	assert.Equal(t, "claude-abc123", got[0].ProviderSessionID)
+	assert.Empty(t, got[1].Title, "老会话缺这些字段时如实留空")
+	assert.Empty(t, got[1].AgentSyncID)
+	assert.Empty(t, got[1].ProviderSessionID)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -88,9 +94,9 @@ func TestSessionRepo_ListAll_ReturnsRowsAcrossPeers(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 	repo := session_repo.NewSession()
 
-	rows := sqlmock.NewRows([]string{"peer_fingerprint", "peer_session_id", "agent_id", "cwd", "backend_type", "lifecycle_state", "created_at", "updated_at"}).
-		AddRow("peerA", "s1", 7, "/work", "claudecode", "running", 100, 200).
-		AddRow("peerB", "s1", 8, "/other", "codex", "idle", 100, 150)
+	rows := sqlmock.NewRows([]string{"peer_fingerprint", "peer_session_id", "agent_id", "cwd", "backend_type", "lifecycle_state", "title", "agent_sync_id", "provider_session_id", "created_at", "updated_at"}).
+		AddRow("peerA", "s1", 7, "/work", "claudecode", "running", "", "", "", 100, 200).
+		AddRow("peerB", "s1", 8, "/other", "codex", "idle", "", "", "", 100, 150)
 	mock.ExpectQuery("SELECT \\* FROM `daemon_sessions` ORDER BY updated_at DESC").WillReturnRows(rows)
 
 	got, err := repo.ListAll(ctx)
@@ -107,8 +113,8 @@ func TestSessionRepo_Find_ScopedToPeer(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 	repo := session_repo.NewSession()
 
-	rows := sqlmock.NewRows([]string{"peer_fingerprint", "peer_session_id", "backend_type", "lifecycle_state"}).
-		AddRow("peerA", "s1", "claudecode", "running")
+	rows := sqlmock.NewRows([]string{"peer_fingerprint", "peer_session_id", "backend_type", "lifecycle_state", "title", "agent_sync_id", "provider_session_id"}).
+		AddRow("peerA", "s1", "claudecode", "running", "fix the bug", "01HXsync000000000000000000", "claude-abc123")
 	mock.ExpectQuery("SELECT \\* FROM `daemon_sessions` WHERE peer_fingerprint = \\? AND peer_session_id = \\?").
 		WithArgs("peerA", "s1", 1).
 		WillReturnRows(rows)
@@ -117,6 +123,9 @@ func TestSessionRepo_Find_ScopedToPeer(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, "claudecode", got.BackendType)
+	assert.Equal(t, "fix the bug", got.Title)
+	assert.Equal(t, "01HXsync000000000000000000", got.AgentSyncID)
+	assert.Equal(t, "claude-abc123", got.ProviderSessionID)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

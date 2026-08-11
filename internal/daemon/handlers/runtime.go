@@ -311,7 +311,22 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	// 通知出口必须在这里建:对端指纹只有请求 ctx 上有,而 fanout / forwardAutonomousTurn
 	// 跑在脱离 ctx 的 goroutine 里(见 sessionEmitter 注释)。它同时定下这一轮的 backend
 	// 会话键 em.rid —— 交给 backend 的一律是这个按对端隔离的键,不是客户端报的裸 id。
-	em := h.newEmitter(ctx, p.SessionID)
+	//
+	// R9:一轮可以由**别的同账号对端**在这条会话上开起来(浏览器给桌面端发起的会话发
+	// 新消息)。会话归属因此由点名的 origin 决定,而不是调用方自己的指纹 —— 与控制族
+	// 走同一条 ResolveSessionPeer 约定:省略 = 调用方自己的对端,点名别人是账号级能力
+	// (配对身份点名一律 ErrUnauthorized)。
+	runPeer, err := ResolveSessionPeer(ctx, p.PeerFingerprint, h.deps.ClaimedAccountID)
+	if err != nil {
+		return wire.RunAck{}, err
+	}
+	em := h.newEmitterFor(ctx, p.SessionID, runPeer)
+
+	// R18:「开新一轮」的发起方标记。浏览器在空闲会话上发消息时随 runtime.run 声明自己的
+	// 设备身份(SourceDevice 非空),daemon 据此在事件流开头注入一条 user_message 事件,
+	// 扇出给同一条会话的其余订阅者 —— 桌面端据此把这一轮落成一行带来源标识的用户消息。
+	// 桌面端自己发消息不带 SourceDevice(单端零变化),不注入,事件流与今天逐帧一致。
+	userMsg := userMessageFor(p)
 
 	var (
 		piPreparer piagentrt.RunPreparer
@@ -444,6 +459,16 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		return h.preparePi(em, p, &be, piOwner, piPreparer, req)
 	}
 
+	// 续话(决策 8):provider_session_id 已由上一轮在这台 daemon 上落库,调用方不再需要
+	// 提供。这里只改直连(非 Pi)路径 —— Pi 的 prepare/start 由已准备的身份自己带,不受
+	// 影响;调用方显式提供的值(重开 fork 等)优先于落库的那份。查不出行或读失败时保持
+	// 空,让 runtime 自己新建会话,不拿一个读不出来的库去换续话。
+	if strings.TrimSpace(req.ProviderSessionID) == "" && h.deps.SessionQuery != nil {
+		if row, err := h.deps.SessionQuery.Find(ctx, em.peer, em.peerSessionID); err == nil && row != nil && row.ProviderSessionID != "" {
+			req.ProviderSessionID = row.ProviderSessionID
+		}
+	}
+
 	events, result, err := rt.Run(ctx, req)
 	if err != nil {
 		return wire.RunAck{}, err
@@ -464,8 +489,8 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	// 里报的 sessionID 是它,这一行是把两边对上号的唯一地方。
 	log.Printf("runtime.run: session started sid=%d backendKey=%d backend=%s agentId=%d userTextBytes=%d",
 		p.SessionID, em.rid, be.Type, p.AgentID, len(p.UserText))
-	h.startSession(em, p, bt)
-	go h.fanout(em, owner, events, result) //nolint:gosec // G118: turn fanout outlives the Run RPC and owns terminal cleanup.
+	h.startSession(em, p, bt, providerSessionIDOf(result))
+	go h.fanout(em, owner, events, result, userMsg) //nolint:gosec // G118: turn fanout outlives the Run RPC and owns terminal cleanup.
 	// 真实 runtime 若支持自主续轮(claudecode),起每会话一个转发 goroutine 把
 	// AutonomousTurns(sid) 推到 client。session 已 spawn,此刻订阅才拿得到 channel。
 	if src, ok := rt.(agentruntime.AutonomousTurnSource); ok {
@@ -615,8 +640,8 @@ func (h *RuntimeHandlers) startPreparedPi(
 	}
 	log.Printf("runtime.run: Pi generation started sid=%d backendKey=%d backend=%s",
 		p.SessionID, em.rid, be.Type)
-	h.startSession(em, p, bt)
-	go h.fanout(em, owner, events, result)
+	h.startSession(em, p, bt, providerSessionID)
+	go h.fanout(em, owner, events, result, userMessageFor(p))
 	return ack, nil
 }
 
@@ -631,19 +656,33 @@ func drainRuntimeEvents(events <-chan agentruntime.Event) {
 // 日志、不影响这一轮执行:一轮已经在跑了,拿它陪葬换不回任何东西,代价是这条会话在
 // 清单里缺席直到下一轮重新建行。
 
-// startSession 在一轮起手时建行并置 running。
-func (h *RuntimeHandlers) startSession(em *sessionEmitter, p wire.RunParams, bt agent_backend_entity.BackendType) {
+// startSession 在一轮起手时建行并置 running。providerSessionID 是 daemon 这一轮从
+// result 收回的 provider 原生会话身份(决策 8):首轮新建后落库,后续轮续用;空串 =
+// runtime 还没给出身份(这一轮就是新建)。标题与 Agent 同步标识(R7)随 p 携带、幂等覆盖。
+func (h *RuntimeHandlers) startSession(em *sessionEmitter, p wire.RunParams, bt agent_backend_entity.BackendType, providerSessionID string) {
 	err := h.deps.Sessions.Start(em.ctx, SessionRecord{
-		PeerFingerprint: em.peer,
-		PeerSessionID:   em.peerSessionID,
-		AgentID:         p.AgentID,
-		Cwd:             p.Cwd,
-		BackendType:     string(bt),
-		LifecycleState:  wire.SessionLifecycleRunning,
+		PeerFingerprint:   em.peer,
+		PeerSessionID:     em.peerSessionID,
+		AgentID:           p.AgentID,
+		Cwd:               p.Cwd,
+		BackendType:       string(bt),
+		LifecycleState:    wire.SessionLifecycleRunning,
+		Title:             p.Title,
+		AgentSyncID:       p.AgentSyncID,
+		ProviderSessionID: providerSessionID,
 	})
 	if err != nil {
 		log.Printf("runtime.run: record session failed sid=%d peer=%q err=%v", em.sid, em.peer, err)
 	}
+}
+
+// providerSessionIDOf 取这一轮 result 里 runtime 确认的 provider 原生会话身份;result
+// 为 nil(直连路径 run 失败前)时回空串。
+func providerSessionIDOf(result *agentruntime.RunResult) string {
+	if result == nil {
+		return ""
+	}
+	return strings.TrimSpace(result.ProviderSessionID)
 }
 
 // runningSession 把会话推回 running(自主续轮开始)。
@@ -660,13 +699,58 @@ func (h *RuntimeHandlers) finishSession(em *sessionEmitter) {
 	}
 }
 
+// userMessageFor 从 RunParams 推出「开新一轮」的发起方标记(R18):发起方声明了设备身份
+// (SourceDevice 非空)且有用户文本时返回标记,否则 nil。桌面端自己发消息不传 SourceDevice,
+// 返回 nil 即事件流与今天逐帧一致。
+func userMessageFor(p wire.RunParams) *agentruntime.UserMessageEvent {
+	if text := strings.TrimSpace(p.UserText); text != "" && p.SourceDevice != "" {
+		return &agentruntime.UserMessageEvent{
+			Text:             text,
+			SourceDevice:     p.SourceDevice,
+			SourceDeviceName: p.SourceDeviceName,
+		}
+	}
+	return nil
+}
+
+// emitPrelude 把发起方标记(UserMessageEvent)按与事件流同一条纪律发出:marshal →
+// 判 generation 是否仍归本属主(stale 丢弃,与循环里一致)→ em.emit 落库 + 推送。
+// 返回是否真的作为一条事件发出。
+func (h *RuntimeHandlers) emitPrelude(em *sessionEmitter, owner *runtimeSession, rid int64, prelude *agentruntime.UserMessageEvent) bool {
+	raw, err := json.Marshal(prelude)
+	if err != nil {
+		log.Printf("runtime.event: prelude marshal failed sid=%d err=%v", em.sid, err)
+		return false
+	}
+	current := h.isCurrent(rid, owner)
+	if owner.backendType == agent_backend_entity.TypePiAgent && owner.ctx != nil {
+		current = h.canDeliverPiEvent(rid, owner)
+	}
+	if !current {
+		log.Printf("runtime.event: stale prelude dropped sid=%d", em.sid)
+		return false
+	}
+	return em.emit(wire.NotifyEvent, &wire.EventFrame{
+		SessionID: em.sid,
+		Event:     json.RawMessage(raw),
+	})
+}
+
 // fanout 把 backend events channel 抽干推到 runtime.event,channel close 后再发
 // runtime.runResultDone 终态帧。日志按事件 kind 计数,turn 结束时打一条汇总,
 // 排查 stuck-turn / 漏事件时方便对账 client 端实际收到几条。
-func (h *RuntimeHandlers) fanout(em *sessionEmitter, owner *runtimeSession, ch <-chan agentruntime.Event, result *agentruntime.RunResult) {
+func (h *RuntimeHandlers) fanout(em *sessionEmitter, owner *runtimeSession, ch <-chan agentruntime.Event, result *agentruntime.RunResult, prelude *agentruntime.UserMessageEvent) {
 	sid, rid := em.sid, em.rid
 	count := 0
 	kindHist := map[string]int{}
+	// R18:把发起方标记作为**第一条**事件注入,保证订阅者先把这一轮的用户消息落成转录行,
+	// 再接收后端真正的事件。
+	if prelude != nil {
+		if h.emitPrelude(em, owner, rid, prelude) {
+			count++
+			kindHist["UserMessage"]++
+		}
+	}
 	for ev := range ch {
 		// R17:SteerConsumed 里的每条 steer 都带着它的提交方来源 —— 实时消费路径
 		// 在这里把 Steer RPC 时记下的对端盖回去(轮末残留的走 DrainPending 同表消费)。
@@ -847,10 +931,11 @@ type sessionEmitter struct {
 	rid int64
 }
 
-// newEmitter 在 runtime.run 处理期间构造会话通知出口,捕获对端指纹并据此定下这一轮的
-// backend 会话键。
-func (h *RuntimeHandlers) newEmitter(ctx context.Context, sid int64) *sessionEmitter {
-	peer := peerFingerprint(ctx)
+// newEmitterFor 在 runtime.run 处理期间构造会话通知出口,并据会话归属定下这一轮的
+// backend 会话键。归属由调用方给定 —— runtime.run 用它把一轮落在**点名的 origin**
+// 名下(R9),而不是调用方自己名下那条同号会话;省略 origin 时调用方传
+// peerFingerprint(ctx),即「调用方自己的对端」。
+func (h *RuntimeHandlers) newEmitterFor(ctx context.Context, sid int64, peer string) *sessionEmitter {
 	return &sessionEmitter{
 		ctx:           context.WithoutCancel(ctx),
 		journal:       h.deps.Journal,

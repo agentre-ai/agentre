@@ -887,9 +887,16 @@ function ChatPanel({
         assistantMessageId: amsg.id,
         streamStartedAt: Date.now(),
       });
-      setMessages((prev) =>
-        prev.some((m) => m.id === amsg.id) ? prev : [...prev, amsg],
-      );
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === amsg.id)) return prev;
+        // R18:浏览器在空闲会话上「开新一轮」跑起的一轮,daemon 把发起方用户消息随
+        // StreamAutonomousStarted 的 userMessages 带出 —— 先插 user 行再插 assistant,
+        // 否则桌面端看到的又是「没有提问的回复」。来源标识在消息 DTO 上,转录渲染层
+        // 复用 chat.message.fromDevice 的 inline pill(本机消息无 sourceDevice,零变化)。
+        const userMsgs = ev.userMessages ?? [];
+        const additions = [...userMsgs, amsg];
+        return [...prev, ...additions];
+      });
     },
     [sessionId, openStream, setMessages],
   );
