@@ -117,7 +117,7 @@ func TestGateway_IssueTokenForAndSetTokenProvider(t *testing.T) {
 	assert.NoError(t, err)
 	entry, ok := g.tokens.Resolve(tok)
 	if assert.True(t, ok) {
-		assert.Equal(t, "session-picked", entry.MainProviderKey)
+		assert.Equal(t, "session-picked", entry.Main.ProviderKey)
 	}
 
 	prev, ok := g.SetTokenProvider(tok, "switched")
@@ -125,7 +125,7 @@ func TestGateway_IssueTokenForAndSetTokenProvider(t *testing.T) {
 	assert.Equal(t, "session-picked", prev)
 	assert.Equal(t, 1, g.tokens.Size(), "切换不得多签一条 token")
 	entry, _ = g.tokens.Resolve(tok)
-	assert.Equal(t, "switched", entry.MainProviderKey)
+	assert.Equal(t, "switched", entry.Main.ProviderKey)
 
 	_, ok = g.SetTokenProvider("never-issued", "switched")
 	assert.False(t, ok)
@@ -213,6 +213,7 @@ func TestGateway_RegisterControl(t *testing.T) {
 func TestGateway_ServesAnthropicRouteEndToEnd(t *testing.T) {
 	upstream, rec := newRecordingUpstream(t, `{"id":"msg_x"}`)
 	lookup := newFakeLookup(newAnthropicProvider("key-1", upstream.URL))
+	lookup.withModel(newModel("mk-key-1-default", "claude-sonnet-4-6"))
 
 	g := New("127.0.0.1", 0, lookup)
 	assert.NoError(t, g.Start(context.Background()))

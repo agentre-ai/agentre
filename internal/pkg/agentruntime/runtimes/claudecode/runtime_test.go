@@ -13,7 +13,6 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
-	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
 	"github.com/agentre-ai/agentre/pkg/claudecode"
@@ -21,9 +20,9 @@ import (
 
 // TestRun_ModelChangeEvictsAndRespawns 锁住 claudecode 的模型 evict 语义:--model 是
 // 启动期 flag(WithModel 绑定在 Client 创建时),CLI 子进程又会被 LRU 缓存跨轮复用 ——
-// effectiveModel(provider.Model → backend.DefaultModel)变化必须 evict + 重 spawn,
+// effectiveModel(解析出的 ModelID → backend.DefaultModel)变化必须 evict + 重 spawn,
 // 否则下一轮复用旧模型进程,新模型不生效(镜像 codex runtime 的 modelChanged 先例)。
-// #26 会话级 override 已移除,模型变化只看 provider.Model / backend.DefaultModel。
+// #26 会话级 override 已移除,模型变化只看解析出的 ModelID / backend.DefaultModel。
 func TestRun_ModelChangeEvictsAndRespawns(t *testing.T) {
 	Convey("Given 一个带 usage 的假 claude 子进程", t, func() {
 		var spawnCount int32
@@ -51,7 +50,8 @@ func TestRun_ModelChangeEvictsAndRespawns(t *testing.T) {
 				SessionID: 77,
 				Cwd:       t.TempDir(),
 				UserText:  "hi",
-				Provider:  &llm_provider_entity.LLMProvider{Model: providerModel},
+				// effective 配置（EffectiveLLMConfig v1 seam）：模型变化走这里。
+				Effective: &agentruntime.EffectiveLLMConfig{ProviderKey: "pk", ProviderType: "anthropic", ModelID: providerModel},
 			})
 			So(err, ShouldBeNil)
 			for range events { //nolint:revive // drain
@@ -109,7 +109,9 @@ func TestRun_ProviderChangeEvictsAndRespawns(t *testing.T) {
 				SessionID: 88,
 				Cwd:       t.TempDir(),
 				UserText:  "hi",
-				Provider:  &llm_provider_entity.LLMProvider{ProviderKey: providerKey, Model: "same-model"},
+				// effective 配置（EffectiveLLMConfig v1 seam）：供应商 key 变化走这里，
+				// 模型 id 相同但供应商不同也必须 evict。
+				Effective: &agentruntime.EffectiveLLMConfig{ProviderKey: providerKey, ProviderType: "anthropic", ModelID: "same-model"},
 			})
 			So(err, ShouldBeNil)
 			for range events { //nolint:revive // drain

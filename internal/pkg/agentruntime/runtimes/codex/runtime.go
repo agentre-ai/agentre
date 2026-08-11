@@ -79,7 +79,7 @@ type Runtime struct {
 	// (launchedSpawnKey:effectiveModel + effectiveProviderKey),key 与
 	// CLISessionPool 一致(sessionKey)。--model 与 model_provider/base_url(-c 覆盖项)
 	// 都是启动期 flag(绑定在 Client 创建时),app-server 进程又会被池跨轮复用 ——
-	// provider.Model 或 effectiveProviderKey 任一变化都必须 evict + 重 spawn(镜像
+	// 解析出的 ModelID 或 effectiveProviderKey 任一变化都必须 evict + 重 spawn(镜像
 	// claudecode 的 launchedEffort 先例;决策 4 把比对键从单纯 model 扩展为二者的组合,
 	// 否则两个配同一 model id 的不同供应商换绑定时会漏判,复用旧进程打到旧供应商)。
 	// 否则下一轮复用旧参数进程,新供应商/模型不生效(RunResult.Model 仍旧模型)。
@@ -276,6 +276,7 @@ func (r *Runtime) goalSession(ctx context.Context, req agentruntime.GoalRequest,
 	runReq := agentruntime.RunRequest{
 		Backend:           req.Backend,
 		Provider:          req.Provider,
+		Effective:         req.Effective,
 		AgentID:           req.AgentID,
 		SessionID:         req.SessionID,
 		Cwd:               cwd,
@@ -444,14 +445,14 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	active.setOut(out)
 
 	// RunResult.Model 上报线程实际模型(sess.Model()),而非启动请求模型:codex 的
-	// thread/resume 返回线程当前 model。绑 provider 时 provider.Model 经 --model 生效后
+	// thread/resume 返回线程当前 model。绑 provider 时解析出的 ModelID 经 --model 生效后
 	// sess.Model() 即实际运行模型;无 provider 时两者同值,不回归。
 	modelID := strings.TrimSpace(sess.Model())
 	if modelID == "" {
 		// app-server 没在 thread start/resume 结果里带 model 时 sess.Model() 为空 ——
 		// 此时「观测不到」不等于「跑的是 defaultModelID」:直接落死常量会把一个从没跑过
 		// 的 model id 写进 assistantMsg.Model。回落到本轮请求的 effectiveModel
-		// (provider.Model),观测不到就按「请求值已生效」处理。
+		// (解析出的 ModelID),观测不到就按「请求值已生效」处理。
 		modelID = codexEffectiveModel(req)
 	}
 	if modelID == "" {

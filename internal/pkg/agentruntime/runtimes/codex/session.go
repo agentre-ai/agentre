@@ -351,13 +351,13 @@ func gatewayDeps(req agentruntime.RunRequest) CLIDeps {
 }
 
 // codexEffectiveModel 统一模型解析规则(codex 版):#26 会话级模型覆盖已移除,
-// effectiveModel 直接回落供应商默认(req.Provider.Model)。codex 无 backend 默认模型字段
-// (DefaultModel 仅 claudecode 用),CLI 登录态(provider=nil)返回空,交由调用方按
-// defaultModelID 兜底。它是 buildLaunchSpec 与 acquireSession 判「模型变化 → evict」
-// 的同一取值源。
+// effectiveModel 取执行侧解析结果(EffectiveLLMConfig v1 seam)的 ModelID。codex
+// 无 backend 默认模型字段 (DefaultModel 仅 claudecode 用),CLI 登录态(无供应商)
+// 返回空,交由调用方按 defaultModelID 兜底。它是 buildLaunchSpec 与 acquireSession
+// 判「模型变化 → evict」的同一取值源。
 func codexEffectiveModel(req agentruntime.RunRequest) string {
-	if req.Provider != nil {
-		return strings.TrimSpace(req.Provider.Model)
+	if req.Effective != nil {
+		return strings.TrimSpace(req.Effective.ModelID)
 	}
 	return ""
 }

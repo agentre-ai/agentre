@@ -17,15 +17,22 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 )
 
-// fakeLookup 测试用 provider lookup，返回构造时 inject 的 map。
+// fakeLookup 测试用 provider+model lookup，返回构造时 inject 的 map，同时实现
+// ProviderLookup 与 ModelLookup（桌面端 llm_provider_repo 的等价物）。
 type fakeLookup struct {
 	providers map[string]*llm_provider_entity.LLMProvider
+	models    map[string]*llm_provider_model_entity.LLMProviderModel
 }
 
 func (f *fakeLookup) FindByKey(_ context.Context, key string) (*llm_provider_entity.LLMProvider, error) {
 	return f.providers[key], nil
+}
+
+func (f *fakeLookup) FindModelByKey(_ context.Context, modelKey string) (*llm_provider_model_entity.LLMProviderModel, error) {
+	return f.models[modelKey], nil
 }
 
 func newFakeLookup(items ...*llm_provider_entity.LLMProvider) *fakeLookup {
@@ -33,12 +40,21 @@ func newFakeLookup(items ...*llm_provider_entity.LLMProvider) *fakeLookup {
 	for _, p := range items {
 		m[p.ProviderKey] = p
 	}
-	return &fakeLookup{providers: m}
+	return &fakeLookup{providers: m, models: map[string]*llm_provider_model_entity.LLMProviderModel{}}
+}
+
+func (f *fakeLookup) withModel(m *llm_provider_model_entity.LLMProviderModel) *fakeLookup {
+	if f.models == nil {
+		f.models = map[string]*llm_provider_model_entity.LLMProviderModel{}
+	}
+	f.models[m.ModelKey] = m
+	return f
 }
 
 func assertOpenAIForwarded(
 	t *testing.T,
 	provider *llm_provider_entity.LLMProvider,
+	models []*llm_provider_model_entity.LLMProviderModel,
 	handler func(*Forwarder) http.HandlerFunc,
 	backendID int64,
 	path string,
@@ -50,6 +66,9 @@ func assertOpenAIForwarded(
 	provider.BaseURL = upstream.URL
 	tokens := NewTokenRegistry()
 	lookup := newFakeLookup(provider)
+	for _, m := range models {
+		lookup.withModel(m)
+	}
 	f := NewForwarder(tokens, lookup)
 
 	w := issueAndRequest(t, handler(f), tokens,
@@ -66,26 +85,33 @@ func testAPIKey(name string) string {
 	return strings.Join([]string{"k", name}, "-")
 }
 
-func newAnthropicProvider(key string, baseURL string) *llm_provider_entity.LLMProvider {
+// newModel 构造一条属于 provider 的稳定模型记录（ModelKey 稳定，ModelID 是执行 id）。
+func newModel(key, modelID string) *llm_provider_model_entity.LLMProviderModel {
+	return &llm_provider_model_entity.LLMProviderModel{
+		ModelKey: key, ModelID: modelID, Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE,
+	}
+}
+
+func newAnthropicProvider(key, baseURL string) *llm_provider_entity.LLMProvider {
 	return &llm_provider_entity.LLMProvider{
 		ProviderKey: key, Type: string(llm_provider_entity.TypeAnthropic), Name: "a",
-		Model: "claude-sonnet-4-6", APIKey: testAPIKey("anthropic"), BaseURL: baseURL,
+		DefaultModelKey: "mk-" + key + "-default", APIKey: testAPIKey("anthropic"), BaseURL: baseURL,
 		Status: consts.ACTIVE,
 	}
 }
 
-func newOpenAIResponseProvider(key string, baseURL string) *llm_provider_entity.LLMProvider {
+func newOpenAIResponseProvider(key, baseURL string) *llm_provider_entity.LLMProvider {
 	return &llm_provider_entity.LLMProvider{
 		ProviderKey: key, Type: string(llm_provider_entity.TypeOpenAIResponse), Name: "r",
-		Model: "gpt-5-codex", APIKey: testAPIKey("resp"), BaseURL: baseURL,
+		DefaultModelKey: "mk-" + key + "-default", APIKey: testAPIKey("resp"), BaseURL: baseURL,
 		Status: consts.ACTIVE,
 	}
 }
 
-func newOpenAIChatProvider(key string, baseURL string) *llm_provider_entity.LLMProvider {
+func newOpenAIChatProvider(key, baseURL string) *llm_provider_entity.LLMProvider {
 	return &llm_provider_entity.LLMProvider{
 		ProviderKey: key, Type: string(llm_provider_entity.TypeOpenAIChat), Name: "c",
-		Model: "gpt-4o", APIKey: testAPIKey("chat"), BaseURL: baseURL,
+		DefaultModelKey: "mk-" + key + "-default", APIKey: testAPIKey("chat"), BaseURL: baseURL,
 		Status: consts.ACTIVE,
 	}
 }
@@ -132,6 +158,7 @@ func TestForwarder_AnthropicHappyPath(t *testing.T) {
 	upstream, rec := newRecordingUpstream(t, `{"id":"msg_x","content":[{"type":"text","text":"pong"}]}`)
 	tokens := NewTokenRegistry()
 	lookup := newFakeLookup(newAnthropicProvider("key-1", upstream.URL))
+	lookup.withModel(newModel("mk-key-1-default", "claude-sonnet-4-6"))
 	f := NewForwarder(tokens, lookup)
 
 	w := issueAndRequest(t, f.AnthropicHandler(), tokens,
@@ -147,7 +174,42 @@ func TestForwarder_AnthropicHappyPath(t *testing.T) {
 
 	var body map[string]any
 	assert.NoError(t, json.Unmarshal(rec.Body, &body))
-	assert.Equal(t, "claude-sonnet-4-6", body["model"]) // model 已改写
+	assert.Equal(t, "claude-sonnet-4-6", body["model"]) // model 已按默认模型改写
+}
+
+// TestForwarder_ProviderDefaultFollowsCurrentDefault 钉死 spec 决策 8/9：provider-default
+// 的 model 在本轮按 Provider 当前默认模型解析 —— Provider 默认模型变化后，同一 token 的
+// 下一条请求必须改写为新的默认模型，而不是沿用旧值。
+func TestForwarder_ProviderDefaultFollowsCurrentDefault(t *testing.T) {
+	upstream, rec := newRecordingUpstream(t, `{"ok":"x"}`)
+	provider := newAnthropicProvider("key-1", upstream.URL)
+	provider.DefaultModelKey = "mk-a"
+	lookup := newFakeLookup(provider)
+	lookup.withModel(newModel("mk-a", "claude-sonnet-4-6"))
+	lookup.withModel(newModel("mk-b", "claude-sonnet-4-7"))
+
+	tokens := NewTokenRegistry()
+	f := NewForwarder(tokens, lookup)
+	be := &agent_backend_entity.AgentBackend{ID: 5, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-1"}
+	tok, err := tokens.Issue(be, "key-1", 0)
+	assert.NoError(t, err)
+
+	send := func() map[string]any {
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"opus"}`))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		rec2 := httptest.NewRecorder()
+		f.AnthropicHandler()(rec2, req)
+		assert.Equal(t, http.StatusOK, rec2.Code)
+		var body map[string]any
+		assert.NoError(t, json.Unmarshal(rec.Body, &body))
+		return body
+	}
+
+	assert.Equal(t, "claude-sonnet-4-6", send()["model"], "当前默认 mk-a → claude-sonnet-4-6")
+
+	// 管理员把默认模型切到 mk-b：provider-default 下一轮必须动态跟随，不用重签 token。
+	provider.DefaultModelKey = "mk-b"
+	assert.Equal(t, "claude-sonnet-4-7", send()["model"], "默认切换后同一 token 必须解析到新默认")
 }
 
 func TestForwarder_AliasRoutingPicksTierProvider(t *testing.T) {
@@ -159,10 +221,10 @@ func TestForwarder_AliasRoutingPicksTierProvider(t *testing.T) {
 
 	tokens := NewTokenRegistry()
 	main := newAnthropicProvider("key-1", mainUpstream.URL)
-	main.Model = "claude-sonnet-fallback"
 	opus := newAnthropicProvider("key-2", opusUpstream.URL)
-	opus.Model = "claude-opus-4-1"
 	lookup := newFakeLookup(main, opus)
+	lookup.withModel(newModel("mk-key-1-default", "claude-sonnet-fallback"))
+	lookup.withModel(newModel("mk-key-2-default", "claude-opus-4-1"))
 	f := NewForwarder(tokens, lookup)
 
 	w := issueAndRequest(t, f.AnthropicHandler(), tokens,
@@ -186,6 +248,7 @@ func TestForwarder_AliasRoutingPicksTierProvider(t *testing.T) {
 func TestForwarder_OpenAIResponses(t *testing.T) {
 	assertOpenAIForwarded(t,
 		newOpenAIResponseProvider("key-1", ""),
+		[]*llm_provider_model_entity.LLMProviderModel{newModel("mk-key-1-default", "gpt-5-codex")},
 		(*Forwarder).OpenAIResponsesHandler,
 		6,
 		"/v1/responses",
@@ -197,6 +260,7 @@ func TestForwarder_OpenAIResponses(t *testing.T) {
 func TestForwarder_OpenAIChat(t *testing.T) {
 	assertOpenAIForwarded(t,
 		newOpenAIChatProvider("key-1", ""),
+		[]*llm_provider_model_entity.LLMProviderModel{newModel("mk-key-1-default", "gpt-4o")},
 		(*Forwarder).OpenAIChatHandler,
 		7,
 		"/v1/chat/completions",
@@ -226,19 +290,20 @@ func TestForwarder_RejectsProviderTypeMismatch(t *testing.T) {
 // TestForwarder_SwitchedProviderRoutesSameTokenToNewUpstream 钉死会话切换供应商的转发
 // 侧（规格「网关路由与子进程重启」）：token 字符串整段会话不变（它已烤进 CLI 子进程
 // env），换供应商改的只是它的路由目标 —— 同一个 token 的下一条请求必须打到新供应商的
-// BaseURL、带新供应商的 APIKey、body 的 model 改写成新供应商的 model。
+// BaseURL、带新供应商的 APIKey、body 的 model 改写成新供应商的默认模型。
 func TestForwarder_SwitchedProviderRoutesSameTokenToNewUpstream(t *testing.T) {
 	oldUpstream, oldRec := newRecordingUpstream(t, `{"ok":"old"}`)
 	newUpstream, newRec := newRecordingUpstream(t, `{"ok":"new"}`)
 
 	oldProvider := newAnthropicProvider("key-old", oldUpstream.URL)
-	oldProvider.Model = "claude-old"
 	switched := newAnthropicProvider("key-new", newUpstream.URL)
-	switched.Model = "claude-new"
 	switched.APIKey = "k-switched"
 
 	tokens := NewTokenRegistry()
-	f := NewForwarder(tokens, newFakeLookup(oldProvider, switched))
+	lookup := newFakeLookup(oldProvider, switched)
+	lookup.withModel(newModel("mk-key-old-default", "claude-old"))
+	lookup.withModel(newModel("mk-key-new-default", "claude-new"))
+	f := NewForwarder(tokens, lookup)
 	be := &agent_backend_entity.AgentBackend{
 		ID: 5, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-old",
 	}
@@ -266,7 +331,7 @@ func TestForwarder_SwitchedProviderRoutesSameTokenToNewUpstream(t *testing.T) {
 	assert.Equal(t, "k-switched", newRec.Header.Get("x-api-key"), "用新供应商的 APIKey")
 	var body map[string]any
 	assert.NoError(t, json.Unmarshal(newRec.Body, &body))
-	assert.Equal(t, "claude-new", body["model"], "model 改写成新供应商的 model")
+	assert.Equal(t, "claude-new", body["model"], "model 改写成新供应商的默认模型")
 }
 
 // TestForwarder_SwitchedToMissingProviderKeeps502 切换目标在本机缺失/停用时，转发端点
@@ -312,6 +377,26 @@ func TestForwarder_UnknownTokenReturns401(t *testing.T) {
 	w := httptest.NewRecorder()
 	f.AnthropicHandler()(w, req)
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+// TestForwarder_ProviderDefaultMissingModelKeeps502 钉死决策 7 的网关侧：Provider 存在
+// 但没有合法启用的默认模型（配置损坏）时转发端点 502，不静默把 alias 原样透传。
+func TestForwarder_ProviderDefaultMissingModelKeeps502(t *testing.T) {
+	upstream, _ := newRecordingUpstream(t, `{"ok":"x"}`)
+	provider := newAnthropicProvider("key-1", upstream.URL)
+	provider.DefaultModelKey = "mk-gone"
+	tokens := NewTokenRegistry()
+	f := NewForwarder(tokens, newFakeLookup(provider))
+
+	tok, err := tokens.Issue(
+		&agent_backend_entity.AgentBackend{ID: 5, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-1"},
+		"key-1", 0)
+	assert.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"opus"}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	f.AnthropicHandler()(rec, req)
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
 }
 
 func TestBuildTargetURL(t *testing.T) {

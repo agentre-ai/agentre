@@ -79,7 +79,14 @@ func (s *departmentSvc) Load(ctx context.Context, _ *LoadOrgRequest) (*LoadOrgRe
 	providerActiveByKey := make(map[string]bool)
 	for _, p := range providers {
 		providerByKey[p.ProviderKey] = p.Name
-		providerModelByKey[p.ProviderKey] = p.Model
+		// 组织页只展示一个摘要模型：取 Provider 当前默认模型的 ModelID。
+		// Provider 1→N 后 Provider 行不再有单模型投影，默认模型由 default_model_key
+		// 指向的启用 Model 决定（provider-default 展示口径）。查不到/无默认时留空。
+		if p.DefaultModelKey != "" {
+			if m, merr := llm_provider_repo.LLMProvider().FindModelByKey(ctx, p.DefaultModelKey); merr == nil && m != nil {
+				providerModelByKey[p.ProviderKey] = m.ModelID
+			}
+		}
 		providerActiveByKey[p.ProviderKey] = p.IsActive()
 	}
 	backendByID := make(map[int64]*BackendSummary)

@@ -33,11 +33,10 @@ func TestBuildLaunchCommand_ClaudeCodeWithTokenAndModel(t *testing.T) {
 			Name:           "cc",
 			LLMProviderKey: "key-9", // 绑了 provider → 命令里也该带 ANTHROPIC_*
 		},
-		Provider: &llm_provider_entity.LLMProvider{
-			ID:          9,
-			ProviderKey: "key-9",
-			Type:        string(llm_provider_entity.TypeAnthropic),
-			Model:       "claude-sonnet-4-6",
+		Effective: &EffectiveLLMConfig{
+			ProviderKey:  "key-9",
+			ProviderType: string(llm_provider_entity.TypeAnthropic),
+			ModelID:      "claude-sonnet-4-6",
 		},
 		AgentID:           42,
 		ProviderSessionID: "sess-uuid",
@@ -80,7 +79,7 @@ func TestBuildLaunchCommand_ClaudeCodePlaceholderToken(t *testing.T) {
 			Name:           "cc",
 			LLMProviderKey: "key-1",
 		},
-		Provider:   &llm_provider_entity.LLMProvider{ProviderKey: "key-1"},
+		Effective: &EffectiveLLMConfig{ProviderKey: "key-1"},
 		AgentID:    12,
 		GatewayURL: "http://127.0.0.1:60080",
 	})
@@ -139,10 +138,9 @@ func TestBuildLaunchCommand_CodexWithTokenAndModel(t *testing.T) {
 			Type: string(agent_backend_entity.TypeCodex),
 			Name: "cx",
 		},
-		Provider: &llm_provider_entity.LLMProvider{
-			ID:    3,
-			Type:  string(llm_provider_entity.TypeOpenAIResponse),
-			Model: "gpt-5-codex",
+		Effective: &EffectiveLLMConfig{
+			ProviderType: string(llm_provider_entity.TypeOpenAIResponse),
+			ModelID:      "gpt-5-codex",
 		},
 		AgentID:    8,
 		GatewayURL: "http://127.0.0.1:60080",
@@ -329,7 +327,7 @@ func TestBuildLaunchCommand_ShellEscapes(t *testing.T) {
 			LLMProviderKey: "key-1", // 让 ANTHROPIC_* 入 env，覆盖单引号转义
 			EnvJSON:        `{"WEIRD":"a'b c"}`,
 		},
-		Provider:   &llm_provider_entity.LLMProvider{ProviderKey: "key-1"},
+		Effective: &EffectiveLLMConfig{ProviderKey: "key-1"},
 		AgentID:    11,
 		GatewayURL: "http://127.0.0.1:60080",
 		Token:      "tok",

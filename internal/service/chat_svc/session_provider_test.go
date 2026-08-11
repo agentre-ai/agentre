@@ -14,6 +14,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 )
@@ -63,7 +64,7 @@ func TestSetChatSessionProvider_PersistsAndAppendsNotice(t *testing.T) {
 	expectSwitchBackend(m, ctx, sess, agent_backend_entity.TypeClaudeCode, "agent-bound")
 	m.provider.EXPECT().FindByKey(ctx, "session-key").Return(&llm_provider_entity.LLMProvider{
 		ID: 33, ProviderKey: "session-key", Type: string(llm_provider_entity.TypeAnthropic),
-		Model: "claude-sonnet-4-6", Status: consts.ACTIVE,
+		Status: consts.ACTIVE,
 	}, nil)
 	m.session.EXPECT().UpdateProviderKey(ctx, int64(100), "session-key").Return(nil)
 	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(7, nil)
@@ -95,7 +96,7 @@ func TestSetChatSessionProvider_NoticeCarriesProviderDisplayName(t *testing.T) {
 	expectSwitchBackend(m, ctx, sess, agent_backend_entity.TypeClaudeCode, "agent-bound")
 	m.provider.EXPECT().FindByKey(ctx, "session-key").Return(&llm_provider_entity.LLMProvider{
 		ID: 33, ProviderKey: "session-key", Name: "中转 · GLM 5.2", Type: string(llm_provider_entity.TypeAnthropic),
-		Model: "claude-sonnet-4-6", Status: consts.ACTIVE,
+		Status: consts.ACTIVE,
 	}, nil)
 	m.session.EXPECT().UpdateProviderKey(ctx, int64(100), "session-key").Return(nil)
 	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(7, nil)
@@ -233,12 +234,18 @@ func TestLoadSession_DisplaysEffectiveProvider(t *testing.T) {
 	}, nil)
 	m.provider.EXPECT().FindByKey(ctx, "agent-bound").Return(&llm_provider_entity.LLMProvider{
 		ID: 33, ProviderKey: "agent-bound", Type: string(llm_provider_entity.TypeOpenAIChat),
-		Model: "gpt-5", ContextWindow: 111_000, Status: consts.ACTIVE,
+		Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-agent-bound", Status: consts.ACTIVE,
 	}, nil).AnyTimes()
+	m.provider.EXPECT().FindModelByKey(ctx, "mk-agent-bound").Return(
+		&llm_provider_model_entity.LLMProviderModel{ModelKey: "mk-agent-bound", ModelID: "gpt-5", ContextWindow: 111_000, Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+		nil).AnyTimes()
 	m.provider.EXPECT().FindByKey(ctx, "session-key").Return(&llm_provider_entity.LLMProvider{
 		ID: 34, ProviderKey: "session-key", Type: string(llm_provider_entity.TypeAnthropic),
-		Model: "claude-sonnet-4-6", ContextWindow: 222_000, Status: consts.ACTIVE,
-	}, nil)
+		Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-session-key", Status: consts.ACTIVE,
+	}, nil).AnyTimes()
+	m.provider.EXPECT().FindModelByKey(ctx, "mk-session-key").Return(
+		&llm_provider_model_entity.LLMProviderModel{ModelKey: "mk-session-key", ModelID: "claude-sonnet-4-6", ContextWindow: 222_000, Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+		nil).AnyTimes()
 	m.message.EXPECT().List(ctx, int64(100)).Return(nil, nil)
 
 	resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 100})
@@ -259,7 +266,7 @@ func TestLoadSession_FallsBackToAgentBindingForDisplay(t *testing.T) {
 	expectLoadSessionBackend(m, ctx, 100, 7, 12, agent_backend_entity.TypeClaudeCode,
 		&llm_provider_entity.LLMProvider{
 			ID: 33, ProviderKey: "agent-bound", Type: string(llm_provider_entity.TypeAnthropic),
-			Model: "claude-sonnet-4-6", ContextWindow: 111_000, Status: consts.ACTIVE,
+			Status: consts.ACTIVE,
 		})
 
 	resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 100})
@@ -293,12 +300,18 @@ func TestGetLaunchCommand_UsesEffectiveProvider(t *testing.T) {
 	}, nil)
 	m.provider.EXPECT().FindByKey(ctx, "agent-bound").Return(&llm_provider_entity.LLMProvider{
 		ID: 33, ProviderKey: "agent-bound", Type: string(llm_provider_entity.TypeAnthropic),
-		Model: "claude-opus-4-1", Status: consts.ACTIVE,
+		Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-agent-bound", Status: consts.ACTIVE,
 	}, nil).AnyTimes()
+	m.provider.EXPECT().FindModelByKey(ctx, "mk-agent-bound").Return(
+		&llm_provider_model_entity.LLMProviderModel{ModelKey: "mk-agent-bound", ModelID: "claude-opus-4-1", Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+		nil).AnyTimes()
 	m.provider.EXPECT().FindByKey(ctx, "session-key").Return(&llm_provider_entity.LLMProvider{
 		ID: 34, ProviderKey: "session-key", Type: string(llm_provider_entity.TypeAnthropic),
-		Model: "claude-sonnet-4-6", Status: consts.ACTIVE,
-	}, nil)
+		Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-session-key", Status: consts.ACTIVE,
+	}, nil).AnyTimes()
+	m.provider.EXPECT().FindModelByKey(ctx, "mk-session-key").Return(
+		&llm_provider_model_entity.LLMProviderModel{ModelKey: "mk-session-key", ModelID: "claude-sonnet-4-6", Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+		nil).AnyTimes()
 
 	resp, err := m.svc.GetLaunchCommand(ctx, &chat_svc.LaunchCommandRequest{SessionID: 3})
 	require.NoError(t, err)

@@ -16,6 +16,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 )
@@ -24,10 +25,27 @@ func newBuiltinAgent(id, backendID int64) *agent_entity.Agent {
 	return &agent_entity.Agent{ID: id, AgentBackendID: backendID, Status: consts.ACTIVE, PromptJSON: `[]`}
 }
 
+// newActiveProvider 构造一条可被 provider-default 解析的供应商：Enabled=On + 指向
+// 一条启用默认模型的 DefaultModelKey（EffectiveLLMConfig v1 seam 的 ResolveTarget
+// 前置条件）。
 func newActiveProvider(key, ptype string) *llm_provider_entity.LLMProvider {
 	return &llm_provider_entity.LLMProvider{
-		ProviderKey: key, Type: ptype, Status: consts.ACTIVE, Model: "default-model",
+		ProviderKey: key, Type: ptype, Status: consts.ACTIVE,
+		Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-" + key,
 	}
+}
+
+// expectProviderResolvable 为「会话 provider_key > agent 绑定 → ResolveTarget 解析
+// provider-default」这条链的默认模型查询搭 mock（EffectiveLLMConfig v1 seam）：
+// ResolveTarget 解析空 ModelKey 时会查一次 FindModelByKey(DefaultModelKey)。
+// FindByKey 由各测试显式 AnyTimes 提供（resolveAgentBackend / sessionProviderOverride /
+// ResolveTarget 各会查一次），避免同一 key 重复注册。
+func expectProviderResolvable(m *chatMocks, key string) {
+	m.provider.EXPECT().FindModelByKey(gomock.Any(), "mk-"+key).Return(
+		&llm_provider_model_entity.LLMProviderModel{
+			ModelKey: "mk-" + key, ModelID: "model-" + key,
+			Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE,
+		}, nil).AnyTimes()
 }
 
 // TestSend_NewSession_PersistsAndValidatesProviderKey 钉死「新建会话 SendRequest.ProviderKey
@@ -46,8 +64,9 @@ func TestSend_NewSession_PersistsAndValidatesProviderKey(t *testing.T) {
 		m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 			ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 		}, nil)
-		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeAnthropic)), nil)
-		m.provider.EXPECT().FindByKey(gomock.Any(), "key-99").Return(newActiveProvider("key-99", string(llm_provider_entity.TypeAnthropic)), nil)
+		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
+		expectProviderResolvable(m, "key-99")
+		m.provider.EXPECT().FindByKey(gomock.Any(), "key-99").Return(newActiveProvider("key-99", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
 
 		m.session.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, s *chat_entity.Session) error {
 			assert.Equal(t, "key-99", s.ProviderKey, "所选供应商必须与 Session 一起落库")
@@ -135,8 +154,8 @@ func TestSend_ExistingSession_ProviderKeyOverridesAgentBinding(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeAnthropic)), nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-99").Return(newActiveProvider("key-99", string(llm_provider_entity.TypeAnthropic)), nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
+	expectProviderResolvable(m, "key-99")
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	m.dbMock.ExpectBegin()
@@ -186,7 +205,8 @@ func TestSend_ExistingSession_NoProviderKeyUsesAgentBinding(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeAnthropic)), nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	m.dbMock.ExpectBegin()
@@ -245,8 +265,9 @@ func TestRegenerate_ExistingSession_ProviderKeyOverridesAgentBinding(t *testing.
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeAnthropic)), nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-99").Return(newActiveProvider("key-99", string(llm_provider_entity.TypeAnthropic)), nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
+	expectProviderResolvable(m, "key-99")
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-99").Return(newActiveProvider("key-99", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	m.dbMock.ExpectBegin()
@@ -294,7 +315,8 @@ func TestSend_ExistingSession_MissingSessionProviderFallsBackWithNotice(t *testi
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeAnthropic)), nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 	m.provider.EXPECT().FindByKey(gomock.Any(), "gone-provider").Return(nil, nil)
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 

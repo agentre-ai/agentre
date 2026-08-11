@@ -101,7 +101,7 @@ func TestRunTurn_ProviderFallbackAppendsPersistentNotice(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}
 	prov := &llm_provider_entity.LLMProvider{
-		ProviderKey: "key-21", Type: string(llm_provider_entity.TypeAnthropic), Model: "provider-default", Status: consts.ACTIVE,
+		ProviderKey: "key-21", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}
 	assistant := &chat_entity.Message{ID: 1001, SessionID: 100, Role: "assistant", BlocksJSON: "[]"}
 
@@ -173,7 +173,7 @@ func TestRunTurn_NoModelDeviationNotice(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-99", Status: consts.ACTIVE,
 	}
 	prov := &llm_provider_entity.LLMProvider{
-		ProviderKey: "key-99", Type: string(llm_provider_entity.TypeAnthropic), Model: "provider-default", Status: consts.ACTIVE,
+		ProviderKey: "key-99", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}
 	assistant := &chat_entity.Message{ID: 1001, SessionID: 100, Role: "assistant", BlocksJSON: "[]"}
 
@@ -223,7 +223,7 @@ func TestRunTurn_RemoteFallbackSignalAppendsPersistentNotice(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}
 	prov := &llm_provider_entity.LLMProvider{
-		ProviderKey: "key-21", Type: string(llm_provider_entity.TypeAnthropic), Model: "provider-default", Status: consts.ACTIVE,
+		ProviderKey: "key-21", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
 	}
 	assistant := &chat_entity.Message{ID: 1001, SessionID: 100, Role: "assistant", BlocksJSON: "[]"}
 

@@ -18,6 +18,7 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
 )
@@ -216,12 +217,16 @@ func TestBuiltinProber_PassesProviderModelToAgent(t *testing.T) {
 			ProviderKey: "key-11",
 			Type:        string(llm_provider_entity.TypeAnthropic),
 			Name:        "production",
-			Model:       "claude-sonnet-4-6",
+			Enabled:     llm_provider_entity.EnabledOn,
+			DefaultModelKey: "mk-11",
 			APIKey:      "sk-test",
 			BaseURL:     "http://127.0.0.1:0",
 			Status:      consts.ACTIVE,
 		}
-		repoMock.EXPECT().FindByKey(gomock.Any(), "key-11").Return(entity, nil)
+		repoMock.EXPECT().FindByKey(gomock.Any(), "key-11").Return(entity, nil).AnyTimes()
+		repoMock.EXPECT().FindModelByKey(gomock.Any(), "mk-11").Return(
+			&llm_provider_model_entity.LLMProviderModel{ModelKey: "mk-11", ModelID: "claude-sonnet-4-6", Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+			nil).AnyTimes()
 
 		capture := &modelCapturingProvider{}
 		origBuilder := providerBuilder
@@ -240,7 +245,7 @@ func TestBuiltinProber_PassesProviderModelToAgent(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, "pong", strings.TrimSpace(reply))
 		assert.Equal(t, "claude-sonnet-4-6", capture.Model(),
-			"builtinProber 必须把 LLMProvider.Model 注入 coding.WithModel；空 model 会让真实 LLM 调用以 400 失败")
+			"builtinProber 必须把解析出的 ModelID 注入 coding.WithModel；空 model 会让真实 LLM 调用以 400 失败")
 	})
 }
 
@@ -256,12 +261,16 @@ func TestBuildPiAgentProviderProbe(t *testing.T) {
 			ProviderKey: "key-pi",
 			Type:        string(llm_provider_entity.TypeOpenAIChat),
 			Name:        "PiProvider",
-			Model:       "deepseek-v3",
+			Enabled:     llm_provider_entity.EnabledOn,
+			DefaultModelKey: "mk-pi",
 			APIKey:      "sk-pi-1",
 			BaseURL:     "https://pi.example",
 			Status:      consts.ACTIVE,
 		}
-		repoMock.EXPECT().FindByKey(gomock.Any(), "key-pi").Return(p, nil)
+		repoMock.EXPECT().FindByKey(gomock.Any(), "key-pi").Return(p, nil).AnyTimes()
+		repoMock.EXPECT().FindModelByKey(gomock.Any(), "mk-pi").Return(
+			&llm_provider_model_entity.LLMProviderModel{ModelKey: "mk-pi", ModelID: "deepseek-v3", Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+			nil).AnyTimes()
 
 		Convey("When assembling the probe params Then the provider extension is materialized, env gets the API key and model is agentre-<key>/<model>", func() {
 			exts, envOut, modelOut, err := buildPiAgentProviderProbe(context.Background(), &agent_backend_entity.AgentBackend{
@@ -322,7 +331,6 @@ func TestBuildPiAgentProviderProbe(t *testing.T) {
 				ProviderKey: "key-pi",
 				Type:        string(llm_provider_entity.TypeOpenAIChat),
 				Name:        "PiProvider",
-				Model:       "deepseek-v3",
 				APIKey:      "sk-pi-1",
 				BaseURL:     "https://pi.example",
 				Status:      consts.DELETE,
@@ -347,7 +355,6 @@ func TestBuildPiAgentProviderProbe(t *testing.T) {
 			ProviderKey: "key-pi",
 			Type:        string(llm_provider_entity.TypeOpenAIChat),
 			Name:        "PiProvider",
-			Model:       "deepseek-v3",
 			APIKey:      "",
 			BaseURL:     "https://pi.example",
 			Status:      consts.ACTIVE,

@@ -13,7 +13,6 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
-	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
 	pkgcodex "github.com/agentre-ai/agentre/pkg/codex"
@@ -202,7 +201,7 @@ func TestRun_ModelResolution(t *testing.T) {
 					Type:    string(agent_backend_entity.TypeCodex),
 					EnvJSON: "{}",
 				},
-				Provider:  &llm_provider_entity.LLMProvider{Model: "gpt-5.4"},
+				Effective: &agentruntime.EffectiveLLMConfig{ModelID: "gpt-5.4"},
 				SessionID: 1,
 				Cwd:       t.TempDir(),
 				UserText:  "hello",
@@ -230,7 +229,7 @@ func TestRun_ModelResolution(t *testing.T) {
 					Type:    string(agent_backend_entity.TypeCodex),
 					EnvJSON: "{}",
 				},
-				Provider:  &llm_provider_entity.LLMProvider{Model: "glm-4.6"},
+				Effective: &agentruntime.EffectiveLLMConfig{ModelID: "glm-4.6"},
 				SessionID: 1,
 				Cwd:       t.TempDir(),
 				UserText:  "hello",
@@ -253,7 +252,7 @@ func TestRun_ModelResolution(t *testing.T) {
 					Type:    string(agent_backend_entity.TypeCodex),
 					EnvJSON: "{}",
 				},
-				Provider:  &llm_provider_entity.LLMProvider{Model: "gpt-5.4"},
+				Effective: &agentruntime.EffectiveLLMConfig{ModelID: "gpt-5.4"},
 				SessionID: 1,
 				Cwd:       t.TempDir(),
 				UserText:  "hello",
@@ -268,17 +267,18 @@ func TestRun_ModelResolution(t *testing.T) {
 }
 
 // TestRun_ModelChangeEvictsAndRespawns 锁住 codex 的模型 evict 语义:app-server 进程会
-// 被 CLISessionPool 跨轮复用,而 WithModel 绑定在 Client 创建时 —— provider.Model 变了
-// (会话选供应商换绑定等)必须 evict + 重 spawn,否则下一轮复用池里旧模型进程,模型不生效
-// (RunResult.Model 仍旧模型)。#26 会话级 override 已移除,模型变化只看 provider.Model。
+// 被 CLISessionPool 跨轮复用,而 WithModel 绑定在 Client 创建时 —— 解析出的 ModelID 变了
+// (会话选供应商换绑定、Provider 默认模型变化等)必须 evict + 重 spawn,否则下一轮复用池里
+// 旧模型进程,模型不生效 (RunResult.Model 仍旧模型)。#26 会话级 override 已移除,
+// 模型变化只看解析出的 ModelID。
 func TestRun_ModelChangeEvictsAndRespawns(t *testing.T) {
-	Convey("Given 同一 codex 会话两轮 provider.Model 不同", t, func() {
+	Convey("Given 同一 codex 会话两轮解析出的 ModelID 不同", t, func() {
 		var spawnCount int32
 		restore := SetSessionFactoryForTest(func(req agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
 			atomic.AddInt32(&spawnCount, 1)
 			model := "gpt-5.5"
-			if req.Provider != nil {
-				model = req.Provider.Model
+			if req.Effective != nil {
+				model = req.Effective.ModelID
 			}
 			return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-x", model: model}, nil
 		})
@@ -291,7 +291,7 @@ func TestRun_ModelChangeEvictsAndRespawns(t *testing.T) {
 					Type:    string(agent_backend_entity.TypeCodex),
 					EnvJSON: "{}",
 				},
-				Provider:  &llm_provider_entity.LLMProvider{Model: providerModel},
+				Effective: &agentruntime.EffectiveLLMConfig{ModelID: providerModel},
 				SessionID: 77,
 				Cwd:       t.TempDir(),
 				UserText:  "hi",
@@ -324,11 +324,11 @@ func TestRun_ModelChangeEvictsAndRespawns(t *testing.T) {
 
 // TestRun_ProviderChangeEvictsAndRespawns 锁住 codex 的 evict 比对键扩展(spec
 // 2026-08-10 决策 4):model_provider/base_url 同是启动期 -c 覆盖项(WithModel 绑定在
-// Client 创建时),两个不同供应商可以配同一个 model id,只比 provider.Model 会漏掉换
+// Client 创建时),两个不同供应商可以配同一个 model id,只比解析出的 ModelID 会漏掉换
 // 供应商 —— 必须把 effectiveProviderKey 也纳入比对,否则会话切换供应商后复用池里的旧
 // app-server 进程,请求仍打旧供应商。
 func TestRun_ProviderChangeEvictsAndRespawns(t *testing.T) {
-	Convey("Given 同一 codex 会话两轮 provider.Model 相同但 ProviderKey 不同", t, func() {
+	Convey("Given 同一 codex 会话两轮解析出的 ModelID 相同但 ProviderKey 不同", t, func() {
 		var spawnCount int32
 		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
 			atomic.AddInt32(&spawnCount, 1)
@@ -343,7 +343,7 @@ func TestRun_ProviderChangeEvictsAndRespawns(t *testing.T) {
 					Type:    string(agent_backend_entity.TypeCodex),
 					EnvJSON: "{}",
 				},
-				Provider:  &llm_provider_entity.LLMProvider{ProviderKey: providerKey, Model: "same-model"},
+				Effective: &agentruntime.EffectiveLLMConfig{ProviderKey: providerKey, ModelID: "same-model"},
 				SessionID: 78,
 				Cwd:       t.TempDir(),
 				UserText:  "hi",

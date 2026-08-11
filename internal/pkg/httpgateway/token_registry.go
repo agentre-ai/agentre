@@ -11,17 +11,27 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 )
 
+// TokenTarget 是 token 的可变路由目标（spec：ProviderKey + ModelKey）。
+//
+//   - ProviderKey 非空且 ModelKey 空 → provider-default：每轮由 Gateway 解析 Provider 当前默认模型；
+//   - 两个 key 都非空 → fixed-model：解析指定 Model 记录（由后续任务扩展）。
+type TokenTarget struct {
+	ProviderKey string
+	ModelKey    string
+}
+
 // TokenEntry 一条 token → backend 路由记录。
 //
-// 持有 backend 的 ID / 类型 / 主 provider key / model_routes 解析后的快照；
+// 持有 backend 的 ID / 类型 / 主路由目标 / model_routes 解析后的快照；
 // 不持有 provider 实体本身——转发时由 llmforward 通过 llm_provider_repo 查实时数据。
 type TokenEntry struct {
-	BackendID       int64
-	BackendType     agent_backend_entity.BackendType
-	MainProviderKey string
-	// Routes 把 alias（OPUS / SONNET / HAIKU 等，**统一大写**）映射到 LLMProvider.ProviderKey。
+	BackendID   int64
+	BackendType agent_backend_entity.BackendType
+	// Main 是主路由目标（会话级常驻 token 的可变部分：ProviderKey+ModelKey）。
+	Main TokenTarget
+	// Routes 把 alias（OPUS / SONNET / HAIKU 等，**统一大写**）映射到路由目标。
 	// 空 map 表示没有 tier 路由（codex / 没配 model_routes 的 claudecode）。
-	Routes   map[string]string
+	Routes   map[string]TokenTarget
 	ExpireAt time.Time // 0 = 永不过期（chat flow 长 token 用）
 }
 
@@ -33,16 +43,16 @@ func (e TokenEntry) IsExpired(now time.Time) bool {
 	return !now.Before(e.ExpireAt)
 }
 
-// ResolveModel 在 routes 里找 alias 对应的 provider key；没命中返回 (mainProviderKey, false)。
+// ResolveModel 在 routes 里找 alias 对应的路由目标；没命中返回主目标。
 // alias 比较前会先转大写——子进程发的请求 body 里 model 字段可能是 "opus" 等小写。
-func (e TokenEntry) ResolveModel(modelField string) (providerKey string, hit bool) {
+func (e TokenEntry) ResolveModel(modelField string) (TokenTarget, bool) {
 	if len(e.Routes) == 0 {
-		return e.MainProviderKey, false
+		return e.Main, false
 	}
-	if p, ok := e.Routes[strings.ToUpper(strings.TrimSpace(modelField))]; ok {
-		return p, true
+	if t, ok := e.Routes[strings.ToUpper(strings.TrimSpace(modelField))]; ok {
+		return t, true
 	}
-	return e.MainProviderKey, false
+	return e.Main, false
 }
 
 // TokenRegistry 内存 token 表。App 退出即清空；不落盘。
@@ -87,9 +97,9 @@ func (r *TokenRegistry) Issue(b *agent_backend_entity.AgentBackend, providerKey 
 	if err != nil {
 		return "", err
 	}
-	upper := make(map[string]string, len(routes))
+	upper := make(map[string]TokenTarget, len(routes))
 	for k, v := range routes {
-		upper[strings.ToUpper(k)] = v
+		upper[strings.ToUpper(k)] = TokenTarget{ProviderKey: v}
 	}
 
 	tok, err := RandomToken(24)
@@ -97,10 +107,10 @@ func (r *TokenRegistry) Issue(b *agent_backend_entity.AgentBackend, providerKey 
 		return "", err
 	}
 	entry := TokenEntry{
-		BackendID:       b.ID,
-		BackendType:     agent_backend_entity.BackendType(b.Type),
-		MainProviderKey: providerKey,
-		Routes:          upper,
+		BackendID:   b.ID,
+		BackendType: agent_backend_entity.BackendType(b.Type),
+		Main:        TokenTarget{ProviderKey: providerKey},
+		Routes:      upper,
 	}
 	if ttl > 0 {
 		entry.ExpireAt = r.now().Add(ttl)
@@ -132,12 +142,13 @@ func (r *TokenRegistry) Resolve(token string) (TokenEntry, bool) {
 	return entry, true
 }
 
-// SetProviderKey 把既有 token 的主供应商改成 providerKey，**token 字符串不变**，
-// 返回它原来的主供应商与是否命中（未签发过 / 已过期 → ("", false)）。
+// SetProviderKey 把既有 token 的主路由目标改成 providerKey（ModelKey 重置为空 =
+// provider-default），**token 字符串不变**，返回它原来的主供应商与是否命中
+// （未签发过 / 已过期 → ("", false)）。
 //
 // 会话中途换供应商走这里而不是重签：token 是会话级常驻、首轮就烤进 CLI 子进程 env 的，
 // 重签会让在跑的子进程手里那个立刻失效（曾经的 401 事故）。tier 路由（Routes）与 backend
-// 身份不动 —— 换的只是主供应商这一件事。
+// 身份不动 —— 换的只是主路由目标这一件事。
 func (r *TokenRegistry) SetProviderKey(token, providerKey string) (previous string, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -145,8 +156,8 @@ func (r *TokenRegistry) SetProviderKey(token, providerKey string) (previous stri
 	if !found || entry.IsExpired(r.now()) {
 		return "", false
 	}
-	previous = entry.MainProviderKey
-	entry.MainProviderKey = providerKey
+	previous = entry.Main.ProviderKey
+	entry.Main = TokenTarget{ProviderKey: providerKey}
 	r.tokens[token] = entry
 	return previous, true
 }

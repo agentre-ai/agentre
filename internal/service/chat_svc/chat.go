@@ -617,8 +617,8 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		resp.Session.AgentAvatarDataURL = a.AvatarDataURL
 		// BackendType 给前端判断「复制启动命令」这类仅 CLI 后端有效的菜单是否显示。
 		// 上下文窗口走统一优先级 resolveContextWindowWithRuntime：
-		//   runtime 上报（session.ContextWindow）> 用户配置（provider.ContextWindow）
-		//   > latestAssistantModel catalog > provider.Model catalog。
+		//   runtime 上报（session.ContextWindow）> 解析出的 ContextWindow
+		//   > latestAssistantModel catalog > 解析出的 ModelID catalog。
 		// backend 不存在或无 provider 时仍尝试用 latestAssistantModel 兜底；都没有 → 0。
 		// 查询失败一律不阻塞加载会话本身。
 		var prov *llm_provider_entity.LLMProvider
@@ -649,7 +649,11 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		if prov != nil {
 			resp.Session.LLMProviderType = prov.Type
 		}
-		resp.Session.ContextWindow = resolveContextWindowWithRuntime(sess, prov, msgs)
+		// 展示侧使用同一解析规则（EffectiveLLMConfig v1 seam）：上下文窗口 / 模型目录
+		// 走解析出的模型，不直接读 Provider 行。查询失败不阻塞加载会话本身（与 prov
+		// 同一容忍度）。
+		cfg, _ := s.effectiveLLMForTurn(ctx, prov)
+		resp.Session.ContextWindow = resolveContextWindowWithRuntime(sess, cfg, msgs)
 
 		// Device + cwd 信息: 给前端 chat header 渲染"远端运行 · /home/me/proj"小字使用。
 		// be 解析失败 / device 离线 / cwd 查询失败时容忍降级 (字段留空,不让 LoadSession 整体失败);
@@ -744,6 +748,12 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	if err != nil {
 		return nil, operationFailedWithCause(ctx, err)
 	}
+	// 执行侧配置（EffectiveLLMConfig v1 seam）：--model 用解析出的 ModelID，
+	// 不再读 Provider 旧单模型字段。
+	cfg, err := s.effectiveLLMForTurn(ctx, prov)
+	if err != nil {
+		return nil, operationFailedWithCause(ctx, err)
+	}
 
 	// 关联 provider 时拼 gateway URL 并签一个"进程内永久"的 token 内联进命令；
 	// CLI 自身 login 模式则什么也不传，BuildLaunchCommand 不会写 BASE_URL/API_KEY。
@@ -765,7 +775,7 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	}
 	cmd, err := agentruntime.BuildLaunchCommand(agentruntime.LaunchCommandSpec{
 		Backend:           be,
-		Provider:          prov,
+		Effective:         cfg,
 		AgentID:           a.ID,
 		SessionID:         sess.ID,
 		Cwd:               cwd,
@@ -1398,11 +1408,19 @@ func (s *chatSvc) goalControllerForSession(ctx context.Context, sess *chat_entit
 	if err != nil {
 		return nil, agentruntime.GoalRequest{}, release, err
 	}
+	// goal 与 turn 共用同一执行侧配置（EffectiveLLMConfig v1 seam）：codex goal 会话池
+	// 与 turn 同源解析，避免启动期比对键在 goal 与 turn 之间反复翻转。远端由 daemon
+	// 自家解析，desktop 不解析、不发本地结果。
+	cfg, err := s.effectiveLLMForNonRemoteTurn(ctx, be, prov)
+	if err != nil {
+		return nil, agentruntime.GoalRequest{}, release, err
+	}
 	return controller, agentruntime.GoalRequest{
 		SessionID:         sess.ID,
 		ProviderSessionID: sess.ProviderSessionID,
 		Backend:           be,
 		Provider:          prov,
+		Effective:         cfg,
 		Cwd:               cwd,
 		AgentID:           a.ID,
 	}, release, nil
@@ -3300,9 +3318,18 @@ func (s *chatSvc) startTurn(
 	userMsg := &chat_entity.Message{SessionID: sess.ID, Role: "user", DeviceID: be.DeviceID}
 	_ = userMsg.SetBlocks(userBlocks)
 
+	// 解析本轮执行侧配置（EffectiveLLMConfig v1 seam）：provider-default 在 turn 入口
+	// 解析 Provider 当前默认模型，assistantMsg.Model 用解析出的 ModelID 占位（真正执行
+	// 后由 result.Model 覆盖）。远端 backend 由 daemon 自家解析，desktop 不解析、不发
+	// 本地结果（effectiveLLMForNonRemoteTurn 返回 nil）。
+	cfg, err := s.effectiveLLMForNonRemoteTurn(ctx, be, prov)
+	if err != nil {
+		lock.Unlock()
+		return nil, err
+	}
 	model := ""
-	if prov != nil {
-		model = prov.Model
+	if cfg != nil {
+		model = cfg.ModelID
 	}
 	assistantMsg := &chat_entity.Message{
 		SessionID:  sess.ID,
@@ -3558,9 +3585,16 @@ func (s *chatSvc) startCompactTurn(
 		lock = gate.lock
 	}
 
+	// 解析本轮执行侧配置（EffectiveLLMConfig v1 seam）：compact 也是执行入口，
+	// assistantMsg.Model 用解析出的 ModelID 占位（真正执行后由 result.Model 覆盖）。
+	cfg, err := s.effectiveLLMForNonRemoteTurn(ctx, be, prov)
+	if err != nil {
+		lock.Unlock()
+		return nil, err
+	}
 	model := ""
-	if prov != nil {
-		model = prov.Model
+	if cfg != nil {
+		model = cfg.ModelID
 	}
 	assistantMsg := &chat_entity.Message{
 		SessionID:  sess.ID,
@@ -3797,9 +3831,17 @@ func (s *chatSvc) prepareTurnRun(
 	if err != nil {
 		return fail(err)
 	}
+	// 解析本轮执行侧配置（EffectiveLLMConfig v1 seam）：provider-default 在每轮准备时
+	// 解析 Provider 当前默认模型；远端 backend 由 daemon 自家解析，desktop 不发本地结果。
+	// 解析失败（配置损坏）阻止本轮，不静默降级。
+	cfg, err := s.effectiveLLMForNonRemoteTurn(ctx, be, prov)
+	if err != nil {
+		return fail(err)
+	}
 	req := agentruntime.RunRequest{
 		Backend:           be,
 		Provider:          prov,
+		Effective:         cfg,
 		AgentID:           a.ID,
 		SessionID:         sess.ID,
 		Cwd:               cwd,
@@ -4136,7 +4178,7 @@ func (s *chatSvc) runTurn(
 			assistantMsg.ReasoningTokens = result.Usage.ReasoningTokens
 		}
 		// runner 上报的实际模型 id 覆盖创建时的占位值：
-		//   - builtin: 与原值相同（都来自 prov.Model）→ 不变
+		//   - builtin: 与原值相同（都来自解析出的 ModelID）→ 不变
 		//   - claudecode CLI login: 创建时 model="" → 这里被填上 system.init.model 真值
 		//   - codex CLI login: 同上，填上 Agentre 的 codex 默认模型
 		// LoadSession 后续就能用这个字段查 cago catalog 解析 contextWindow。
@@ -5094,28 +5136,27 @@ func latestAssistantModel(msgs []*chat_entity.Message) string {
 // 优先级（高 → 低）：
 //  1. session.ContextWindow > 0：runner 上轮上报的 modelContextWindow（codex
 //     app-server 推送），最权威——用户在 CLI 内 /model 切换后立刻生效；
-//  2. provider.ContextWindow > 0：用户在 LLMProvider 显式配置——某些 vendor
-//     给非标准窗口、或绑精简号时表达 UI 上限的明确意图；
+//  2. cfg.ContextWindow > 0：解析出模型的 ContextWindow（用户在 LLMProvider 显式
+//     配置——某些 vendor 给非标准窗口、或绑精简号时表达 UI 上限的明确意图）；
 //  3. latestAssistantModel → llmcatalog.Lookup：从历史 assistant message
 //     的 Model 字段查表（claudecode CLI login / 显式 --model 都能命中）；
-//  4. provider.Model → llmcatalog.Lookup：新会话还没 assistant message 时的兜底。
+//  4. cfg.ModelID → llmcatalog.Lookup：新会话还没 assistant message 时的兜底。
 //
-// 与之前 resolveContextWindow* 两套函数的合并：所有 backend 都走这一条路径，
-// 仅靠优先级 1 / 2 之间的相对顺序自动表达"runtime 实测优先于静态配置"。
-func resolveContextWindowWithRuntime(sess *chat_entity.Session, p *llm_provider_entity.LLMProvider, msgs []*chat_entity.Message) int {
+// cfg 是执行侧解析结果（EffectiveLLMConfig v1 seam），不再直接读 Provider 行。
+func resolveContextWindowWithRuntime(sess *chat_entity.Session, cfg *agentruntime.EffectiveLLMConfig, msgs []*chat_entity.Message) int {
 	if sess != nil && sess.ContextWindow > 0 {
 		return sess.ContextWindow
 	}
-	if p != nil && p.ContextWindow > 0 {
-		return p.ContextWindow
+	if cfg != nil && cfg.ContextWindow > 0 {
+		return cfg.ContextWindow
 	}
 	if model := latestAssistantModel(msgs); model != "" {
 		if info, ok := llmcatalog.Lookup(model); ok {
 			return info.ContextWindow
 		}
 	}
-	if p != nil {
-		if info, ok := llmcatalog.Lookup(p.Model); ok {
+	if cfg != nil {
+		if info, ok := llmcatalog.Lookup(cfg.ModelID); ok {
 			return info.ContextWindow
 		}
 	}

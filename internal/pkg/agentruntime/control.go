@@ -31,12 +31,16 @@ type GoalRequest struct {
 	ProviderSessionID string
 	Backend           *agent_backend_entity.AgentBackend
 	Provider          *llm_provider_entity.LLMProvider
-	Cwd               string
-	GatewayURL        string
-	GatewayToken      string
-	Objective         *string
-	Status            *string
-	TokenBudget       *int
+	// Effective 是本轮执行侧唯一解析结果（EffectiveLLMConfig v1 seam），
+	// 与 RunRequest.Effective 同源；goal 与 turn 共用同一个 CLI 会话池，
+	// 两边解析不一致会让启动期比对键反复翻转、把在用的子进程 evict 掉。
+	Effective     *EffectiveLLMConfig
+	Cwd           string
+	GatewayURL    string
+	GatewayToken  string
+	Objective     *string
+	Status        *string
+	TokenBudget   *int
 }
 
 type GoalController interface {

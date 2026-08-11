@@ -6,7 +6,6 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
-	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/pkg/claudecode"
 )
@@ -58,16 +57,16 @@ func TestCCBuildClientOpts_MCPServersInjectTool(t *testing.T) {
 }
 
 // TestCCBuildClientOpts_ProviderModelDownToCLI 锁住 Bug 1 修复:
-// 绑了 LLM provider 的 claudecode 后端必须把 provider.Model 通过 WithModel
+// 绑了 LLM provider 的 claudecode 后端必须把解析出的 ModelID 通过 WithModel
 // 透到 *claudecode.Client,后续 OpenSession 装配 argv 才会带 --model。
 // 不传时 CLI 用本地默认模型名报 system.init.model,result.Model 会把
-// chat_svc 创建消息时写好的 prov.Model 占位值覆盖成 CLI 默认,前端展示错。
+// chat_svc 创建消息时写好的占位值覆盖成 CLI 默认,前端展示错。
 func TestCCBuildClientOpts_ProviderModelDownToCLI(t *testing.T) {
-	Convey("provider.Model 非空 → Client.Model() = provider.Model", t, func() {
+	Convey("解析出的 ModelID 非空 → Client.Model() = 该 ModelID", t, func() {
 		spec := ccLaunchSpec{
 			Req: agentruntime.RunRequest{
 				Backend:  &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
-				Provider: &llm_provider_entity.LLMProvider{Model: "glm-5.1"},
+				Effective: &agentruntime.EffectiveLLMConfig{ModelID: "glm-5.1"},
 			},
 		}
 		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)
@@ -85,11 +84,11 @@ func TestCCBuildClientOpts_ProviderModelDownToCLI(t *testing.T) {
 		So(c.Model(), ShouldEqual, "")
 	})
 
-	Convey("provider 非空但 Model 空(罕见配置) → 不下发 --model,留给 CLI 默认", t, func() {
+	Convey("provider 非空但解析出的 ModelID 空(罕见配置) → 不下发 --model,留给 CLI 默认", t, func() {
 		spec := ccLaunchSpec{
 			Req: agentruntime.RunRequest{
 				Backend:  &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
-				Provider: &llm_provider_entity.LLMProvider{Model: "   "}, // 只有空白
+				Effective: &agentruntime.EffectiveLLMConfig{ModelID: "   "}, // 只有空白
 			},
 		}
 		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)
@@ -108,7 +107,7 @@ func TestCCBuildClientOpts_EnvironmentDownToSettings(t *testing.T) {
 			Env: env,
 			Req: agentruntime.RunRequest{
 				Backend:  &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
-				Provider: &llm_provider_entity.LLMProvider{Model: "glm-test-model"},
+				Effective: &agentruntime.EffectiveLLMConfig{ModelID: "glm-test-model"},
 			},
 		}
 
@@ -119,7 +118,7 @@ func TestCCBuildClientOpts_EnvironmentDownToSettings(t *testing.T) {
 }
 
 // TestCCBuildClientOpts_BackendDefaultModel 锁住 CLI 登录态(无 provider)下的自定义
-// 模型:backend.DefaultModel 在 provider.Model 为空时兜底下发成 --model;provider.Model
+// 模型:backend.DefaultModel 在解析出的 ModelID 为空时兜底下发成 --model;ModelID
 // 非空时仍优先,DefaultModel 被忽略(绑 provider 行为不变)。
 func TestCCBuildClientOpts_BackendDefaultModel(t *testing.T) {
 	Convey("provider = nil + backend.DefaultModel 非空 → 下发 DefaultModel", t, func() {
@@ -135,14 +134,14 @@ func TestCCBuildClientOpts_BackendDefaultModel(t *testing.T) {
 		So(c.Model(), ShouldEqual, "claude-fable-5")
 	})
 
-	Convey("provider.Model 非空 → 优先于 backend.DefaultModel", t, func() {
+	Convey("解析出的 ModelID 非空 → 优先于 backend.DefaultModel", t, func() {
 		spec := ccLaunchSpec{
 			Req: agentruntime.RunRequest{
 				Backend: &agent_backend_entity.AgentBackend{
 					Type:         string(agent_backend_entity.TypeClaudeCode),
 					DefaultModel: "claude-fable-5",
 				},
-				Provider: &llm_provider_entity.LLMProvider{Model: "glm-5.1"},
+				Effective: &agentruntime.EffectiveLLMConfig{ModelID: "glm-5.1"},
 			},
 		}
 		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)

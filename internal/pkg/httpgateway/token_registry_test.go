@@ -26,11 +26,11 @@ func TestTokenRegistry_IssueResolveRevoke(t *testing.T) {
 	got, ok := r.Resolve(tok)
 	if assert.True(t, ok) {
 		assert.Equal(t, int64(7), got.BackendID)
-		assert.Equal(t, "key-3", got.MainProviderKey)
+		assert.Equal(t, "key-3", got.Main.ProviderKey)
 		assert.Equal(t, agent_backend_entity.TypeClaudeCode, got.BackendType)
 		// alias 已规范成大写
-		assert.Equal(t, "key-5", got.Routes["OPUS"])
-		assert.Equal(t, "key-6", got.Routes["SONNET"])
+		assert.Equal(t, "key-5", got.Routes["OPUS"].ProviderKey)
+		assert.Equal(t, "key-6", got.Routes["SONNET"].ProviderKey)
 	}
 
 	r.Revoke(tok)
@@ -73,7 +73,7 @@ func TestTokenRegistry_IssueWithoutProvider(t *testing.T) {
 	entry, ok := r.Resolve(tok)
 	if assert.True(t, ok) {
 		assert.Equal(t, int64(42), entry.BackendID)
-		assert.Equal(t, "", entry.MainProviderKey, "hook-only token: provider key is empty")
+		assert.Equal(t, "", entry.Main.ProviderKey, "hook-only token: provider key is empty")
 		assert.Empty(t, entry.Routes)
 	}
 }
@@ -123,10 +123,10 @@ func TestTokenRegistry_IssueUsesEffectiveProviderKey(t *testing.T) {
 
 	entry, ok := r.Resolve(tok)
 	if assert.True(t, ok) {
-		assert.Equal(t, "session-picked", entry.MainProviderKey, "签发时传入的 effective key 说了算")
+		assert.Equal(t, "session-picked", entry.Main.ProviderKey, "签发时传入的 effective key 说了算")
 		assert.Equal(t, int64(7), entry.BackendID, "身份仍来自 backend")
-		key, hit := entry.ResolveModel("")
-		assert.Equal(t, "session-picked", key)
+		tgt, hit := entry.ResolveModel("")
+		assert.Equal(t, "session-picked", tgt.ProviderKey)
 		assert.False(t, hit)
 	}
 }
@@ -150,9 +150,9 @@ func TestTokenRegistry_SetProviderKeyKeepsTokenString(t *testing.T) {
 
 	entry, found := r.Resolve(tok)
 	if assert.True(t, found, "token 字符串不变，仍能解出来") {
-		assert.Equal(t, "switched", entry.MainProviderKey)
+		assert.Equal(t, "switched", entry.Main.ProviderKey)
 		assert.Equal(t, int64(7), entry.BackendID, "身份不变")
-		assert.Equal(t, "tier-key", entry.Routes["OPUS"], "tier 路由来自 backend 配置，不受切换影响")
+		assert.Equal(t, "tier-key", entry.Routes["OPUS"].ProviderKey, "tier 路由来自 backend 配置，不受切换影响")
 	}
 }
 
@@ -175,8 +175,8 @@ func TestTokenRegistry_SetProviderKeyUnknownToken(t *testing.T) {
 
 func TestTokenEntry_ResolveModel(t *testing.T) {
 	entry := TokenEntry{
-		MainProviderKey: "key-1",
-		Routes:          map[string]string{"OPUS": "key-5", "SONNET": "key-6"},
+		Main:   TokenTarget{ProviderKey: "key-1"},
+		Routes: map[string]TokenTarget{"OPUS": {ProviderKey: "key-5"}, "SONNET": {ProviderKey: "key-6"}},
 	}
 
 	cases := []struct {
@@ -192,16 +192,16 @@ func TestTokenEntry_ResolveModel(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.input, func(t *testing.T) {
-			got, hit := entry.ResolveModel(tc.input)
-			assert.Equal(t, tc.want, got)
+			tgt, hit := entry.ResolveModel(tc.input)
+			assert.Equal(t, tc.want, tgt.ProviderKey)
 			assert.Equal(t, tc.hit, hit)
 		})
 	}
 }
 
 func TestTokenEntry_ResolveModelEmptyRoutes(t *testing.T) {
-	entry := TokenEntry{MainProviderKey: "key-42"}
-	got, hit := entry.ResolveModel("anything")
-	assert.Equal(t, "key-42", got)
+	entry := TokenEntry{Main: TokenTarget{ProviderKey: "key-42"}}
+	tgt, hit := entry.ResolveModel("anything")
+	assert.Equal(t, "key-42", tgt.ProviderKey)
 	assert.False(t, hit)
 }
