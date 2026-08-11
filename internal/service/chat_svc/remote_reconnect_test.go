@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/stretchr/testify/assert"
@@ -299,6 +300,153 @@ func TestReleaseRemoteRuntimeGeneration_ReleasesTheLeaseItHeld(t *testing.T) {
 	assert.Zero(t, doubled,
 		"%d 条 lease 被归还了不止一次 —— 归还方还的是别人装进去的那条",
 		doubled)
+}
+
+// Given 同一台设备上两条冷路径同时开工(cache 里还没有它的条目),When 两边都查过
+// 「没有可沿用的条目」之后才各自去装自己刚建的那个,Then 交出的必须是**同一个**
+// *remote.Runtime。
+//
+// 「查」与「装」分成两次上锁的话,后装的那个把先装的整个覆盖掉,代价有两条:
+//
+//   - 被覆盖的那个 entry 的 lease 从此没人还 —— 它那一轮的 release 按 deviceID 查
+//     cache,查到的是覆盖它的那个,generation 比不上就直接返回。那条池化连接的池引用
+//     永远掉不下去,再也不会空闲回收;
+//   - 两个 runtime 同时挂在**同一条**连接上抢注同名 handler,先来的那一轮的事件会被
+//     路由到不认识它的那个实例然后静默丢弃(R18),对那条会话提交工具决议当场
+//     ErrNoActiveTurn(R10)—— 正是本轮要修掉的那个形态。
+//
+// 怎么把那个窗口从「偶尔」压成「每轮都穿」——两件事叠起来,都是真实调度做得到的:
+//
+//  1. lease.Client() 正好被调在「查」之后、「装」之前,让每一条冷路径在那里合流一次,
+//     于是它们都已经查过 cache、都还没装进去(合流点带超时:某一轮少一条冷路径也不
+//     吊死);
+//  2. 另起一条 goroutine 反复占住 remoteMu 一小会儿,把它压进**饥饿模式** —— Go 的
+//     sync.Mutex 在某个等待方等满 1ms 后改成 FIFO 直接交棒,抢锁的一方不再插队。
+//     「查」完放开的那一手因此必然被排在队里的另一条冷路径接走。生产上这只是「锁很忙 /
+//     持锁方被调度出去」的日常样子,不是什么特殊构造。
+func TestBorrowRemoteRuntime_ConcurrentColdPathsShareOneRuntime(t *testing.T) {
+	const rounds, callers = 10, 8
+	for range rounds {
+		// 每轮一个全新的 svc:冷路径要的正是「cache 里还没有这台设备」。
+		pool := &coldPathPool{conn: make(chan struct{}), gate: newMeetingPoint(callers)}
+		svc := &chatSvc{emitter: NoopEmitter{}}
+		svc.setConnPoolForTest(pool)
+		be := &agent_backend_entity.AgentBackend{DeviceID: "7"}
+
+		stop := make(chan struct{})
+		var hog sync.WaitGroup
+		hog.Add(1)
+		go func() {
+			defer hog.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				svc.remoteMu.Lock()
+				time.Sleep(2 * time.Millisecond)
+				svc.remoteMu.Unlock()
+			}
+		}()
+
+		got := make([]*remote.Runtime, callers)
+		rel := make([]func(), callers)
+		errs := make([]error, callers)
+		var wg sync.WaitGroup
+		wg.Add(callers)
+		for i := range got {
+			go func() {
+				defer wg.Done()
+				got[i], rel[i], errs[i] = svc.borrowRemoteRuntimeForTurn(
+					context.Background(), be, int64(100+i))
+			}()
+		}
+		wg.Wait()
+		close(stop)
+		hog.Wait()
+
+		for i := range got {
+			require.NoError(t, errs[i])
+			require.Same(t, got[0], got[i],
+				"同一条池化连接上只能有一个 *remote.Runtime —— 第二个会抢走它的通知 handler")
+		}
+
+		// 被覆盖的那个 entry 的 lease 是还不掉的(那一轮的 release 按 deviceID 查
+		// cache,查到的是覆盖它的那个,generation 比不上就直接返回)。这里把每一轮都
+		// 正常收尾,再钉一次那条代价。
+		for _, r := range rel {
+			r()
+		}
+		for _, l := range pool.handedOut() {
+			assert.NotZero(t, l.releases.Load(),
+				"有 lease 从来没被归还 —— 它的池引用永远掉不下去,那条连接再也不会空闲回收")
+		}
+	}
+}
+
+// meetingPoint 让 want 条 goroutine 在同一处合流;到场的不足 want 条时按超时放行,
+// 不把测试吊死。
+type meetingPoint struct {
+	mu   sync.Mutex
+	n    int
+	want int
+	open chan struct{}
+}
+
+func newMeetingPoint(want int) *meetingPoint {
+	return &meetingPoint{want: want, open: make(chan struct{})}
+}
+
+func (m *meetingPoint) arrive() {
+	m.mu.Lock()
+	m.n++
+	if m.n == m.want {
+		close(m.open)
+	}
+	m.mu.Unlock()
+	select {
+	case <-m.open:
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// coldPathLease 在 Client() 上合流一次 —— 冷路径正是在那之后才去装自己建的 entry。
+type coldPathLease struct {
+	conn     chan struct{}
+	gate     *meetingPoint
+	releases atomic.Int32
+}
+
+func (l *coldPathLease) Client() agentruntime.DaemonClientPort {
+	l.gate.arrive()
+	return &noopDaemonClient{}
+}
+func (l *coldPathLease) Closed() <-chan struct{} { return l.conn }
+func (l *coldPathLease) Release()                { l.releases.Add(1) }
+
+// coldPathPool 每次 Borrow 都交出同一条池化连接上的一条新 lease。
+type coldPathPool struct {
+	conn chan struct{}
+	gate *meetingPoint
+	mu   sync.Mutex
+	out  []*coldPathLease
+}
+
+func (p *coldPathPool) Borrow(context.Context, int64) (remote_device_svc.Lease, error) {
+	l := &coldPathLease{conn: p.conn, gate: p.gate}
+	p.mu.Lock()
+	p.out = append(p.out, l)
+	p.mu.Unlock()
+	return l, nil
+}
+
+func (p *coldPathPool) Close() error { return nil }
+
+func (p *coldPathPool) handedOut() []*coldPathLease {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]*coldPathLease(nil), p.out...)
 }
 
 // raceLease 记账只落在自己身上(原子量各自独立),归还方与借用方之间因此没有同步边。

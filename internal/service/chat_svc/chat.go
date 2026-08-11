@@ -5090,7 +5090,7 @@ func (s *chatSvc) remoteRuntimeForDevice(
 	}
 	fp := s.daemonFingerprint(ctx, deviceID)
 
-	if entry, installed := s.adoptLease(deviceID, lease, sessionIDs, owner); entry != nil {
+	if entry, installed := s.adoptLease(deviceID, lease, sessionIDs, owner, nil); entry != nil {
 		if installed {
 			go s.watchLeaseClosed(deviceID, entry, lease)
 		} else {
@@ -5114,26 +5114,28 @@ func (s *chatSvc) remoteRuntimeForDevice(
 	)
 	entry.runtime = rt
 
-	// Re-lock and insert. TOCTOU 输家:用赢家的 entry,自己刚建的这个丢掉。
-	if existing, installed := s.adoptLease(deviceID, lease, sessionIDs, owner); existing != nil {
-		if installed {
-			go s.watchLeaseClosed(deviceID, existing, lease)
-		} else {
-			lease.Release()
-		}
-		return existing.runtime, fp, nil
+	// TOCTOU 输家:用赢家的 entry,自己刚建的这个丢掉。「查」与「装」交给 adoptLease
+	// 在同一个临界区里做完 —— 分成两次上锁的话两条冷路径会各自查到「没有」,后装的那个
+	// 把先装的整个覆盖掉(见 adoptLease 的说明)。fresh 非 nil,交回的 entry 因此非 nil。
+	installedEntry, installed := s.adoptLease(deviceID, lease, sessionIDs, owner, entry)
+	if installed {
+		go s.watchLeaseClosed(deviceID, installedEntry, lease)
+	} else {
+		lease.Release()
 	}
-	s.remoteMu.Lock()
-	s.remoteCache[deviceID] = entry
-	s.remoteMu.Unlock()
-
-	go s.watchLeaseClosed(deviceID, entry, lease)
-	return rt, fp, nil
+	return installedEntry.runtime, fp, nil
 }
 
 // adoptLease 试着把这次借到的 lease 交给 deviceID 在 cache 里已有的那个 entry,并把
-// sessionIDs 记进它的引用集。交回 (可用的 entry, 这条 lease 是否被装了进去);没有可用
-// 的 entry(没有条目、或它那条池化连接已经被回收)时交回 nil,调用方据此新建。
+// sessionIDs 记进它的引用集。交回 (要用的 entry, 这条 lease 是否被装了进去)。
+//
+// 没有可用的 entry(没有条目、或它那条池化连接已经被回收)时:fresh 非 nil 就把它装
+// 进 cache 并交回它,fresh 为 nil 则交回 nil,调用方据此去新建。「查」与「装」因此在
+// **同一个临界区**里 —— 分开两次上锁的话,两条同时走冷路径的 borrow 会各自查到「没有」,
+// 后装的那个把先装的整个覆盖掉。代价有两条:被覆盖的那个 entry 的 lease 从此没人还
+// (那一轮的 release 按 deviceID 查 cache,查到的是覆盖它的那个,generation 比不上就
+// 直接返回),它那条池化连接再也不会空闲回收;而两个 runtime 同时挂在同一条连接上抢注
+// 同名 handler —— 正是下面这一段说的 R18 / R10。
 //
 // 为什么非沿用不可:entry.runtime 是**那条连接**上五类通知 handler 的属主,也是自主
 // 续轮消费方(chat_svc 每会话只订阅一次)订阅的那个实例。连接还活着却为它另造一个
@@ -5150,25 +5152,31 @@ func (s *chatSvc) adoptLease(
 	lease remote_device_svc.Lease,
 	sessionIDs []int64,
 	owner *remoteRuntimeGeneration,
+	fresh *remoteRuntimeEntry,
 ) (*remoteRuntimeEntry, bool) {
 	s.remoteMu.Lock()
 	defer s.remoteMu.Unlock()
 	entry, ok := s.remoteCache[deviceID]
-	if !ok {
-		return nil, false
-	}
-	if entry.leased {
+	if ok && entry.leased {
 		// 期间已经有人给它借了一条(并发的另一次 borrow / 重连端口换过 lease):
 		// 用它手上那条,自己这条还回去。
 		addSessionRefs(entry, sessionIDs, owner)
 		return entry, false
 	}
-	if !samePooledConn(entry.lease, lease) {
+	if ok && !samePooledConn(entry.lease, lease) {
 		// 借到的是另一条连接 —— 上一条已经被池摘走(daemon drop / 空闲回收 /
 		// Pool.Close),这个 entry 连同它的 runtime 一起作废(它自己的 watchClose
 		// 会收尾挂在上面的会话与消费方)。
 		delete(s.remoteCache, deviceID)
-		return nil, false
+		ok = false
+	}
+	if !ok {
+		if fresh == nil {
+			return nil, false
+		}
+		// fresh 由调用方建好(lease / leased / 引用集都已就位),这里只负责装。
+		s.remoteCache[deviceID] = fresh
+		return fresh, true
 	}
 	entry.lease = lease
 	entry.leased = true
