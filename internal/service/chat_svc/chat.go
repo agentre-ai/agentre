@@ -5141,9 +5141,10 @@ func (s *chatSvc) remoteRuntimeForDevice(
 // 发起的一轮于是被投进一个没有消费方的补齐轮,既不落库也不报错(R18);新实例的会话表
 // 又是空的,对那条会话提交工具决议当场 ErrNoActiveTurn(R10)。
 //
-// 「连接还活着吗」用**上一条 lease 的 Closed()** 判:它是池 entry 级的信号,Release
-// 之后依然有效,且一旦关闭就永远关闭。所以判定放在 Borrow **之后** —— 此刻还没关,就说
-// 明刚才那次 Borrow 拿到的正是同一个池 entry(池只在 evict 时把它从表里摘掉)。
+// 「还能沿用吗」问的是**这次借到的是不是同一条池化连接**(见 samePooledConn),不是
+// 「上一条 lease 还没关闭吗」:池的 tryEvictIdle 与 watchClient 都是先把 entry 从表里
+// 摘掉、再关 closedCh,落进这两步之间的 Borrow 会拨一条新连接,而旧那条此刻还没关 ——
+// 「还没关」并不蕴含「借到的是同一条」。
 func (s *chatSvc) adoptLease(
 	deviceID int64,
 	lease remote_device_svc.Lease,
@@ -5162,9 +5163,10 @@ func (s *chatSvc) adoptLease(
 		addSessionRefs(entry, sessionIDs, owner)
 		return entry, false
 	}
-	if !leaseAlive(entry.lease) {
-		// 那条连接已经被回收,这个 entry 连同它的 runtime 一起作废(它自己的
-		// watchClose 会收尾挂在上面的会话与消费方)。
+	if !samePooledConn(entry.lease, lease) {
+		// 借到的是另一条连接 —— 上一条已经被池摘走(daemon drop / 空闲回收 /
+		// Pool.Close),这个 entry 连同它的 runtime 一起作废(它自己的 watchClose
+		// 会收尾挂在上面的会话与消费方)。
 		delete(s.remoteCache, deviceID)
 		return nil, false
 	}
@@ -5174,19 +5176,24 @@ func (s *chatSvc) adoptLease(
 	return entry, true
 }
 
-// leaseAlive 报告某条(可能已经归还过的)lease 背后那条池化连接是不是还活着。
-// Lease.Closed() 在 entry 失效(daemon drop / idle 超时 / Pool.Close)时关闭,
-// 与 Release 无关 —— 见 remote_device_svc.Lease 的契约。
-func leaseAlive(l remote_device_svc.Lease) bool {
-	if l == nil {
+// samePooledConn 报告两条 lease 是不是同一条池化连接上的 —— 也就是挂在前者上的
+// runtime 能不能接着用后者。
+//
+// 判据是 Lease.Closed():按契约它交回的是**池 entry 级**的信号(daemon drop /
+// 空闲超时 / Pool.Close 时关闭,与 Release 无关),同一个池 entry 交出的每一条
+// lease 因此拿到同一个 channel —— 它就是那条连接的身份。而 Borrow 只会在 entry
+// 还没失效时把它交出来,所以「同一条」自带「还活着」。
+//
+// 不用「上一条还没关闭吗」来代替:池摘表与关信号是两步(先 delete 后 close),
+// 落进中间的 Borrow 会拨一条新连接而旧信号尚未关闭,那时「还没关」是真的、
+// 「同一条」却是假的,沿用旧 runtime 等于把这一轮发给一条正被关掉的 socket。
+func samePooledConn(a, b remote_device_svc.Lease) bool {
+	if a == nil || b == nil {
 		return false
 	}
-	select {
-	case <-l.Closed():
-		return false
-	default:
-		return true
-	}
+	// 契约里 closedCh 恒非 nil;真为 nil 时两个 nil 会假装成「同一条」,宁可重建。
+	closed := a.Closed()
+	return closed != nil && closed == b.Closed()
 }
 
 // addSessionRefs 调用方必须持 remoteMu。owner 非 nil = 这一轮的 generation token,
@@ -5259,9 +5266,15 @@ func (s *chatSvc) releaseRemoteRuntimeGeneration(
 	// 订阅的实例。摘掉它,下一轮 borrow 会为同一条连接另造一个 runtime 并抢走 handler
 	// —— 别的端此后在这条会话上发起的一轮就没人落库了(R18),对它提交工具决议也当场
 	// ErrNoActiveTurn(R10)。连接真被回收时由 watchLeaseClosed 摘 entry。
+	//
+	// 要还的那条必须在解锁**之前**抓下来:entry 从此留在 map 里,解锁之后并发的另一次
+	// borrow 会走冷路径(fast path 因 leased==false 落空)并在 adoptLease 里把
+	// entry.lease 换成它刚借的那条。到那时再读 entry.lease,读到的是别人这一轮正用着的
+	// 那条 —— 把它提前还掉,而自己这条的池引用永远掉不下去,那条连接从此不再空闲回收。
+	lease := entry.lease
 	entry.leased = false
 	s.remoteMu.Unlock()
-	entry.lease.Release()
+	lease.Release()
 }
 
 // remoteRuntimeCount returns the number of sessions currently sharing the

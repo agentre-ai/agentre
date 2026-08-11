@@ -3,6 +3,7 @@ package chat_svc
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cago-frame/cago/pkg/consts"
@@ -186,6 +187,152 @@ func TestBorrowRemoteRuntime_RebuildsRuntimeAfterPooledConnEvicted(t *testing.T)
 	second, _, err := svc.borrowRemoteRuntimeForTurn(context.Background(), be, 100)
 	require.NoError(t, err)
 	assert.NotSame(t, first, second, "连接已被回收,不能再沿用挂在它上面的 runtime")
+}
+
+// Given 上一条池化连接已经被摘出池子的表、但它的 Closed() 还没来得及关闭(池的
+// tryEvictIdle 与 watchClient 都是**先** delete 再 close),When 落在这两步之间的
+// 那次 Borrow 因此拨到了一条**新连接**,Then 必须另造一个 *remote.Runtime。
+//
+// 沿用旧那个等于把这一轮发给旧连接的 client —— 池下一刻就把那条 socket 关了,这一轮
+// 的每个 RPC 都打在已关的连接上。所以判据不能是「上一条 lease 还没关闭」(那只是
+// 「还没走到 close 那一行」),必须是「这次借到的就是同一条池化连接」。
+func TestBorrowRemoteRuntime_RebuildsWhenBorrowLandsOnAnotherPooledConn(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	// 两条 lease 出自**两个不同的池 entry**,而旧那条的信号此刻都还没关闭 ——
+	// 这正是 delete 与 close 之间那个窗口的样子。
+	oldConn := make(chan struct{})
+	newConn := make(chan struct{})
+	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
+	lease1 := mock_remote_device_svc.NewMockLease(ctrl)
+	lease2 := mock_remote_device_svc.NewMockLease(ctrl)
+	lease1.EXPECT().Client().Return(&noopDaemonClient{}).AnyTimes()
+	lease1.EXPECT().Closed().Return(oldConn).AnyTimes()
+	lease1.EXPECT().Release().AnyTimes()
+	lease2.EXPECT().Client().Return(&noopDaemonClient{}).AnyTimes()
+	lease2.EXPECT().Closed().Return(newConn).AnyTimes()
+	lease2.EXPECT().Release().AnyTimes()
+	gomock.InOrder(
+		pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(lease1, nil),
+		pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(lease2, nil),
+	)
+
+	svc := &chatSvc{emitter: NoopEmitter{}}
+	svc.setConnPoolForTest(pool)
+	be := &agent_backend_entity.AgentBackend{DeviceID: "7"}
+
+	first, release, err := svc.borrowRemoteRuntimeForTurn(context.Background(), be, 100)
+	require.NoError(t, err)
+	release()
+
+	second, _, err := svc.borrowRemoteRuntimeForTurn(context.Background(), be, 100)
+	require.NoError(t, err)
+	assert.NotSame(t, first, second,
+		"借到的是另一条池化连接,挂在旧连接上的 runtime 不能再用")
+}
+
+// Given 引用归零的归还与同一台设备上的下一次借用同时发生,When 归还方去还 lease,
+// Then 它还的必须是**自己解锁前手上那条**。
+//
+// entry 现在在引用归零后留在 cache 里(这正是本轮改的形态),于是并发的那次借用会走
+// 冷路径(fast path 因 leased==false 落空),Borrow 一条新 lease,并在 adoptLease 里
+// 把 entry.lease 换掉 —— 而归还方此刻正好在 Unlock 之后、Release 之前读它。读换过之后
+// 的那条会同时错两件事:entry.lease 上的数据竞争(go test -race 直接报),以及**还错
+// 人** —— 别人这一轮正用着的那条被提前还掉,自己那条的池引用则永远掉不下去,那条连接
+// 从此不再空闲回收。
+//
+// **判它的是 `go test -race`**:竞态本身是确定报得出来的(两次访问之间没有任何同步
+// 边),而「还错人」是那次无同步读的代价 —— 它要不要当场兑现取决于调度,不能指望不带
+// -race 的一遍跑到。下面那两条不变量断言是第二道网:一旦哪天变成必然发生的错还,
+// 不带 -race 也拦得住。
+//
+// 替身是手写的而不是 mockgen 的:gomock 的 controller 在**每一次**打桩调用上都过同一
+// 把锁,归还方的 Release 与借用方的 Borrow 因此被串成一条 happens-before 边,-race
+// 看到的是「有序的」两次访问 —— 真竞态会被这把锁整个盖住。下面这对替身在归还路径与
+// 借用路径之间不共享任何同步对象,竞态才暴露得出来。
+func TestReleaseRemoteRuntimeGeneration_ReleasesTheLeaseItHeld(t *testing.T) {
+	const rounds = 200
+	pool := &racePool{conn: make(chan struct{})} // 同一条池化连接:每次 Borrow 都落在它上面
+
+	svc := &chatSvc{emitter: NoopEmitter{}}
+	svc.setConnPoolForTest(pool)
+	be := &agent_backend_entity.AgentBackend{DeviceID: "7"}
+
+	for range rounds {
+		_, release, err := svc.borrowRemoteRuntimeForTurn(context.Background(), be, 100)
+		require.NoError(t, err)
+
+		// 归还与另一条会话的借用同时发生。
+		next := make(chan func(), 1)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			release()
+		}()
+		go func() {
+			defer wg.Done()
+			_, rel, berr := svc.borrowRemoteRuntimeForTurn(context.Background(), be, 101)
+			if berr != nil {
+				next <- func() {}
+				return
+			}
+			next <- rel
+		}()
+		wg.Wait()
+		(<-next)()
+	}
+
+	var orphaned, doubled int
+	for _, l := range pool.handedOut() {
+		switch n := l.releases.Load(); {
+		case n == 0:
+			orphaned++
+		case n > 1:
+			doubled++
+		}
+	}
+	assert.Zero(t, orphaned,
+		"%d 条 lease 从来没被归还 —— 它们的池引用永远掉不下去,那条连接再也不会空闲回收",
+		orphaned)
+	assert.Zero(t, doubled,
+		"%d 条 lease 被归还了不止一次 —— 归还方还的是别人装进去的那条",
+		doubled)
+}
+
+// raceLease 记账只落在自己身上(原子量各自独立),归还方与借用方之间因此没有同步边。
+type raceLease struct {
+	conn     chan struct{}
+	releases atomic.Int32
+}
+
+func (l *raceLease) Client() agentruntime.DaemonClientPort { return &noopDaemonClient{} }
+func (l *raceLease) Closed() <-chan struct{}               { return l.conn }
+func (l *raceLease) Release()                              { l.releases.Add(1) }
+
+// racePool 每次 Borrow 都交出同一条池化连接上的一条新 lease。mu 只在借用侧被拿,
+// 归还侧一次都不碰它 —— 否则又会把要观察的那条竞态盖住。
+type racePool struct {
+	conn chan struct{}
+	mu   sync.Mutex
+	out  []*raceLease
+}
+
+func (p *racePool) Borrow(context.Context, int64) (remote_device_svc.Lease, error) {
+	l := &raceLease{conn: p.conn}
+	p.mu.Lock()
+	p.out = append(p.out, l)
+	p.mu.Unlock()
+	return l, nil
+}
+
+func (p *racePool) Close() error { return nil }
+
+func (p *racePool) handedOut() []*raceLease {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]*raceLease(nil), p.out...)
 }
 
 // Given 某设备的 *remote.Runtime 已在 cache 里(第一条会话建的),When 第二条会话
