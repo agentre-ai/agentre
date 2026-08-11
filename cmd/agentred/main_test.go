@@ -39,7 +39,7 @@ func TestRootSubcommands(t *testing.T) {
 	for _, c := range root.Commands() {
 		got[c.Name()] = true
 	}
-	for _, want := range []string{"run", "status", "pair", "login", "unclaim", "llm", "claudecode"} {
+	for _, want := range []string{"run", "status", "pair", "login", "unclaim", "llm", "claudecode", "service"} {
 		assert.True(t, got[want], "missing subcommand %q", want)
 	}
 
