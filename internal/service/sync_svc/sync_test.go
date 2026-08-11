@@ -261,6 +261,24 @@ func TestNotifyLocalChange_GivenLoggedOut_DoesNothing(t *testing.T) {
 	assert.Empty(t, h.transport.pushed)
 }
 
+// TestNotifyRuntimeClaim_GivenLoggedOut_QueuesUntilAuthentication R13：认领不依赖
+// 登录态；它先写同一条出站队列，认证后才归属账号并上传。
+func TestNotifyRuntimeClaim_GivenLoggedOut_QueuesUntilAuthentication(t *testing.T) {
+	h := newHarness(t, false)
+	h.svc.NotifyRuntimeClaim(context.Background(), LocalChange{
+		Kind: "project", LocalID: 1, Op: OpDelete,
+		Meta: syncmeta_entity.SyncMeta{SyncID: "relative-old"},
+	})
+	require.Len(t, h.outbound.rows, 1)
+	assert.Equal(t, int64(0), h.outbound.rows[0].SyncAccountID)
+	assert.Empty(t, h.transport.pushed)
+
+	require.NoError(t, h.svc.claimAnonymousQueue(context.Background(), 7))
+	require.Len(t, h.outbound.rows, 1)
+	assert.Equal(t, int64(7), h.outbound.rows[0].SyncAccountID)
+	assert.Equal(t, "relative-old", h.outbound.rows[0].EntitySyncID)
+}
+
 // TestNotifyLocalChange_GivenRowOfAnotherAccount_DoesNotUpload R13a：本地行记录的
 // 账号与当前登录账号不同时不上行、也不携带原同步标识。
 func TestNotifyLocalChange_GivenRowOfAnotherAccount_DoesNotUpload(t *testing.T) {

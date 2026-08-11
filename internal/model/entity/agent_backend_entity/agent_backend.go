@@ -52,8 +52,9 @@ type AgentBackend struct {
 	Type           string `gorm:"column:type;type:text;not null"`
 	Name           string `gorm:"column:name;type:text;not null"`
 	LLMProviderKey string `gorm:"column:llm_provider_key;type:text;not null;default:''"`
-	// DeviceID 关联的远端设备 ID（paired_agents.id 的字符串形式）。
-	// 空串表示本地运行；非空表示用户意图绑定远端，服务层按 DeviceIDInt() 派发。
+	// DeviceID is the target machine's canonical device fingerprint. It is the
+	// cross-device persisted and synced identity; dispatch resolves it to this
+	// installation's paired-row ID only at the local boundary.
 	DeviceID string `gorm:"column:device_id;type:text;not null;default:''"`
 	CLIPath  string `gorm:"column:cli_path;type:text;not null;default:''"`
 	// ModelRoutes 仅 claudecode 使用：`{"OPUS":"<provider-key>","SONNET":"<provider-key>","HAIKU":"<provider-key>"}` 子集，
@@ -126,7 +127,9 @@ func (b *AgentBackend) IsLocal() bool { return b != nil && b.DeviceID == "" }
 // IsRemote DeviceID 非空即视为"绑了远端意图"，无论字段值是否可解析为整数；nil receiver 返回 false。
 func (b *AgentBackend) IsRemote() bool { return b != nil && b.DeviceID != "" }
 
-// DeviceIDInt 解析 DeviceID 为 paired_agents.id。空串或解析失败时返回 (0, false)。
+// DeviceIDInt is retained only for legacy callers while DeviceID transitions
+// from a paired-row ID to a canonical fingerprint. New persisted values never
+// use it; dispatch boundaries resolve fingerprints through paired devices.
 func (b *AgentBackend) DeviceIDInt() (int64, bool) {
 	if b == nil || b.DeviceID == "" {
 		return 0, false

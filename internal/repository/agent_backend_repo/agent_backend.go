@@ -10,6 +10,8 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/syncmeta_entity"
 	"github.com/agentre-ai/agentre/internal/repository/repoquery"
 )
 
@@ -24,6 +26,16 @@ type AgentBackendRepo interface {
 	FindByName(ctx context.Context, name string) (*agent_backend_entity.AgentBackend, error)
 	List(ctx context.Context) ([]*agent_backend_entity.AgentBackend, error)
 	Delete(ctx context.Context, id int64) error
+	ClaimRelative(ctx context.Context, fingerprint string) ([]RelativeClaim, error)
+}
+
+// RelativeClaim is the locally atomic replacement of one legacy relative
+// backend and every execution target that references it.
+type RelativeClaim struct {
+	OriginalBackend *agent_backend_entity.AgentBackend
+	ClaimedBackend  *agent_backend_entity.AgentBackend
+	OriginalTargets []*agent_entity.AgentExecTarget
+	ClaimedTargets  []*agent_entity.AgentExecTarget
 }
 
 var defaultAgentBackend AgentBackendRepo
@@ -94,4 +106,65 @@ func (r *agentBackendRepo) Delete(ctx context.Context, id int64) error {
 	return db.Ctx(ctx).Model(&agent_backend_entity.AgentBackend{}).
 		Where("id = ?", id).
 		Update("status", consts.DELETE).Error
+}
+
+// ClaimRelative clones every still-relative backend for fingerprint, fans out
+// its execution targets, and tombstones the old rows in one transaction. Only
+// DeviceID == "" is eligible: another desktop's already named clone can never
+// be claimed again.
+func (r *agentBackendRepo) ClaimRelative(ctx context.Context, fingerprint string) ([]RelativeClaim, error) {
+	if fingerprint == "" {
+		return nil, nil
+	}
+	claims := make([]RelativeClaim, 0)
+	err := db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
+		var originals []*agent_backend_entity.AgentBackend
+		if err := tx.Where("device_id = ? AND status = ?", "", consts.ACTIVE).Order("id ASC").Find(&originals).Error; err != nil {
+			return err
+		}
+		for _, original := range originals {
+			var originalTargets []*agent_entity.AgentExecTarget
+			if err := tx.Where("agent_backend_id = ?", original.ID).
+				Order("agent_id ASC, sort_order ASC, id ASC").Find(&originalTargets).Error; err != nil {
+				return err
+			}
+
+			claimed := *original
+			claimed.ID = 0
+			claimed.DeviceID = fingerprint
+			claimed.SyncMeta = syncmeta_entity.SyncMeta{SyncAccountID: original.SyncAccountID}
+			claimed.EnsureSyncID()
+			if err := tx.Create(&claimed).Error; err != nil {
+				return err
+			}
+
+			claimedTargets := make([]*agent_entity.AgentExecTarget, 0, len(originalTargets))
+			for _, target := range originalTargets {
+				copyTarget := *target
+				copyTarget.ID = 0
+				copyTarget.AgentBackendID = claimed.ID
+				copyTarget.SyncMeta = syncmeta_entity.SyncMeta{SyncAccountID: target.SyncAccountID}
+				copyTarget.EnsureSyncID()
+				if err := tx.Create(&copyTarget).Error; err != nil {
+					return err
+				}
+				claimedTargets = append(claimedTargets, &copyTarget)
+			}
+			for _, target := range originalTargets {
+				if err := tx.Where("id = ?", target.ID).Delete(&agent_entity.AgentExecTarget{}).Error; err != nil {
+					return err
+				}
+			}
+			if err := tx.Model(&agent_backend_entity.AgentBackend{}).Where("id = ?", original.ID).
+				Update("status", consts.DELETE).Error; err != nil {
+				return err
+			}
+			claims = append(claims, RelativeClaim{
+				OriginalBackend: original, ClaimedBackend: &claimed,
+				OriginalTargets: originalTargets, ClaimedTargets: claimedTargets,
+			})
+		}
+		return nil
+	})
+	return claims, err
 }

@@ -77,6 +77,20 @@ func NotifyDelete(ctx context.Context, kind string, localID int64, meta syncmeta
 	Notify(ctx, LocalChange{Kind: kind, LocalID: localID, Op: OpDelete, Meta: meta})
 }
 
+// NotifyRuntimeClaim records an R13 runtime-claim mutation through the same
+// queue path as ordinary changes. Unlike normal edits it must survive a logged
+// out startup, so account-less rows enter the existing queue under account 0
+// and are assigned to the first authenticated account before upload.
+func NotifyRuntimeClaim(ctx context.Context, kind string, localID int64, op string, meta syncmeta_entity.SyncMeta) {
+	if s := defaultSvc; s != nil {
+		if recorder, ok := s.(interface {
+			NotifyRuntimeClaim(context.Context, LocalChange)
+		}); ok {
+			recorder.NotifyRuntimeClaim(ctx, LocalChange{Kind: kind, LocalID: localID, Op: op, Meta: meta})
+		}
+	}
+}
+
 type service struct {
 	adapters map[string]adapter
 	now      func() int64
@@ -100,6 +114,36 @@ func New(transport Transport) SyncSvc {
 		background: func(f func()) { go f() },
 		transport:  transport,
 	}
+}
+
+func (s *service) NotifyRuntimeClaim(ctx context.Context, ch LocalChange) {
+	if !kindKnown(ch.Kind) || ch.Meta.SyncID == "" {
+		return
+	}
+	accountID, _, loggedIn := s.account(ctx)
+	if loggedIn && !ch.Meta.EligibleForSync(accountID) {
+		return
+	}
+	if !loggedIn {
+		// A row already owned by an account stays queued for that account; only
+		// genuinely unowned legacy rows use the anonymous holding key.
+		accountID = ch.Meta.SyncAccountID
+	}
+	if err := s.enqueue(ctx, accountID, ch); err != nil {
+		logger.Ctx(ctx).Warn("sync_svc.NotifyRuntimeClaim: enqueue failed",
+			zap.String("kind", ch.Kind), zap.String("op", ch.Op), zap.Error(err))
+		return
+	}
+	if !loggedIn {
+		return
+	}
+	bgCtx := context.WithoutCancel(ctx)
+	s.background(func() {
+		if err := s.SyncOnce(bgCtx); err != nil {
+			logger.Ctx(bgCtx).Debug("sync_svc.NotifyRuntimeClaim: push failed, staying queued",
+				zap.String("kind", ch.Kind), zap.Error(err))
+		}
+	})
 }
 
 func (s *service) getTransport() Transport {
@@ -241,6 +285,10 @@ func (s *service) SyncOnce(ctx context.Context) error {
 	accountID, deviceID, ok := s.account(ctx)
 	if !ok || s.getTransport() == nil {
 		return nil
+	}
+	if err := s.claimAnonymousQueue(ctx, accountID); err != nil {
+		s.setLastErr(err)
+		return err
 	}
 	if err := s.claimUnowned(ctx, accountID); err != nil {
 		s.setLastErr(err)

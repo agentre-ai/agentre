@@ -13,6 +13,8 @@ import (
 	"github.com/cago-frame/cago/configs"
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/cago-frame/cago/pkg/i18n"
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
@@ -49,6 +51,7 @@ type AgentBackendSvc interface {
 	CancelTest(ctx context.Context, req *CancelTestBackendRequest) (*CancelTestBackendResponse, error)
 	ResolveCLIPath(ctx context.Context, req *ResolveCLIPathRequest) (*ResolveCLIPathResponse, error)
 	ScanAndCreateAgentBackends(ctx context.Context, req *ScanAndCreateAgentBackendsRequest) (*ScanAndCreateAgentBackendsResponse, error)
+	ClaimRelativeBackends(ctx context.Context) error
 }
 
 type agentBackendSvc struct {
@@ -87,6 +90,39 @@ func RegisterGateway(g httpgateway.TokenIssuer) {
 
 // AgentBackend 取默认服务单例。
 func AgentBackend() AgentBackendSvc { return defaultAgentBackend }
+
+// ClaimRelativeBackends is the per-installation R13 upgrade step. It runs only
+// after remote_device_svc is initialized, so the fingerprint comes from this
+// desktop's keychain identity rather than server login state.
+func (s *agentBackendSvc) ClaimRelativeBackends(ctx context.Context) error {
+	remote := remote_device_svc.Default()
+	if remote == nil {
+		return errors.New("remote device service unavailable")
+	}
+	fingerprint, err := remote.DeviceFingerprint()
+	if err != nil {
+		return err
+	}
+	claims, err := agent_backend_repo.AgentBackend().ClaimRelative(ctx, fingerprint)
+	if err != nil {
+		return err
+	}
+	for _, claim := range claims {
+		sync_svc.NotifyRuntimeClaim(ctx, syncwire.KindAgentBackend, claim.ClaimedBackend.ID, sync_svc.OpCreate, claim.ClaimedBackend.SyncMeta)
+		for _, target := range claim.ClaimedTargets {
+			sync_svc.NotifyRuntimeClaim(ctx, syncwire.KindAgentExecTarget, target.ID, sync_svc.OpCreate, target.SyncMeta)
+		}
+		for _, target := range claim.OriginalTargets {
+			sync_svc.NotifyRuntimeClaim(ctx, syncwire.KindAgentExecTarget, target.ID, sync_svc.OpDelete, target.SyncMeta)
+		}
+		sync_svc.NotifyRuntimeClaim(ctx, syncwire.KindAgentBackend, claim.OriginalBackend.ID, sync_svc.OpDelete, claim.OriginalBackend.SyncMeta)
+	}
+	if len(claims) > 0 {
+		logger.Ctx(ctx).Info("agent_backend_svc.ClaimRelativeBackends: claimed relative backends",
+			zap.Int("count", len(claims)))
+	}
+	return nil
+}
 
 func (s *agentBackendSvc) List(ctx context.Context, _ *ListBackendsRequest) (*ListBackendsResponse, error) {
 	rows, err := agent_backend_repo.AgentBackend().List(ctx)
@@ -154,6 +190,11 @@ func (s *agentBackendSvc) create(ctx context.Context, req *CreateBackendRequest,
 		Status:                consts.ACTIVE,
 		Createtime:            now,
 		Updatetime:            now,
+	}
+	var deviceErr error
+	b.DeviceID, deviceErr = canonicalDeviceID(b.DeviceID)
+	if deviceErr != nil {
+		return nil, deviceErr
 	}
 	if requireOpenClaw && !b.IsOpenClaw() {
 		return nil, i18n.NewError(ctx, code.AgentBackendInvalidType)
@@ -261,6 +302,11 @@ func (s *agentBackendSvc) update(ctx context.Context, req *UpdateBackendRequest,
 	existing.OpenClawDefaultModel = strings.TrimSpace(req.OpenClawDefaultModel)
 	existing.OpenClawSessionMode = strings.TrimSpace(req.OpenClawSessionMode)
 	existing.DeviceID = strings.TrimSpace(req.DeviceID)
+	var deviceErr error
+	existing.DeviceID, deviceErr = canonicalDeviceID(existing.DeviceID)
+	if deviceErr != nil {
+		return nil, deviceErr
+	}
 	existing.Updatetime = s.now()
 	if existing.IsOpenClaw() {
 		normalized, err := agent_backend_entity.NormalizeOpenClawGatewayURL(existing.OpenClawGatewayURL)
@@ -352,7 +398,10 @@ func (s *agentBackendSvc) test(ctx context.Context, req *TestBackendRequest, tra
 	// 远端 device → 不在本地装 deps / gateway / provider，由 daemon 自己装。
 	// 主进程只负责拨号 + 转发参数 + 折叠结果。provider FK 校验也下放给 daemon，
 	// 因为远端可能有自己的 provider 状态视图（如离线时本地 provider 表过期）。
-	if did, ok, perr := parseRemoteDeviceID(entity.DeviceID); perr != nil {
+	if did, ok, err := localPairedDeviceID(ctx, entity.DeviceID); err != nil {
+		if errors.Is(err, ErrRemoteDeviceNotFound) {
+			return &TestBackendResponse{OK: false, Message: i18n.NewError(ctx, code.RemoteDeviceNotFound).Error()}, nil
+		}
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	} else if ok {
 		return s.probeRemote(ctx, entity, did)
@@ -916,11 +965,14 @@ func (s *agentBackendSvc) toItem(ctx context.Context, b *agent_backend_entity.Ag
 		item.LLMProviderModel = p.Model
 		item.LLMProviderActive = p.IsActive()
 	}
-	if id, ok := b.DeviceIDInt(); ok {
-		if dv, err := remote_device_svc.Default().Get(ctx, id); err == nil && dv != nil {
+	if legacyID, ok := b.DeviceIDInt(); ok && remote_device_svc.Default() != nil {
+		if dv, err := remote_device_svc.Default().Get(ctx, legacyID); err == nil && dv != nil {
 			item.DeviceName = dv.Name
 			item.Online = dv.Online
 		}
+	} else if dv, err := pairedDeviceView(ctx, b.DeviceID); err == nil && dv != nil {
+		item.DeviceName = dv.Name
+		item.Online = dv.Online
 	}
 	return item
 }
@@ -936,18 +988,73 @@ func openClawTokenAccount(backendID int64) string {
 	return "agentre.openclaw.backend." + strconv.FormatInt(backendID, 10) + ".token"
 }
 
-// validateDeviceID 校验 device_id 引用的远端设备存在且未删除。
-// 空串 = 本地，跳过校验。
+// validateDeviceID accepts canonical fingerprints without a local pairing.
+// Numeric values are legacy paired-row IDs; retain their old strict validation
+// until all pre-R13 records have been claimed and synced as fingerprints.
+// canonicalDeviceID turns the legacy "local" input into this installation's
+// canonical fingerprint. A nil remote service is retained for narrow unit-test
+// construction only; bootstrap always initializes it before public writes.
+func canonicalDeviceID(deviceID string) (string, error) {
+	if deviceID != "" || remote_device_svc.Default() == nil {
+		return deviceID, nil
+	}
+	return remote_device_svc.Default().DeviceFingerprint()
+}
+
 func (s *agentBackendSvc) validateDeviceID(ctx context.Context, deviceID string) error {
-	if deviceID == "" {
+	if deviceID == "" || strings.HasPrefix(deviceID, "sha256:") {
 		return nil
 	}
-	id, err := strconv.ParseInt(deviceID, 10, 64)
-	if err != nil {
+	if _, legacy := (&agent_backend_entity.AgentBackend{DeviceID: deviceID}).DeviceIDInt(); !legacy {
+		return i18n.NewError(ctx, code.AgentBackendInvalidDevice)
+	}
+	id, _ := strconv.ParseInt(deviceID, 10, 64)
+	if remote_device_svc.Default() == nil {
 		return i18n.NewError(ctx, code.AgentBackendInvalidDevice)
 	}
 	if _, err := remote_device_svc.Default().Get(ctx, id); err != nil {
 		return i18n.NewError(ctx, code.AgentBackendInvalidDevice)
 	}
 	return nil
+}
+
+// pairedDeviceView resolves a canonical fingerprint to this installation's
+// paired-device view. It is intentionally best-effort for presentation; an
+// unpaired named target remains a valid persisted/synced target.
+func pairedDeviceView(ctx context.Context, fingerprint string) (*remote_device_svc.DeviceView, error) {
+	if fingerprint == "" || remote_device_svc.Default() == nil {
+		return nil, nil
+	}
+	rows, err := remote_device_svc.Default().List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if row != nil && row.DaemonFingerprint == fingerprint {
+			return row, nil
+		}
+	}
+	return nil, nil
+}
+
+// localPairedDeviceID translates a persisted fingerprint only at a local
+// dispatch boundary, where the daemon client still requires the paired-row ID.
+func localPairedDeviceID(ctx context.Context, fingerprint string) (int64, bool, error) {
+	if fingerprint == "" {
+		return 0, false, nil
+	}
+	if !strings.HasPrefix(fingerprint, "sha256:") {
+		if legacyID, ok := (&agent_backend_entity.AgentBackend{DeviceID: fingerprint}).DeviceIDInt(); ok {
+			return legacyID, true, nil
+		}
+		return 0, false, errors.New("invalid device fingerprint")
+	}
+	view, err := pairedDeviceView(ctx, fingerprint)
+	if err != nil {
+		return 0, false, err
+	}
+	if view == nil {
+		return 0, false, ErrRemoteDeviceNotFound
+	}
+	return view.ID, view.ID > 0, nil
 }

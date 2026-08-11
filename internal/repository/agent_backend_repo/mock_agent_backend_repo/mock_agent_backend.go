@@ -14,6 +14,7 @@ import (
 	reflect "reflect"
 
 	agent_backend_entity "github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	agent_backend_repo "github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -54,6 +55,21 @@ func (m *MockAgentBackendRepo) BatchFind(ctx context.Context, ids []int64) (map[
 func (mr *MockAgentBackendRepoMockRecorder) BatchFind(ctx, ids any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BatchFind", reflect.TypeOf((*MockAgentBackendRepo)(nil).BatchFind), ctx, ids)
+}
+
+// ClaimRelative mocks base method.
+func (m *MockAgentBackendRepo) ClaimRelative(ctx context.Context, fingerprint string) ([]agent_backend_repo.RelativeClaim, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ClaimRelative", ctx, fingerprint)
+	ret0, _ := ret[0].([]agent_backend_repo.RelativeClaim)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ClaimRelative indicates an expected call of ClaimRelative.
+func (mr *MockAgentBackendRepoMockRecorder) ClaimRelative(ctx, fingerprint any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClaimRelative", reflect.TypeOf((*MockAgentBackendRepo)(nil).ClaimRelative), ctx, fingerprint)
 }
 
 // Create mocks base method.

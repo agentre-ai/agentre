@@ -29,8 +29,11 @@ func (s *agentBackendSvc) ResolveCLIPath(ctx context.Context, req *ResolveCLIPat
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
 	t := strings.TrimSpace(req.Type)
-	deviceID, hasDevice, err := parseRemoteDeviceID(strings.TrimSpace(req.DeviceID))
+	deviceID, hasDevice, err := localPairedDeviceID(ctx, strings.TrimSpace(req.DeviceID))
 	if err != nil {
+		if errors.Is(err, ErrRemoteDeviceNotFound) {
+			return nil, i18n.NewError(ctx, code.RemoteDeviceNotFound)
+		}
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
 	if hasDevice {
