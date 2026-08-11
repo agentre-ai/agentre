@@ -103,6 +103,91 @@ func TestReconnectRemote_SwapsLeaseAndKeepsCacheEntry(t *testing.T) {
 	assert.Same(t, lease2, swapped, "entry 必须持有新 lease")
 }
 
+// Given 上一轮已经把引用全还了、而那条池化连接**还活着**,When 同一台设备再借一次,
+// Then 交出的必须还是**同一个** *remote.Runtime。
+//
+// 它是这条连接上五类通知 handler 的属主,也是自主续轮消费方(startAutonomousWatcher,
+// 每会话只订阅一次)订阅的那个实例。为同一条连接另造一个 runtime,新实例会把 handler
+// 抢注过去,而消费方还挂在旧实例上 —— 别的端在这台机器上发起的一轮于是被投进一个没有
+// 消费方的补齐轮:什么都不落库(R18),同时新实例的会话表是空的,对那条会话提交工具
+// 决议当场 ErrNoActiveTurn(R10)。
+func TestBorrowRemoteRuntime_ReusesRuntimeWhilePooledConnLives(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	// 两条 lease 出自**同一个池 entry**:同一条连接、同一个 Closed() 信号。
+	client := &noopDaemonClient{}
+	alive := make(chan struct{})
+	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
+	lease1 := mock_remote_device_svc.NewMockLease(ctrl)
+	lease2 := mock_remote_device_svc.NewMockLease(ctrl)
+	for _, l := range []*mock_remote_device_svc.MockLease{lease1, lease2} {
+		l.EXPECT().Client().Return(client).AnyTimes()
+		l.EXPECT().Closed().Return(alive).AnyTimes()
+		l.EXPECT().Release().AnyTimes()
+	}
+	gomock.InOrder(
+		pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(lease1, nil),
+		pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(lease2, nil),
+	)
+
+	svc := &chatSvc{emitter: NoopEmitter{}}
+	svc.setConnPoolForTest(pool)
+	be := &agent_backend_entity.AgentBackend{DeviceID: "7"}
+
+	first, release, err := svc.borrowRemoteRuntimeForTurn(context.Background(), be, 100)
+	require.NoError(t, err)
+	release() // 这一轮跑完:引用归零,lease 还给池(空闲回收照常计时)
+	assert.Zero(t, svc.remoteRuntimeCount(7), "引用必须真的归零 —— 否则这条断言什么都没测")
+
+	second, _, err := svc.borrowRemoteRuntimeForTurn(context.Background(), be, 100)
+	require.NoError(t, err)
+	assert.Same(t, first, second,
+		"连接还活着时,同一台设备只能有一个 *remote.Runtime —— 第二个会抢走它的通知 handler")
+
+	svc.remoteMu.Lock()
+	entry := svc.remoteCache[7]
+	svc.remoteMu.Unlock()
+	require.NotNil(t, entry)
+	assert.Same(t, lease2, entry.lease, "重新借用必须把新 lease 装进同一个 entry")
+}
+
+// Given 那条池化连接在两轮之间被回收了(空闲超时 / daemon 掉线),When 同一台设备再
+// 借一次,Then 必须**另造**一个 *remote.Runtime —— 旧那个的连接已经死了,沿用它等于
+// 把这一轮发给一条不存在的 socket。
+func TestBorrowRemoteRuntime_RebuildsRuntimeAfterPooledConnEvicted(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	evicted := make(chan struct{})
+	close(evicted) // 第一条 lease 背后的池 entry 已失效
+	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
+	lease1 := mock_remote_device_svc.NewMockLease(ctrl)
+	lease2 := mock_remote_device_svc.NewMockLease(ctrl)
+	lease1.EXPECT().Client().Return(&noopDaemonClient{}).AnyTimes()
+	lease1.EXPECT().Closed().Return(evicted).AnyTimes()
+	lease1.EXPECT().Release().AnyTimes()
+	lease2.EXPECT().Client().Return(&noopDaemonClient{}).AnyTimes()
+	lease2.EXPECT().Closed().Return(make(chan struct{})).AnyTimes()
+	lease2.EXPECT().Release().AnyTimes()
+	gomock.InOrder(
+		pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(lease1, nil),
+		pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(lease2, nil),
+	)
+
+	svc := &chatSvc{emitter: NoopEmitter{}}
+	svc.setConnPoolForTest(pool)
+	be := &agent_backend_entity.AgentBackend{DeviceID: "7"}
+
+	first, release, err := svc.borrowRemoteRuntimeForTurn(context.Background(), be, 100)
+	require.NoError(t, err)
+	release()
+
+	second, _, err := svc.borrowRemoteRuntimeForTurn(context.Background(), be, 100)
+	require.NoError(t, err)
+	assert.NotSame(t, first, second, "连接已被回收,不能再沿用挂在它上面的 runtime")
+}
+
 // Given 某设备的 *remote.Runtime 已在 cache 里(第一条会话建的),When 第二条会话
 // 借用同一台设备,Then 它的执行 daemon 与实例标识**同样**要落库。
 //
