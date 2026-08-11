@@ -695,24 +695,23 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// readUsageTotalTokens 从子代理 details 的 usage 对象里提取总 token 数。usage
-// 由 pi 侧的 subagent 工具（如 dev-kit）实时累计上报：input/output/cacheRead/
-// cacheWrite 是跨轮累加量，求和即该子代理消耗的总 token 数。缺省/畸形字段按 0
-// 处理，由调用方决定是否覆盖（0 不抹已有进度）。
+// readUsageTotalTokens 从子代理 details 的 usage 对象里提取已消耗的上下文大小。
+// pi 侧的 subagent 工具（如 dev-kit）把每轮 message_end 的 totalTokens（= 该轮
+// 语境窗口大小，随累计历史增长）记录为 usage.contextTokens，取最新一帧的值即
+// 子代理当前消耗的上下文大小。不累加 input/output/cache*：那些是逐调用 token
+// 量，跨轮求和会把每轮重发的历史重复计数，数值虚高（真实卡片应像 Claude 一样
+// 显示已消耗的上下文量级）。缺省/畸形字段按 0 处理，由调用方决定是否覆盖。
 func readUsageTotalTokens(raw json.RawMessage) int {
 	if len(raw) == 0 || isJSONNull(raw) {
 		return 0
 	}
 	var usage struct {
-		Input      int `json:"input"`
-		Output     int `json:"output"`
-		CacheRead  int `json:"cacheRead"`
-		CacheWrite int `json:"cacheWrite"`
+		ContextTokens int `json:"contextTokens"`
 	}
 	if json.Unmarshal(raw, &usage) != nil {
 		return 0
 	}
-	return usage.Input + usage.Output + usage.CacheRead + usage.CacheWrite
+	return usage.ContextTokens
 }
 
 func (t *subagentTracker) applySnapshotMetadata(index int, snapshot decodedSnapshot, final bool) {
