@@ -25,6 +25,7 @@ import {
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { isNoticeOnlyMessage } from "@/lib/notice-message";
 import { cn } from "@/lib/utils";
 
 import type { PlanActionStream } from "./canonical-tool/props";
@@ -1274,12 +1275,21 @@ const ChatTranscript = React.forwardRef<
   },
   ref,
 ) {
-  // 只有当整个序列的「最后一条」就是 assistant 时才挂指示器：
-  // 正常 stream 流程下 doSend 会同时插入 user + assistant 占位，所以末尾一定是 assistant；
-  // 如果末尾是 user（异常态或还没插占位），不应该在更早的 assistant 上挂指示器误导用户。
-  const tail = messages.at(-1);
-  const lastAssistantId =
-    tail && tail.role === "assistant" ? tail.id : undefined;
+  // lastAssistantId:生成指示器(三个点)的宿主。只有当整个序列的「最后一条」就是
+  // assistant 时才挂 —— 正常 stream 流程下 doSend 同时插入 user + assistant 占位,
+  // 所以末尾一定是 assistant;末尾是 user(异常态或还没插占位)时不该在更早的
+  // assistant 上挂指示器误导用户,所以扫到的第一条不是 assistant 就返回 undefined。
+  // 只承载 notice 的旁白行在这里透明:轮中切换供应商会把一条 notice 消息追加在在跑的
+  // assistant 之后(pill 切完立刻 reloadSession),它若被当成末条 assistant,三个点就
+  // 跳到旁白行上、在跑的那条看着像已经停了。
+  const lastAssistantId = React.useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (isNoticeOnlyMessage(m)) continue;
+      return m.role === "assistant" ? m.id : undefined;
+    }
+    return undefined;
+  }, [messages]);
 
   // 折叠"压缩前"的旧消息:扫所有 messages.blocks,找最后一条 compact_boundary 所在的
   // (messageIdx, blockIdx);该位置之前的所有消息默认隐藏,该消息自己的更早 blocks 也
@@ -1315,13 +1325,26 @@ const ChatTranscript = React.forwardRef<
   // 判定:assistant 轮且其在**完整 messages**里紧邻的前一条不是 user —— 正常轮是
   // user→assistant、auto-continue / steer 也是 user→assistant,只有自主续轮是
   // assistant→assistant(无 user 行)。用完整 messages(而非 displayMessages)算,
-  // 避免 compact 折叠把首条 assistant 误判成自主轮。会话首条(i===0)永不算。
+  // 避免 compact 折叠把首条 assistant 误判成自主轮。会话首条永不算(见下方 prevRole
+  // 的 undefined 初值)。
+  //
+  // 只含 notice 块的消息(供应商切换/回退提示,规格决策 3)在这条判定里透明:它自己
+  // 永远不进 ids(单独 continue,连角色都不看),且在寻找「紧邻前一条」时被跳过(不
+  // 推进 prevRole)—— 否则它会插进两条真实 assistant 消息之间把回退提示误判成自主
+  // 续轮,也可能反过来垫在 assistant 与后续真实自主续轮之间把该有的判定拆断。
   const autonomousIds = React.useMemo(() => {
     const ids = new Set<number>();
-    for (let i = 1; i < messages.length; i++) {
-      if (messages[i].role === "assistant" && messages[i - 1].role !== "user") {
-        ids.add(messages[i].id);
+    let prevRole: string | undefined;
+    for (const m of messages) {
+      if (isNoticeOnlyMessage(m)) continue;
+      if (
+        prevRole !== undefined &&
+        m.role === "assistant" &&
+        prevRole !== "user"
+      ) {
+        ids.add(m.id);
       }
+      prevRole = m.role;
     }
     return ids;
   }, [messages]);

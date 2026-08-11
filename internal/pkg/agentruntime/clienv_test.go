@@ -12,9 +12,9 @@ import (
 // 仅做最小契约测试 — 详细分支已由 agent_backend_svc/prober_test.go 间接覆盖。
 // 这里挡的是包级位置漂移：函数搬到 agentruntime 后仍按预期工作。
 func TestBuildClaudeCodeEnv_Basic(t *testing.T) {
-	t.Run("有 gateway + LLM provider 时同时注入 ANTHROPIC_* 和 AGENTRE_GATEWAY_*", func(t *testing.T) {
+	t.Run("有 gateway + effective provider 时同时注入 ANTHROPIC_* 和 AGENTRE_GATEWAY_*", func(t *testing.T) {
 		b := &agent_backend_entity.AgentBackend{LLMProviderKey: "key-7", ModelRoutes: `{"SONNET":"key-1"}`, EnvJSON: `{"X":"y"}`}
-		env, err := BuildClaudeCodeEnv(b, CLIDeps{Token: "tok", GatewayURL: "http://127.0.0.1:60080"})
+		env, err := BuildClaudeCodeEnv(b, CLIDeps{Token: "tok", GatewayURL: "http://127.0.0.1:60080", ProviderKey: "key-7"})
 		require.NoError(t, err)
 		assert.Equal(t, "http://127.0.0.1:60080", env["ANTHROPIC_BASE_URL"])
 		assert.Equal(t, "tok", env["ANTHROPIC_AUTH_TOKEN"])
@@ -25,7 +25,7 @@ func TestBuildClaudeCodeEnv_Basic(t *testing.T) {
 		_, hasKey := env["ANTHROPIC_API_KEY"]
 		assert.False(t, hasKey, "不写 ANTHROPIC_API_KEY")
 	})
-	t.Run(`CLI 登录模式（LLMProviderKey==""）：只注入 AGENTRE_GATEWAY_*，不动 ANTHROPIC_*`, func(t *testing.T) {
+	t.Run(`CLI 登录模式（deps.ProviderKey==""）：只注入 AGENTRE_GATEWAY_*，不动 ANTHROPIC_*`, func(t *testing.T) {
 		// 这是修复「mid-turn chip 不消除」的核心契约：CLI 登录模式下我们
 		// 仍要让 hook 子进程能访问 /hook/v1/inbox，但不能让 claude CLI 用
 		// Bearer 覆盖 OAuth 走 LLM 转发（gateway 没 provider，会直接挂）。
@@ -39,8 +39,29 @@ func TestBuildClaudeCodeEnv_Basic(t *testing.T) {
 		_, hasAuth := env["ANTHROPIC_AUTH_TOKEN"]
 		assert.False(t, hasAuth, "CLI 登录模式不能设 ANTHROPIC_AUTH_TOKEN")
 	})
+	t.Run("backend 未绑定但会话选了 agentre 供应商（deps.ProviderKey 非空）：仍注入 ANTHROPIC_*", func(t *testing.T) {
+		// spec 2026-08-10 决策 6/问题 3：CLI 登录态后端上，会话级 provider_key 也要
+		// 能接管网关路由 —— 门控必须看本轮 effective provider（deps.ProviderKey），
+		// 不能再看 backend 绑定（b.LLMProviderKey）。
+		b := &agent_backend_entity.AgentBackend{LLMProviderKey: ""}
+		env, err := BuildClaudeCodeEnv(b, CLIDeps{Token: "tok", GatewayURL: "http://127.0.0.1:60080", ProviderKey: "session-picked"})
+		require.NoError(t, err)
+		assert.Equal(t, "http://127.0.0.1:60080", env["ANTHROPIC_BASE_URL"], "会话选了供应商就该走网关,即便 backend 未绑定")
+		assert.Equal(t, "tok", env["ANTHROPIC_AUTH_TOKEN"])
+	})
+	t.Run("backend 绑定了供应商但调用方未传 deps.ProviderKey（探测类调用点）：回落 backend 绑定注入 ANTHROPIC_*", func(t *testing.T) {
+		// daemon cli.probe / agent_backend_svc 的连通性 Test 没有会话 / session_provider
+		// 覆盖概念，只按 backend 自身绑定探测，历来直接传 CLIDeps{Token,GatewayURL}、
+		// 不填 ProviderKey —— 门控必须回落 b.LLMProviderKey，否则这两个既有调用点会
+		// 静默停止走网关（回归成探测 CLI 自身登录态而非目标 provider）。
+		b := &agent_backend_entity.AgentBackend{LLMProviderKey: "key-7"}
+		env, err := BuildClaudeCodeEnv(b, CLIDeps{Token: "tok", GatewayURL: "http://127.0.0.1:60080"})
+		require.NoError(t, err)
+		assert.Equal(t, "http://127.0.0.1:60080", env["ANTHROPIC_BASE_URL"])
+		assert.Equal(t, "tok", env["ANTHROPIC_AUTH_TOKEN"])
+	})
 	t.Run("无 gateway 时既不写 ANTHROPIC_* 也不写 AGENTRE_GATEWAY_*", func(t *testing.T) {
-		env, err := BuildClaudeCodeEnv(&agent_backend_entity.AgentBackend{LLMProviderKey: "key-1"}, CLIDeps{})
+		env, err := BuildClaudeCodeEnv(&agent_backend_entity.AgentBackend{LLMProviderKey: "key-1"}, CLIDeps{ProviderKey: "key-1"})
 		require.NoError(t, err)
 		_, has := env["ANTHROPIC_BASE_URL"]
 		assert.False(t, has)

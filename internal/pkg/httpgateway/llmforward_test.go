@@ -118,7 +118,7 @@ func newRecordingUpstream(t *testing.T, response string) (*httptest.Server, *rec
 // issueAndRequest 帮测试发一条带 token 的请求到 forwarder handler。
 func issueAndRequest(t *testing.T, h http.HandlerFunc, tokens *TokenRegistry, b *agent_backend_entity.AgentBackend, path string, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	tok, err := tokens.Issue(b, time.Minute)
+	tok, err := tokens.Issue(b, b.LLMProviderKey, time.Minute)
 	assert.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
@@ -221,6 +221,74 @@ func TestForwarder_RejectsProviderTypeMismatch(t *testing.T) {
 	var body map[string]string
 	_ = json.Unmarshal(w.Body.Bytes(), &body)
 	assert.Contains(t, body["error"], "type mismatch")
+}
+
+// TestForwarder_SwitchedProviderRoutesSameTokenToNewUpstream 钉死会话切换供应商的转发
+// 侧（规格「网关路由与子进程重启」）：token 字符串整段会话不变（它已烤进 CLI 子进程
+// env），换供应商改的只是它的路由目标 —— 同一个 token 的下一条请求必须打到新供应商的
+// BaseURL、带新供应商的 APIKey、body 的 model 改写成新供应商的 model。
+func TestForwarder_SwitchedProviderRoutesSameTokenToNewUpstream(t *testing.T) {
+	oldUpstream, oldRec := newRecordingUpstream(t, `{"ok":"old"}`)
+	newUpstream, newRec := newRecordingUpstream(t, `{"ok":"new"}`)
+
+	oldProvider := newAnthropicProvider("key-old", oldUpstream.URL)
+	oldProvider.Model = "claude-old"
+	switched := newAnthropicProvider("key-new", newUpstream.URL)
+	switched.Model = "claude-new"
+	switched.APIKey = "k-switched"
+
+	tokens := NewTokenRegistry()
+	f := NewForwarder(tokens, newFakeLookup(oldProvider, switched))
+	be := &agent_backend_entity.AgentBackend{
+		ID: 5, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-old",
+	}
+	tok, err := tokens.Issue(be, "key-old", 0)
+	assert.NoError(t, err)
+
+	send := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages",
+			strings.NewReader(`{"model":"whatever","messages":[]}`))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		rec := httptest.NewRecorder()
+		f.AnthropicHandler()(rec, req)
+		return rec
+	}
+
+	assert.Equal(t, http.StatusOK, send().Code)
+	assert.Equal(t, "/v1/messages", oldRec.Path)
+
+	prev, ok := tokens.SetProviderKey(tok, "key-new")
+	assert.True(t, ok)
+	assert.Equal(t, "key-old", prev)
+
+	assert.Equal(t, http.StatusOK, send().Code, "token 字符串没变，仍然有效")
+	assert.Equal(t, "/v1/messages", newRec.Path, "切换后的请求打到新供应商")
+	assert.Equal(t, "k-switched", newRec.Header.Get("x-api-key"), "用新供应商的 APIKey")
+	var body map[string]any
+	assert.NoError(t, json.Unmarshal(newRec.Body, &body))
+	assert.Equal(t, "claude-new", body["model"], "model 改写成新供应商的 model")
+}
+
+// TestForwarder_SwitchedToMissingProviderKeeps502 切换目标在本机缺失/停用时，转发端点
+// 维持既有的 502（规格「网关路由与子进程重启」）：不静默回落旧供应商 —— 那会让用户以为
+// 换成功了、实际还在老那家上跑。
+func TestForwarder_SwitchedToMissingProviderKeeps502(t *testing.T) {
+	upstream, _ := newRecordingUpstream(t, `{"ok":"old"}`)
+	tokens := NewTokenRegistry()
+	f := NewForwarder(tokens, newFakeLookup(newAnthropicProvider("key-old", upstream.URL)))
+
+	tok, err := tokens.Issue(
+		&agent_backend_entity.AgentBackend{ID: 5, Type: string(agent_backend_entity.TypeClaudeCode)},
+		"key-old", 0)
+	assert.NoError(t, err)
+	_, ok := tokens.SetProviderKey(tok, "key-gone")
+	assert.True(t, ok)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"x"}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	f.AnthropicHandler()(rec, req)
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
 }
 
 func TestForwarder_MissingTokenReturns401(t *testing.T) {

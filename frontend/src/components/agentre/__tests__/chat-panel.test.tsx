@@ -42,6 +42,7 @@ const appMocks = vi.hoisted(() => ({
   GetChatGoal: vi.fn(),
   ListLLMProviders: vi.fn().mockResolvedValue({ items: [] }),
   LoadChatSession: vi.fn(),
+  SetChatSessionProvider: vi.fn(),
   MarkChatSessionRead: vi.fn().mockResolvedValue({}),
   RegenerateChatMessage: vi.fn(),
   RenameChatSession: vi.fn(),
@@ -2911,9 +2912,11 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
     expect(pill).toHaveTextContent("Acme Claude");
   });
 
-  it("openclaw 新建会话不渲染供应商选择器（openclaw 不消费 agentre provider）", () => {
+  it("openclaw 新建会话渲染 disabled pill（决策 10：禁用而非隐藏，不消费 agentre provider）", async () => {
     resetStore();
     mockSessionStore.session = null;
+    // 本文件无 beforeEach 清 mock，先前测试的调用会累计 —— 这里先清掉只看本测试。
+    appMocks.ListLLMProviders.mockClear();
     render(
       <ChatPanel
         sessionId={0}
@@ -2929,27 +2932,13 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
       />,
     );
 
-    expect(screen.queryByTestId("provider-pill")).not.toBeInTheDocument();
+    const pill = await screen.findByTestId("provider-pill");
+    expect(pill).toBeDisabled();
+    expect(appMocks.ListLLMProviders).not.toHaveBeenCalled();
   });
 
-  it("已有会话（含 openclaw）不渲染供应商选择器（决策 7：无 pill、无只读徽标）", () => {
+  it("已有会话渲染供应商选择器并显示会话当前供应商（决策 10：取代『无 pill』的旧决策 7）", async () => {
     resetStore();
-    mockSessionStore.session = makeSession({
-      backendType: "claudecode",
-      llmProviderKey: "acme-anthropic",
-    });
-    render(<ChatPanel sessionId={42} newSessionAgent={null} />);
-
-    expect(screen.queryByTestId("provider-pill")).not.toBeInTheDocument();
-  });
-
-  it("已有会话不拉 ListLLMProviders：供应商选择器只在新建会话渲染", async () => {
-    resetStore();
-    mockSessionStore.session = makeSession({
-      backendType: "claudecode",
-      llmProviderKey: "acme-anthropic",
-    });
-    // 本文件无 beforeEach 清 mock，先前测试的调用会累计 —— 这里先清掉只看本测试。
     appMocks.ListLLMProviders.mockClear();
     appMocks.ListLLMProviders.mockResolvedValue({
       items: [
@@ -2962,13 +2951,76 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
         },
       ],
     });
-
+    mockSessionStore.session = makeSession({
+      backendType: "claudecode",
+      providerKey: "acme-anthropic",
+      agentProviderKey: "acme-anthropic",
+    });
     render(<ChatPanel sessionId={42} newSessionAgent={null} />);
 
-    await waitFor(() => {
-      expect(screen.queryByTestId("provider-pill")).not.toBeInTheDocument();
+    const pill = await screen.findByTestId("provider-pill");
+    await waitFor(() => expect(pill).not.toBeDisabled());
+    expect(pill).toHaveTextContent("Acme");
+    expect(appMocks.ListLLMProviders).toHaveBeenCalled();
+  });
+
+  it("已有会话 openclaw 渲染 disabled pill + tooltip（决策 10）", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({
+      backendType: "openclaw",
+      providerKey: "",
+      agentProviderKey: "",
     });
-    expect(appMocks.ListLLMProviders).not.toHaveBeenCalled();
+    render(<ChatPanel sessionId={43} newSessionAgent={null} />);
+
+    const pill = await screen.findByTestId("provider-pill");
+    expect(pill).toBeDisabled();
+    expect(pill).toHaveAttribute(
+      "title",
+      "This backend does not use agentre providers",
+    );
+  });
+
+  it("已有会话选中供应商：调用 SetChatSessionProvider(sessionId, providerKey) 并 reload 会话以取新的切换 notice", async () => {
+    resetStore();
+    appMocks.ListLLMProviders.mockClear();
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [
+        {
+          id: 11,
+          providerKey: "acme-anthropic",
+          name: "Acme",
+          type: "anthropic",
+          model: "claude-sonnet-4-5",
+        },
+      ],
+    });
+    appMocks.SetChatSessionProvider.mockResolvedValue({
+      providerKey: "acme-anthropic",
+      agentProviderKey: "",
+    });
+    reloadSpy.mockClear();
+    mockSessionStore.session = makeSession({
+      backendType: "claudecode",
+      providerKey: "",
+      agentProviderKey: "",
+    });
+    render(<ChatPanel sessionId={42} newSessionAgent={null} />);
+
+    const pill = await screen.findByTestId("provider-pill");
+    await waitFor(() => expect(pill).not.toBeDisabled());
+
+    const user = userEvent.setup();
+    await user.click(pill);
+    await user.click(within(screen.getByRole("listbox")).getByText("Acme"));
+
+    await waitFor(() => {
+      expect(appMocks.SetChatSessionProvider).toHaveBeenCalledWith({
+        sessionId: 42,
+        providerKey: "acme-anthropic",
+      });
+    });
+    await waitFor(() => expect(reloadSpy).toHaveBeenCalled());
   });
 });
 

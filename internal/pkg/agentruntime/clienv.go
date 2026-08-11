@@ -18,6 +18,21 @@ const (
 type CLIDeps struct {
 	Token      string
 	GatewayURL string
+	// ProviderKey 是本轮 effective provider 的 key（RunRequest.EffectiveProviderKey()
+	// 的同源值：会话 provider_key 覆盖 agent 绑定、经缺失/停用回退后的那家）。空串 =
+	// 调用方没有会话级覆盖信息可报（见下）。
+	//
+	// 只用于 claudecode 的 ANTHROPIC_BASE_URL/AUTH_TOKEN 门控（spec 2026-08-10 决策 6）：
+	// Token/GatewayURL 是否非空只代表「hook 子进程能不能访问 /hook/v1/inbox」——
+	// Claude Code 无论是否绑 provider 都会拿到它俩（PostToolUse hook 需要），不能拿它俩
+	// 当「这一轮要不要把 LLM 流量指向网关」的信号，必须单独看 ProviderKey。
+	//
+	// BuildClaudeCodeEnv 在 ProviderKey 为空时回落 backend.LLMProviderKey：会话级
+	// turn 路径总是显式传 ProviderKey（req.EffectiveProviderKey()，已含 backend 回落，
+	// 决策 2 的唯一口径）；连通性探测类调用点（daemon cli.probe、agent_backend_svc
+	// 的 Test）没有会话概念，只按 backend 自身绑定探测，继续只传 Token/GatewayURL 即可，
+	// 不必每处都重复解析一遍 effective provider。
+	ProviderKey string
 }
 
 // BuildClaudeCodeEnv 装配 claudecode 子进程的环境变量：
@@ -27,10 +42,12 @@ type CLIDeps struct {
 //     /hook/v1/inbox 拉排队消息。不走 ANTHROPIC_*，避免被 claude CLI 当成「替
 //     OAuth 把 LLM 路由到 gateway」的开关（CLI 登录模式下我们没 provider 转
 //     发，会直接挂 LLM）。
-//   - **ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN**：只在 backend 真的绑了 LLM
-//     provider 时设——这种情况下确实希望 claude CLI 把 LLM 请求路由到 gateway，
-//     gateway 按 model_routes 转发到对应 provider。CLI 登录模式留空，让 claude
-//     自身 OAuth 直连 anthropic.com。
+//   - **ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN**：只在本轮有 effective provider 时设
+//     ——deps.ProviderKey 非空（会话 provider_key 覆盖 agent 绑定后的那家）或
+//     b.LLMProviderKey 非空（未传 ProviderKey 的探测类调用点，回落 backend 自身绑定），
+//     二者皆空才是真正的 CLI 登录态。有 effective provider 时确实希望 claude CLI 把
+//     LLM 请求路由到 gateway，gateway 按 model_routes 转发到对应 provider；CLI 登录
+//     模式留空，让 claude 自身 OAuth 直连 anthropic.com。
 //   - 用户自定义 env_json 追加（保留键已被 entity.Check 拒入）；
 //   - 如果 backend.model_routes 含 OPUS/SONNET/HAIKU，注入 ANTHROPIC_DEFAULT_*_MODEL = alias 字符串
 //     （上游识别 alias，gateway 按 alias 路由到对应 provider 后再改写成真实 model id）。
@@ -47,8 +64,10 @@ func BuildClaudeCodeEnv(b *agent_backend_entity.AgentBackend, deps CLIDeps) (map
 		// hook 子进程总能拿到这两个，无论是否 CLI 登录模式。
 		env["AGENTRE_GATEWAY_URL"] = deps.GatewayURL
 		env["AGENTRE_GATEWAY_TOKEN"] = deps.Token
-		// 只有当 backend 绑了 LLM provider 时才让 claude CLI 走 gateway 做 LLM 转发。
-		if b != nil && b.LLMProviderKey != "" {
+		// 只有当本轮有 effective provider 时才让 claude CLI 走 gateway 做 LLM 转发
+		// （决策 6）：deps.ProviderKey 优先（backend 未绑定但会话选了 agentre 供应商时
+		// 也要生效），未传时回落 b.LLMProviderKey，保持无会话概念的探测类调用点行为不变。
+		if strings.TrimSpace(deps.ProviderKey) != "" || (b != nil && strings.TrimSpace(b.LLMProviderKey) != "") {
 			env["ANTHROPIC_BASE_URL"] = deps.GatewayURL
 			env["ANTHROPIC_AUTH_TOKEN"] = deps.Token
 		}

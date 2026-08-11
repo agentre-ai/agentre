@@ -285,11 +285,21 @@ type ChatBlock struct {
 	Text  string `json:"text,omitempty"`  // text / thinking / tool_result / notice 文本
 	Level string `json:"level,omitempty"` // notice 级别
 
-	// notice 块专用:供应商回退提示的会话所选 provider_key（spec 决策 8）。
+	// notice 块专用:供应商回退提示的会话所选 provider_key（spec 2026-08-09 决策 8）,
+	// 或供应商切换提示切换后的会话级 key（2026-08-10 决策 9,空串 = 改回跟随 agent 绑定）。
 	// 持久化时编码进 cago blocks.NoticeBlock.Text 的小 JSON,投影(noticeBlockToChatBlock)
 	// 解回这里;非结构化旧 notice 无此字段,前端回退到 Text 原样渲染。
-	ProviderKey string          `json:"providerKey,omitempty"`
-	Image       *ChatBlockImage `json:"image,omitempty"`
+	ProviderKey string `json:"providerKey,omitempty"`
+	// ProviderName 是 ProviderKey 对应供应商的展示名(2026-08-10 显示缺陷修复决策 1/2):
+	// 后端产出 notice 时按当前解析到的供应商实体填入,查不到(供应商已删)时留空。前端
+	// 渲染时优先用它,空则回退到 ProviderKey —— transcript 要读得懂"改用了哪个供应商"
+	// 而不是一串 UUID。
+	ProviderName string `json:"providerName,omitempty"`
+	// NoticeKind 区分 notice 的来源:""=供应商回退提示(含全部旧数据),"switch"=用户
+	// 切换了会话供应商。前端据它选 t() 文案 —— 切回「跟随 agent 绑定」时 ProviderKey
+	// 为空,只有这个字段能把它与「无结构化负载的旧 notice」区分开。
+	NoticeKind string          `json:"noticeKind,omitempty"`
+	Image      *ChatBlockImage `json:"image,omitempty"`
 
 	// tool_use:
 	ToolUseID string         `json:"toolUseId,omitempty"`
@@ -491,9 +501,19 @@ type ChatSessionDetail struct {
 	// openai-response）。前端用它和 BackendType 一起判定 Usage 字段语义：Anthropic 系
 	// 的 PromptTokens 只含未缓存输入，要叠加 CachedTokens + CacheCreationTokens 才是
 	// 总上下文；OpenAI 系的 PromptTokens 已是总数。空串表示后端未绑定 provider（CLI 登录态）。
+	//
+	// 按 **effective provider**（会话 provider_key > agent 绑定，spec 2026-08-10
+	// 「有效供应商解析（唯一口径）」）解析，不再单看 agent 绑定 —— 否则会话换了个不同
+	// 类型 / 不同上下文窗口的供应商后，用量条与上下文占比会按另一个供应商算错。
 	LLMProviderType string `json:"llmProviderType"`
-	Title           string `json:"title"`
-	AgentStatus     string `json:"agentStatus"`
+	// ProviderKey 是这条会话自己选的 LLM 供应商 key；空串 = 跟随 agent 绑定。
+	// AgentProviderKey 是该会话所用那一档 backend 绑定的 key；两者都空 = CLI 登录态。
+	// 前端 composer 的供应商 pill 用这两个值渲染标签（已选 → 供应商名；未选 → agent
+	// 绑定供应商名；皆无 → 「选择供应商」占位）。
+	ProviderKey      string `json:"providerKey"`
+	AgentProviderKey string `json:"agentProviderKey"`
+	Title            string `json:"title"`
+	AgentStatus      string `json:"agentStatus"`
 	// ActiveStream 仅在 LoadSession 时填:该会话有正在跑的 turn 时,给出其 per-turn
 	// wails 事件名("chat:event:<sessionID>:<assistantMessageID>"),让中途打开本会话的
 	// 前端 openStream 重挂到实时流。子 agent 调用轮 / 自主轮等"非前端发起"的 turn 没有 Send
@@ -734,9 +754,9 @@ type SendRequest struct {
 	// （SessionID>0）忽略这个字段：会话早已按 R15b 钉在它落到的那一档上，不可能再改。
 	ExecTargetOverride int64 `json:"execTargetOverride,omitempty"`
 	// ProviderKey 仅新建会话（SessionID=0）生效：所选 LLM 供应商 key，随首条消息与
-	// Session 一同 Create 落库（spec 决策 2）。空串 = 跟随 agent 绑定。已有会话忽略
-	// （B 不允许事后改，无 Setter）。非空时校验：供应商必须存在、IsActive 且与后端
-	// kind 兼容（ProviderTypeMatch），否则 Send 报错。
+	// Session 一同 Create 落库（spec 决策 2）。空串 = 跟随 agent 绑定。已有会话在这里
+	// 忽略——改供应商走 SetChatSessionProvider（2026-08-10 决策 1）。非空时校验：
+	// 供应商必须存在、IsActive 且与后端 kind 兼容（ProviderTypeMatch），否则 Send 报错。
 	ProviderKey string `json:"providerKey,omitempty"`
 	// EmitTurnStartedBypass 表示本轮由"非查看者"发起(子 agent 调用经 subagent_svc
 	// 阻塞起轮),需经会话级旁路 chat:autonomous:<sessionId> 把 per-turn 流名推给该会话
@@ -949,6 +969,21 @@ type SetPermissionModeRequest struct {
 type SetPermissionModeResponse struct {
 	Applied bool   `json:"applied"`
 	Mode    string `json:"mode"`
+}
+
+// SetSessionProviderRequest 切换已有会话的 LLM 供应商（spec 2026-08-10 决策 1）。
+// ProviderKey 空串 = 改回「跟随 agent 绑定」（CLI 后端即回到自身登录态，决策 7）。
+type SetSessionProviderRequest struct {
+	SessionID   int64  `json:"sessionId"`
+	ProviderKey string `json:"providerKey"`
+}
+
+// SetSessionProviderResponse 回传落库后的会话级 key 与该会话所用那一档 backend 的
+// 绑定 key，前端据此立刻更新 pill 标签，不必再拉一次 LoadSession。
+// 新供应商自下一轮生效：正在进行的轮不受影响（决策 8）。
+type SetSessionProviderResponse struct {
+	ProviderKey      string `json:"providerKey"`
+	AgentProviderKey string `json:"agentProviderKey"`
 }
 
 // LaunchCommandRequest / Response 用于「复制启动命令」菜单：

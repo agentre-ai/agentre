@@ -67,9 +67,15 @@ func BuildLaunchCommand(spec LaunchCommandSpec) (string, error) {
 func buildClaudeCodeShellCommand(spec LaunchCommandSpec, cwd string) (string, error) {
 	// 即便 Token 为空，只要 GatewayURL 非空，仍用占位符喂 BuildClaudeCodeEnv，
 	// 让它把 BASE_URL/AUTH_TOKEN 写进 env；真值替换在 assembleShellLine 里做。
+	// ProviderKey 传 spec.Provider 的 key(effective provider，已过回退):backend 未绑定
+	// 但会话选了供应商时，BuildClaudeCodeEnv 的 ANTHROPIC_* 门控只能靠它才知道有
+	// effective provider(spec.Backend.LLMProviderKey 此时为空，回落不到)。
 	deps := CLIDeps{}
 	if spec.GatewayURL != "" {
 		deps = CLIDeps{Token: tokenOrPlaceholder(spec.Token), GatewayURL: spec.GatewayURL}
+		if spec.Provider != nil {
+			deps.ProviderKey = spec.Provider.ProviderKey
+		}
 	}
 	env, err := BuildClaudeCodeEnv(spec.Backend, deps)
 	if err != nil {

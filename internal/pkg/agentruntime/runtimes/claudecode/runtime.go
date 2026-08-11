@@ -566,6 +566,15 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 		cur = nil
 	}
 
+	// effectiveProviderKey 同是启动期参数(ANTHROPIC_BASE_URL/AUTH_TOKEN 只在 spawn
+	// 时下发一次):两个不同供应商可以配同一个 model id,只比 launchedModel 会漏掉换
+	// 供应商 —— 会话切换后网关路由虽已改,但复用的旧子进程手里没有指向新供应商的
+	// env,请求仍打旧的(spec 2026-08-10 决策 4)。
+	if cur != nil && cur.launchedProviderKey != req.EffectiveProviderKey() {
+		r.cache.Remove(key)
+		cur = nil
+	}
+
 	if cur != nil {
 		// 复用现有 CLI 子进程:不重新 spawn,因此本轮没有新的 --permission-mode
 		// 下发。回吐当前缓存的 mode 让 chat_svc 写库幂等(值不变即 noop)。
@@ -602,7 +611,9 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 			return nil, "", err
 		}
 	}
-	env, err := BuildClaudeCodeEnv(req.Backend, CLIDeps{Token: req.GatewayToken, GatewayURL: req.GatewayURL})
+	env, err := BuildClaudeCodeEnv(req.Backend, CLIDeps{
+		Token: req.GatewayToken, GatewayURL: req.GatewayURL, ProviderKey: req.EffectiveProviderKey(),
+	})
 	if err != nil {
 		return nil, "", err
 	}
@@ -641,15 +652,16 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 		}
 	}
 	cur = &claudeActive{
-		sessionUUID:    inboxKey,
-		handle:         handle,
-		steer:          r.steer,
-		pool:           r.cache,
-		poolKey:        key,
-		launchedEffort: req.Backend.ReasoningEffort,
-		launchedModel:  claudeEffectiveModel(req),
-		permissionMode: runtimeMode,
-		tasks:          newTaskAggregator(),
+		sessionUUID:         inboxKey,
+		handle:              handle,
+		steer:               r.steer,
+		pool:                r.cache,
+		poolKey:             key,
+		launchedEffort:      req.Backend.ReasoningEffort,
+		launchedModel:       claudeEffectiveModel(req),
+		launchedProviderKey: req.EffectiveProviderKey(),
+		permissionMode:      runtimeMode,
+		tasks:               newTaskAggregator(),
 	}
 	if req.SessionID > 0 {
 		r.cache.Put(key, cur)

@@ -77,6 +77,59 @@ func TestRun_ModelChangeEvictsAndRespawns(t *testing.T) {
 	})
 }
 
+// TestRun_ProviderChangeEvictsAndRespawns 锁住 claudecode 的 evict 比对键扩展
+// （spec 2026-08-10 决策 4）：--model 与 ANTHROPIC_BASE_URL/AUTH_TOKEN 都是启动期
+// 参数，两个不同供应商可以配同一个 model id，只比 model 会漏掉换供应商——必须把
+// effectiveProviderKey 也纳入比对，否则会话切换供应商后 CLI 子进程被 LRU 复用，
+// 请求仍打到旧供应商（网关路由虽已切换，但子进程手里的 ANTHROPIC_BASE_URL 是启动期
+// 烤进去的，运行时改不掉）。
+func TestRun_ProviderChangeEvictsAndRespawns(t *testing.T) {
+	Convey("Given 同一 claudecode 会话两轮 provider.Model 相同但 ProviderKey 不同", t, func() {
+		var spawnCount int32
+		restore := SetSessionFactoryForTest(func(ccLaunchSpec) (ccSessionHandle, error) {
+			atomic.AddInt32(&spawnCount, 1)
+			return &fakeCCHandle{
+				id: "fake-sid",
+				stream: &eventCCStream{events: []claudecode.Event{
+					{Kind: claudecode.EventUsage, Usage: provider.Usage{PromptTokens: 1}},
+					{Kind: claudecode.EventDone},
+				}},
+			}, nil
+		})
+		defer restore()
+
+		r := New()
+		ctx := context.Background()
+		backend := &agent_backend_entity.AgentBackend{
+			Type: string(agent_backend_entity.TypeClaudeCode),
+		}
+		run := func(providerKey string) {
+			events, _, err := r.Run(ctx, agentruntime.RunRequest{
+				Backend:   backend,
+				SessionID: 88,
+				Cwd:       t.TempDir(),
+				UserText:  "hi",
+				Provider:  &llm_provider_entity.LLMProvider{ProviderKey: providerKey, Model: "same-model"},
+			})
+			So(err, ShouldBeNil)
+			for range events { //nolint:revive // drain
+			}
+		}
+
+		Convey("When 同供应商再来一轮, Then 复用不重 spawn", func() {
+			run("provider-a")
+			run("provider-a")
+			So(atomic.LoadInt32(&spawnCount), ShouldEqual, 1)
+		})
+
+		Convey("When ProviderKey 变化但 model 不变, Then evict + 重 spawn", func() {
+			run("provider-a")
+			run("provider-b")
+			So(atomic.LoadInt32(&spawnCount), ShouldEqual, 2)
+		})
+	})
+}
+
 // TestClaudeCodeCapabilities 钉死 claudecode runtime 的能力矩阵 + permission
 // mode 元数据。这些值与 chat_svc / 前端 UI gating 的硬编码 switch 一一对应,
 // 任何一项偏移都意味着 Plan B 切 dispatcher 后会有 UI/dispatch 错乱。

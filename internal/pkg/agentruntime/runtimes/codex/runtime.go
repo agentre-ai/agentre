@@ -75,19 +75,29 @@ type Runtime struct {
 	active map[int64]*codexActive
 	pool   *agentruntime.CLISessionPool
 
-	// launchedModel 记录每个 chat 会话(spawn 时)下发的 effectiveModel,
-	// key 与 CLISessionPool 一致(sessionKey)。--model 是启动期 flag(WithModel
-	// 绑定在 Client 创建时),app-server 进程又会被池跨轮复用 —— provider.Model 变了
-	// (换供应商绑定等)必须 evict + 重 spawn(镜像 claudecode 的 launchedEffort 先例),
-	// 否则下一轮复用旧模型进程,新模型不生效(RunResult.Model 仍旧模型)。
+	// launchedModel 记录每个 chat 会话(spawn 时)下发的启动期参数快照
+	// (launchedSpawnKey:effectiveModel + effectiveProviderKey),key 与
+	// CLISessionPool 一致(sessionKey)。--model 与 model_provider/base_url(-c 覆盖项)
+	// 都是启动期 flag(绑定在 Client 创建时),app-server 进程又会被池跨轮复用 ——
+	// provider.Model 或 effectiveProviderKey 任一变化都必须 evict + 重 spawn(镜像
+	// claudecode 的 launchedEffort 先例;决策 4 把比对键从单纯 model 扩展为二者的组合,
+	// 否则两个配同一 model id 的不同供应商换绑定时会漏判,复用旧进程打到旧供应商)。
+	// 否则下一轮复用旧参数进程,新供应商/模型不生效(RunResult.Model 仍旧模型)。
 	//
 	// 池按 LRU 上限(MarkIdle 的 prune)逐出空闲会话时不会回调这里,故条目可能只增不减
 	// (逐出后该 key 再 spawn 会被 recordLaunchedModel 覆盖)。为防长驻进程里 map 随
 	// 会话累积无界增长,recordLaunchedModel 用 FIFO 上限裁剪:被裁掉的 key 若日后回到
-	// 池,modelChanged 只会把它当成「未记录」,最多导致一次无谓重 spawn,绝不产生错误结果。
-	launchedModel map[string]string
+	// 池,spawnKeyChanged 只会把它当成「未记录」,最多导致一次无谓重 spawn,绝不产生错误结果。
+	launchedModel map[string]launchedSpawnKey
 	// launchedModelOrder 是 launchedModel 的 FIFO 插入序,用于容量裁剪。
 	launchedModelOrder []string
+}
+
+// launchedSpawnKey 是 spawn 时下发给 codex CLI 的启动期参数快照,决定 evict 比对
+// (spec 2026-08-10 决策 4)。两个字段任一变化都要求 evict + 重 spawn。
+type launchedSpawnKey struct {
+	model       string
+	providerKey string
 }
 
 // maxTrackedLaunchedModels 是 launchedModel 的上限。池空闲容量 8,同时活跃的 key
@@ -105,29 +115,29 @@ func NewWithPool(pool *agentruntime.CLISessionPool) *Runtime {
 	return &Runtime{
 		active:             map[int64]*codexActive{},
 		pool:               pool,
-		launchedModel:      map[string]string{},
+		launchedModel:      map[string]launchedSpawnKey{},
 		launchedModelOrder: []string{},
 	}
 }
 
-// modelChanged 报告该会话已 spawn 的 effectiveModel 是否与新一轮不同。
-// 新会话(未记录过)视为未变化,正常创建。
-func (r *Runtime) modelChanged(key, effective string) bool {
+// spawnKeyChanged 报告该会话已 spawn 的启动期参数(model + providerKey)是否与新一轮
+// 不同。新会话(未记录过)视为未变化,正常创建。
+func (r *Runtime) spawnKeyChanged(key string, want launchedSpawnKey) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.launchedModel[key] != effective
+	return r.launchedModel[key] != want
 }
 
-// recordLaunchedModel 在 spawn 成功后记录本次下发的 effectiveModel。
+// recordLaunchedModel 在 spawn 成功后记录本次下发的启动期参数快照。
 // 超过 maxTrackedLaunchedModels 时按 FIFO 裁掉最旧条目(池逐出会话不回调本包,
 // 必须在这里兜底防 map 无界增长)。
-func (r *Runtime) recordLaunchedModel(key, effective string) {
+func (r *Runtime) recordLaunchedModel(key string, spawn launchedSpawnKey) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.launchedModel[key]; !exists {
 		r.launchedModelOrder = append(r.launchedModelOrder, key)
 	}
-	r.launchedModel[key] = effective
+	r.launchedModel[key] = spawn
 	for len(r.launchedModelOrder) > maxTrackedLaunchedModels {
 		oldest := r.launchedModelOrder[0]
 		r.launchedModelOrder = r.launchedModelOrder[1:]
@@ -484,9 +494,11 @@ func (r *Runtime) acquireSession(req agentruntime.RunRequest, env map[string]str
 	if req.SessionID > 0 {
 		key := sessionKey(req.SessionID)
 		if v, ok := r.pool.Get(key); ok {
-			// 模型是启动期 flag:effectiveModel 变化 → evict + 重 spawn(镜像 claudecode
-			// launchedEffort 先例)。模型未变则复用池内 app-server。
-			if r.modelChanged(key, codexEffectiveModel(req)) {
+			// 模型 / effectiveProviderKey 都是启动期参数:任一变化 → evict + 重 spawn
+			// (镜像 claudecode launchedEffort 先例;决策 4)。两者都未变则复用池内
+			// app-server。
+			want := launchedSpawnKey{model: codexEffectiveModel(req), providerKey: req.EffectiveProviderKey()}
+			if r.spawnKeyChanged(key, want) {
 				r.pool.Remove(key)
 				r.forgetLaunchedModel(key)
 			} else {
@@ -503,7 +515,7 @@ func (r *Runtime) acquireSession(req agentruntime.RunRequest, env map[string]str
 		key := sessionKey(req.SessionID)
 		r.pool.Put(key, sess)
 		r.pool.MarkActive(key)
-		r.recordLaunchedModel(key, codexEffectiveModel(req))
+		r.recordLaunchedModel(key, launchedSpawnKey{model: codexEffectiveModel(req), providerKey: req.EffectiveProviderKey()})
 	}
 	return sess, nil
 }
@@ -531,7 +543,7 @@ func (r *Runtime) CloseSession(_ context.Context, sessionID int64) {
 func (r *Runtime) CloseAllSessions(_ context.Context) {
 	r.pool.RemoveAll()
 	r.mu.Lock()
-	r.launchedModel = map[string]string{}
+	r.launchedModel = map[string]launchedSpawnKey{}
 	r.launchedModelOrder = []string{}
 	r.mu.Unlock()
 }

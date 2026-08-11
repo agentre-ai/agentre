@@ -592,6 +592,51 @@ describe("ChatTranscript autonomous turn banner", () => {
     } as chat_svc.ChatMessage;
   }
 
+  // emptyMsg:轮刚起、内容还没落地的 assistant 行(autonomous_turn.go / Send 建行时
+  // BlocksJSON 恒为 "[]")。与 noticeMsg 的区别正是判定要认的那条界:没有块 ≠ 块全是
+  // notice。
+  function emptyMsg(id: number): chat_svc.ChatMessage {
+    return {
+      blocks: [] as ChatBlockData[],
+      completionTokens: 0,
+      createtime: new Date("2026-05-17T10:30:00Z").getTime(),
+      durationMs: 0,
+      errorText: "",
+      id,
+      model: "",
+      promptTokens: 0,
+      role: "assistant",
+      seq: id,
+      sessionId: 1,
+    } as chat_svc.ChatMessage;
+  }
+
+  // noticeMsg:供应商切换/回退 notice 的落库形状——独立的 assistant 消息,blocks 只有
+  // 一个 type: "notice" 块(session_provider.go 的 encodeProviderSwitch 同源同形)。
+  function noticeMsg(id: number): chat_svc.ChatMessage {
+    return {
+      blocks: [
+        {
+          level: "info",
+          noticeKind: "switch",
+          providerKey: "session-key",
+          providerName: "中转 · GLM 5.2",
+          type: "notice",
+        } as ChatBlockData,
+      ],
+      completionTokens: 0,
+      createtime: new Date("2026-05-17T10:30:00Z").getTime(),
+      durationMs: 0,
+      errorText: "",
+      id,
+      model: "",
+      promptTokens: 0,
+      role: "assistant",
+      seq: id,
+      sessionId: 1,
+    } as chat_svc.ChatMessage;
+  }
+
   it("自主续轮(assistant 紧邻前一条 assistant,无 user 行)前渲染 AutoTriggerBanner", () => {
     render(
       <ChatTranscript
@@ -625,6 +670,96 @@ describe("ChatTranscript autonomous turn banner", () => {
       />,
     );
     expect(screen.queryAllByRole("separator")).toHaveLength(0);
+  });
+
+  it("供应商切换 notice 行本身不触发 banner,且不吞掉它之后紧跟的真实自主续轮", () => {
+    const { container } = render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          msg(1, "user", "后台跑吧，完了叫我"),
+          msg(2, "assistant", "后台任务我先跑着，完了叫你。"),
+          noticeMsg(3),
+          msg(4, "assistant", "后台任务跑完了，结果是……"),
+        ]}
+      />,
+    );
+    // notice 行(msg 3)在判定里透明:它自己不算自主轮 —— 它所在的行里没有 banner。
+    const noticeRow = container.querySelector('[data-message-id="3"]');
+    expect(noticeRow).not.toBeNull();
+    expect(
+      within(noticeRow as HTMLElement).queryByRole("separator"),
+    ).toBeNull();
+    // msg(4) 紧邻的前一条真实消息仍是 assistant(notice 被跳过)→ 真自主续轮的 banner
+    // 必须照常出现在 msg(4) 的行里(决策 3 的反向边界,mockup「R2 的反向边界」)。
+    const realRow = container.querySelector('[data-message-id="4"]');
+    expect(realRow).not.toBeNull();
+    expect(
+      within(realRow as HTMLElement).getByRole("separator"),
+    ).toHaveTextContent(/auto-continued|自动继续/);
+    // 全局也应恰好一条 banner,不多不少。
+    expect(screen.getAllByRole("separator")).toHaveLength(1);
+  });
+
+  it("供应商切换 notice 之后接正常 user→assistant 轮不产生 banner", () => {
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          msg(1, "user", "hi"),
+          msg(2, "assistant", "先切个供应商"),
+          noticeMsg(3),
+          msg(4, "user", "继续"),
+          msg(5, "assistant", "好的"),
+        ]}
+      />,
+    );
+    expect(screen.queryAllByRole("separator")).toHaveLength(0);
+  });
+
+  it("notice 垫在 user 与它的 assistant 回复之间,不把这一轮误判成自主续轮", () => {
+    // 决策 3 的另一半:notice 行「在判断其它消息的『紧邻前一条』时被跳过」。这里
+    // msg(3) 紧邻的前一条**真实**消息是 msg(1) 这条 user —— 正常轮,不该出 banner。
+    // 真实成因:用户发完消息、assistant 还没落地时在 pill 上切了供应商,切换 notice
+    // 就落在两者中间(NextSeq 排在在途 assistant 之后同理)。notice 若不透明,它会
+    // 顶替 user 成为「紧邻前一条」,把一条普通轮误判成自主续轮 —— 正是 R2 的形状。
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          msg(1, "user", "帮我查一下"),
+          noticeMsg(2),
+          msg(3, "assistant", "好的,我查到……"),
+        ]}
+      />,
+    );
+    expect(screen.queryAllByRole("separator")).toHaveLength(0);
+  });
+
+  it("自主续轮刚起、内容还没落地(blocks 为空)时横幅就该在", () => {
+    // 决策 3 认的是「内容块**全部是 notice**」,空 blocks 不是 notice 行 —— 这条守的
+    // 是判定别把「还没有内容的消息」一并吞掉。真实形状:autonomous_turn.go 建自主轮
+    // assistant 行时 BlocksJSON 恒为 "[]",chat-panel 的 autonomous_started 分支立刻
+    // 把这条空消息插进 messages,横幅正要在这一刻出现,而不是等第一段文字流完。
+    const { container } = render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          msg(1, "user", "后台跑吧，完了叫我"),
+          msg(2, "assistant", "后台任务我先跑着，完了叫你。"),
+          emptyMsg(3),
+        ]}
+      />,
+    );
+    const pendingRow = container.querySelector('[data-message-id="3"]');
+    expect(pendingRow).not.toBeNull();
+    expect(
+      within(pendingRow as HTMLElement).getByRole("separator"),
+    ).toHaveTextContent(/auto-continued|自动继续/);
   });
 });
 
@@ -1971,6 +2106,39 @@ describe("ChatTranscript typing indicator", () => {
     );
 
     expect(screen.getByLabelText("Generating")).toBeInTheDocument();
+  });
+
+  it("轮中切换供应商追加的 notice 行不抢走生成指示器", () => {
+    // 供应商 pill 允许在轮中切换,切换成功后 chat-panel 立刻 reloadSession(),把新落库
+    // 的 notice 消息(role=assistant、只有一个 notice 块)拉进 messages —— 它排在在跑
+    // 的 assistant 之后,成了 messages 的末条 assistant。指示器宿主必须仍是真正在流的
+    // 那条,否则三个点会跳到 notice 行上、在跑的那条看着像已经停了。
+    render(
+      <ChatTranscript
+        liveByMessageId={new Map([[2, { liveTail: "streaming chunk" }]])}
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          userMessage(1, "hi"),
+          assistantMessage(2, []),
+          assistantMessage(3, [
+            {
+              level: "info",
+              noticeKind: "switch",
+              providerKey: "session-key",
+              providerName: "中转 · GLM 5.2",
+              type: "notice",
+            } as ChatBlockData,
+          ]),
+        ]}
+        streaming
+      />,
+    );
+
+    const indicator = screen.getByLabelText("Generating");
+    expect(
+      indicator.closest("[data-message-id]")?.getAttribute("data-message-id"),
+    ).toBe("2");
   });
 
   it("places the indicator after the live tail text in DOM order", () => {

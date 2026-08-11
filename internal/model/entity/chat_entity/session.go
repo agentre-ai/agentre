@@ -71,8 +71,9 @@ type Session struct {
 	PermissionModeAtLaunch string `gorm:"column:permission_mode_at_launch;type:text;not null;default:''"`
 	// ProviderKey 是会话级 LLM 供应商 key（chat_sessions.provider_key）。
 	// 空串 = 跟随 agent 绑定：每轮由 chat_svc 从 be.LLMProviderKey → prov.Model 解析。
-	// 非空时在解析 prov 时优先于 agent 绑定（spec 决策 2/3）。仅新建会话随首条消息落库，
-	// 不可事后修改；所指向供应商缺失/停用时回退 agent 绑定并追加持久 notice（决策 8）。
+	// 非空时在解析 prov 时优先于 agent 绑定（spec 决策 2/3）。新建会话随首条消息落库，
+	// 此后可由 chat_svc.SetChatSessionProvider 单列改写（2026-08-10 决策 1，自下一轮
+	// 生效）；所指向供应商缺失/停用时回退 agent 绑定并追加持久 notice（决策 8）。
 	ProviderKey string `gorm:"column:provider_key;type:text;not null;default:''"`
 	// ExecDeviceID 执行该会话的配对 daemon(paired_agentreds.id)。0 = 本机执行 ——
 	// 也是老数据的默认值，语义与远端执行落地前完全一致。

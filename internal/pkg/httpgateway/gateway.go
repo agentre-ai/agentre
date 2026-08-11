@@ -328,16 +328,39 @@ func (g *Gateway) RegisterControl(h http.Handler) {
 	g.ctlMu.Unlock()
 }
 
-// IssueToken 给一个 backend 申请 token；ttl <= 0 视作永久（chat flow 用）。
+// IssueToken 给一个 backend 申请 token，路由到 backend 自身绑定的供应商；
+// ttl <= 0 视作永久（chat flow 用）。
 // State=stopped 时返回 ErrGatewayNotRunning，调用方据此返回软失败给前端。
-func (g *Gateway) IssueToken(_ context.Context, backend *agent_backend_entity.AgentBackend, ttl time.Duration) (string, error) {
+//
+// 会话可能覆盖供应商的场景（chat turn）用 IssueTokenFor 显式传 effective key。
+func (g *Gateway) IssueToken(ctx context.Context, backend *agent_backend_entity.AgentBackend, ttl time.Duration) (string, error) {
+	var key string
+	if backend != nil {
+		key = backend.LLMProviderKey
+	}
+	return g.IssueTokenFor(ctx, backend, key, ttl)
+}
+
+// IssueTokenFor 与 IssueToken 同形，但 token 路由到显式传入的 providerKey：
+// chat flow 传本轮的 effective provider（会话 provider_key > agent 绑定，决策 3），
+// 于是「会话换了供应商」不必换 backend、也不必污染 agent 绑定就能改上游。
+func (g *Gateway) IssueTokenFor(
+	_ context.Context, backend *agent_backend_entity.AgentBackend, providerKey string, ttl time.Duration,
+) (string, error) {
 	g.mu.RLock()
 	running := g.state == stateRunning
 	g.mu.RUnlock()
 	if !running {
 		return "", ErrGatewayNotRunning
 	}
-	return g.tokens.Issue(backend, ttl)
+	return g.tokens.Issue(backend, providerKey, ttl)
+}
+
+// SetTokenProvider 改既有 token 的路由目标（token 字符串不变），返回它原来的供应商与
+// 是否命中。会话中途换供应商时由 chat flow / daemon 在下一轮调用 —— 见 TokenRegistry.
+// SetProviderKey 的重签禁忌说明。
+func (g *Gateway) SetTokenProvider(token, providerKey string) (previous string, ok bool) {
+	return g.tokens.SetProviderKey(token, providerKey)
 }
 
 // RevokeToken 立刻删除 token。

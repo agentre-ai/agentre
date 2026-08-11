@@ -24,14 +24,14 @@ import (
 // CapReportContextWindow=true;PermissionModeMeta 仅 default/plan,SwitchableDuringTurn=false。
 // TestRecordLaunchedModel_Bounded 锁住 launchedModel 的容量裁剪:池按 LRU 上限逐出
 // 空闲会话时不回调本包,若不加上限,map 会随进程内用过的会话数无界增长。裁掉的是
-// 最旧的 key —— 它若日后回池,modelChanged 只会误判一次无谓重 spawn,不产错误结果。
+// 最旧的 key —— 它若日后回池,spawnKeyChanged 只会误判一次无谓重 spawn,不产错误结果。
 func TestRecordLaunchedModel_Bounded(t *testing.T) {
 	Convey("Given 一个 codex runtime", t, func() {
 		r := New()
 
 		Convey("When 记录超过上限的会话数 Then map 被 FIFO 裁剪到上限以内", func() {
 			for i := 0; i < maxTrackedLaunchedModels+64; i++ {
-				r.recordLaunchedModel(fmt.Sprintf("sess-%d", i), "gpt-5.5")
+				r.recordLaunchedModel(fmt.Sprintf("sess-%d", i), launchedSpawnKey{model: "gpt-5.5"})
 			}
 			r.mu.Lock()
 			defer r.mu.Unlock()
@@ -45,8 +45,8 @@ func TestRecordLaunchedModel_Bounded(t *testing.T) {
 		})
 
 		Convey("When forgetLaunchedModel 剔除已记录 key Then map 与 FIFO 序同步删除", func() {
-			r.recordLaunchedModel("a", "m1")
-			r.recordLaunchedModel("b", "m2")
+			r.recordLaunchedModel("a", launchedSpawnKey{model: "m1"})
+			r.recordLaunchedModel("b", launchedSpawnKey{model: "m2"})
 			r.forgetLaunchedModel("a")
 			r.mu.Lock()
 			defer r.mu.Unlock()
@@ -317,6 +317,51 @@ func TestRun_ModelChangeEvictsAndRespawns(t *testing.T) {
 			run("gpt-5.5")
 			second := run("gpt-5.6")
 			So(second.Model, ShouldEqual, "gpt-5.6")
+			So(atomic.LoadInt32(&spawnCount), ShouldEqual, 2)
+		})
+	})
+}
+
+// TestRun_ProviderChangeEvictsAndRespawns 锁住 codex 的 evict 比对键扩展(spec
+// 2026-08-10 决策 4):model_provider/base_url 同是启动期 -c 覆盖项(WithModel 绑定在
+// Client 创建时),两个不同供应商可以配同一个 model id,只比 provider.Model 会漏掉换
+// 供应商 —— 必须把 effectiveProviderKey 也纳入比对,否则会话切换供应商后复用池里的旧
+// app-server 进程,请求仍打旧供应商。
+func TestRun_ProviderChangeEvictsAndRespawns(t *testing.T) {
+	Convey("Given 同一 codex 会话两轮 provider.Model 相同但 ProviderKey 不同", t, func() {
+		var spawnCount int32
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+			atomic.AddInt32(&spawnCount, 1)
+			return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-y", model: "same-model"}, nil
+		})
+		defer restore()
+
+		r := New()
+		run := func(providerKey string) {
+			events, _, err := r.Run(context.Background(), agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:    string(agent_backend_entity.TypeCodex),
+					EnvJSON: "{}",
+				},
+				Provider:  &llm_provider_entity.LLMProvider{ProviderKey: providerKey, Model: "same-model"},
+				SessionID: 78,
+				Cwd:       t.TempDir(),
+				UserText:  "hi",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+		}
+
+		Convey("When 同供应商再来一轮, Then 复用不重 spawn", func() {
+			run("provider-a")
+			run("provider-a")
+			So(atomic.LoadInt32(&spawnCount), ShouldEqual, 1)
+		})
+
+		Convey("When ProviderKey 变化但 model 不变, Then evict + 重 spawn", func() {
+			run("provider-a")
+			run("provider-b")
 			So(atomic.LoadInt32(&spawnCount), ShouldEqual, 2)
 		})
 	})

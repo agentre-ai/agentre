@@ -46,6 +46,11 @@ type SessionRepo interface {
 	// invoked through the user-facing SetPermissionMode IPC — that one only
 	// touches permission_mode.
 	UpdatePermissionModeAtLaunch(ctx context.Context, sessionID int64, mode string) error
+	// UpdateProviderKey 改写会话级 LLM 供应商 key（空串 = 跟随 agent 绑定）。
+	// 由 chat_svc.SetChatSessionProvider 调用；切换允许发生在轮中，所以只碰这一列，
+	// 不走整行 Save —— 后者会把并发轮次正在写的状态列一起盖掉。同理 provider_key
+	// 也在 Update 的 Omit 清单里：轮次收尾的整行回写拿的是轮次开始时读出的旧实体。
+	UpdateProviderKey(ctx context.Context, sessionID int64, providerKey string) error
 	// UpdateExecDaemon 记录执行该会话的配对 daemon(paired_agentreds.id)及其实例标识
 	// (sha256:<hex>)、以及这条会话钉住的执行目标档(agentBackendID,R15b / 决策36)。
 	// deviceID=0 + 空标识表示回到本机执行；agentBackendID=0 表示尚未钉住。三列同一条
@@ -397,10 +402,14 @@ func (r *sessionRepo) Update(ctx context.Context, s *chat_entity.Session) error 
 	//     会把「这条会话跑在哪台 daemon 上、钉在哪一档、消费到哪」一起抹成 0 / '' / 0,
 	//     空闲的远端会话从此落在 ListRemoteExecSessions 的取材条件之外,再也进不了
 	//     启动补齐;钉住的档也会被抹回未钉住,下一轮又变成重挑(决策36明确禁止)。
-	// 这四列在服务层没有任何「写实体再 Update」的路径,Omit 不会丢掉谁的写入。
+	//   - provider_key —— 会话级供应商允许在轮中切换(2026-08-10 决策 8),而收尾用的
+	//     实体是轮次开始时读出的、带着旧供应商的那一份,不 Omit 就会把用户刚切好的
+	//     供应商冲回去。新建会话的首次写入走 Create,不经这里。
+	// 这几列在服务层没有任何「写实体再 Update」的路径,Omit 不会丢掉谁的写入。
 	err := db.Ctx(ctx).Omit(
 		"permission_mode", "permission_mode_at_launch",
 		"exec_device_id", "exec_daemon_fingerprint", "exec_agent_backend_id", "event_cursor",
+		"provider_key",
 	).Save(s).Error
 	s.ApplyDerivedFields()
 	return err
@@ -421,6 +430,15 @@ func (r *sessionRepo) UpdatePermissionModeAtLaunch(ctx context.Context, sessionI
 		Updates(map[string]any{
 			"permission_mode_at_launch": mode,
 			"updatetime":                time.Now().UnixMilli(),
+		}).Error
+}
+
+func (r *sessionRepo) UpdateProviderKey(ctx context.Context, sessionID int64, providerKey string) error {
+	return db.Ctx(ctx).Model(&chat_entity.Session{}).
+		Where("id = ? AND status = ?", sessionID, consts.ACTIVE).
+		Updates(map[string]any{
+			"provider_key": providerKey,
+			"updatetime":   time.Now().UnixMilli(),
 		}).Error
 }
 

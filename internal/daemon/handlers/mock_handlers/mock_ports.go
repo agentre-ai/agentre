@@ -459,6 +459,21 @@ func (mr *MockGatewayPortMockRecorder) IssueToken(ctx, b, ttl any) *gomock.Call 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IssueToken", reflect.TypeOf((*MockGatewayPort)(nil).IssueToken), ctx, b, ttl)
 }
 
+// IssueTokenFor mocks base method.
+func (m *MockGatewayPort) IssueTokenFor(ctx context.Context, b *agent_backend_entity.AgentBackend, providerKey string, ttl time.Duration) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IssueTokenFor", ctx, b, providerKey, ttl)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// IssueTokenFor indicates an expected call of IssueTokenFor.
+func (mr *MockGatewayPortMockRecorder) IssueTokenFor(ctx, b, providerKey, ttl any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IssueTokenFor", reflect.TypeOf((*MockGatewayPort)(nil).IssueTokenFor), ctx, b, providerKey, ttl)
+}
+
 // RevokeToken mocks base method.
 func (m *MockGatewayPort) RevokeToken(token string) {
 	m.ctrl.T.Helper()
@@ -469,6 +484,21 @@ func (m *MockGatewayPort) RevokeToken(token string) {
 func (mr *MockGatewayPortMockRecorder) RevokeToken(token any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RevokeToken", reflect.TypeOf((*MockGatewayPort)(nil).RevokeToken), token)
+}
+
+// SetTokenProvider mocks base method.
+func (m *MockGatewayPort) SetTokenProvider(token, providerKey string) (string, bool) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetTokenProvider", token, providerKey)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(bool)
+	return ret0, ret1
+}
+
+// SetTokenProvider indicates an expected call of SetTokenProvider.
+func (mr *MockGatewayPortMockRecorder) SetTokenProvider(token, providerKey any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetTokenProvider", reflect.TypeOf((*MockGatewayPort)(nil).SetTokenProvider), token, providerKey)
 }
 
 // URL mocks base method.

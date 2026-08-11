@@ -29,6 +29,8 @@ import (
 	"time"
 
 	"github.com/cago-frame/agents/agent/blocks"
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
 
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
@@ -381,7 +383,9 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		// 会话级常驻 token:首轮签、后续轮复用同一个,**不在轮末撤销**(见
 		// sessionTokens 注释)。decode/Run 失败也不撤销 —— token 留着给下一轮重试复用,
 		// 没用上的也只是随 daemon 退出释放(有界)。
-		gatewayURL, gatewayToken, terr = h.ensureSessionToken(ctx, em.rid, &be)
+		// 按解析出来的 provider 路由,而不是 be.LLMProviderKey:桌面端中途换了供应商时,
+		// 下一轮 wire 带的是新的 effective key,这条常驻 token 的上游要跟着变(决策 3/12)。
+		gatewayURL, gatewayToken, terr = h.ensureSessionToken(ctx, em.rid, &be, provider.ProviderKey)
 		if terr != nil {
 			return wire.RunAck{}, terr
 		}
@@ -1427,7 +1431,13 @@ func (h *RuntimeHandlers) resolveSession(sid int64) (agentruntime.Runtime, error
 // env,子进程跨轮复用时 env 不重建,所以必须整段会话稳定且永不过期 —— 否则下一轮
 // 复用的子进程手里的 token 失效,PostToolUse hook 撞 401、SteerInbox drain 不到。
 // Gateway 不可用 / URL 为空时返回空串,调用方按"不签"处理。
-func (h *RuntimeHandlers) ensureSessionToken(ctx context.Context, sid int64, be *agent_backend_entity.AgentBackend) (string, string, error) {
+//
+// providerKey 是本轮解析出来的供应商(wire 的 effectiveProviderKey 自解、必要时已回退):
+// 首轮按它签发,之后每轮把既有 token 的路由目标对齐到它 —— 桌面端换供应商后,同一个
+// token 字符串继续有效,只是上游变了(决策 3/12)。
+func (h *RuntimeHandlers) ensureSessionToken(
+	ctx context.Context, sid int64, be *agent_backend_entity.AgentBackend, providerKey string,
+) (string, string, error) {
 	if h.deps.Gateway == nil {
 		return "", "", nil
 	}
@@ -1437,10 +1447,12 @@ func (h *RuntimeHandlers) ensureSessionToken(ctx context.Context, sid int64, be 
 	}
 	if sid > 0 {
 		if v, ok := h.sessionTokens.Load(sid); ok {
-			return url, v.(string), nil
+			tok := v.(string)
+			h.routeSessionToken(ctx, sid, tok, providerKey)
+			return url, tok, nil
 		}
 	}
-	tok, err := h.deps.Gateway.IssueToken(ctx, be, 0)
+	tok, err := h.deps.Gateway.IssueTokenFor(ctx, be, providerKey, 0)
 	if err != nil {
 		return "", "", fmt.Errorf("gateway token: %w", err)
 	}
@@ -1452,6 +1464,25 @@ func (h *RuntimeHandlers) ensureSessionToken(ctx context.Context, sid int64, be 
 		}
 	}
 	return url, tok, nil
+}
+
+// routeSessionToken 把会话常驻 token 的路由目标对齐到本轮的供应商;token 字符串不变,
+// 已烤进子进程 env 的那份继续可用。真的换了才记一条日志;找不到 entry = gateway 重启过
+// (token 表只在内存里),子进程手里那个也已失效,记 warn 供排查。
+func (h *RuntimeHandlers) routeSessionToken(ctx context.Context, sid int64, token, providerKey string) {
+	previous, ok := h.deps.Gateway.SetTokenProvider(token, providerKey)
+	if !ok {
+		logger.Ctx(ctx).Warn("handlers.routeSessionToken: session token missing from gateway",
+			zap.Int64("sessionId", sid),
+			zap.String("providerKey", providerKey))
+		return
+	}
+	if previous != providerKey {
+		logger.Ctx(ctx).Info("handlers.routeSessionToken: gateway token rerouted to new provider",
+			zap.Int64("sessionId", sid),
+			zap.String("previousProviderKey", previous),
+			zap.String("providerKey", providerKey))
+	}
 }
 
 func (h *RuntimeHandlers) lookupSession(sid int64) *runtimeSession {

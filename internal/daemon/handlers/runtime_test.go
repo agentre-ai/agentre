@@ -1290,7 +1290,9 @@ func TestRuntime_Run_WithProvider_ReusesPermanentTokenAcrossTurns(t *testing.T) 
 	gw.EXPECT().URL().Return("http://gw").AnyTimes()
 	// ttl=0 (permanent), minted exactly once; NO RevokeToken EXPECT → gomock
 	// fails if anything revokes it (e.g. a leftover turn-end revoke).
-	gw.EXPECT().IssueToken(ctx, gomock.Any(), time.Duration(0)).Return("sess-token", nil).Times(1)
+	gw.EXPECT().IssueTokenFor(ctx, gomock.Any(), "pk", time.Duration(0)).Return("sess-token", nil).Times(1)
+	// 后续轮只把既有 token 的路由目标对齐到同一家（没换供应商 → 原地不动）。
+	gw.EXPECT().SetTokenProvider("sess-token", "pk").Return("pk", true).Times(1)
 
 	runOnce := func() {
 		_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 42, UserText: "hi"})
@@ -1307,6 +1309,57 @@ func TestRuntime_Run_WithProvider_ReusesPermanentTokenAcrossTurns(t *testing.T) 
 	require.Len(t, rt.runReqs, 2)
 	assert.Equal(t, "sess-token", rt.runReqs[0].req.GatewayToken)
 	assert.Equal(t, "sess-token", rt.runReqs[1].req.GatewayToken, "turn 2 must reuse the same permanent token")
+}
+
+// TestRuntime_Run_SessionTokenFollowsEffectiveProvider 钉死决策 3 + 12 的 daemon 侧：
+// daemon 自家网关的会话常驻 token 同样按 effective provider 签发；桌面端中途换了供应商
+// （下一轮 wire 带新的 effectiveProviderKey）时，只改这条既有 token 的路由目标 ——
+// token 字符串必须不变（它已烤进 daemon 本机 spawn 的 CLI 子进程 env）。
+func TestRuntime_Run_SessionTokenFollowsEffectiveProvider(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.Done{}
+		close(ch)
+		return ch, &agentruntime.RunResult{ProviderSessionID: "psid"}, nil
+	}
+	ctx, _, gw, lookup, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{
+		ID:             3,
+		Type:           string(agent_backend_entity.TypeClaudeCode),
+		LLMProviderKey: "agent-bound-key",
+	}
+	activeProvider := func(key string) *llm_provider_entity.LLMProvider {
+		return &llm_provider_entity.LLMProvider{
+			ProviderKey: key, Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-x",
+			Status: consts.ACTIVE,
+		}
+	}
+	lookup.EXPECT().FindByKey(ctx, "first-key").Return(activeProvider("first-key"), nil)
+	lookup.EXPECT().FindByKey(ctx, "switched-key").Return(activeProvider("switched-key"), nil)
+	gw.EXPECT().URL().Return("http://gw").AnyTimes()
+	// 首轮按 effective key 签一个永久 token；换供应商后**不得**再签第二个。
+	gw.EXPECT().IssueTokenFor(ctx, gomock.Any(), "first-key", time.Duration(0)).
+		Return("sess-token", nil).Times(1)
+	gw.EXPECT().SetTokenProvider("sess-token", "switched-key").Return("first-key", true).Times(1)
+
+	runOnce := func(providerKey string) {
+		_, err := h.Run(ctx, wire.RunParams{
+			Backend: backendJSON(t, be), SessionID: 42, UserText: "hi", LLMProviderKey: providerKey,
+		})
+		require.NoError(t, err)
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			_, serr := h.Steer(ctx, wire.SteerParams{SessionID: 42, Text: "x"})
+			assert.ErrorIs(c, serr, agentruntime.ErrNoActiveTurn)
+		}, time.Second, 10*time.Millisecond)
+	}
+	runOnce("first-key")
+	runOnce("switched-key")
+
+	require.Len(t, rt.runReqs, 2)
+	assert.Equal(t, "sess-token", rt.runReqs[0].req.GatewayToken)
+	assert.Equal(t, "sess-token", rt.runReqs[1].req.GatewayToken, "换供应商不换 token 字符串")
+	assert.Equal(t, "switched-key", rt.runReqs[1].req.Provider.ProviderKey)
 }
 
 func TestRuntime_Run_StopErrAborted_RehydratesCode(t *testing.T) {

@@ -43,6 +43,10 @@ e2e/scratch/*
 coverage.out
 coverage.html
 
+# 本机凭证:验证 / 联调用的真实供应商 key 放这里,永不入库
+.env
+.env.local
+
 # Binary files
 /agentre
 /agentred
