@@ -2108,6 +2108,39 @@ describe("ChatTranscript typing indicator", () => {
     expect(screen.getByLabelText("Generating")).toBeInTheDocument();
   });
 
+  it("轮中切换供应商追加的 notice 行不抢走生成指示器", () => {
+    // 供应商 pill 允许在轮中切换,切换成功后 chat-panel 立刻 reloadSession(),把新落库
+    // 的 notice 消息(role=assistant、只有一个 notice 块)拉进 messages —— 它排在在跑
+    // 的 assistant 之后,成了 messages 的末条 assistant。指示器宿主必须仍是真正在流的
+    // 那条,否则三个点会跳到 notice 行上、在跑的那条看着像已经停了。
+    render(
+      <ChatTranscript
+        liveByMessageId={new Map([[2, { liveTail: "streaming chunk" }]])}
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          userMessage(1, "hi"),
+          assistantMessage(2, []),
+          assistantMessage(3, [
+            {
+              level: "info",
+              noticeKind: "switch",
+              providerKey: "session-key",
+              providerName: "中转 · GLM 5.2",
+              type: "notice",
+            } as ChatBlockData,
+          ]),
+        ]}
+        streaming
+      />,
+    );
+
+    const indicator = screen.getByLabelText("Generating");
+    expect(
+      indicator.closest("[data-message-id]")?.getAttribute("data-message-id"),
+    ).toBe("2");
+  });
+
   it("places the indicator after the live tail text in DOM order", () => {
     render(
       <ChatTranscript

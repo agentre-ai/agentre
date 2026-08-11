@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { LoadChatSession } from "../../wailsjs/go/app/App";
 import type { chat_svc } from "../../wailsjs/go/models";
 import { clientLog } from "@/lib/client-log";
+import { isNoticeOnlyMessage } from "@/lib/notice-message";
 import {
   hasSessionStream,
   primaryStream,
@@ -130,8 +131,13 @@ export function useChatSession(sessionId: number) {
       // (末条)assistant 消息,StreamDone 经既有路径收口并 reload 回填最终内容。
       if (resp.session.activeStream) {
         const streamsStore = useChatStreamsStore.getState();
+        // 找末条**真实** assistant:只承载 notice 的旁白行(供应商切换 notice)跳过 ——
+        // 它排在在跑的 assistant 之后,若被当成末条 assistant,overlay 的 pending 审批
+        // 就落在这条没有块的旁白行上找不到,既没从 messages 剥离也没搬进 liveBlocks,
+        // 用户点批准后 resolved 事件反扫 liveBlocks 落空 → 卡片永远 pending。
         let lastAssistantIdx = -1;
         for (let i = loadedMessages.length - 1; i >= 0; i--) {
+          if (isNoticeOnlyMessage(loadedMessages[i])) continue;
           if (loadedMessages[i].role === "assistant") {
             lastAssistantIdx = i;
             break;

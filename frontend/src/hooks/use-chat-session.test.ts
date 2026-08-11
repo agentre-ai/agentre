@@ -134,6 +134,79 @@ describe("useChatSession", () => {
     });
   });
 
+  // 供应商切换 notice 是一条独立的 assistant 消息(只有一个 notice 块),排在在跑的
+  // assistant 之后。轮中切换供应商 → chat-panel reloadSession() → 这条 notice 成了末条
+  // assistant。若"末条 assistant"按行取,overlay 的 pending 审批就落在 notice 那条空
+  // 消息上找不到 → 既没从 messages 剥离也没搬进 liveBlocks → 用户点批准后 resolved
+  // 事件反扫 liveBlocks 落空 → 卡片永远 pending。找的必须是末条**真实** assistant。
+  it("moves overlay pending tool_approval blocks into liveBlocks even when a provider notice trails", async () => {
+    loadChatSession.mockResolvedValueOnce({
+      session: {
+        id: 9,
+        agentId: 1,
+        agentName: "Eng",
+        title: "x",
+        agentStatus: "running",
+        activeStream: "chat:event:9:42",
+        lastMessageAt: 0,
+        createtime: 0,
+      },
+      messages: [
+        { id: 40, sessionId: 9, role: "user", blocks: [], seq: 1 },
+        {
+          id: 42,
+          sessionId: 9,
+          role: "assistant",
+          blocks: [
+            { type: "text", text: "creating department..." },
+            {
+              type: "tool_approval",
+              toolApproval: {
+                requestId: "org-1",
+                toolName: "org_create_department",
+                toolInput: { name: "研发部" },
+                status: "pending",
+              },
+            },
+          ],
+          seq: 2,
+        },
+        {
+          id: 43,
+          sessionId: 9,
+          role: "assistant",
+          blocks: [
+            {
+              type: "notice",
+              level: "info",
+              noticeKind: "switch",
+              providerKey: "session-key",
+              providerName: "中转 · GLM 5.2",
+            },
+          ],
+          seq: 3,
+        },
+      ],
+    });
+    const { result } = renderHook(() => useChatSession(9));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // ① pending 块从真正持有它的那条消息(42)上剥离,notice 那条不受影响。
+    const owner = result.current.messages.find((m) => m.id === 42)!;
+    expect((owner.blocks ?? []).some((b) => b.type === "tool_approval")).toBe(
+      false,
+    );
+    expect((owner.blocks ?? []).some((b) => b.type === "text")).toBe(true);
+
+    // ② 搬进的是 42 的 liveBlocks —— resolved 事件按 assistantMessageId 反扫才命中。
+    const live = streamForMessage(useChatStreamsStore.getState(), 9, 42);
+    expect(live?.liveBlocks).toHaveLength(1);
+    expect(live?.liveBlocks[0]).toMatchObject({
+      type: "tool_approval",
+      toolApproval: { requestId: "org-1", status: "pending" },
+    });
+  });
+
   // 已决议(resolved)的 tool_approval 块是持久化历史,留在 messages 路径,不搬不剥。
   it("leaves resolved tool_approval blocks in messages untouched on reattach", async () => {
     loadChatSession.mockResolvedValueOnce({

@@ -25,6 +25,7 @@ import {
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { isNoticeOnlyMessage } from "@/lib/notice-message";
 import { cn } from "@/lib/utils";
 
 import type { PlanActionStream } from "./canonical-tool/props";
@@ -1274,12 +1275,21 @@ const ChatTranscript = React.forwardRef<
   },
   ref,
 ) {
-  // 只有当整个序列的「最后一条」就是 assistant 时才挂指示器：
-  // 正常 stream 流程下 doSend 会同时插入 user + assistant 占位，所以末尾一定是 assistant；
-  // 如果末尾是 user（异常态或还没插占位），不应该在更早的 assistant 上挂指示器误导用户。
-  const tail = messages.at(-1);
-  const lastAssistantId =
-    tail && tail.role === "assistant" ? tail.id : undefined;
+  // lastAssistantId:生成指示器(三个点)的宿主。只有当整个序列的「最后一条」就是
+  // assistant 时才挂 —— 正常 stream 流程下 doSend 同时插入 user + assistant 占位,
+  // 所以末尾一定是 assistant;末尾是 user(异常态或还没插占位)时不该在更早的
+  // assistant 上挂指示器误导用户,所以扫到的第一条不是 assistant 就返回 undefined。
+  // 只承载 notice 的旁白行在这里透明:轮中切换供应商会把一条 notice 消息追加在在跑的
+  // assistant 之后(pill 切完立刻 reloadSession),它若被当成末条 assistant,三个点就
+  // 跳到旁白行上、在跑的那条看着像已经停了。
+  const lastAssistantId = React.useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (isNoticeOnlyMessage(m)) continue;
+      return m.role === "assistant" ? m.id : undefined;
+    }
+    return undefined;
+  }, [messages]);
 
   // 折叠"压缩前"的旧消息:扫所有 messages.blocks,找最后一条 compact_boundary 所在的
   // (messageIdx, blockIdx);该位置之前的所有消息默认隐藏,该消息自己的更早 blocks 也
@@ -1326,9 +1336,7 @@ const ChatTranscript = React.forwardRef<
     const ids = new Set<number>();
     let prevRole: string | undefined;
     for (const m of messages) {
-      const isNoticeOnly =
-        m.blocks.length > 0 && m.blocks.every((b) => b.type === "notice");
-      if (isNoticeOnly) continue;
+      if (isNoticeOnlyMessage(m)) continue;
       if (
         prevRole !== undefined &&
         m.role === "assistant" &&
