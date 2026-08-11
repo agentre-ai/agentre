@@ -3,19 +3,19 @@ package llm_provider_svc
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
-	"strings"
 	"testing"
 
+	"github.com/cago-frame/cago/pkg/utils/httputils"
 	"github.com/google/uuid"
 	"github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
 )
@@ -66,68 +66,89 @@ func setupSvcTest(t *testing.T) (
 	return context.Background(), mockRepo, doer, svc
 }
 
+func assertCode(t *testing.T, err error, want int) {
+	t.Helper()
+	assert.Error(t, err)
+	var httpErr *httputils.Error
+	assert.ErrorAs(t, err, &httpErr)
+	assert.Equal(t, want, httpErr.Code)
+}
+
 func TestCreateProvider(t *testing.T) {
 	convey.Convey("Create LLM provider", t, func() {
 		ctx, mockRepo, _, svc := setupSvcTest(t)
 
-		convey.Convey("成功创建 Anthropic 供应商", func() {
+		convey.Convey("带 Models + 默认模型创建：原子写 Provider+Models+默认，Provider 启用", func() {
+			var gotKey string
 			mockRepo.EXPECT().FindByName(gomock.Any(), "production").Return(nil, nil)
-			mockRepo.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_entity.LLMProvider{})).
-				DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider) error {
+			mockRepo.EXPECT().CreateWithModels(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_entity.LLMProvider{}), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider, models []*llm_provider_model_entity.LLMProviderModel, defaultKey string) error {
+					gotKey = defaultKey
 					p.ID = 7
-					return nil
-				})
-
-			resp, err := svc.Create(ctx, &CreateProviderRequest{
-				Type:   "anthropic",
-				Name:   "production",
-				APIKey: "test-ant-key-1234",
-			})
-			assert.NoError(t, err)
-			assert.NotNil(t, resp)
-			assert.Equal(t, int64(7), resp.Item.ID)
-			assert.True(t, resp.Item.HasAPIKey)
-			// masked api key 应当不暴露完整 key
-			assert.NotContains(t, resp.Item.MaskedAPIKey, "test-key")
-		})
-
-		convey.Convey("Create 时自动 mint UUIDv4 并在响应中返回", func() {
-			var capturedEntity *llm_provider_entity.LLMProvider
-			mockRepo.EXPECT().FindByName(gomock.Any(), "uuid-test").Return(nil, nil)
-			mockRepo.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_entity.LLMProvider{})).
-				DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider) error {
-					capturedEntity = p
-					p.ID = 42
+					assert.Equal(t, llm_provider_entity.EnabledOn, p.Enabled)
+					assert.Len(t, models, 2)
+					for _, m := range models {
+						_, parseErr := uuid.Parse(m.ModelKey)
+						assert.NoError(t, parseErr, "ModelKey should be a valid UUID")
+					}
+					// 默认 key 必须等于默认模型（ModelID=claude-sonnet-4-6）的 key
+					assert.Equal(t, "claude-sonnet-4-6", models[0].ModelID)
+					assert.Equal(t, models[0].ModelKey, defaultKey)
 					return nil
 				})
 
 			resp, err := svc.Create(ctx, &CreateProviderRequest{ //nolint:gosec // credential-shaped API key is a test fixture.
 				Type:   "anthropic",
-				Name:   "uuid-test",
-				APIKey: "test-ant-uuid",
+				Name:   "production",
+				APIKey: "test-ant-key-1234",
+				Models: []*ModelInput{
+					{ModelID: "claude-sonnet-4-6", Name: "Sonnet"},
+					{ModelID: "claude-opus-4-7"},
+				},
+				DefaultModelID: "claude-sonnet-4-6",
 			})
 			assert.NoError(t, err)
 			assert.NotNil(t, resp)
-			// ProviderKey must be a valid UUIDv4
-			_, parseErr := uuid.Parse(resp.Item.ProviderKey)
-			assert.NoError(t, parseErr, "ProviderKey should be a valid UUID")
-			assert.NotEmpty(t, resp.Item.ProviderKey)
-			// The entity that hit the repo must have the same key
-			assert.NotNil(t, capturedEntity)
-			assert.Equal(t, resp.Item.ProviderKey, capturedEntity.ProviderKey)
+			assert.Equal(t, int64(7), resp.Item.ID)
+			assert.True(t, resp.Item.Enabled)
+			assert.Equal(t, gotKey, resp.Item.DefaultModelKey)
+			assert.True(t, resp.Item.HasAPIKey)
+			// 掩码 key 不暴露明文
+			assert.NotContains(t, resp.Item.MaskedAPIKey, "test-ant")
+		})
+
+		convey.Convey("无默认模型时 Provider 以停用态创建", func() {
+			mockRepo.EXPECT().FindByName(gomock.Any(), "offline").Return(nil, nil)
+			mockRepo.EXPECT().CreateWithModels(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_entity.LLMProvider{}), gomock.Any(), "").
+				DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider, _ []*llm_provider_model_entity.LLMProviderModel, _ string) error {
+					p.ID = 8
+					assert.Equal(t, llm_provider_entity.EnabledOff, p.Enabled)
+					return nil
+				})
+			resp, err := svc.Create(ctx, &CreateProviderRequest{Type: "openai-chat", Name: "offline"})
+			assert.NoError(t, err)
+			assert.False(t, resp.Item.Enabled)
+		})
+
+		convey.Convey("DefaultModelID 不在 Models 中 → 参数错误（不落库）", func() {
+			_, err := svc.Create(ctx, &CreateProviderRequest{
+				Type:           "openai-chat",
+				Name:           "x",
+				Models:         []*ModelInput{{ModelID: "a"}},
+				DefaultModelID: "b",
+			})
+			assertCode(t, err, code.InvalidParameter)
 		})
 
 		convey.Convey("名称重复返回错误", func() {
-			mockRepo.EXPECT().FindByName(gomock.Any(), "dup").Return(&llm_provider_entity.LLMProvider{
-				ID: 1, Name: "dup",
-			}, nil)
-			_, err := svc.Create(ctx, &CreateProviderRequest{Type: "openai-chat", Name: "dup", APIKey: "k"})
-			assert.Error(t, err)
+			mockRepo.EXPECT().FindByName(gomock.Any(), "dup").Return(&llm_provider_entity.LLMProvider{ID: 1, Name: "dup"}, nil)
+			_, err := svc.Create(ctx, &CreateProviderRequest{Type: "openai-chat", Name: "dup", APIKey: "k"}) //nolint:gosec // credential-shaped API key is a test fixture.
+			assertCode(t, err, code.LLMProviderNameDuplicated)
 		})
 
 		convey.Convey("不支持的类型被拒绝", func() {
 			_, err := svc.Create(ctx, &CreateProviderRequest{Type: "google", Name: "x"})
-			assert.Error(t, err)
+			assertCode(t, err, code.LLMProviderInvalidType)
 		})
 	})
 }
@@ -148,320 +169,395 @@ func TestUpdateProvider(t *testing.T) {
 					assert.Equal(t, "new", p.Name)
 					return nil
 				})
-			_, err := svc.Update(ctx, &UpdateProviderRequest{ID: 3, Name: "new"})
+			resp, err := svc.Update(ctx, &UpdateProviderRequest{ID: 3, Name: "new"})
 			assert.NoError(t, err)
+			assert.Equal(t, "new", resp.Item.Name)
 		})
 
 		convey.Convey("供应商不存在", func() {
 			mockRepo.EXPECT().Find(gomock.Any(), int64(99)).Return(nil, nil)
 			_, err := svc.Update(ctx, &UpdateProviderRequest{ID: 99, Name: "x"})
-			assert.Error(t, err)
+			assertCode(t, err, code.LLMProviderNotFound)
 		})
 	})
 }
 
-func TestListModelsAnthropic(t *testing.T) {
-	convey.Convey("ListModels for Anthropic", t, func() {
-		ctx, mockRepo, doer, svc := setupSvcTest(t)
+func TestSetProviderEnabled(t *testing.T) {
+	convey.Convey("SetProviderEnabled", t, func() {
+		ctx, mockRepo, _, svc := setupSvcTest(t)
 
-		mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
-			ID: 1, Type: "anthropic", APIKey: "test-ant-key", Status: 1,
-		}, nil)
-		doer.respond(200, `{"data":[{"id":"claude-opus-4-7"},{"id":"unknown-model"}]}`)
+		convey.Convey("已有启用默认模型 → 启用成功", func() {
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, ProviderKey: "pk", Enabled: llm_provider_entity.EnabledOff, DefaultModelKey: "mk1", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().FindModelByKey(gomock.Any(), "mk1").Return(&llm_provider_model_entity.LLMProviderModel{
+				ProviderID: 1, ModelKey: "mk1", Enabled: llm_provider_model_entity.EnabledOn, Status: 1,
+			}, nil)
+			mockRepo.EXPECT().Update(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_entity.LLMProvider{})).
+				DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider) error {
+					assert.Equal(t, llm_provider_entity.EnabledOn, p.Enabled)
+					return nil
+				})
+			resp, err := svc.SetProviderEnabled(ctx, &SetProviderEnabledRequest{ID: 1, Enabled: true})
+			assert.NoError(t, err)
+			assert.True(t, resp.Item.Enabled)
+		})
 
-		resp, err := svc.ListModels(ctx, &ListModelsRequest{ID: 1})
-		assert.NoError(t, err)
-		assert.Equal(t, 2, len(resp.Items))
+		convey.Convey("未设默认模型 → 拒绝启用", func() {
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, Enabled: llm_provider_entity.EnabledOff, Status: 1,
+			}, nil)
+			_, err := svc.SetProviderEnabled(ctx, &SetProviderEnabledRequest{ID: 1, Enabled: true})
+			assertCode(t, err, code.LLMProviderNoEnabledDefault)
+		})
 
-		// 第一个模型命中 cago 内置目录，元数据应被填充
-		known := resp.Items[0]
-		assert.Equal(t, "claude-opus-4-7", known.ID)
-		assert.True(t, known.KnownInCago)
-		assert.Equal(t, "anthropic", known.Vendor)
-		assert.Greater(t, known.ContextWindow, 0)
+		convey.Convey("默认模型已停用 → 拒绝启用", func() {
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, Enabled: llm_provider_entity.EnabledOff, DefaultModelKey: "mk1", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().FindModelByKey(gomock.Any(), "mk1").Return(&llm_provider_model_entity.LLMProviderModel{
+				ProviderID: 1, ModelKey: "mk1", Enabled: llm_provider_model_entity.EnabledOff, Status: 1,
+			}, nil)
+			_, err := svc.SetProviderEnabled(ctx, &SetProviderEnabledRequest{ID: 1, Enabled: true})
+			assertCode(t, err, code.LLMProviderNoEnabledDefault)
+		})
 
-		// 未知模型保留 id + 根据 provider type 推断的 vendor
-		unknown := resp.Items[1]
-		assert.False(t, unknown.KnownInCago)
-		assert.Equal(t, "anthropic", unknown.Vendor)
-
-		// 校验 HTTP 请求头
-		assert.Equal(t, "test-ant-key", doer.last.Header.Get("x-api-key"))
-		assert.NotEmpty(t, doer.last.Header.Get("anthropic-version"))
-		assert.True(t, strings.HasSuffix(doer.last.URL.Path, "/v1/models"))
+		convey.Convey("被引用的供应商允许停用（不做引用检查）", func() {
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk1", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().Update(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_entity.LLMProvider{})).
+				DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider) error {
+					assert.Equal(t, llm_provider_entity.EnabledOff, p.Enabled)
+					return nil
+				})
+			resp, err := svc.SetProviderEnabled(ctx, &SetProviderEnabledRequest{ID: 1, Enabled: false})
+			assert.NoError(t, err)
+			assert.False(t, resp.Item.Enabled)
+		})
 	})
 }
 
-func TestAnthropicCustomBaseURLKeepsSingleV1Prefix(t *testing.T) {
-	t.Run("Given a base URL ending in /v1, when models are fetched, then /v1 is not duplicated", func(t *testing.T) {
-		ctx, mockRepo, doer, svc := setupSvcTest(t)
-		mockRepo.EXPECT().Find(gomock.Any(), int64(21)).Return(&llm_provider_entity.LLMProvider{ //nolint:gosec // credential-shaped API key is a test fixture.
-			ID:      21,
-			Type:    "anthropic",
-			APIKey:  "test-anthropic-key",
-			BaseURL: "https://glm.example/v1",
-			Status:  1,
-		}, nil)
-		doer.respond(200, `{"data":[{"id":"glm-test-model"}]}`)
+func TestDeleteProvider(t *testing.T) {
+	convey.Convey("Delete LLM provider", t, func() {
+		ctx, mockRepo, _, svc := setupSvcTest(t)
 
-		resp, err := svc.ListModels(ctx, &ListModelsRequest{ID: 21})
+		convey.Convey("无引用 → 删除 Provider 及其全部 Models", func() {
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, ProviderKey: "pk", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().CountProviderReferences(gomock.Any(), "pk").Return(llm_provider_repo.ProviderRefCounts{}, nil)
+			mockRepo.EXPECT().Delete(gomock.Any(), int64(1)).Return(nil)
+			mockRepo.EXPECT().DeleteProviderModels(gomock.Any(), int64(1)).Return(nil)
+			_, err := svc.Delete(ctx, &DeleteProviderRequest{ID: 1})
+			assert.NoError(t, err)
+		})
 
-		assert.NoError(t, err)
-		assert.Len(t, resp.Items, 1)
-		assert.Equal(t, "https://glm.example/v1/models", doer.last.URL.String())
-	})
+		convey.Convey("被 Backend 引用 → 拒绝删除", func() {
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, ProviderKey: "pk", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().CountProviderReferences(gomock.Any(), "pk").Return(llm_provider_repo.ProviderRefCounts{
+				Backends: 1,
+			}, nil)
+			_, err := svc.Delete(ctx, &DeleteProviderRequest{ID: 1})
+			assertCode(t, err, code.LLMProviderReferenced)
+		})
 
-	t.Run("Given a base URL ending in /v1/, when a test message is sent, then /v1 is not duplicated", func(t *testing.T) {
-		ctx, mockRepo, doer, svc := setupSvcTest(t)
-		mockRepo.EXPECT().Find(gomock.Any(), int64(22)).Return(&llm_provider_entity.LLMProvider{ //nolint:gosec // credential-shaped API key is a test fixture.
-			ID:      22,
-			Type:    "anthropic",
-			APIKey:  "test-anthropic-key",
-			BaseURL: "https://glm.example/v1/",
-			Model:   "glm-test-model",
-			Status:  1,
-		}, nil)
-		doer.respond(200, `{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`)
-
-		resp, err := svc.TestConnection(ctx, &TestConnectionRequest{ID: 22})
-
-		assert.NoError(t, err)
-		assert.True(t, resp.OK)
-		assert.Equal(t, "https://glm.example/v1/messages", doer.last.URL.String())
+		convey.Convey("供应商不存在", func() {
+			mockRepo.EXPECT().Find(gomock.Any(), int64(99)).Return(nil, nil)
+			_, err := svc.Delete(ctx, &DeleteProviderRequest{ID: 99})
+			assertCode(t, err, code.LLMProviderNotFound)
+		})
 	})
 }
 
-func TestPreviewModelsDraftEditKeepsSavedAPIKey(t *testing.T) {
-	t.Run("Given an edited provider and an empty draft key, when models are fetched, then the draft URL and saved key are used", func(t *testing.T) {
-		ctx, mockRepo, doer, svc := setupSvcTest(t)
-		mockRepo.EXPECT().Find(gomock.Any(), int64(23)).Return(&llm_provider_entity.LLMProvider{
-			ID:      23,
-			Type:    "anthropic",
-			APIKey:  "test-saved-key",
-			BaseURL: "https://old.example/v1",
-			Status:  1,
-		}, nil)
-		doer.respond(200, `{"data":[{"id":"glm-test-model"}]}`)
+func TestListModelsPersisted(t *testing.T) {
+	convey.Convey("ListModels（持久化）", t, func() {
+		ctx, mockRepo, _, svc := setupSvcTest(t)
 
-		var req PreviewModelsRequest
-		assert.NoError(t, json.Unmarshal([]byte(`{
-			"id": 23,
-			"type": "anthropic",
-			"apiKey": "",
-			"baseUrl": "https://new.example/v1"
-		}`), &req))
-		resp, err := svc.PreviewModels(ctx, &req)
+		convey.Convey("返回已持久化模型并标记 isDefault / enabled，不含凭证", func() {
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, ProviderKey: "pk", DefaultModelKey: "mk1", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().ListModels(gomock.Any(), int64(1)).Return([]*llm_provider_model_entity.LLMProviderModel{
+				{ID: 1, ProviderID: 1, ModelKey: "mk1", ModelID: "claude-sonnet-4-6", Enabled: llm_provider_model_entity.EnabledOn, Status: 1},
+				{ID: 2, ProviderID: 1, ModelKey: "mk2", ModelID: "claude-opus-4-7", Enabled: llm_provider_model_entity.EnabledOff, Status: 1},
+			}, nil)
 
-		assert.NoError(t, err)
-		assert.Len(t, resp.Items, 1)
-		assert.Equal(t, "https://new.example/v1/models", doer.last.URL.String())
-		assert.Equal(t, "test-saved-key", doer.last.Header.Get("x-api-key"))
+			resp, err := svc.ListModels(ctx, &ListModelsRequest{ID: 1})
+			assert.NoError(t, err)
+			assert.Len(t, resp.Items, 2)
+			assert.Equal(t, "pk", resp.Items[0].ProviderKey)
+			assert.True(t, resp.Items[0].IsDefault)
+			assert.False(t, resp.Items[1].IsDefault)
+			assert.False(t, resp.Items[1].Enabled)
+		})
+
+		convey.Convey("供应商不存在", func() {
+			mockRepo.EXPECT().Find(gomock.Any(), int64(99)).Return(nil, nil)
+			_, err := svc.ListModels(ctx, &ListModelsRequest{ID: 99})
+			assertCode(t, err, code.LLMProviderNotFound)
+		})
 	})
 }
 
-func TestListModelsOpenAIUsesCustomBaseURL(t *testing.T) {
-	ctx, mockRepo, doer, svc := setupSvcTest(t)
-	mockRepo.EXPECT().Find(gomock.Any(), int64(5)).Return(&llm_provider_entity.LLMProvider{
-		ID: 5, Type: "openai-chat", APIKey: "test-openai-key", BaseURL: "http://localhost:11434/v1", Status: 1,
-	}, nil)
-	doer.respond(200, `{"data":[{"id":"gpt-5.5"}]}`)
+func TestImportModels(t *testing.T) {
+	convey.Convey("ImportModels", t, func() {
+		ctx, mockRepo, _, svc := setupSvcTest(t)
 
-	resp, err := svc.ListModels(ctx, &ListModelsRequest{ID: 5})
-	assert.NoError(t, err)
-	assert.Equal(t, 1, len(resp.Items))
-	assert.Equal(t, "http://localhost:11434/v1/models", doer.last.URL.String())
-	assert.Equal(t, "Bearer test-openai-key", doer.last.Header.Get("Authorization"))
-}
+		convey.Convey("新模型导入 + 已存在模型保留原 key 且不覆盖非空元数据", func() {
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, ProviderKey: "pk", DefaultModelKey: "mk1", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().ListModels(gomock.Any(), int64(1)).Return([]*llm_provider_model_entity.LLMProviderModel{
+				{ID: 1, ProviderID: 1, ModelKey: "mk1", ModelID: "claude-sonnet-4-6", Name: "user-name", ContextWindow: 200000, Enabled: llm_provider_model_entity.EnabledOn, Status: 1},
+			}, nil)
+			mockRepo.EXPECT().BatchImportModels(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, models []*llm_provider_model_entity.LLMProviderModel) error {
+					assert.Len(t, models, 1)
+					assert.Equal(t, "claude-opus-4-7", models[0].ModelID)
+					_, parseErr := uuid.Parse(models[0].ModelKey)
+					assert.NoError(t, parseErr)
+					assert.Equal(t, llm_provider_model_entity.EnabledOn, models[0].Enabled)
+					return nil
+				})
 
-func TestListModelsUpstreamError(t *testing.T) {
-	ctx, mockRepo, doer, svc := setupSvcTest(t)
-	mockRepo.EXPECT().Find(gomock.Any(), int64(2)).Return(&llm_provider_entity.LLMProvider{
-		ID: 2, Type: "openai-chat", APIKey: "bad", Status: 1,
-	}, nil)
-	doer.respond(401, `{"error":"invalid api key"}`)
-	_, err := svc.ListModels(ctx, &ListModelsRequest{ID: 2})
-	assert.Error(t, err)
-}
+			resp, err := svc.ImportModels(ctx, &ImportModelsRequest{
+				ProviderID: 1,
+				Models: []*ModelInput{
+					// 已存在：新 name 不能覆盖用户维护的 name；不改 key
+					{ModelID: "claude-sonnet-4-6", Name: "upstream-name"},
+					// 新发现
+					{ModelID: "claude-opus-4-7", Name: "Opus"},
+				},
+			})
+			assert.NoError(t, err)
+			assert.Equal(t, 1, resp.Imported)
+			assert.Equal(t, 0, resp.Updated)
+			assert.Len(t, resp.Items, 2)
+			assert.Equal(t, "mk1", resp.Items[0].ModelKey)
+			assert.Equal(t, "user-name", resp.Items[0].Name)
+		})
 
-func TestTestConnectionSendsHiToOpenAI(t *testing.T) {
-	ctx, mockRepo, doer, svc := setupSvcTest(t)
-	mockRepo.EXPECT().Find(gomock.Any(), int64(9)).Return(&llm_provider_entity.LLMProvider{
-		ID:      9,
-		Type:    "openai-chat",
-		APIKey:  "test-openai-key",
-		BaseURL: "http://localhost:11434/v1",
-		Model:   "gpt-4o",
-		Status:  1,
-	}, nil)
-	doer.respond(200, `{"choices":[{"message":{"role":"assistant","content":"hi there"},"finish_reason":"stop"}]}`)
+		convey.Convey("本地字段为空时用提交值补齐 → UpdateModel", func() {
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, ProviderKey: "pk", DefaultModelKey: "mk1", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().ListModels(gomock.Any(), int64(1)).Return([]*llm_provider_model_entity.LLMProviderModel{
+				{ID: 1, ProviderID: 1, ModelKey: "mk1", ModelID: "claude-sonnet-4-6", Enabled: llm_provider_model_entity.EnabledOn, Status: 1},
+			}, nil)
+			mockRepo.EXPECT().UpdateModel(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_model_entity.LLMProviderModel{})).
+				DoAndReturn(func(_ context.Context, m *llm_provider_model_entity.LLMProviderModel) error {
+					assert.Equal(t, "mk1", m.ModelKey)
+					assert.Equal(t, "Sonnet", m.Name)
+					assert.Equal(t, 128000, m.ContextWindow)
+					return nil
+				})
 
-	resp, err := svc.TestConnection(ctx, &TestConnectionRequest{ID: 9})
-	assert.NoError(t, err)
-	assert.True(t, resp.OK)
-	assert.Equal(t, http.MethodPost, doer.last.Method)
-	assert.Equal(t, "http://localhost:11434/v1/chat/completions", doer.last.URL.String())
-	assert.Equal(t, "Bearer test-openai-key", doer.last.Header.Get("Authorization"))
-	assert.Equal(t, "application/json", doer.last.Header.Get("Content-Type"))
-
-	var payload struct {
-		Model    string `json:"model"`
-		Messages []struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		} `json:"messages"`
-	}
-	assert.NoError(t, json.NewDecoder(doer.last.Body).Decode(&payload))
-	assert.Equal(t, "gpt-4o", payload.Model)
-	assert.Len(t, payload.Messages, 1)
-	assert.Equal(t, "user", payload.Messages[0].Role)
-	assert.Equal(t, "hi", payload.Messages[0].Content)
-}
-
-func TestTestConnectionSendsHiToOpenAIResponse(t *testing.T) {
-	ctx, mockRepo, doer, svc := setupSvcTest(t)
-	mockRepo.EXPECT().Find(gomock.Any(), int64(13)).Return(&llm_provider_entity.LLMProvider{
-		ID:      13,
-		Type:    "openai-response",
-		APIKey:  "test-response-key",
-		BaseURL: "https://api.openai.com/v1",
-		Model:   "gpt-5-codex",
-		Status:  1,
-	}, nil)
-	doer.respond(200, `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}]}`)
-
-	resp, err := svc.TestConnection(ctx, &TestConnectionRequest{ID: 13})
-	assert.NoError(t, err)
-	assert.True(t, resp.OK)
-	assert.Equal(t, http.MethodPost, doer.last.Method)
-	assert.Equal(t, "https://api.openai.com/v1/responses", doer.last.URL.String())
-	assert.Equal(t, "Bearer test-response-key", doer.last.Header.Get("Authorization"))
-	assert.Equal(t, "application/json", doer.last.Header.Get("Content-Type"))
-
-	var payload struct {
-		Model           string `json:"model"`
-		Input           string `json:"input"`
-		MaxOutputTokens int    `json:"max_output_tokens"`
-	}
-	assert.NoError(t, json.NewDecoder(doer.last.Body).Decode(&payload))
-	assert.Equal(t, "gpt-5-codex", payload.Model)
-	assert.Equal(t, "hi", payload.Input)
-	assert.Equal(t, 16, payload.MaxOutputTokens)
-}
-
-func TestTestConnectionSendsHiToAnthropic(t *testing.T) {
-	ctx, mockRepo, doer, svc := setupSvcTest(t)
-	mockRepo.EXPECT().Find(gomock.Any(), int64(10)).Return(&llm_provider_entity.LLMProvider{ //nolint:gosec // credential-shaped API key is a test fixture.
-		ID:     10,
-		Type:   "anthropic",
-		APIKey: "test-anthropic-key",
-		Model:  "claude-sonnet-4-6",
-		Status: 1,
-	}, nil)
-	doer.respond(200, `{"content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn"}`)
-
-	resp, err := svc.TestConnection(ctx, &TestConnectionRequest{ID: 10})
-	assert.NoError(t, err)
-	assert.True(t, resp.OK)
-	assert.Equal(t, http.MethodPost, doer.last.Method)
-	assert.Equal(t, "https://api.anthropic.com/v1/messages", doer.last.URL.String())
-	assert.Equal(t, "test-anthropic-key", doer.last.Header.Get("x-api-key"))
-	assert.NotEmpty(t, doer.last.Header.Get("anthropic-version"))
-	assert.Equal(t, "application/json", doer.last.Header.Get("Content-Type"))
-
-	var payload struct {
-		Model     string `json:"model"`
-		MaxTokens int    `json:"max_tokens"`
-		Messages  []struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		} `json:"messages"`
-	}
-	assert.NoError(t, json.NewDecoder(doer.last.Body).Decode(&payload))
-	assert.Equal(t, "claude-sonnet-4-6", payload.Model)
-	assert.Equal(t, 16, payload.MaxTokens)
-	assert.Len(t, payload.Messages, 1)
-	assert.Equal(t, "user", payload.Messages[0].Role)
-	assert.Equal(t, "hi", payload.Messages[0].Content)
-}
-
-func TestTestConnectionSendsHiWithCreateDraft(t *testing.T) {
-	ctx, _, doer, svc := setupSvcTest(t)
-	doer.respond(200, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
-
-	resp, err := svc.TestConnection(ctx, &TestConnectionRequest{
-		UseDraft: true,
-		Type:     "openai-chat",
-		APIKey:   "test-draft-key",
-		BaseURL:  "http://localhost:11434/v1",
-		Model:    "llama3.2",
+			resp, err := svc.ImportModels(ctx, &ImportModelsRequest{
+				ProviderID: 1,
+				Models: []*ModelInput{
+					{ModelID: "claude-sonnet-4-6", Name: "Sonnet", ContextWindow: 128000},
+				},
+			})
+			assert.NoError(t, err)
+			assert.Equal(t, 0, resp.Imported)
+			assert.Equal(t, 1, resp.Updated)
+		})
 	})
-	assert.NoError(t, err)
-	assert.True(t, resp.OK)
-	assert.Equal(t, "http://localhost:11434/v1/chat/completions", doer.last.URL.String())
-	assert.Equal(t, "Bearer test-draft-key", doer.last.Header.Get("Authorization"))
-
-	var payload struct {
-		Model    string `json:"model"`
-		Messages []struct {
-			Content string `json:"content"`
-		} `json:"messages"`
-	}
-	assert.NoError(t, json.NewDecoder(doer.last.Body).Decode(&payload))
-	assert.Equal(t, "llama3.2", payload.Model)
-	assert.Equal(t, "hi", payload.Messages[0].Content)
 }
 
-func TestTestConnectionDraftEditKeepsSavedAPIKey(t *testing.T) {
-	ctx, mockRepo, doer, svc := setupSvcTest(t)
-	mockRepo.EXPECT().Find(gomock.Any(), int64(12)).Return(&llm_provider_entity.LLMProvider{
-		ID:      12,
-		Type:    "openai-chat",
-		APIKey:  "test-saved-key",
-		BaseURL: "http://old.example/v1",
-		Model:   "old-model",
-		Status:  1,
-	}, nil)
-	doer.respond(200, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+func TestUpdateModel(t *testing.T) {
+	convey.Convey("UpdateModel", t, func() {
+		ctx, mockRepo, _, svc := setupSvcTest(t)
 
-	resp, err := svc.TestConnection(ctx, &TestConnectionRequest{
-		ID:       12,
-		UseDraft: true,
-		Type:     "openai-chat",
-		BaseURL:  "http://new.example/v1",
-		Model:    "new-model",
+		convey.Convey("未引用模型改 ModelID → 直接更新", func() {
+			mockRepo.EXPECT().FindModel(gomock.Any(), int64(1)).Return(&llm_provider_model_entity.LLMProviderModel{
+				ID: 1, ProviderID: 1, ModelKey: "mk1", ModelID: "a", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().CountModelReferences(gomock.Any(), "mk1").Return(llm_provider_repo.ModelRefCounts{}, nil)
+			mockRepo.EXPECT().UpdateModel(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_model_entity.LLMProviderModel{})).
+				DoAndReturn(func(_ context.Context, m *llm_provider_model_entity.LLMProviderModel) error {
+					assert.Equal(t, "b", m.ModelID)
+					assert.Equal(t, "mk1", m.ModelKey)
+					return nil
+				})
+			resp, err := svc.UpdateModel(ctx, &UpdateModelRequest{ID: 1, ModelID: "b"})
+			assert.NoError(t, err)
+			assert.Equal(t, "b", resp.Item.ModelID)
+		})
+
+		convey.Convey("被引用模型改 ModelID 未确认 → 拒绝", func() {
+			mockRepo.EXPECT().FindModel(gomock.Any(), int64(1)).Return(&llm_provider_model_entity.LLMProviderModel{
+				ID: 1, ProviderID: 1, ModelKey: "mk1", ModelID: "a", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().CountModelReferences(gomock.Any(), "mk1").Return(llm_provider_repo.ModelRefCounts{Backends: 1}, nil)
+			_, err := svc.UpdateModel(ctx, &UpdateModelRequest{ID: 1, ModelID: "b"})
+			assertCode(t, err, code.LLMProviderModelConfirmRequired)
+		})
+
+		convey.Convey("被引用模型改 ModelID 已确认 → 更新", func() {
+			mockRepo.EXPECT().FindModel(gomock.Any(), int64(1)).Return(&llm_provider_model_entity.LLMProviderModel{
+				ID: 1, ProviderID: 1, ModelKey: "mk1", ModelID: "a", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().CountModelReferences(gomock.Any(), "mk1").Return(llm_provider_repo.ModelRefCounts{Sessions: 2}, nil)
+			mockRepo.EXPECT().UpdateModel(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_model_entity.LLMProviderModel{})).
+				DoAndReturn(func(_ context.Context, m *llm_provider_model_entity.LLMProviderModel) error {
+					assert.Equal(t, "b", m.ModelID)
+					return nil
+				})
+			_, err := svc.UpdateModel(ctx, &UpdateModelRequest{ID: 1, ModelID: "b", ConfirmReference: true})
+			assert.NoError(t, err)
+		})
 	})
-	assert.NoError(t, err)
-	assert.True(t, resp.OK)
-	assert.Equal(t, "http://new.example/v1/chat/completions", doer.last.URL.String())
-	assert.Equal(t, "Bearer test-saved-key", doer.last.Header.Get("Authorization"))
-
-	var payload struct {
-		Model string `json:"model"`
-	}
-	assert.NoError(t, json.NewDecoder(doer.last.Body).Decode(&payload))
-	assert.Equal(t, "new-model", payload.Model)
 }
 
-func TestTestConnectionReportsFailure(t *testing.T) {
-	ctx, mockRepo, doer, svc := setupSvcTest(t)
-	mockRepo.EXPECT().Find(gomock.Any(), int64(8)).Return(&llm_provider_entity.LLMProvider{
-		ID: 8, Type: "openai-chat", APIKey: "bad", Model: "gpt-4o", Status: 1,
-	}, nil)
-	doer.err = errors.New("dial tcp: i/o timeout")
-	resp, err := svc.TestConnection(ctx, &TestConnectionRequest{ID: 8})
-	assert.NoError(t, err)
-	assert.False(t, resp.OK)
-	assert.Contains(t, resp.Message, "i/o timeout")
+func TestSetModelDefault(t *testing.T) {
+	convey.Convey("SetModelDefault", t, func() {
+		ctx, mockRepo, _, svc := setupSvcTest(t)
+
+		convey.Convey("设默认成功并顺带启用 Provider", func() {
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, ProviderKey: "pk", Enabled: llm_provider_entity.EnabledOff, DefaultModelKey: "old", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().FindModelByKey(gomock.Any(), "mk2").Return(&llm_provider_model_entity.LLMProviderModel{
+				ProviderID: 1, ModelKey: "mk2", Enabled: llm_provider_model_entity.EnabledOn, Status: 1,
+			}, nil)
+			mockRepo.EXPECT().Update(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_entity.LLMProvider{})).
+				DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider) error {
+					assert.Equal(t, "mk2", p.DefaultModelKey)
+					assert.Equal(t, llm_provider_entity.EnabledOn, p.Enabled)
+					return nil
+				})
+			resp, err := svc.SetModelDefault(ctx, &SetModelDefaultRequest{ProviderID: 1, ModelKey: "mk2"})
+			assert.NoError(t, err)
+			assert.Equal(t, "mk2", resp.Item.DefaultModelKey)
+			assert.True(t, resp.Item.Enabled)
+		})
+
+		convey.Convey("模型不属于该供应商 → 拒绝", func() {
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, ProviderKey: "pk", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().FindModelByKey(gomock.Any(), "mk9").Return(&llm_provider_model_entity.LLMProviderModel{
+				ProviderID: 2, ModelKey: "mk9", Enabled: llm_provider_model_entity.EnabledOn, Status: 1,
+			}, nil)
+			_, err := svc.SetModelDefault(ctx, &SetModelDefaultRequest{ProviderID: 1, ModelKey: "mk9"})
+			assertCode(t, err, code.LLMProviderModelNotOwned)
+		})
+
+		convey.Convey("模型已停用 → 拒绝", func() {
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, ProviderKey: "pk", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().FindModelByKey(gomock.Any(), "mk9").Return(&llm_provider_model_entity.LLMProviderModel{
+				ProviderID: 1, ModelKey: "mk9", Enabled: llm_provider_model_entity.EnabledOff, Status: 1,
+			}, nil)
+			_, err := svc.SetModelDefault(ctx, &SetModelDefaultRequest{ProviderID: 1, ModelKey: "mk9"})
+			assertCode(t, err, code.LLMProviderModelDisabled)
+		})
+
+		convey.Convey("模型不存在 → 拒绝", func() {
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, ProviderKey: "pk", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().FindModelByKey(gomock.Any(), "mk9").Return(nil, nil)
+			_, err := svc.SetModelDefault(ctx, &SetModelDefaultRequest{ProviderID: 1, ModelKey: "mk9"})
+			assertCode(t, err, code.LLMProviderModelNotFound)
+		})
+	})
 }
 
-func TestTestConnectionRequiresDefaultModel(t *testing.T) {
-	ctx, mockRepo, _, svc := setupSvcTest(t)
-	mockRepo.EXPECT().Find(gomock.Any(), int64(11)).Return(&llm_provider_entity.LLMProvider{
-		ID: 11, Type: "openai-chat", APIKey: "test-openai-key", Status: 1,
-	}, nil)
+func TestSetModelEnabled(t *testing.T) {
+	convey.Convey("SetModelEnabled", t, func() {
+		ctx, mockRepo, _, svc := setupSvcTest(t)
 
-	resp, err := svc.TestConnection(ctx, &TestConnectionRequest{ID: 11})
-	assert.NoError(t, err)
-	assert.False(t, resp.OK)
-	assert.Contains(t, resp.Message, "默认模型")
+		convey.Convey("停用非默认模型 → 成功", func() {
+			mockRepo.EXPECT().FindModel(gomock.Any(), int64(1)).Return(&llm_provider_model_entity.LLMProviderModel{
+				ID: 1, ProviderID: 1, ModelKey: "mk1", Enabled: llm_provider_model_entity.EnabledOn, Status: 1,
+			}, nil)
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, DefaultModelKey: "other", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().UpdateModel(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_model_entity.LLMProviderModel{})).
+				DoAndReturn(func(_ context.Context, m *llm_provider_model_entity.LLMProviderModel) error {
+					assert.Equal(t, llm_provider_model_entity.EnabledOff, m.Enabled)
+					return nil
+				})
+			resp, err := svc.SetModelEnabled(ctx, &SetModelEnabledRequest{ID: 1, Enabled: false})
+			assert.NoError(t, err)
+			assert.False(t, resp.Item.Enabled)
+		})
+
+		convey.Convey("停用默认模型 → 拒绝", func() {
+			mockRepo.EXPECT().FindModel(gomock.Any(), int64(1)).Return(&llm_provider_model_entity.LLMProviderModel{
+				ID: 1, ProviderID: 1, ModelKey: "mk1", Enabled: llm_provider_model_entity.EnabledOn, Status: 1,
+			}, nil)
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, DefaultModelKey: "mk1", Status: 1,
+			}, nil)
+			_, err := svc.SetModelEnabled(ctx, &SetModelEnabledRequest{ID: 1, Enabled: false})
+			assertCode(t, err, code.LLMProviderModelIsDefault)
+		})
+
+		convey.Convey("重新启用模型 → 成功", func() {
+			mockRepo.EXPECT().FindModel(gomock.Any(), int64(1)).Return(&llm_provider_model_entity.LLMProviderModel{
+				ID: 1, ProviderID: 1, ModelKey: "mk1", Enabled: llm_provider_model_entity.EnabledOff, Status: 1,
+			}, nil)
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, DefaultModelKey: "other", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().UpdateModel(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_model_entity.LLMProviderModel{})).
+				DoAndReturn(func(_ context.Context, m *llm_provider_model_entity.LLMProviderModel) error {
+					assert.Equal(t, llm_provider_model_entity.EnabledOn, m.Enabled)
+					return nil
+				})
+			resp, err := svc.SetModelEnabled(ctx, &SetModelEnabledRequest{ID: 1, Enabled: true})
+			assert.NoError(t, err)
+			assert.True(t, resp.Item.Enabled)
+		})
+	})
+}
+
+func TestDeleteModel(t *testing.T) {
+	convey.Convey("DeleteModel", t, func() {
+		ctx, mockRepo, _, svc := setupSvcTest(t)
+
+		convey.Convey("无引用且非默认 → 删除", func() {
+			mockRepo.EXPECT().FindModel(gomock.Any(), int64(1)).Return(&llm_provider_model_entity.LLMProviderModel{
+				ID: 1, ProviderID: 1, ModelKey: "mk1", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, DefaultModelKey: "other", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().CountModelReferences(gomock.Any(), "mk1").Return(llm_provider_repo.ModelRefCounts{}, nil)
+			mockRepo.EXPECT().DeleteModel(gomock.Any(), int64(1)).Return(nil)
+			_, err := svc.DeleteModel(ctx, &DeleteModelRequest{ID: 1})
+			assert.NoError(t, err)
+		})
+
+		convey.Convey("默认模型 → 拒绝", func() {
+			mockRepo.EXPECT().FindModel(gomock.Any(), int64(1)).Return(&llm_provider_model_entity.LLMProviderModel{
+				ID: 1, ProviderID: 1, ModelKey: "mk1", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, DefaultModelKey: "mk1", Status: 1,
+			}, nil)
+			_, err := svc.DeleteModel(ctx, &DeleteModelRequest{ID: 1})
+			assertCode(t, err, code.LLMProviderModelIsDefault)
+		})
+
+		convey.Convey("被引用 → 拒绝", func() {
+			mockRepo.EXPECT().FindModel(gomock.Any(), int64(1)).Return(&llm_provider_model_entity.LLMProviderModel{
+				ID: 1, ProviderID: 1, ModelKey: "mk1", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, DefaultModelKey: "other", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().CountModelReferences(gomock.Any(), "mk1").Return(llm_provider_repo.ModelRefCounts{Routes: 1}, nil)
+			_, err := svc.DeleteModel(ctx, &DeleteModelRequest{ID: 1})
+			assertCode(t, err, code.LLMProviderModelReferenced)
+		})
+	})
 }

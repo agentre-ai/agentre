@@ -18,10 +18,20 @@ const (
 
 // LLM 供应商 11000~11999
 const (
-	LLMProviderNotFound       = iota + 11000 // LLM 供应商不存在
-	LLMProviderNameDuplicated                // LLM 供应商名称已存在
-	LLMProviderInvalidType                   // LLM 供应商类型不支持
-	LLMProviderFetchModels                   // 拉取模型列表失败
+	LLMProviderNotFound             = iota + 11000 // LLM 供应商不存在
+	LLMProviderNameDuplicated                      // LLM 供应商名称已存在
+	LLMProviderInvalidType                         // LLM 供应商类型不支持
+	LLMProviderFetchModels                         // 拉取模型列表失败
+	LLMProviderDisabled                            // LLM 供应商已停用
+	LLMProviderNoEnabledDefault                    // 启用前必须设置属于该供应商的启用默认模型
+	LLMProviderReferenced                          // 供应商被 Backend/Session/Route 引用，不能删除
+	LLMProviderModelNotFound                       // 模型不存在
+	LLMProviderModelNotOwned                       // 模型不属于该供应商
+	LLMProviderModelDisabled                       // 模型已停用
+	LLMProviderModelIsDefault                      // 默认模型不能停用或删除，请先指定其它默认模型
+	LLMProviderModelReferenced                     // 模型被 Backend/Session/Route 引用，不能删除
+	LLMProviderModelConfirmRequired                // 修改被引用模型的 model_id 需要二次确认
+	LLMProviderDefaultModelInvalid                 // 供应商未配置可用的默认模型
 )
 
 // Agent 后端 12000~12999
