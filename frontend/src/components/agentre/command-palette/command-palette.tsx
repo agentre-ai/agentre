@@ -229,6 +229,7 @@ export function CommandPalette(): React.ReactElement {
           </DialogDescription>
 
           <CommandPrimitive
+            key={mode}
             // 关掉 cmdk 内置 filter / sort —— 我们用 source.getScore 自己排
             shouldFilter={false}
             loop

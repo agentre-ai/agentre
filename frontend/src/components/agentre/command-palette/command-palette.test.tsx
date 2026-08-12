@@ -863,6 +863,35 @@ describe("CommandPalette — 命令模式分组顺序：新建对话先于操作
     });
   });
 
+  it("Given a command item is selected, When Backspace exits command mode, Then the first default-mode result is selected", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [mkAgent({ id: 1, name: "Builder" })],
+    });
+    appMocks.ProjectListTree.mockResolvedValue([]);
+    renderHarness("/chat");
+
+    await act(async () => {
+      useCommandPaletteStore.getState().openWith("> ");
+    });
+    await flush();
+    expect(
+      screen
+        .getByText("Builder")
+        .closest("[cmdk-item]")
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
+
+    fireEvent.keyDown(screen.getByRole("combobox"), { key: "Backspace" });
+    await flush();
+
+    expect(
+      screen
+        .getByText("Chat")
+        .closest("[cmdk-item]")
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
+  });
+
   it("Given keyboard selection was moved to an agent in project A, When Tab switches to project B where that agent is disabled, Then selection returns to the first enabled project command", async () => {
     appMocks.ListChatAgents.mockResolvedValue({
       agents: [
