@@ -145,6 +145,21 @@ func (mr *MockAgentBackendRepoMockRecorder) List(ctx any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockAgentBackendRepo)(nil).List), ctx)
 }
 
+// ListByDevice mocks base method.
+func (m *MockAgentBackendRepo) ListByDevice(ctx context.Context, deviceID string) ([]*agent_backend_entity.AgentBackend, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListByDevice", ctx, deviceID)
+	ret0, _ := ret[0].([]*agent_backend_entity.AgentBackend)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListByDevice indicates an expected call of ListByDevice.
+func (mr *MockAgentBackendRepoMockRecorder) ListByDevice(ctx, deviceID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByDevice", reflect.TypeOf((*MockAgentBackendRepo)(nil).ListByDevice), ctx, deviceID)
+}
+
 // Update mocks base method.
 func (m *MockAgentBackendRepo) Update(ctx context.Context, b *agent_backend_entity.AgentBackend) error {
 	m.ctrl.T.Helper()

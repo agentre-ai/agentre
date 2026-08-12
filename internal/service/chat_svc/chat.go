@@ -5556,7 +5556,9 @@ func (s *chatSvc) selectRunner(ctx context.Context, be *agent_backend_entity.Age
 	if be == nil {
 		return nil, i18n.NewError(ctx, code.AgentBackendNotFound)
 	}
-	if be.IsLocal() {
+	// 指向本机的档（DeviceID == 本机指纹）就是本地 CLI / 内置 runtime，不走远端
+	// borrow——R14 把自己排到第一之后，派发到「自己」必须在本机跑起来。
+	if be.IsLocal() || s.beIsSelf(ctx, be) {
 		r := agentruntime.RuntimeFor(agent_backend_entity.BackendType(be.Type))
 		if r == nil {
 			return nil, i18n.NewError(ctx, code.AgentBackendInvalidType)

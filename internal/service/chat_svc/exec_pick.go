@@ -16,7 +16,6 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
-	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_repo"
@@ -51,6 +50,9 @@ type ExecTargetAvailabilityView struct {
 	// 展示它（路径回答「换过去在哪个目录干活」，比机器名更有信息量）。会话不绑项目
 	// （projectID<=0）或那台机器上没配这个项目时为空串，界面据此不渲染这一行。
 	ProjectPath string `json:"projectPath"`
+	// HasOverride 报告该 Agent 是否有本端顺序覆盖（R14 / R16）：组织架构页据此标注
+	// 「正在用本端顺序」并启用「恢复为账号默认顺序」。同一请求里每档同值。
+	HasOverride bool `json:"hasOverride"`
 }
 
 // ExecTargetNoneAvailableError 在一个 Agent 的执行目标列表非空、但逐档判定全部不可用时
@@ -97,11 +99,11 @@ func (e *ExecTargetNoneAvailableError) As(target any) bool {
 	return false
 }
 
-// PickExecTarget 见 ChatSvc 接口注释。
+// PickExecTarget 见 ChatSvc 接口注释。按 R14 解析后的顺序取第一个可用的档。
 func (s *chatSvc) PickExecTarget(ctx context.Context, agentID int64, projectID int64) (*ExecTargetChoice, error) {
-	targets, err := agent_repo.AgentExecTarget().ListByAgent(ctx, agentID)
+	targets, err := s.resolvedExecTargets(ctx, agentID)
 	if err != nil {
-		return nil, operationFailedWithCause(ctx, err, zap.Int64("agentId", agentID))
+		return nil, err
 	}
 	if len(targets) == 0 {
 		return nil, i18n.NewError(ctx, code.ChatAgentNoBackend)
@@ -139,13 +141,15 @@ func (s *chatSvc) PickExecTarget(ctx context.Context, agentID int64, projectID i
 // evalExecTargetAvailability），但刻意**不在遇到第一个可用档时提前返回**——界面要
 // 同时看到列表里每一档的状态（含徽标「当前生效/在线/离线/未配对/…」），不只是最终
 // 会派发到哪一档。projectID<=0（自由会话）不做项目路径判定，与 PickExecTarget 一致。
-// 空列表返回空切片、无错误——「保存被拒」是写路径（agent_svc.Update）的职责，读路径
-// 只如实报告。
+// 列表按 R14 解析后的顺序给出（本端覆盖 / 无覆盖时桌面端自己提前），每档标注
+// HasOverride。空列表返回空切片、无错误——「保存被拒」是写路径（agent_svc.Update）
+// 的职责，读路径只如实报告。
 func (s *chatSvc) ListExecTargetAvailability(ctx context.Context, agentID int64, projectID int64) ([]ExecTargetAvailabilityView, error) {
-	targets, err := agent_repo.AgentExecTarget().ListByAgent(ctx, agentID)
+	targets, err := s.resolvedExecTargets(ctx, agentID)
 	if err != nil {
-		return nil, operationFailedWithCause(ctx, err, zap.Int64("agentId", agentID))
+		return nil, err
 	}
+	hasOverride := s.hasExecTargetOverride(ctx, agentID)
 	out := make([]ExecTargetAvailabilityView, 0, len(targets))
 	for _, target := range targets {
 		be, err := agent_backend_repo.AgentBackend().Find(ctx, target.AgentBackendID)
@@ -173,6 +177,7 @@ func (s *chatSvc) ListExecTargetAvailability(ctx context.Context, agentID int64,
 			Reason:         reason,
 			Hint:           hint,
 			ProjectPath:    projectPath,
+			HasOverride:    hasOverride,
 		})
 	}
 	return out, nil
@@ -195,7 +200,9 @@ func (s *chatSvc) evalExecTargetAvailability(
 	if be == nil {
 		return BlockReasonNoBackend, i18n.T(ctx, code.ChatExecTargetHintBackendGone), nil
 	}
-	if be.IsRemote() {
+	// 指向本机的档（DeviceID == 本机指纹）不是「远端配对设备」：它是这台桌面端自己，
+	// 按本地判据判可用（R14 把自己排第一的前提是它能被本地派发）。
+	if !s.beIsSelf(ctx, be) && be.IsRemote() {
 		reason, hint, err := s.evalRemoteDeviceAvailability(ctx, be)
 		if err != nil {
 			return "", "", err

@@ -24,6 +24,10 @@ type AgentBackendRepo interface {
 	Find(ctx context.Context, id int64) (*agent_backend_entity.AgentBackend, error)
 	BatchFind(ctx context.Context, ids []int64) (map[int64]*agent_backend_entity.AgentBackend, error)
 	FindByName(ctx context.Context, name string) (*agent_backend_entity.AgentBackend, error)
+	// ListByDevice 列出指向同一台设备（canonical fingerprint）的全部启用 backend。
+	// 一台机器可以有多档（Claude Code / Codex / Pi Agent 各一档，R14「自己」是一组
+	// 而不是一个）；R14 顺序解析用它识别「本机」那几档。
+	ListByDevice(ctx context.Context, deviceID string) ([]*agent_backend_entity.AgentBackend, error)
 	List(ctx context.Context) ([]*agent_backend_entity.AgentBackend, error)
 	Delete(ctx context.Context, id int64) error
 	ClaimRelative(ctx context.Context, fingerprint string) ([]RelativeClaim, error)
@@ -92,6 +96,15 @@ func (r *agentBackendRepo) FindByName(ctx context.Context, name string) (*agent_
 		return nil, err
 	}
 	return out, nil
+}
+
+func (r *agentBackendRepo) ListByDevice(ctx context.Context, deviceID string) ([]*agent_backend_entity.AgentBackend, error) {
+	var rows []*agent_backend_entity.AgentBackend
+	err := db.Ctx(ctx).
+		Where("device_id = ? AND status = ?", deviceID, consts.ACTIVE).
+		Order("id ASC").
+		Find(&rows).Error
+	return rows, err
 }
 
 func (r *agentBackendRepo) List(ctx context.Context) ([]*agent_backend_entity.AgentBackend, error) {

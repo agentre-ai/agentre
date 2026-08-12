@@ -33,27 +33,30 @@ import (
 )
 
 type pickExecTargetMocks struct {
-	execTarget      *mock_agent_repo.MockAgentExecTargetRepo
-	backend         *mock_agent_backend_repo.MockAgentBackendRepo
-	provider        *mock_llm_provider_repo.MockLLMProviderRepo
-	project         *mock_project_repo.MockProjectRepo
-	projectLocation *mock_project_location_repo.MockProjectLocationRepo
-	remoteDevice    *mock_remote_device_svc.MockRemoteDeviceSvc
+	execTarget         *mock_agent_repo.MockAgentExecTargetRepo
+	execTargetOverride *mock_agent_repo.MockAgentExecTargetOverrideRepo
+	backend            *mock_agent_backend_repo.MockAgentBackendRepo
+	provider           *mock_llm_provider_repo.MockLLMProviderRepo
+	project            *mock_project_repo.MockProjectRepo
+	projectLocation    *mock_project_location_repo.MockProjectLocationRepo
+	remoteDevice       *mock_remote_device_svc.MockRemoteDeviceSvc
 }
 
 func setupPickExecTargetTest(t *testing.T) (context.Context, *pickExecTargetMocks, chat_svc.ChatSvc) {
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	m := &pickExecTargetMocks{
-		execTarget:      mock_agent_repo.NewMockAgentExecTargetRepo(ctrl),
-		backend:         mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl),
-		provider:        mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl),
-		project:         mock_project_repo.NewMockProjectRepo(ctrl),
-		projectLocation: mock_project_location_repo.NewMockProjectLocationRepo(ctrl),
-		remoteDevice:    mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl),
+		execTarget:         mock_agent_repo.NewMockAgentExecTargetRepo(ctrl),
+		execTargetOverride: mock_agent_repo.NewMockAgentExecTargetOverrideRepo(ctrl),
+		backend:            mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl),
+		provider:           mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl),
+		project:            mock_project_repo.NewMockProjectRepo(ctrl),
+		projectLocation:    mock_project_location_repo.NewMockProjectLocationRepo(ctrl),
+		remoteDevice:       mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl),
 	}
 
 	previousExecTarget := agent_repo.AgentExecTarget()
+	previousOverride := agent_repo.AgentExecTargetOverride()
 	previousBackend := agent_backend_repo.AgentBackend()
 	previousProvider := llm_provider_repo.LLMProvider()
 	previousProject := project_repo.Project()
@@ -61,14 +64,24 @@ func setupPickExecTargetTest(t *testing.T) (context.Context, *pickExecTargetMock
 	previousRemoteDevice := remote_device_svc.Default()
 
 	agent_repo.RegisterAgentExecTarget(m.execTarget)
+	agent_repo.RegisterAgentExecTargetOverride(m.execTargetOverride)
 	agent_backend_repo.RegisterAgentBackend(m.backend)
 	llm_provider_repo.RegisterLLMProvider(m.provider)
 	project_repo.RegisterProject(m.project)
 	project_location_repo.RegisterProjectLocation(m.projectLocation)
 	remote_device_svc.SetDefault(m.remoteDevice)
 
+	// R14 顺序解析的默认宽松桩：这批既有测试不关心「本端覆盖 / 自己提前」，默认
+	// 无覆盖、无本机指纹。AnyTimes 宽松桩注册在前，具体测试不得对同一方法再叠加
+	// 精确期望（gomock 永远先匹配 AnyTimes）——R14 自身的用例在 exec_target_order_test.go
+	// 用不带这些宽松桩的专用环境。
+	m.execTargetOverride.EXPECT().Get(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+	m.remoteDevice.EXPECT().DeviceFingerprint().Return("", nil).AnyTimes()
+	m.backend.EXPECT().ListByDevice(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+
 	t.Cleanup(func() {
 		agent_repo.RegisterAgentExecTarget(previousExecTarget)
+		agent_repo.RegisterAgentExecTargetOverride(previousOverride)
 		agent_backend_repo.RegisterAgentBackend(previousBackend)
 		llm_provider_repo.RegisterLLMProvider(previousProvider)
 		project_repo.RegisterProject(previousProject)

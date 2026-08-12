@@ -2195,7 +2195,12 @@
           "unpaired": "This computer isn't paired with it",
           "offline": "Offline",
           "projectPathMissing": "This machine has no configured path for this project"
-        }
+        },
+        "scopeDevice": "This device",
+        "scopeDefault": "Account default",
+        "deviceScopeHint": "This is the order used when starting sessions on this computer only. Dragging changes it on this device alone and is not synced to other devices.",
+        "restoreDefault": "Restore account default order",
+        "deviceEmptyHint": "This device's order is not loaded yet."
       },
       "basicInfo": "Basic Info",
       "charCount": "{{count}} chars",

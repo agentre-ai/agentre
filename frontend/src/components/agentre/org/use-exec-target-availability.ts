@@ -13,10 +13,18 @@ import type { chat_svc } from "@/../wailsjs/go/models";
 // 读取」的快照——按 id 查找让重排（不改变 backend 集合）不需要等一轮保存往返就能
 // 复用已有的可用性判定，调用方只在「新增/删除了哪个 backend」时才需要拿到新数据
 // （用 targetsKey 控制何时重新拉取）。
+//
+// R14：后端按解析后的顺序返回（本端覆盖 / 无覆盖时本机自己提前），所以响应数组
+// 本身**就是本端当前生效顺序**——orderedTargets 原样交回数组顺序供设备态列表使用，
+// hasOverride 标注是否处于本端覆盖（R16「恢复为账号默认顺序」据此显示）。
 export function useExecTargetAvailability(agentId: number, targetsKey: string) {
   const [byBackendId, setByBackendId] = React.useState<
     Map<number, chat_svc.ExecTargetAvailabilityView>
   >(new Map());
+  const [orderedTargets, setOrderedTargets] = React.useState<
+    { agentBackendId: number }[]
+  >([]);
+  const [hasOverride, setHasOverride] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   // 只有最新一次请求可以写状态：增删执行目标会连着触发多次拉取，先发的那次晚返回时
   // 不能把新一批判定盖回旧的（徽标会一直停在删掉那一档还在的快照上）。卸载时把代次
@@ -27,13 +35,20 @@ export function useExecTargetAvailability(agentId: number, targetsKey: string) {
     const req = ++reqRef.current;
     if (!agentId) {
       setByBackendId(new Map());
+      setOrderedTargets([]);
+      setHasOverride(false);
       return;
     }
     setLoading(true);
     try {
       const resp = await ListAgentExecTargetAvailability(agentId, 0);
       if (req !== reqRef.current) return;
-      setByBackendId(new Map((resp ?? []).map((s) => [s.agentBackendId, s])));
+      const rows = resp ?? [];
+      setByBackendId(new Map(rows.map((s) => [s.agentBackendId, s])));
+      setOrderedTargets(
+        rows.map((s) => ({ agentBackendId: s.agentBackendId })),
+      );
+      setHasOverride(rows.length > 0 && rows[0].hasOverride);
     } catch (e) {
       if (req !== reqRef.current) return;
       console.error("[org] exec target availability load failed", e);
@@ -55,5 +70,5 @@ export function useExecTargetAvailability(agentId: number, targetsKey: string) {
     [],
   );
 
-  return { byBackendId, loading, reload };
+  return { byBackendId, orderedTargets, hasOverride, loading, reload };
 }
