@@ -76,11 +76,7 @@ func newServiceCmdWithDeps(deps serviceCommandDeps) *cobra.Command {
 			printServiceInspection(w, status, deps.localStatus)
 		}),
 		newServiceActionCmd("restart", deps.managerFactory, func(ctx context.Context, manager ServiceManager) (ServiceStatus, error) {
-			status, err := manager.Restart(ctx)
-			if err != nil {
-				return ServiceStatus{}, err
-			}
-			return waitForLocalDaemon(ctx, manager, status, deps.localStatus)
+			return restartService(ctx, manager, deps.localStatus)
 		}, printServiceStatus),
 		newServiceActionCmd("stop", deps.managerFactory, func(ctx context.Context, manager ServiceManager) (ServiceStatus, error) {
 			return manager.Stop(ctx)
@@ -140,8 +136,39 @@ func startService(ctx context.Context, manager ServiceManager, load serviceStatu
 	return waitForLocalDaemon(ctx, manager, status, load)
 }
 
+func restartService(ctx context.Context, manager ServiceManager, load serviceStatusLoader) (ServiceStatus, error) {
+	previousPID := ""
+	if load != nil {
+		if current, err := load(ctx); err == nil {
+			previousPID = daemonStatusPID(current)
+		}
+	}
+	status, err := manager.Restart(ctx)
+	if err != nil {
+		return ServiceStatus{}, err
+	}
+	if !requiresRestartPIDChange(status) {
+		previousPID = ""
+	}
+	return waitForLocalDaemonPIDChange(ctx, manager, status, load, previousPID)
+}
+
+func requiresRestartPIDChange(status ServiceStatus) bool {
+	for _, detail := range status.Details {
+		if strings.HasPrefix(detail, "Manager: launchd") || strings.HasPrefix(detail, "Manager: systemd") {
+			return true
+		}
+	}
+	return false
+}
+
 func waitForLocalDaemon(ctx context.Context, manager ServiceManager, status ServiceStatus,
 	load serviceStatusLoader) (ServiceStatus, error) {
+	return waitForLocalDaemonPIDChange(ctx, manager, status, load, "")
+}
+
+func waitForLocalDaemonPIDChange(ctx context.Context, manager ServiceManager, status ServiceStatus,
+	load serviceStatusLoader, previousPID string) (ServiceStatus, error) {
 	if load == nil {
 		return status, nil
 	}
@@ -152,8 +179,12 @@ func waitForLocalDaemon(ctx context.Context, manager ServiceManager, status Serv
 		lastStatus = status
 	)
 	for {
-		if _, err := load(waitCtx); err == nil {
-			return status, nil
+		if localStatus, err := load(waitCtx); err == nil {
+			currentPID := daemonStatusPID(localStatus)
+			if previousPID == "" || (currentPID != "" && currentPID != previousPID) {
+				return status, nil
+			}
+			lastErr = fmt.Errorf("local daemon still reports pre-restart PID %s", previousPID)
 		} else {
 			lastErr = err
 		}
@@ -163,14 +194,30 @@ func waitForLocalDaemon(ctx context.Context, manager ServiceManager, status Serv
 		}
 		lastStatus = observed
 		if !observed.Running {
-			return ServiceStatus{}, fmt.Errorf("wait for local daemon status: service stopped before becoming ready (last error: %v; service: %s); Run manually: agentred service status", lastErr, strings.Join(observed.Details, ", "))
+			return ServiceStatus{}, fmt.Errorf("wait for local daemon status: service stopped before becoming ready (last error: %v; service: %s); %s", lastErr, strings.Join(observed.Details, ", "), serviceReadinessDiagnostic(observed))
 		}
 		select {
 		case <-waitCtx.Done():
-			return ServiceStatus{}, fmt.Errorf("wait for local daemon status: %w (last error: %v; service: %s); Run manually: agentred service status", waitCtx.Err(), lastErr, strings.Join(lastStatus.Details, ", "))
+			return ServiceStatus{}, fmt.Errorf("wait for local daemon status: %w (last error: %v; service: %s); %s", waitCtx.Err(), lastErr, strings.Join(lastStatus.Details, ", "), serviceReadinessDiagnostic(lastStatus))
 		case <-time.After(serviceReadyPollInterval):
 		}
 	}
+}
+
+func serviceReadinessDiagnostic(status ServiceStatus) string {
+	for _, detail := range status.Details {
+		if target, ok := strings.CutPrefix(detail, "Target: "); ok {
+			return fmt.Sprintf("launchctl target %s; Run manually: launchctl print %s", target, target)
+		}
+	}
+	return "Run manually: agentred service status"
+}
+
+func daemonStatusPID(status map[string]any) string {
+	if status == nil || status["pid"] == nil {
+		return ""
+	}
+	return fmt.Sprint(status["pid"])
 }
 
 func loadLocalDaemonStatus(ctx context.Context) (map[string]any, error) {

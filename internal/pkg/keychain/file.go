@@ -65,7 +65,11 @@ func (f *fileKC) Set(account, secret string) error {
 	if err := os.MkdirAll(f.dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(f.path(account), []byte(secret), 0o600)
+	path := f.path(account)
+	if err := os.WriteFile(path, []byte(secret), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 func (f *fileKC) Delete(account string) error {

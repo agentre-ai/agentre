@@ -54,6 +54,17 @@ func TestFile(t *testing.T) {
 		So(v, ShouldEqual, "secret")
 	})
 
+	Convey("overwriting an existing secret repairs its permissions to 0600", t, func() {
+		dir := t.TempDir()
+		secretPath := filepath.Join(dir, "acc")
+		So(os.WriteFile(secretPath, []byte("old"), 0o644), ShouldBeNil)
+		So(keychain.NewFile(dir).Set("acc", "secret"), ShouldBeNil)
+
+		info, err := os.Stat(secretPath)
+		So(err, ShouldBeNil)
+		So(info.Mode().Perm(), ShouldEqual, os.FileMode(0o600))
+	})
+
 	Convey("Get on a missing account returns ErrNotFound", t, func() {
 		dir := t.TempDir()
 		_, err := keychain.NewFile(dir).Get("missing")

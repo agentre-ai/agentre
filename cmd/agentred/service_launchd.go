@@ -57,6 +57,7 @@ func (m *launchdServiceManager) Stop(ctx context.Context) (ServiceStatus, error)
 		Details: []string{
 			"Manager: launchd LaunchAgent",
 			"Plist: " + m.plistPath,
+			"Target: " + m.target,
 			"Loaded: false",
 			"Running: false",
 		},
@@ -137,6 +138,7 @@ func (m *launchdServiceManager) inspectOutput(ctx context.Context) (ServiceStatu
 		Details: []string{
 			"Manager: launchd LaunchAgent",
 			"Plist: " + m.plistPath,
+			"Target: " + m.target,
 			fmt.Sprintf("Loaded: %t", loaded),
 			fmt.Sprintf("Running: %t", running),
 		},

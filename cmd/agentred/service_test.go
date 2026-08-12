@@ -111,7 +111,14 @@ func TestGivenInstallWithStartWhenExecutedThenManagerInstallsBeforeStarting(t *t
 }
 
 func TestGivenRunningManagerButUnreadableLocalDaemonWhenStartingThenCommandFailsWithoutPrintingSuccess(t *testing.T) {
-	manager := &fakeServiceManager{status: ServiceStatus{Installed: true, Running: true}}
+	manager := &fakeServiceManager{status: ServiceStatus{
+		Installed: true,
+		Running:   true,
+		Details: []string{
+			"Manager: launchd LaunchAgent",
+			"Target: gui/501/ai.agentre.agentred",
+		},
+	}}
 	cmd := newServiceCmdWithDeps(serviceCommandDeps{
 		managerFactory: func() (ServiceManager, error) { return manager, nil },
 		localStatus: func(context.Context) (map[string]any, error) {
@@ -132,6 +139,8 @@ func TestGivenRunningManagerButUnreadableLocalDaemonWhenStartingThenCommandFails
 	assert.Empty(t, out.String())
 	assert.Contains(t, err.Error(), "wait for local daemon status")
 	assert.Contains(t, err.Error(), "dial local socket: connection refused")
+	assert.Contains(t, err.Error(), "launchctl target gui/501/ai.agentre.agentred")
+	assert.Contains(t, err.Error(), "Run manually: launchctl print gui/501/ai.agentre.agentred")
 }
 
 func TestGivenLocalDaemonNeverBecomesReadyWhenStartingThenCancellationStopsObservation(t *testing.T) {
@@ -192,7 +201,7 @@ func TestGivenLifecycleStartActionsWhenLocalDaemonBecomesReadableThenTheyPrintRu
 	}{
 		{name: "install --start", args: []string{"install", "--start"}, wantCalls: []string{"install", "start", "status"}},
 		{name: "start", args: []string{"start"}, wantCalls: []string{"start", "status"}},
-		{name: "restart", args: []string{"restart"}, wantCalls: []string{"restart", "status"}},
+		{name: "restart", args: []string{"restart"}, wantCalls: []string{"restart"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -220,6 +229,63 @@ func TestGivenLifecycleStartActionsWhenLocalDaemonBecomesReadableThenTheyPrintRu
 			assert.Equal(t, "Daemon running", strings.Split(strings.TrimSpace(out.String()), "\n")[0])
 		})
 	}
+}
+
+func TestGivenRestartWhenOldDaemonStillAnswersThenItWaitsForANewDaemonPID(t *testing.T) {
+	manager := &fakeServiceManager{status: ServiceStatus{
+		Installed: true,
+		Running:   true,
+		Details:   []string{"Manager: launchd LaunchAgent"},
+	}}
+	attempts := 0
+	cmd := newServiceCmdWithDeps(serviceCommandDeps{
+		managerFactory: func() (ServiceManager, error) { return manager, nil },
+		localStatus: func(context.Context) (map[string]any, error) {
+			attempts++
+			switch attempts {
+			case 1, 2:
+				return map[string]any{"pid": float64(41)}, nil
+			default:
+				return map[string]any{"pid": float64(42)}, nil
+			}
+		},
+	})
+	cmd.SilenceUsage = true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"restart"})
+
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, 3, attempts, "the pre-restart daemon must not satisfy post-restart readiness")
+	assert.Equal(t, []string{"restart", "status"}, manager.calls)
+	assert.Equal(t, "Daemon running", strings.Split(strings.TrimSpace(out.String()), "\n")[0])
+}
+
+func TestGivenWindowsRestartWhenLocalStatusIsReadableThenNoNewPIDContractIsAdded(t *testing.T) {
+	manager := &fakeServiceManager{status: ServiceStatus{
+		Installed: true,
+		Running:   true,
+		Details:   []string{"Manager: Windows Task Scheduler"},
+	}}
+	attempts := 0
+	cmd := newServiceCmdWithDeps(serviceCommandDeps{
+		managerFactory: func() (ServiceManager, error) { return manager, nil },
+		localStatus: func(context.Context) (map[string]any, error) {
+			attempts++
+			return map[string]any{"pid": float64(41)}, nil
+		},
+	})
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"restart"})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+	cmd.SetContext(ctx)
+
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, 2, attempts, "Windows restart keeps the pre-existing readable-status contract")
 }
 
 func TestGivenInstallWithStartAndLingerWarningWhenExecutedThenRepairDetailIsPreserved(t *testing.T) {
