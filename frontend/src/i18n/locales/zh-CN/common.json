@@ -41,6 +41,44 @@
     "needsAttention": "审批",
     "unread": "未读"
   },
+  "activity": {
+    "header": {
+      "steps": "{{count}} 步",
+      "steps_one": "{{count}} 步",
+      "steps_other": "{{count}} 步",
+      "running": "正在执行 · 已 {{count}} 步",
+      "running_one": "正在执行 · 已 {{count}} 步",
+      "running_other": "正在执行 · 已 {{count}} 步",
+      "duration": "{{seconds}}s",
+      "durationTitle": "本轮耗时"
+    },
+    "summary": {
+      "thinking": "思考 {{count}}",
+      "read": "查阅 {{count}}",
+      "edit": "改 {{count}} 个文件",
+      "edit_one": "改 {{count}} 个文件",
+      "edit_other": "改 {{count}} 个文件",
+      "write": "写入 {{count}}",
+      "command": "命令 {{count}}",
+      "other": "其它 {{count}}",
+      "failures": "{{count}} 失败"
+    },
+    "row": {
+      "toggle": "展开/收起 {{tool}} 这一步的明细",
+      "thinking": "思考",
+      "thinkingMeta": "{{count}} 字",
+      "exit": "exit {{code}}",
+      "failed": "失败",
+      "lines": "{{count}} 行",
+      "lines_one": "{{count}} 行",
+      "lines_other": "{{count}} 行",
+      "sections": {
+        "params": "参数",
+        "result": "结果",
+        "content": "内容"
+      }
+    }
+  },
   "agentBackends": {
     "actions": {
       "cancelTest": "取消测试",

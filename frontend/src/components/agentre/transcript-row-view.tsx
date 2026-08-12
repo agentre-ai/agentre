@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
+import { ActivityBlock } from "./activity-block/block";
 import { AutoTriggerBanner } from "./auto-trigger-banner";
 import { PlanApproveCard } from "./canonical-tool/plan-approve-request/card";
 import type { PlanActionStream } from "./canonical-tool/props";
@@ -600,9 +601,15 @@ function MessageBody({
 function RenderItemView({
   item,
   messageId,
+  live,
+  durationMs,
 }: {
   item: TranscriptRowItem;
   messageId: number;
+  /** 本行是仍在流式的那条消息的末行 —— 尾部的活动块此刻正在跑。 */
+  live: boolean;
+  /** 消息级耗时(块级无来源),活动块组头的耗时槽用;运行中不显示。 */
+  durationMs?: number;
 }) {
   const { t } = useTranslation();
   const ctx = React.useContext(TranscriptRenderContext);
@@ -633,6 +640,21 @@ function RenderItemView({
           streaming={item.streaming}
           text={item.block.text ?? ""}
           uiStateKey={item.uiStateKey}
+        />
+      );
+    case "activity":
+      // 活动块:连续的思考 / 只读探查 / 中性 / 写 / 命令 / 失败折成一行组头。
+      // 一个块仍然只占一个虚拟行 —— 折叠态不 mount 组内步骤(Hard invariant 9)。
+      // running 只认「仍在流式的消息的末行」:此刻没有别的东西排在它后面,
+      // 说明 agent 正在这一组里干活。轮次落定 → live 变假 → 自动收起。
+      return (
+        <ActivityBlock
+          steps={item.steps}
+          summary={item.summary}
+          uiStateKey={item.uiStateKey}
+          cwd={ctx?.cwd}
+          durationMs={durationMs}
+          running={live}
         />
       );
     case "image":
@@ -804,6 +826,10 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
     isAssistant && row.isLastOfMessage
       ? extractAssistantOutputText(m.blocks ?? [], liveBlocks ?? [], liveTail)
       : "";
+  // live 行 = 仍在流式的那条消息的末行(chat.tsx 只给这一行喂 live* 内容)。
+  // 尾部的活动块据此判「此刻正在跑」:自动展开 + 实时尾巴,落定后自动收起。
+  const isLiveTailRow =
+    row.isLastOfMessage && (liveBlocks !== undefined || liveTail.length > 0);
 
   const tailAttachments = row.isLastOfMessage ? (
     <>
@@ -857,7 +883,12 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
           source={isAssistant ? undefined : row.sourceDevice}
           meta={meta}
         >
-          <RenderItemView item={row.item} messageId={row.messageId} />
+          <RenderItemView
+            item={row.item}
+            messageId={row.messageId}
+            live={isLiveTailRow}
+            durationMs={m.durationMs}
+          />
           {tailAttachments}
         </ChatMessage>
       </>
@@ -871,7 +902,12 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
       <div aria-hidden className="w-7 shrink-0" />
       <div className="flex min-w-0 max-w-measure flex-1 flex-col gap-1">
         <div data-selectable-text="true" className="flex flex-col gap-2">
-          <RenderItemView item={row.item} messageId={row.messageId} />
+          <RenderItemView
+            item={row.item}
+            messageId={row.messageId}
+            live={isLiveTailRow}
+            durationMs={m.durationMs}
+          />
           {tailAttachments}
         </div>
         {meta ? (

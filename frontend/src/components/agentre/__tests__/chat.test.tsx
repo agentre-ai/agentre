@@ -1168,6 +1168,12 @@ describe("ChatTranscript virtualization", () => {
     const toolBlocks = Array.from({ length: 40 }, (_, idx) => {
       const toolUseId = `toolu-heavy-${idx + 1}`;
       return [
+        // 每次调用前先说一句 —— 正文打断活动块聚合,于是这 40 次调用仍是 40 张
+        // 独立的工具卡(单条不成组),测的还是「一条消息内按行窗口挂载」。
+        {
+          text: `narration-${idx + 1}`,
+          type: "text",
+        } as ChatBlockData,
         {
           toolInput: { command: `echo heavy-${idx + 1}` },
           toolName: "Bash",
@@ -1227,10 +1233,18 @@ describe("ChatTranscript virtualization", () => {
 // 行级虚拟化核心验收:单条消息内部的 tool 卡也按视口窗口挂载/卸载,
 // 这是「切 tab 卡顿(单 message 数百 tool 卡击穿 per-message 虚拟化)」的修复本体。
 describe("ChatTranscript block-level virtualization", () => {
+  // 一条消息 = count 次「说一句 + 调一次工具」。正文打断活动块聚合(Hard
+  // invariant 4 / 决策 5),所以每次调用仍是独立的一行工具卡 —— 这正是行级
+  // 虚拟化要窗口化的形态。连续调用会折成一个活动块,那种形态由下面单独一条
+  // 用例钉住(折叠态只出一行、一张卡都不 mount)。
   function manyToolMessage(id: number, count: number): chat_svc.ChatMessage {
     const blocks = Array.from({ length: count }, (_, idx) => {
       const toolUseId = `toolu-big-${idx + 1}`;
       return [
+        {
+          text: `big-say-${idx + 1}`,
+          type: "text",
+        } as ChatBlockData,
         {
           toolInput: { command: `echo big-${idx + 1}` },
           toolName: "Bash",
@@ -1249,6 +1263,53 @@ describe("ChatTranscript block-level virtualization", () => {
       blocks,
     } as chat_svc.ChatMessage;
   }
+
+  function toolPairBlocks(count: number): ChatBlockData[] {
+    return Array.from({ length: count }, (_, idx) => {
+      const toolUseId = `toolu-agg-${idx + 1}`;
+      return [
+        {
+          toolInput: { command: `echo agg-${idx + 1}` },
+          toolName: "Bash",
+          toolUseId,
+          type: "tool_use",
+        } as ChatBlockData,
+        {
+          text: `agg-result-${idx + 1}`,
+          toolUseId,
+          type: "tool_result",
+        } as ChatBlockData,
+      ];
+    }).flat();
+  }
+
+  it("Given one message with 300 consecutive tool pairs, When rendered, Then they collapse into a single activity row that mounts no step DOM", async () => {
+    const scrollElement = sizedScrollElement();
+
+    render(
+      <ChatTranscript
+        active
+        agentColor="agent-1"
+        agentName="A"
+        messages={[
+          {
+            ...textMessage(1, "assistant", ""),
+            blocks: toolPairBlocks(300),
+          } as chat_svc.ChatMessage,
+        ]}
+        scrollElement={scrollElement}
+        virtualize
+      />,
+    );
+
+    const header = await screen.findByTestId("activity-header");
+    expect(header).toHaveTextContent("300 steps");
+    expect(document.querySelectorAll("[data-row-key]")).toHaveLength(1);
+    // 折叠态一步都不 mount —— 300 步的结果文本不进 DOM(Hard invariant 9)。
+    expect(screen.queryByTestId("raw-tool-card")).toBeNull();
+    expect(screen.queryByTestId("activity-row")).toBeNull();
+    expect(screen.queryByText("agg-result-1")).toBeNull();
+  });
 
   it("Given one message with 300 tool pairs, When rendered in a 480px viewport, Then only the visible row window mounts", async () => {
     const scrollElement = sizedScrollElement();
@@ -1384,16 +1445,17 @@ describe("ChatTranscript block-level virtualization", () => {
   // followOnAppend 因 wrong-restore 刻意不开 —— 贴底跟随由 ChatTranscript 自己的
   // follow effect 补上。这两条测试钉住:贴底才追、上滑不抢。
   function liveToolBlocks(n: number): ChatBlockData[] {
-    return Array.from(
-      { length: n },
-      (_, idx) =>
-        ({
-          toolInput: { command: `echo live-${idx + 1}` },
-          toolName: "Bash",
-          toolUseId: `toolu-live-${idx + 1}`,
-          type: "tool_use",
-        }) as ChatBlockData,
-    );
+    return Array.from({ length: n }, (_, idx) => [
+      // 每次调用前的一句正文打断聚合,于是流式里每多一次调用就真的多出行 ——
+      // 连续调用会长进同一个活动块(同一行),那种形态测不到「追加行」。
+      { text: `live-say-${idx + 1}`, type: "text" } as ChatBlockData,
+      {
+        toolInput: { command: `echo live-${idx + 1}` },
+        toolName: "Bash",
+        toolUseId: `toolu-live-${idx + 1}`,
+        type: "tool_use",
+      } as ChatBlockData,
+    ]).flat();
   }
 
   it("Given the transcript is at the bottom, When a live tool row is appended, Then it follows to the new end", async () => {
@@ -1410,7 +1472,7 @@ describe("ChatTranscript block-level virtualization", () => {
 
     const { rerender } = render(
       <ChatTranscript
-        liveByMessageId={new Map([[2, { liveBlocks: liveToolBlocks(2) }]])}
+        liveByMessageId={new Map([[2, { liveBlocks: liveToolBlocks(1) }]])}
         active
         agentColor="agent-1"
         agentName="A"
@@ -1425,7 +1487,7 @@ describe("ChatTranscript block-level virtualization", () => {
 
     rerender(
       <ChatTranscript
-        liveByMessageId={new Map([[2, { liveBlocks: liveToolBlocks(3) }]])}
+        liveByMessageId={new Map([[2, { liveBlocks: liveToolBlocks(2) }]])}
         active
         agentColor="agent-1"
         agentName="A"
@@ -2420,11 +2482,11 @@ describe("ChatTranscript thinking blocks", () => {
     expect(screen.getByText("结果是")).toBeInTheDocument();
   });
 
-  it("flushed thinking block in liveBlocks renders as done before the tool that follows it", () => {
+  it("flushed thinking block in liveBlocks renders as a done thought row before the tool that follows it", () => {
     // 回归 guard:store 在 tool_use 边界把已完成的 liveThinking 冻成 thinking block
-    // 推进 liveBlocks。渲染层要把这块 thinking 按「思考完成」渲染,且排在紧随其后
-    // 的 tool_use 之前(时间顺序) —— 取代旧模型「liveThinking + tool_use 共存时
-    // thinking 靠 liveTail 判 streaming」的回归位。
+    // 推进 liveBlocks。已完成的思考与紧随其后的 tool_use 是一段连续活动,聚合成
+    // 一个活动块(正在流的思考才是整卡);展开后它仍是一条「已完成的思考行」,
+    // 且排在那次工具调用之前(时间顺序不重排)。
     render(
       <ChatTranscript
         liveByMessageId={
@@ -2455,13 +2517,24 @@ describe("ChatTranscript thinking blocks", () => {
       />,
     );
 
-    expect(screen.getByText("Thought complete")).toBeInTheDocument();
+    // 这一组正在跑(消息仍在流式,活动块是末行)→ 自动展开,两步都在。
     expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
-    const thinking = screen.getByText("Thought complete");
-    const tool = screen.getByTestId("raw-tool-card");
+    const rows = screen.getAllByTestId("activity-row");
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]).getByTestId("activity-name")).toHaveTextContent(
+      "Thought",
+    );
+    expect(within(rows[1]).getByTestId("activity-name")).toHaveTextContent(
+      "Bash",
+    );
     expect(
-      thinking.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_FOLLOWING,
+      rows[0].compareDocumentPosition(rows[1]) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+    // 思考正文只在点开那一行之后出现(折叠是收起,不是藏)。
+    expect(screen.queryByText("先看一下目录结构")).toBeNull();
+    fireEvent.click(rows[0]);
+    expect(screen.getByText("先看一下目录结构")).toBeInTheDocument();
   });
 });
 

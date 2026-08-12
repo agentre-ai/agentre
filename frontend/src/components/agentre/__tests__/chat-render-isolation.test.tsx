@@ -59,8 +59,11 @@ function toolPair(toolUseId: string): ChatBlockData[] {
 
 describe("ChatTranscript live re-render isolation", () => {
   it("Given persisted tool rows, When live chunks stream in, Then only the live message re-renders", () => {
+    // 两次调用之间隔一句正文:正文打断活动块聚合,于是这两次调用各自成行
+    // (单条不成组),探针才数得到「持久化行有没有被流式 chunk 带着重渲」。
     const persisted = message(1, "assistant", [
       ...toolPair("toolu-old-1"),
+      { text: "then", type: "text" } as ChatBlockData,
       ...toolPair("toolu-old-2"),
     ]);
     const live = message(2, "assistant", []);

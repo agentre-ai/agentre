@@ -41,6 +41,44 @@
     "needsAttention": "Approval",
     "unread": "Unread"
   },
+  "activity": {
+    "header": {
+      "steps": "{{count}} steps",
+      "steps_one": "{{count}} step",
+      "steps_other": "{{count}} steps",
+      "running": "Running · {{count}} steps",
+      "running_one": "Running · {{count}} step",
+      "running_other": "Running · {{count}} steps",
+      "duration": "{{seconds}}s",
+      "durationTitle": "Turn duration"
+    },
+    "summary": {
+      "thinking": "Thinking {{count}}",
+      "read": "Read {{count}}",
+      "edit": "Edited {{count}} files",
+      "edit_one": "Edited {{count}} file",
+      "edit_other": "Edited {{count}} files",
+      "write": "Wrote {{count}}",
+      "command": "Commands {{count}}",
+      "other": "Other {{count}}",
+      "failures": "{{count}} failed"
+    },
+    "row": {
+      "toggle": "Toggle {{tool}} step details",
+      "thinking": "Thought",
+      "thinkingMeta": "{{count}} chars",
+      "exit": "exit {{code}}",
+      "failed": "failed",
+      "lines": "{{count}} lines",
+      "lines_one": "{{count}} line",
+      "lines_other": "{{count}} lines",
+      "sections": {
+        "params": "PARAMS",
+        "result": "RESULT",
+        "content": "CONTENT"
+      }
+    }
+  },
   "agentBackends": {
     "actions": {
       "cancelTest": "Cancel Test",
