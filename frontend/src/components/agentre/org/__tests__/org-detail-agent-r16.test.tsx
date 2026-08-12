@@ -5,7 +5,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { OrgDetailAgent } from "../org-detail-agent";
 import type { OrgAgent, OrgDepartment } from "../types";
-import type { agent_backend_svc } from "../../../../../wailsjs/go/models";
+import type {
+  agent_backend_svc,
+  agent_svc,
+} from "../../../../../wailsjs/go/models";
 
 // R16：组织架构的执行目标列表默认编辑**本端顺序**（覆盖，不同步），并给出
 // 「恢复为账号默认顺序」与切到账号默认顺序的入口。
@@ -110,7 +113,9 @@ afterEach(() => {
   delete (window as any).go;
 });
 
-function renderPanel(onUpdate: ReturnType<typeof vi.fn>) {
+function renderPanel(
+  onUpdate: (req: agent_svc.UpdateAgentRequest) => Promise<unknown>,
+) {
   render(
     <MemoryRouter initialEntries={["/org"]}>
       <OrgDetailAgent
