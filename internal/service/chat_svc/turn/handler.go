@@ -74,6 +74,10 @@ type TurnContext struct {
 	// chat_svc 在 newTurnContext 时注入。
 	SessionTransitioner SessionTransitioner
 	Waits               *WaitTracker
+
+	// SubagentFlipper 把一个「不属于本轮」的后台任务终态,落到它派遣卡真正所在的那条
+	// 更早的消息上。nil 时 handler 退回静默忽略。chat_svc 在 newTurnContext 注入。
+	SubagentFlipper SubagentFlipper
 }
 
 // MessageUpdater handler 在 UsageUpdate / Error 等场景下写 assistantMsg 走这条。
@@ -85,6 +89,17 @@ type MessageUpdater interface {
 // 写 session 字段走这条。
 type SessionUpdater interface {
 	Update(ctx context.Context, sess any) error
+}
+
+// SubagentFlipper 跨消息定向翻转一个后台任务派遣卡的终态。
+//
+// 为什么需要它:后台任务(run_in_background 的 bash / subagent)的完成通知是**跨轮**
+// 到达的 —— 派遣它的那条消息早已收尾落库,它的 subagent_state 块过不了当前轮的
+// accumulator,turn.Mutate 必然落空。完成通知在会话空闲时到达会另起一条自主续轮
+// (那条路自己带跨消息翻转);但它同样可能在**别人的轮**进行中到达,那时 CLI 把这一帧
+// 并进当前活跃轮,handler 是该终态唯一的落点。
+type SubagentFlipper interface {
+	FlipSubagentStatus(ctx context.Context, toolUseID, status string) error
 }
 
 // SessionTransitioner 切 session 状态 — UserAskRequest/ToolPermissionRequest

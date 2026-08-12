@@ -553,3 +553,119 @@ func TestMarkRunningSubagentsCancelled(t *testing.T) {
 		})
 	})
 }
+
+// fakeSubagentFlipper 记录跨消息定向翻转的调用。
+type fakeSubagentFlipper struct {
+	calls []flipCall
+	err   error
+}
+
+type flipCall struct {
+	toolUseID string
+	status    string
+}
+
+func (f *fakeSubagentFlipper) FlipSubagentStatus(_ context.Context, toolUseID, status string) error {
+	f.calls = append(f.calls, flipCall{toolUseID: toolUseID, status: status})
+	return f.err
+}
+
+// TestSubagentDone_CrossTurn_FlipsEarlierMessage 是 sess-2825 的回归:一次
+// run_in_background 派遣的 subagent,其完成通知(CLI system.task_notification)可能在
+// **别人的轮**进行中到达 —— 此时 pkg/claudecode 不另起自主续轮,而是把这一帧并进当前
+// 活跃轮。派遣卡的 subagent_state 块住在更早那条消息里,过不了本轮 accumulator,
+// turn.Mutate 必然落空。旧实现在落空时静默 return,该块就永远停在 running:
+// FlipSubagentStatus 那条跨轮通路只挂在自主续轮上,这一帧根本走不到。
+func TestSubagentDone_CrossTurn_FlipsEarlierMessage(t *testing.T) {
+	Convey("Given 派遣卡在更早的消息里(本轮 accumulator 既无 overlay 也无该 tool_use)", t, func() {
+		acc := turn.New()
+		// 本轮自己的工具调用,与那个后台 subagent 无关。
+		acc.AddToolUse(&cagoblocks.ToolUseBlock{
+			ID:   "tu-this-turn",
+			Name: "Read",
+		}, "")
+		flipper := &fakeSubagentFlipper{}
+		emit := &fakeEmit{}
+
+		Convey("When 它的 SubagentDone 在本轮到达", func() {
+			err := SubagentDoneHandler{}.Apply(context.Background(),
+				agentruntime.SubagentDone{
+					ToolCallID: "toolu-earlier-msg",
+					Info:       agentruntime.SubagentInfo{Kind: "local_agent", Status: "completed"},
+				},
+				acc, emit, nil, &turn.TurnContext{
+					Stream:          "chat:event:1:2",
+					SubagentFlipper: flipper,
+				})
+
+			Convey("Then 该块经跨消息定向翻转落成终态,而不是被静默丢弃", func() {
+				So(err, ShouldBeNil)
+				So(flipper.calls, ShouldHaveLength, 1)
+				So(flipper.calls[0].toolUseID, ShouldEqual, "toolu-earlier-msg")
+				So(flipper.calls[0].status, ShouldEqual, "completed")
+				// 本轮 accumulator 不该被塞进一个孤儿 overlay(块不属于这条消息)。
+				So(acc.Finalize(), ShouldHaveLength, 1)
+			})
+		})
+	})
+}
+
+// TestSubagentDone_CrossTurn_DefaultsStatusWhenEmpty 边界:CLI 偶尔不带 status 的
+// 完成帧,跨消息路径要与命中路径同样默认 completed —— 否则 FlipSubagentStatus 拿到
+// 空 status 会直接 return,卡片仍旧停在 running。
+func TestSubagentDone_CrossTurn_DefaultsStatusWhenEmpty(t *testing.T) {
+	Convey("Info.Status 为空的跨轮完成帧默认翻成 completed", t, func() {
+		flipper := &fakeSubagentFlipper{}
+		err := SubagentDoneHandler{}.Apply(context.Background(),
+			agentruntime.SubagentDone{ToolCallID: "toolu-earlier-msg"},
+			turn.New(), nil, nil, &turn.TurnContext{SubagentFlipper: flipper})
+		So(err, ShouldBeNil)
+		So(flipper.calls, ShouldHaveLength, 1)
+		So(flipper.calls[0].status, ShouldEqual, "completed")
+	})
+}
+
+// TestSubagentDone_ForegroundBash_NoCrossTurnFlip 是上面那条的对照面:前台 bash 的
+// tool_use 就在本轮,只是按 trackSubagentState 的约定从未建 overlay。它同样命中不到
+// Mutate,但绝不能因此去跨消息扫一遍 —— 一条消息里几十次普通 Bash,每次都白跑一趟
+// blocks_json LIKE 全表扫描。
+func TestSubagentDone_ForegroundBash_NoCrossTurnFlip(t *testing.T) {
+	Convey("本轮内的前台 bash 完成帧不触发跨消息翻转", t, func() {
+		acc := turn.New()
+		acc.AddToolUse(&cagoblocks.ToolUseBlock{
+			ID:    "tu-fg",
+			Name:  "Bash",
+			Input: map[string]any{"command": "git status"},
+		}, "")
+		_ = SubagentStartedHandler{}.Apply(context.Background(),
+			agentruntime.SubagentStarted{
+				ToolCallID: "tu-fg",
+				Info:       agentruntime.SubagentInfo{Kind: "local_bash"},
+			}, acc, nil, nil, &turn.TurnContext{})
+
+		flipper := &fakeSubagentFlipper{}
+		err := SubagentDoneHandler{}.Apply(context.Background(),
+			agentruntime.SubagentDone{
+				ToolCallID: "tu-fg",
+				Info:       agentruntime.SubagentInfo{Kind: "local_bash", Status: "completed"},
+			}, acc, nil, nil, &turn.TurnContext{SubagentFlipper: flipper})
+
+		So(err, ShouldBeNil)
+		So(flipper.calls, ShouldHaveLength, 0)
+	})
+}
+
+// TestSubagentDone_CrossTurn_NilFlipperNoPanic:TurnContext 可能不带 flipper
+// (老调用点 / 测试构造的空上下文),此时退回旧的静默行为,不得 panic。
+func TestSubagentDone_CrossTurn_NilFlipperNoPanic(t *testing.T) {
+	Convey("TurnContext 无 flipper 时跨轮完成帧静默忽略", t, func() {
+		So(func() {
+			_ = SubagentDoneHandler{}.Apply(context.Background(),
+				agentruntime.SubagentDone{ToolCallID: "toolu-earlier-msg"},
+				turn.New(), nil, nil, &turn.TurnContext{})
+			_ = SubagentDoneHandler{}.Apply(context.Background(),
+				agentruntime.SubagentDone{ToolCallID: "toolu-earlier-msg"},
+				turn.New(), nil, nil, nil)
+		}, ShouldNotPanic)
+	})
+}
