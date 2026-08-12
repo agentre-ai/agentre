@@ -20,6 +20,11 @@ import {
 import { cn } from "@/lib/utils";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
 
+import {
+  CollapsibleCode,
+  CollapsibleCodeParams,
+  toolInputEntries,
+} from "../../collapsible-code";
 import { shouldIgnoreClickForSelection } from "../../copyable-text";
 import {
   TranscriptCard,
@@ -1052,16 +1057,11 @@ function AgentSpawnRunGroup({
               <AgentSpawnSection
                 label={t("canonical.agentSpawn.sections.output")}
               >
-                <div
-                  className={cn(
-                    "max-h-[220px] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-sm px-2.5 py-2",
-                    status === "failed"
-                      ? "bg-destructive-soft text-status-error"
-                      : "bg-muted/40 text-foreground",
-                  )}
-                >
-                  {output || t("canonical.agentSpawn.emptyResult")}
-                </div>
+                <CollapsibleCode
+                  value={output || t("canonical.agentSpawn.emptyResult")}
+                  surface={status === "failed" ? "destructive" : "muted"}
+                  bodyClassName="rounded-sm px-2.5 py-2"
+                />
               </AgentSpawnSection>
             ) : null}
           </div>
@@ -1138,6 +1138,14 @@ function AgentSpawnSection({
   );
 }
 
+function StepSectionLabel({ label }: { label: string }) {
+  return (
+    <span className="font-sans text-meta font-semibold uppercase tracking-[0.06em] text-muted-foreground">
+      {label}
+    </span>
+  );
+}
+
 function AgentSpawnStepCard({
   cwd,
   step,
@@ -1155,6 +1163,11 @@ function AgentSpawnStepCard({
   const result = step.result;
   const toolName = tool.toolName || "tool";
   const summary = summarizeRawTool(toolName, tool.toolInput, { cwd });
+  const params = React.useMemo(
+    () =>
+      toolInputEntries(tool.toolInput as Record<string, unknown> | undefined),
+    [tool.toolInput],
+  );
   const isError = !!result?.isError;
   const isUnmatchedTerminal = !result && !!terminalFallbackStatus;
   const isRunning = !result && !isUnmatchedTerminal;
@@ -1278,23 +1291,48 @@ function AgentSpawnStepCard({
             // subagent 折叠时把这些文本全挂进 DOM 就是几 MB 隐藏文本,layout/paint
             // 全程陪跑。展开单条 step 才渲染它的结果。
             expanded ? (
-              <div className="border-t border-border px-2.5 py-1.5">
+              <div className="flex flex-col gap-2 border-t border-border px-2.5 py-1.5">
                 <div
-                  data-testid="agent-spawn-step-result"
-                  className={cn(
-                    "max-h-[180px] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-sm px-2 py-1.5 text-foreground",
-                    isError
-                      ? "bg-destructive-soft text-status-error"
-                      : "bg-muted/40",
-                  )}
+                  data-testid="agent-spawn-step-params"
+                  className="flex flex-col gap-1.5"
                 >
-                  {result?.text ? (
-                    <span>{result.text}</span>
-                  ) : isRunning ? (
-                    "—"
-                  ) : result ? (
-                    t("canonical.agentSpawn.emptyResult")
-                  ) : null}
+                  <StepSectionLabel
+                    label={t("canonical.agentSpawn.sections.params")}
+                  />
+                  {params.length === 0 ? (
+                    <div className="text-muted-foreground">
+                      {t("canonical.raw.emptyParams")}
+                    </div>
+                  ) : (
+                    <CollapsibleCodeParams
+                      entries={params}
+                      testIdPrefix={
+                        uiStateKey ? `${uiStateKey}:param` : undefined
+                      }
+                    />
+                  )}
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <StepSectionLabel
+                    label={t("canonical.agentSpawn.sections.result")}
+                  />
+                  <div data-testid="agent-spawn-step-result">
+                    {result?.text ? (
+                      <CollapsibleCode
+                        value={result.text}
+                        surface={isError ? "destructive" : "muted"}
+                        bodyClassName="rounded-sm px-2 py-1.5"
+                      />
+                    ) : isRunning ? (
+                      <div className="rounded-sm bg-muted/40 px-2 py-1.5 text-muted-foreground">
+                        {"—"}
+                      </div>
+                    ) : result ? (
+                      <div className="rounded-sm bg-muted/40 px-2 py-1.5 text-muted-foreground">
+                        {t("canonical.agentSpawn.emptyResult")}
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             ) : null
@@ -1326,15 +1364,13 @@ function renderSummary(
     );
   }
   return (
-    <div
-      className={cn(
-        "max-h-[220px] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-sm border-l-2 px-2.5 py-2",
-        status === "error"
-          ? "border-status-error bg-destructive-soft text-status-error"
-          : "border-primary bg-muted/40 text-foreground",
+    <CollapsibleCode
+      value={resultBlock.text}
+      surface={status === "error" ? "destructive" : "muted"}
+      bodyClassName={cn(
+        "rounded-sm border-l-2 px-2.5 py-2",
+        status === "error" ? "border-status-error" : "border-primary",
       )}
-    >
-      {resultBlock.text}
-    </div>
+    />
   );
 }

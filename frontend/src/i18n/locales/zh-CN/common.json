@@ -350,6 +350,8 @@
       },
       "sections": {
         "prompt": "TASK PROMPT",
+        "params": "PARAMS",
+        "result": "RESULT",
         "tasks": "TASKS",
         "steps": "STEPS",
         "output": "OUTPUT",
@@ -371,6 +373,11 @@
       },
       "summaryRunning": "subagent 还在跑，结果稍后返回…",
       "waitingFirstStep": "等待第一个子调用…"
+    },
+    "code": {
+      "copy": "复制",
+      "copyAll": "复制全部",
+      "paramCount": "{{count}} 个参数"
     },
     "fileEdit": {
       "aria": "{{tool}} 工具调用",
@@ -612,7 +619,7 @@
         "opusWeekly": "Opus 7 天",
         "sonnetWeekly": "Sonnet 7 天",
         "title": "Claude 订阅用量",
-        "usedNote": "百分比为已用比例 · 每 60 秒刷新",
+        "usedNote": "百分比为已用比例 · 每 5 分钟刷新",
         "weekly": "7 天窗口"
       },
       "resetRemaining": " (重置剩 {{time}})",

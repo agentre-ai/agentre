@@ -50,6 +50,46 @@ describe("AI brand logos", () => {
     expect(resolveModelBrand(model)).toBe(brand);
   });
 
+  it("Given monochrome brands, when rendered, then their artwork uses the theme foreground color", () => {
+    render(
+      <>
+        <LlmProviderLogo providerType="anthropic" />
+        <LlmModelLogo model="kimi-k2.5" providerType="openai-chat" />
+        <LlmModelLogo model="gpt-5.4" providerType="openai-response" />
+        <LlmModelLogo model="grok-4" providerType="openai-chat" />
+      </>,
+    );
+
+    for (const [label, brand] of [
+      ["Anthropic", "anthropic"],
+      ["Kimi", "kimi"],
+      ["OpenAI", "openai"],
+      ["xAI", "xai"],
+    ]) {
+      const logo = screen.getByRole("img", { name: label });
+      const mark = logo.firstElementChild as HTMLElement;
+
+      expect(logo).toHaveAttribute("data-brand", brand);
+      expect(logo.querySelector("img")).not.toBeInTheDocument();
+      expect(mark).toHaveClass(
+        "block",
+        "bg-foreground",
+        "[mask-image:var(--brand-logo)]",
+        "[-webkit-mask-image:var(--brand-logo)]",
+      );
+      expect(mark.style.getPropertyValue("--brand-logo")).toContain("url(");
+    }
+  });
+
+  it("Given a colored brand, when rendered, then its official image colors remain unchanged", () => {
+    render(<LlmModelLogo model="claude-sonnet-4-6" providerType="anthropic" />);
+
+    const logo = screen.getByRole("img", { name: "Claude" });
+    expect(logo).toHaveAttribute("data-brand", "claude");
+    expect(logo.querySelector("img")).toBeInTheDocument();
+    expect(logo.querySelector(".bg-foreground")).not.toBeInTheDocument();
+  });
+
   it("Given an unknown model, when rendered, then it falls back to its provider brand", () => {
     render(<LlmModelLogo model="private-model-v1" providerType="anthropic" />);
 

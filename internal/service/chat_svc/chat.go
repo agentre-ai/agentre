@@ -1696,9 +1696,10 @@ func (s *chatSvc) isAgentInProjectChain(ctx context.Context, agentID int64, p *p
 // resolveAgentBackend 查 agent → backend → provider 并做完整的"可对话"校验，同时是
 // 会话粘性（R15b / 决策36）的唯一解析点：sess 非 nil 且已经钉住某一档
 // (ExecAgentBackendID > 0) 时直接解析那一档、不重挑 —— 同一台机器上可以有多档，钉住
-// 的是档本身，续轮不因排序里有更靠前的档现在可用而改派。没钉住时（首轮 / sess 为
-// nil / 老会话）按 R15 顺序挑第一个可用的档（PickExecTarget，task 2 的挑选口）；挑到
-// 之后由调用方（startTurn / StartGoal）负责把它写回会话行 —— 本函数只解析，不写库。
+// 的是档本身，续轮不因排序里有更靠前的档现在可用而改派。唯一恢复边界是钉住的
+// backend 已被删除：该引用已经不再指向一档，按 Agent 当前列表重挑并替换失效钉档。
+// 没钉住时（首轮 / sess 为 nil / 老会话）按 R15 顺序挑第一个可用的档
+// （PickExecTarget，task 2 的挑选口）。
 //
 // Agent 的执行目标列表为空时退化为直接用 a.AgentBackendID 解析：这与
 // agent_repo.hydrateExecTargets 的语义一致（两者理论上永远同值），提前短路避免对着
@@ -1729,6 +1730,19 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, sess *chat_entity.Ses
 	be, err := agent_backend_repo.AgentBackend().Find(ctx, backendID)
 	if err != nil {
 		return nil, nil, nil, operationFailedWithCause(ctx, err)
+	}
+	if be == nil && sess != nil && sess.ID > 0 && sess.ExecAgentBackendID == backendID {
+		choice, pickErr := s.PickExecTarget(ctx, agentID, projectID)
+		if pickErr != nil {
+			return nil, nil, nil, pickErr
+		}
+		be = choice.Backend
+		sess.ExecAgentBackendID = 0
+		s.pinExecTargetIfUnset(ctx, sess, be)
+		logger.Ctx(ctx).Info("chat_svc.resolveAgentBackend: recovered deleted pinned exec target",
+			zap.Int64("sessionId", sess.ID),
+			zap.Int64("deletedAgentBackendId", backendID),
+			zap.Int64("agentBackendId", be.ID))
 	}
 	if be == nil {
 		return nil, nil, nil, i18n.NewError(ctx, code.ChatAgentNotChattable)

@@ -737,7 +737,9 @@ func (t *subagentTracker) applySnapshotMetadata(index int, snapshot decodedSnaps
 	}
 	if snapshot.errorMessage != "" {
 		run.info.ErrorMessage = snapshot.errorMessage
-		run.info.Status = "failed"
+		if final {
+			run.info.Status = "failed"
+		}
 	}
 	if final {
 		if snapshot.summary != "" {

@@ -564,6 +564,7 @@ function groupedChildren(
     runId?: string;
     toolName: string;
     toolUseId: string;
+    toolInput?: Record<string, unknown>;
     result?: string;
     isError?: boolean;
   }>,
@@ -578,6 +579,7 @@ function groupedChildren(
       toolName: entry.toolName,
       toolUseId: entry.toolUseId,
       subagentRunId: entry.runId,
+      ...(entry.toolInput ? { toolInput: entry.toolInput } : {}),
     } as ChatBlockData;
     target.push(toolBlock);
     all.push(toolBlock);
@@ -1250,10 +1252,76 @@ describe("AgentSpawnCard step-list laziness (perf regression)", () => {
       within(details).getByTestId("agent-spawn-step-status"),
     ).toBeInTheDocument();
     expect(within(details).queryByTestId("agent-spawn-step-result")).toBeNull();
+    expect(within(details).queryByTestId("agent-spawn-step-params")).toBeNull();
 
     fireEvent.click(within(details).getByRole("button", { name: /Read/i }));
     expect(
       within(details).getByTestId("agent-spawn-step-result"),
     ).toHaveTextContent("xxxxx");
+  });
+});
+
+describe("AgentSpawnStepCard params section", () => {
+  it("Given an expanded step with tool input, When expanded, Then its params are listed above the result", () => {
+    const block = normalizedSpawnBlock({
+      mode: "single",
+      status: "completed",
+      runs: [{ id: "run-one", index: 0, status: "completed" }],
+    });
+    const { container } = render(
+      <AgentSpawnCard
+        toolBlock={block}
+        childBlocks={groupedChildren([
+          {
+            runId: "run-one",
+            toolName: "Read",
+            toolUseId: "read-1",
+            toolInput: { file_path: "./a.ts", offset: 10 },
+            result: "content",
+          },
+        ])}
+      />,
+    );
+    const details = expandCard(container);
+    fireEvent.click(within(details).getByRole("button", { name: /Read/i }));
+    const params = within(details).getByTestId("agent-spawn-step-params");
+    expect(within(params).getByText("file_path")).toBeInTheDocument();
+    expect(within(params).getByText("./a.ts")).toBeInTheDocument();
+    expect(within(params).getByText("offset")).toBeInTheDocument();
+    expect(within(params).getByText("10")).toBeInTheDocument();
+  });
+
+  it("Given a step with a long param value, When expanded, Then the value scrolls without an expand control", () => {
+    const block = normalizedSpawnBlock({
+      mode: "single",
+      status: "completed",
+      runs: [{ id: "run-one", index: 0, status: "completed" }],
+    });
+    const { container } = render(
+      <AgentSpawnCard
+        toolBlock={block}
+        childBlocks={groupedChildren([
+          {
+            runId: "run-one",
+            toolName: "Bash",
+            toolUseId: "bash-1",
+            toolInput: {
+              command: "echo hi",
+              note: "l1\nl2\nl3\nl4\nl5\nl6",
+            },
+            result: "ok",
+          },
+        ])}
+      />,
+    );
+    const details = expandCard(container);
+    fireEvent.click(within(details).getByRole("button", { name: /Bash/i }));
+    expect(
+      within(details).queryByRole("button", { name: "Expand all" }),
+    ).toBeNull();
+    expect(within(details).getByText(/l6/)).toHaveClass(
+      "max-h-64",
+      "overflow-auto",
+    );
   });
 });

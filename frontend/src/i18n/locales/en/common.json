@@ -350,6 +350,8 @@
       },
       "sections": {
         "prompt": "TASK PROMPT",
+        "params": "PARAMS",
+        "result": "RESULT",
         "tasks": "TASKS",
         "steps": "STEPS",
         "output": "OUTPUT",
@@ -371,6 +373,11 @@
       },
       "summaryRunning": "Subagent is still running. Results will return later...",
       "waitingFirstStep": "Waiting for the first child call..."
+    },
+    "code": {
+      "copy": "Copy",
+      "copyAll": "Copy all",
+      "paramCount": "{{count}} params"
     },
     "fileEdit": {
       "aria": "{{tool}} tool call",
@@ -612,7 +619,7 @@
         "opusWeekly": "Opus 7-day",
         "sonnetWeekly": "Sonnet 7-day",
         "title": "Claude subscription usage",
-        "usedNote": "Percentages are usage · refreshed every 60s",
+        "usedNote": "Percentages are usage · refreshed every 5 minutes",
         "weekly": "7-day window"
       },
       "resetRemaining": " (resets in {{time}})",

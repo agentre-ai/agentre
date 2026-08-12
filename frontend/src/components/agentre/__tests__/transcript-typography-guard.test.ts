@@ -36,6 +36,9 @@ export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [
   { file: "markdown-text.tsx" },
   { file: "code-block.tsx" },
   { file: "thinking-block.tsx" },
+  // collapsible-code.tsx 是卡片共用的长内容滚动块。复制角标按钮用 rounded
+  // (非 rounded-md)、尺寸用 size-3/size-5(非 text-[9/10/11]px)。
+  { file: "collapsible-code.tsx" },
   // rich-link.tsx 被 markdown-text.tsx 注册为 markdown 的 `a` 渲染器,每条含链接
   // 的消息都会渲染它,是对话流组件。7 处 rounded-md 分两类:3 处是手写的 Copy
   // <button>,故意与全局 shadcn Button 保持一致的 rounded-md;4 处是 HoverCard
