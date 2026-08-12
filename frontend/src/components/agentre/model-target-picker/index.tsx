@@ -134,7 +134,13 @@ export function ModelTargetPicker({
     if (!selected) return specialLabel;
     const p = catalog.find((x) => x.providerKey === selected.providerKey);
     if (!p) return selected.providerKey;
-    if (!selected.modelKey) return p.name;
+    if (!selected.modelKey) {
+      // provider-default：摘要必须显示 Provider 与实际模型（当前默认模型的解析结果），
+      // 不得只显示 Provider 名称（spec「Backend and Route flow」）。默认模型缺失/停用
+      // 时无实际模型可展示，回落 Provider 名。
+      const dm = p.defaultModel;
+      return dm ? `${p.name} · ${dm.modelId}` : p.name;
+    }
     const m = p.models.find((x) => x.modelKey === selected.modelKey);
     return m ? `${p.name} · ${m.modelId}` : p.name;
   }, [catalog, selected, specialLabel]);

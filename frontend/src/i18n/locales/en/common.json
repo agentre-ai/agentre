@@ -256,8 +256,8 @@
       "fixedNote": "Fixed to this model; provider default changes won't affect it"
     },
     "providerSync": {
-      "descriptionOnly": "Sync writes the locally saved API key to the remote agentred state file. Other form changes are not saved.",
-      "descriptionSave": "The selected remote agentred does not have these providers configured. Sync writes the locally saved API key to the remote agentred state file, then continues saving the agent backend.",
+      "descriptionOnly": "Sync copies the provider's BaseURL, protocol, API key, default model and model catalog to the remote agentred state file. Other form changes are not saved.",
+      "descriptionSave": "The selected remote agentred does not have these providers configured. Sync copies the provider's BaseURL, protocol, API key, default model and model catalog to the remote agentred state file, then continues saving the agent backend.",
       "failedTitle": "Sync Failed",
       "inlineDescription": "This backend will run on remote agentred. You can sync the selected LLM provider to the remote state file first.",
       "inlineTitle": "Remote Provider Sync",

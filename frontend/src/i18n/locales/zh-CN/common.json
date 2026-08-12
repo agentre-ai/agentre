@@ -256,8 +256,8 @@
       "fixedNote": "已固定该模型，Provider 默认变化不会影响它"
     },
     "providerSync": {
-      "descriptionOnly": "同步会把本机保存的 API Key 写入远端 agentred 状态文件；不会保存表单其它改动。",
-      "descriptionSave": "所选远端 agentred 尚未配置这些 Provider。同步会把本机保存的 API Key 写入远端 agentred 状态文件，然后继续保存 Agent 后端。",
+      "descriptionOnly": "同步会把该 Provider 的 BaseURL、协议、API Key、默认模型与模型目录复制到远端 agentred 状态文件；不会保存表单其它改动。",
+      "descriptionSave": "所选远端 agentred 尚未配置这些 Provider。同步会把 BaseURL、协议、API Key、默认模型与模型目录复制到远端 agentred 状态文件，然后继续保存 Agent 后端。",
       "failedTitle": "同步失败",
       "inlineDescription": "当前后端会在远端 agentred 运行；可先把所选 LLM Provider 同步到远端状态文件。",
       "inlineTitle": "远端 Provider 同步",

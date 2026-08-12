@@ -228,8 +228,14 @@ describe("ProviderPill · 新建会话 ModelTarget 选择器", () => {
     ).toBeInTheDocument();
   });
 
-  it("选中 provider-default → pill 显示供应商名；点「跟随 agent 绑定」清回", async () => {
+  it("选中 provider-default → pill 显示供应商名 · 当前默认模型；点「跟随 agent 绑定」清回", async () => {
     appMocks.ListLLMProviders.mockResolvedValue({ items: ALL_PROVIDERS });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [
+        model("mk-gpt5-default", "gpt-5"),
+        model("mk-fixed", "gpt-5-codex"),
+      ],
+    });
     render(<Harness backendType="codex" />);
 
     const pill = await waitFor(() => screen.getByTestId("provider-pill"));
@@ -237,14 +243,22 @@ describe("ProviderPill · 新建会话 ModelTarget 选择器", () => {
 
     const user = userEvent.setup();
     await user.click(pill);
-    await user.click(
-      within(screen.getByRole("listbox")).getByRole("option", {
-        name: /Acme Resp/,
-      }),
-    );
+    // provider-default 项（label=Acme Resp + sublabel=gpt-5 + Default 徽标）与 fixed
+    // 项（gpt-5-codex）都含 "Acme Resp"：用 sublabel 区分，选 provider-default。
+    const providerDefault = within(screen.getByRole("listbox"))
+      .getAllByRole("option")
+      .find(
+        (o) =>
+          o.textContent?.includes("gpt-5") &&
+          !o.textContent?.includes("gpt-5-codex"),
+      );
+    expect(providerDefault).toBeDefined();
+    await user.click(providerDefault as HTMLElement);
 
-    // 选中后 pill 显示供应商名。
-    expect(screen.getByTestId("provider-pill")).toHaveTextContent("Acme Resp");
+    // provider-default 摘要显示 Provider · 当前默认模型（不得只显示 Provider 名）。
+    expect(screen.getByTestId("provider-pill")).toHaveTextContent(
+      "Acme Resp · gpt-5",
+    );
 
     // 点击「跟随 agent 绑定」清回（无瞬态选择）。
     await user.click(screen.getByTestId("provider-pill"));

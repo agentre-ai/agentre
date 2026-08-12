@@ -882,7 +882,9 @@ describe("AgentBackendsPanel", () => {
       name: /Sync Remote LLM Provider/,
     });
     expect(
-      within(syncDialog).getByText(/API key to the remote agentred state file/),
+      within(syncDialog).getByText(
+        /API key, default model and model catalog to the remote agentred state file/,
+      ),
     ).toBeInTheDocument();
     expect(mocks.CreateAgentBackend).not.toHaveBeenCalled();
 

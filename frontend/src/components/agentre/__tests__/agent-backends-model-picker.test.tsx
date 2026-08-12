@@ -158,6 +158,23 @@ describe("ModelTargetPicker", () => {
     });
   });
 
+  it("provider-default 已选中时触发按钮显示 Provider · 实际模型（路由摘要不得只显示 Provider 名称）", () => {
+    render(
+      <ModelTargetPicker
+        scenario="route"
+        aria-label="LLM Provider"
+        backendType="claudecode"
+        selected={{ providerKey: "k-anthropic", modelKey: "" }}
+        onChange={vi.fn()}
+        catalog={catalog()}
+      />,
+    );
+    // 摘要 = Provider + 当前默认模型（解析出的生效模型），不得只显示 Provider 名。
+    expect(
+      screen.getByRole("button", { name: "LLM Provider" }),
+    ).toHaveTextContent("Anthropic · claude-sonnet-4-6");
+  });
+
   it("搜索可过滤，空目录渲染空态", async () => {
     const user = userEvent.setup();
     render(
