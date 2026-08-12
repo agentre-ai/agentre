@@ -68,3 +68,42 @@ func TestFile(t *testing.T) {
 		So(k.Delete("acc"), ShouldEqual, keychain.ErrNotFound)
 	})
 }
+
+func TestValidateFileDir(t *testing.T) {
+	Convey("an existing 0700 directory passes", t, func() {
+		dir := filepath.Join(t.TempDir(), "kc")
+		So(os.MkdirAll(dir, 0o700), ShouldBeNil)
+		So(keychain.ValidateFileDir(dir), ShouldBeNil)
+	})
+
+	Convey("a missing directory fails", t, func() {
+		err := keychain.ValidateFileDir(filepath.Join(t.TempDir(), "does-not-exist"))
+		So(err, ShouldNotBeNil)
+	})
+
+	Convey("a file path fails", t, func() {
+		f := filepath.Join(t.TempDir(), "file")
+		So(os.WriteFile(f, []byte("x"), 0o600), ShouldBeNil)
+		err := keychain.ValidateFileDir(f)
+		So(err, ShouldNotBeNil)
+	})
+
+	Convey("a group/other-accessible directory fails", t, func() {
+		dir := filepath.Join(t.TempDir(), "kc")
+		So(os.MkdirAll(dir, 0o755), ShouldBeNil)
+		err := keychain.ValidateFileDir(dir)
+		So(err, ShouldNotBeNil)
+	})
+
+	Convey("a directory without owner write fails", t, func() {
+		if os.Geteuid() == 0 {
+			t.Skip("running as root; permission bits do not gate writes")
+		}
+		dir := filepath.Join(t.TempDir(), "kc")
+		So(os.MkdirAll(dir, 0o700), ShouldBeNil)
+		So(os.Chmod(dir, 0o500), ShouldBeNil)
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+		err := keychain.ValidateFileDir(dir)
+		So(err, ShouldNotBeNil)
+	})
+}

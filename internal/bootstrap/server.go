@@ -10,22 +10,23 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/server_state_entity"
-	"github.com/agentre-ai/agentre/internal/pkg/keychain"
 	"github.com/agentre-ai/agentre/internal/repository/server_state_repo"
 	"github.com/agentre-ai/agentre/internal/repository/syncstate_repo"
 	"github.com/agentre-ai/agentre/internal/service/server_svc"
 	"github.com/agentre-ai/agentre/internal/service/sync_svc"
 )
 
-// InitServer wires the desktop's keychain + server_state_repo + server_svc defaults.
+// InitServer wires the server_state_repo + server_svc defaults.
 // The server_svc starts WITHOUT a wails event emitter; app.go.startup binds it
 // later via server_svc.Server().SetEmitter(...).
+//
+// The keychain backend is established earlier in Init (initKeychain), before any
+// keychain-dependent service is assembled; InitServer must not reset it.
 //
 // Reads the persisted server_url to point the http client at the right host;
 // when no row exists yet, the client base URL is empty and StartLogin will
 // rebuild it from the user-supplied URL anyway.
 func InitServer(ctx context.Context) error {
-	keychain.SetDefault(keychain.NewSystem())
 	server_state_repo.RegisterServerState(server_state_repo.NewServerState())
 
 	row, _ := server_state_repo.ServerState().Get(ctx)

@@ -2,6 +2,7 @@ package keychain
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -20,6 +21,33 @@ func NewFile(dir string) Keychain { return &fileKC{dir: dir} }
 
 func (f *fileKC) path(account string) string {
 	return filepath.Join(f.dir, account)
+}
+
+// ValidateFileDir 校验一个可作为 file keychain 存储目录的安全边界:
+//   - 必须已存在且是目录(e2e runner 以 0700 预创建;缺失 = 配置错误);
+//   - 权限必须严格 0700 —— 任何 group/other 位都视为不安全;
+//   - 当前用户必须可写(真写一发 probe 再删,当场暴露只读挂载 / 他人属主 / 只读目录)。
+//
+// 任何一项失败都返回错误:调用方(e2e bootstrap)应直接终止启动,而不是回退其他后端。
+func ValidateFileDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("keychain dir %q: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("keychain dir %q is not a directory", dir)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		return fmt.Errorf("keychain dir %q permissions %#o are not isolated; want 0700", dir, perm)
+	}
+	probe := filepath.Join(dir, ".keychain-probe")
+	if err := os.WriteFile(probe, []byte("probe"), 0o600); err != nil {
+		return fmt.Errorf("keychain dir %q not writable: %w", dir, err)
+	}
+	if err := os.Remove(probe); err != nil {
+		return fmt.Errorf("keychain dir %q probe cleanup: %w", dir, err)
+	}
+	return nil
 }
 
 func (f *fileKC) Get(account string) (string, error) {
