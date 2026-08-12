@@ -413,6 +413,48 @@ func TestListAgentSkillPacks(t *testing.T) {
 	})
 }
 
+// TestListAgentSkillCommands_SelfFingerprintBackendMergesNativeCommands R13 认领后
+// 本机 backend 的 DeviceID 是本机指纹:命令目录的「本地档才合并 CLI 原生命令」分支
+// 不能只看 DeviceID 空串(IsLocal),必须同样认本机指纹——否则认领后本地档的技能
+// 命令目录会缺掉 CLI 自己解析的 user/project/system 命令,只剩插件包里的。
+func TestListAgentSkillCommands_SelfFingerprintBackendMergesNativeCommands(t *testing.T) {
+	Convey("Given a self-fingerprint claudecode backend (R13 canonicalized local), when commands are listed, then native CLI commands are merged", t, func() {
+		ctrl := gomock.NewController(t)
+		al := mock_skill_svc.NewMockAgentLookup(ctrl)
+		bl := mock_skill_svc.NewMockBackendLookup(ctrl)
+		ag := &agent_entity.Agent{ID: 1, AgentBackendID: 9}
+		al.EXPECT().Find(gomock.Any(), int64(1)).Return(ag, nil).AnyTimes()
+		bl.EXPECT().Find(gomock.Any(), int64(9)).Return(&agent_backend_entity.AgentBackend{
+			Type: string(agent_backend_entity.TypeClaudeCode), DeviceID: "sha256:self",
+		}, nil).AnyTimes()
+
+		rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+		rds.EXPECT().DeviceFingerprint().Return("sha256:self", nil).AnyTimes()
+		prevSvc := remote_device_svc.Default()
+		remote_device_svc.SetDefault(rds)
+		t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+		restorePacks := agentskill.SwapDiscovererForTest(agent_backend_entity.TypeClaudeCode, fakeDisc{[]agentskill.SkillPack{
+			{ID: "local@desktop", Name: "local", Skills: []string{"local:run"}, Installed: true, Source: agentskill.SourceInstalled, GloballyEnabled: true},
+		}})
+		defer restorePacks()
+		restoreCommands := agentskill.SwapCommandDiscovererForTest(agent_backend_entity.TypeClaudeCode, fakeCommandDisc{[]agentskill.SkillCommand{
+			{Name: "init", Description: "Initialize a project"},
+		}})
+		defer restoreCommands()
+		et := &fakeExecTargets{}
+		s := newForTest(al, bl, et)
+
+		catalog, err := s.ListAgentSkillCommands(context.Background(), 1, "/tmp/project")
+		So(err, ShouldBeNil)
+		// 插件包命令与 CLI 原生命令都要在:认领后的本地档不再只回插件目录。
+		So(catalog.Commands, ShouldResemble, []SkillCommandDTO{
+			{Name: "local:run"},
+			{Name: "init", Description: "Initialize a project"},
+		})
+	})
+}
+
 func TestListAgentSkillCommands(t *testing.T) {
 	Convey("Given an agent with inherited plugin skills plus backend-native standalone skills", t, func() {
 		ctrl := gomock.NewController(t)

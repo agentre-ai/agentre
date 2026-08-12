@@ -312,7 +312,11 @@ func (s *Service) ListAgentSkillCommands(ctx context.Context, agentID int64, cwd
 		}
 	}
 
-	if discovered.backend != nil && discovered.backend.IsLocal() {
+	// 指向本机指纹的档（R13 认领后本机 backend 的 DeviceID == 本机指纹）跟 DeviceID 空
+	// 一样是本地档：CLI 自己解析的 user/project/system 命令也必须合并进来，不能因为
+	// DeviceID 非空就按远端档跳过（discoverForBackend 已把 self 当本地发现，这里只差
+	// 原生命令这一半边）。
+	if discovered.backend != nil && (discovered.backend.IsLocal() || beTargetsSelf(ctx, discovered.backend)) {
 		if commandDiscoverer, ok := agentskill.CommandDiscovererFor(discovered.backendType); ok {
 			native, err := commandDiscoverer.DiscoverCommands(ctx, agentskill.CommandDiscoverQuery{
 				BackendType:    discovered.backendType,
