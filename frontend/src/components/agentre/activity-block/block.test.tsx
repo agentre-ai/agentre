@@ -64,6 +64,12 @@ const failedStep = toolStep(
   { isError: true, text: '{"exitCode":1,"output":"boom"}' },
 );
 
+// subagent sidecar 是 wails 生成的 class 类型(带 convertValues),测试只用其中
+// 两个字段,按纯数据对象构造后 cast —— 与 store 里同一手法。
+function subagentState(status: string, taskId: string) {
+  return { status, taskId } as unknown as ChatBlockData["subagent"];
+}
+
 function summaryOf(partial: Partial<ActivitySummary> = {}): ActivitySummary {
   return {
     failures: 0,
@@ -347,6 +353,125 @@ describe("ActivityBlock 活动行(展开态)", () => {
     expect(screen.queryByText("check the store")).toBeNull();
     fireEvent.click(row);
     expect(screen.getByText("check the store")).toBeInTheDocument();
+  });
+});
+
+// 「没有标记 = 成功」只有在「还没成功的那些步」都带标记时才成立(spec 决策 10:
+// 只有运行中 / 失败 / 待审批有标记)。没有结果的一步、以及结果只是启动 ACK 的
+// 后台命令,都还没有成功 —— 它们不带标记就是把发生过的事藏了。
+describe("ActivityBlock 未落定的一步", () => {
+  const pendingStep = toolStep("message:1:tool:tool:bash-3", {
+    toolInput: { command: "go build ./..." },
+    toolName: "Bash",
+  });
+
+  const backgroundStep = toolStep(
+    "message:1:tool:tool:bash-4",
+    {
+      subagent: subagentState("running", "bg_1"),
+      toolInput: { command: "pnpm dev", run_in_background: true },
+      toolName: "Bash",
+    },
+    { text: "Command running in background with ID: bg_1" },
+  );
+
+  it("Given 一步还没有结果, Then 该行带运行中标记而不是与成功步同形", () => {
+    renderBlock({ steps: [readStep, pendingStep] });
+    fireEvent.click(screen.getByTestId("activity-header"));
+
+    const rows = screen.getAllByTestId("activity-row");
+    expect(within(rows[1]).getByTestId("activity-pending")).toHaveTextContent(
+      "running",
+    );
+    // 落定的那一步仍然什么标记都没有。
+    expect(within(rows[0]).queryByTestId("activity-pending")).toBeNull();
+  });
+
+  it("Given 一步是仍在后台跑的命令, Then 该行报后台运行与任务 id", () => {
+    renderBlock({ steps: [readStep, backgroundStep] });
+    fireEvent.click(screen.getByTestId("activity-header"));
+
+    const marker = within(screen.getAllByTestId("activity-row")[1]).getByTestId(
+      "activity-pending",
+    );
+    expect(marker).toHaveTextContent("Background");
+    expect(marker).toHaveTextContent("bg_1");
+  });
+
+  it("Given 后台命令连启动 ACK 都还没回, Then 只报一个标记(不叠运行中 + 后台)", () => {
+    renderBlock({
+      steps: [
+        readStep,
+        toolStep("message:1:tool:tool:bash-6", {
+          subagent: subagentState("running", "bg_3"),
+          toolInput: { command: "pnpm dev", run_in_background: true },
+          toolName: "Bash",
+        }),
+      ],
+    });
+    fireEvent.click(screen.getByTestId("activity-header"));
+
+    // getByTestId 本身就会在出现第二个标记时报错。
+    const row = screen.getAllByTestId("activity-row")[1];
+    expect(within(row).getByTestId("activity-pending")).toHaveTextContent(
+      "running",
+    );
+  });
+
+  it("Given 后台任务已经结束, Then 该行不再报后台运行", () => {
+    renderBlock({
+      steps: [
+        readStep,
+        toolStep(
+          "message:1:tool:tool:bash-5",
+          {
+            subagent: subagentState("completed", "bg_2"),
+            toolInput: { command: "pnpm build", run_in_background: true },
+            toolName: "Bash",
+          },
+          { text: "Command running in background with ID: bg_2" },
+        ),
+      ],
+    });
+    fireEvent.click(screen.getByTestId("activity-header"));
+
+    expect(
+      within(screen.getAllByTestId("activity-row")[1]).queryByTestId(
+        "activity-pending",
+      ),
+    ).toBeNull();
+  });
+
+  it("Given 调用方声明这一轮已终结, Then 没配到结果的一步报结果未知且不再转圈", () => {
+    const { container } = renderBlock({
+      pendingOutcome: "unknown",
+      steps: [readStep, pendingStep],
+    });
+    fireEvent.click(screen.getByTestId("activity-header"));
+
+    expect(
+      within(screen.getAllByTestId("activity-row")[1]).getByTestId(
+        "activity-pending",
+      ),
+    ).toHaveTextContent("unknown result");
+    expect(container.querySelector(".animate-spin")).toBeNull();
+  });
+
+  it("Given 这一轮以失败终结, Then 没配到结果的一步按失败行呈现", () => {
+    renderBlock({ pendingOutcome: "failed", steps: [readStep, pendingStep] });
+    fireEvent.click(screen.getByTestId("activity-header"));
+
+    const row = screen.getAllByTestId("activity-row")[1];
+    expect(row).toHaveAttribute("data-failed", "true");
+    expect(within(row).getByTestId("activity-name").className).toContain(
+      "text-status-error",
+    );
+  });
+
+  it("Given 单条不成组的一步还在跑, Then 那一行同样带运行中标记", () => {
+    renderBlock({ steps: [pendingStep], summary: summaryOf({ steps: 1 }) });
+
+    expect(screen.getByTestId("activity-pending")).toHaveTextContent("running");
   });
 });
 

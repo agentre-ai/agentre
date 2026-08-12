@@ -26,7 +26,12 @@ import { shouldIgnoreClickForSelection } from "../copyable-text";
 import type { ActivityStep } from "../transcript-rows";
 import { useTranscriptBooleanState } from "../transcript-ui-state";
 
-import { canonicalOf, stepFacts, stepWeight } from "./facts";
+import {
+  canonicalOf,
+  stepFacts,
+  stepWeight,
+  type PendingOutcome,
+} from "./facts";
 
 // ActivityRow —— 活动块展开后的一行。整行是一个原生 button:可 Tab 聚焦、带
 // aria-expanded、focus-visible 走既有的 ring。展开指示(chevron)静息时不可见,
@@ -59,9 +64,12 @@ const ICON_CLASS: Record<string, string> = {
 export function ActivityRow({
   step,
   cwd,
+  pendingOutcome,
 }: {
   step: ActivityStep;
   cwd?: string;
+  /** 这一步没有结果时报什么(默认「运行中」)—— 见 facts.ts 的 PendingOutcome。 */
+  pendingOutcome?: PendingOutcome;
 }) {
   const { t } = useTranslation();
   // 折叠态挂在这一步「单独成行时」的同一个 key 上 —— 组内组外字节级一致,
@@ -72,7 +80,7 @@ export function ActivityRow({
   );
 
   const weight = stepWeight(step);
-  const facts = stepFacts(step);
+  const facts = stepFacts(step, pendingOutcome);
   const isThinking = step.type === "thinking";
   const toolBlock = isThinking ? undefined : step.toolBlock;
   const input = toolBlock?.toolInput as Record<string, unknown> | undefined;
@@ -171,6 +179,9 @@ export function ActivityRow({
 // StepTrailing:行尾的实义信息。写操作报增删行,失败报红色 exit N,其余报结果
 // 规模(多行)或结果预览(单行)—— 成功态腾出来的位置放实义信息,不放绿胶囊。
 // 失败行不报预览:它的右侧留给红色 exit N,失败详情点开就在展开体里。
+//
+// 还没落定的一步(没有结果 / 后台还在跑)在这里报状态标记而不是结果信息 ——
+// 「没有标记 = 成功」要成立,没成功的那些步就必须留着标记(spec 决策 10)。
 function StepTrailing({ facts }: { facts: ReturnType<typeof stepFacts> }) {
   const { t } = useTranslation();
   return (
@@ -185,7 +196,9 @@ function StepTrailing({ facts }: { facts: ReturnType<typeof stepFacts> }) {
           −{facts.minus}
         </span>
       ) : null}
-      {facts.exitCode !== undefined ? (
+      {facts.pending ? (
+        <PendingMarker outcome={facts.pending} />
+      ) : facts.exitCode !== undefined ? (
         <span
           className={cn(
             "shrink-0",
@@ -199,7 +212,26 @@ function StepTrailing({ facts }: { facts: ReturnType<typeof stepFacts> }) {
           {t("activity.row.failed")}
         </span>
       ) : null}
-      {facts.failed ? null : facts.lines !== undefined ? (
+      {/* 这一步已经报过 pending 标记时不再叠一个后台标记 —— 启动 ACK 还没到的
+          后台命令两者同时成立,一行两个标记只会互相打架。 */}
+      {facts.pending ? null : facts.backgroundRunning ? (
+        // 后台任务:结果是启动 ACK,报「还在后台跑 · 任务 id」而不是那段 ACK 文本。
+        <span
+          data-testid="activity-pending"
+          className="flex max-w-56 shrink-0 items-center gap-1 truncate text-status-running"
+        >
+          <RunningDot />
+          {t("canonical.raw.backgroundRunning")}
+          {facts.backgroundTaskId ? (
+            <>
+              <span aria-hidden="true" className="opacity-50">
+                {"·"}
+              </span>
+              <span className="truncate">{facts.backgroundTaskId}</span>
+            </>
+          ) : null}
+        </span>
+      ) : facts.failed ? null : facts.lines !== undefined ? (
         <span className="shrink-0 text-subtle-foreground">
           {t("activity.row.lines", { count: facts.lines })}
         </span>
@@ -209,6 +241,48 @@ function StepTrailing({ facts }: { facts: ReturnType<typeof stepFacts> }) {
         </span>
       ) : null}
     </>
+  );
+}
+
+// PendingMarker:没有结果的一步报什么。运行中用 status-running + 脉冲点(与组头
+// 运行态同一个语汇);已终结却没配到结果的一步按归属报 失败 / 已取消 / 结果未知
+// —— 它们不转圈(轮次已经结束了,再转就是谎报正在跑)。
+function PendingMarker({ outcome }: { outcome: PendingOutcome }) {
+  const { t } = useTranslation();
+  if (outcome === "running") {
+    return (
+      <span
+        data-testid="activity-pending"
+        className="flex shrink-0 items-center gap-1 text-status-running"
+      >
+        <RunningDot />
+        {t("activity.row.running")}
+      </span>
+    );
+  }
+  return (
+    <span
+      data-testid="activity-pending"
+      className={cn(
+        "shrink-0",
+        outcome === "failed" ? "text-status-error" : "text-subtle-foreground",
+      )}
+    >
+      {outcome === "failed"
+        ? t("activity.row.failed")
+        : outcome === "canceled"
+          ? t("activity.row.canceled")
+          : t("activity.row.unknown")}
+    </span>
+  );
+}
+
+function RunningDot() {
+  return (
+    <span
+      aria-hidden="true"
+      className="size-1.5 shrink-0 rounded-full bg-status-running motion-safe:animate-pulse"
+    />
   );
 }
 

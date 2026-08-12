@@ -27,10 +27,30 @@ export function canonicalOf(block?: ChatBlockData): CanonicalDTO | undefined {
   return (block as { canonical?: CanonicalDTO } | undefined)?.canonical;
 }
 
+// PendingOutcome —— 一步没有 tool_result 时按什么归属报它。
+// 「没有标记 = 成功」只有在还没成功的步骤都带标记时才成立(spec 决策 10:只有
+// 运行中 / 失败 / 待审批有标记),所以没有结果的一步一定要报点什么:
+//   - running:还在跑(转录里的默认 —— 结果随时可能到);
+//   - failed / canceled / unknown:所在的 run 已经终结,这一步始终没配到结果,
+//     归属不明。沿用旧 AgentSpawnStepCard 的同一套判据(见 agent-spawn/card.tsx
+//     的 unmatchedOutcome),不是新语义。
+export type PendingOutcome = "running" | "failed" | "canceled" | "unknown";
+
 /** 一步执行完之后可报出来的事实。空值一律表示「这一步没有这项事实」。 */
 export type StepFacts = {
   /** 结果被标成错误 —— 与组头红色失败计数同一判据(resultBlock.isError)。 */
   failed: boolean;
+  /** 这一步还没有结果时的归属;有结果就是 undefined。 */
+  pending?: PendingOutcome;
+  /**
+   * run_in_background 的命令此刻还在后台跑。它的 tool_result 是**启动 ACK**,
+   * 一到就有结果,所以不能靠 pending 判(与 raw/card.tsx 的 bgRunning 同一判据:
+   * 看后台 subagent 的状态)。没有这个标记,一个还在跑的后台任务在转录里与
+   * 跑完的一步完全同形。
+   */
+  backgroundRunning?: boolean;
+  /** 后台任务 id —— 与「后台任务」面板里的那一条对得上。 */
+  backgroundTaskId?: string;
   /** 非零退出码。命令类结果的 JSON 形状里才有。 */
   exitCode?: number;
   /** file.edit / file.write 的增删行。 */
@@ -44,7 +64,10 @@ export type StepFacts = {
   lines?: number;
 };
 
-export function stepFacts(step: ActivityStep): StepFacts {
+export function stepFacts(
+  step: ActivityStep,
+  pendingOutcome: PendingOutcome = "running",
+): StepFacts {
   if (step.type === "thinking") {
     const text = step.block.text ?? "";
     return { failed: false, resultText: text };
@@ -53,12 +76,16 @@ export function stepFacts(step: ActivityStep): StepFacts {
   const command = parseCommandResult(result?.text);
   const resultText = command ? command.output : (result?.text ?? "");
   const canonical = canonicalOf(step.toolBlock);
+  const pending = result ? undefined : pendingOutcome;
   const facts: StepFacts = {
+    ...backgroundFacts(step.toolBlock),
     exitCode:
       typeof command?.exitCode === "number" && command.exitCode !== 0
         ? command.exitCode
         : undefined,
-    failed: !!result?.isError,
+    // run 以失败终结、这一步又没有结果 —— 按失败行呈现(旧 step 卡同一判据)。
+    failed: !!result?.isError || pending === "failed",
+    pending,
     resultText,
   };
   if (canonical?.kind === "file.edit") {
@@ -77,6 +104,24 @@ export function stepFacts(step: ActivityStep): StepFacts {
   if (lineCount > 1) facts.lines = lineCount;
   else facts.preview = trimmed;
   return facts;
+}
+
+// backgroundFacts 与 raw/card.tsx 的 bgRunning 同源:run_in_background 的命令
+// 立刻拿到启动 ACK,所以「还在不在跑」只能看后台 subagent 的状态,不能看有没有
+// 结果。终态之外(含状态缺失 = 刚起还没回报)一律算还在跑。
+function backgroundFacts(
+  block?: ChatBlockData,
+): Pick<StepFacts, "backgroundRunning" | "backgroundTaskId"> {
+  const input = block?.toolInput as Record<string, unknown> | undefined;
+  if (input?.run_in_background !== true) return {};
+  const status = block?.subagent?.status;
+  if (status === "completed" || status === "failed" || status === "canceled") {
+    return {};
+  }
+  return {
+    backgroundRunning: true,
+    backgroundTaskId: block?.subagent?.taskId ?? undefined,
+  };
 }
 
 type CommandResult = { exitCode?: number; output: string; status?: string };

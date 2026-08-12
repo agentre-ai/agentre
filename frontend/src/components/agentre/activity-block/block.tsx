@@ -14,6 +14,7 @@ import type {
 } from "../transcript-rows";
 import { useTranscriptBooleanState } from "../transcript-ui-state";
 
+import type { PendingOutcome } from "./facts";
 import { ActivityRow } from "./row";
 
 // ActivityBlock —— 一段连续活动(思考 / 只读探查 / 中性 / 写 / 命令 / 失败)的
@@ -39,6 +40,11 @@ export type ActivityBlockProps = {
   running?: boolean;
   /** 用户没碰过时的默认展开态(子代理内部按步数阈值决定)。 */
   defaultExpanded?: boolean;
+  /**
+   * 组内没有结果的步骤按什么归属报(默认「运行中」)。子代理那层的 run 已经终结
+   * 时传 failed / canceled / unknown —— 那些步永远等不到结果了。
+   */
+  pendingOutcome?: PendingOutcome;
 };
 
 export function ActivityBlock({
@@ -49,6 +55,7 @@ export function ActivityBlock({
   durationMs,
   running = false,
   defaultExpanded = false,
+  pendingOutcome,
 }: ActivityBlockProps) {
   const { t } = useTranslation();
   // 自动行为走 fallback、用户选择走 store:运行中 fallback=true(自动展开),
@@ -69,7 +76,9 @@ export function ActivityBlock({
   // 行自己),多一层壳只是多一次点击。运行态同理:这一行本来就看得见,「正在跑
   // 的活动块自动展开」在这里已经天然成立,不需要额外的自动展开。
   if (steps.length === 1) {
-    return <ActivityRow step={steps[0]} cwd={cwd} />;
+    return (
+      <ActivityRow step={steps[0]} cwd={cwd} pendingOutcome={pendingOutcome} />
+    );
   }
 
   const durationLabel =
@@ -157,7 +166,12 @@ export function ActivityBlock({
             expanded ? (
               <div className="ml-1.5 flex flex-col border-l border-border pl-3">
                 {steps.map((step) => (
-                  <ActivityRow key={step.uiStateKey} step={step} cwd={cwd} />
+                  <ActivityRow
+                    key={step.uiStateKey}
+                    step={step}
+                    cwd={cwd}
+                    pendingOutcome={pendingOutcome}
+                  />
                 ))}
               </div>
             ) : null

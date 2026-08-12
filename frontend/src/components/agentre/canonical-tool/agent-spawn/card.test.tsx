@@ -704,7 +704,7 @@ describe("AgentSpawnCard normalized runs", () => {
     expect(within(details).queryByText("No summary")).toBeNull();
   });
 
-  it("Given an unmatched child call in a terminal normalized single run, When rendered, Then the step stops spinning without a synthetic result", () => {
+  it("Given an unmatched child call in a terminal normalized single run, When rendered, Then the step settles as an unknown-result marker without spinning", () => {
     const block = normalizedSpawnBlock({
       mode: "single",
       status: "completed",
@@ -732,9 +732,13 @@ describe("AgentSpawnCard normalized runs", () => {
     );
 
     const details = expandCard(container);
-    // 步骤区是活动块的一行:成功态无标记,未回结果的一步也不该转成 spinner。
+    // 步骤区是活动块的一行:成功态无标记,但这一步并没有成功 —— run 已终结而它
+    // 始终没配到结果,归属不明,必须与「跑完了」区分开(且不再转 spinner)。
     expect(within(details).getByTestId("activity-name")).toHaveTextContent(
       "Bash",
+    );
+    expect(within(details).getByTestId("activity-pending")).toHaveTextContent(
+      "unknown result",
     );
     expect(details.querySelector(".animate-spin")).toBeNull();
     fireEvent.click(within(details).getByRole("button", { name: /Bash/i }));
@@ -890,8 +894,12 @@ describe("AgentSpawnCard normalized runs", () => {
     const fallback = within(details).getByTestId("agent-spawn-fallback-steps");
     expect(within(fallback).getByText("Glob")).toBeInTheDocument();
     expect(within(fallback).getByText("Grep")).toBeInTheDocument();
-    // 归属不明的子调用仍单独成区,内部同样是活动块的两行(不再各自一张 step 卡)。
+    // 归属不明的子调用仍单独成区,内部同样是活动块的两行(不再各自一张 step 卡),
+    // 每一行都报「结果未知」—— 它们既没成功也不在跑。
     expect(within(fallback).getAllByTestId("activity-row")).toHaveLength(2);
+    for (const marker of within(fallback).getAllByTestId("activity-pending")) {
+      expect(marker).toHaveTextContent("unknown result");
+    }
     expect(fallback.querySelector(".animate-spin")).toBeNull();
   });
 
@@ -944,13 +952,13 @@ describe("AgentSpawnCard normalized runs", () => {
   });
 
   it.each([
-    ["failed", "FAILED"],
-    ["canceled", "STOPPED"],
-    ["completed", "DONE"],
-    ["unknown", "UNKNOWN"],
+    ["failed", "FAILED", "failed"],
+    ["canceled", "STOPPED", "canceled"],
+    ["completed", "DONE", "unknown result"],
+    ["unknown", "UNKNOWN", "unknown result"],
   ])(
-    "Given an unmatched child call in a %s run, When rendered, Then the run settles as %s and its step invents no result text",
-    (runStatus, expectedRunStatus) => {
+    "Given an unmatched child call in a %s run, When rendered, Then the run settles as %s, its step reports %s and no result text is invented",
+    (runStatus, expectedRunStatus, expectedStepMarker) => {
       const block = normalizedSpawnBlock({
         status: runStatus,
         runs: [
@@ -984,6 +992,11 @@ describe("AgentSpawnCard normalized runs", () => {
       if (runToggle.getAttribute("aria-expanded") === "false") {
         fireEvent.click(runToggle);
       }
+      // 这一步按 run 的终态归属:失败 / 取消照报,其余一律「结果未知」——
+      // 它没有结果,不能和跑完的一步长得一模一样。
+      expect(within(group).getByTestId("activity-pending")).toHaveTextContent(
+        expectedStepMarker,
+      );
       fireEvent.click(within(group).getByRole("button", { name: /Bash/i }));
       const stepBody = within(group).getByTestId("activity-row-body");
       expect(stepBody).not.toHaveTextContent("(empty result)");

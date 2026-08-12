@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
 
 import { ActivityBlock } from "../../activity-block/block";
+import type { PendingOutcome } from "../../activity-block/facts";
 import { CollapsibleCode } from "../../collapsible-code";
 import { shouldIgnoreClickForSelection } from "../../copyable-text";
 import {
@@ -270,11 +271,14 @@ const STEPS_DEFAULT_EXPANDED_MAX = 20;
 function AgentSpawnSteps({
   cwd,
   keyPrefix,
+  runStatus,
   steps,
 }: {
   cwd?: string;
   /** 组头 / 每一步折叠态的持久化前缀,沿用旧 step key 形态(折叠态零迁移)。 */
   keyPrefix: string;
+  /** 这些步骤所属 run 的状态 —— 决定没配到结果的一步怎么报(见 unmatchedOutcome)。 */
+  runStatus?: AgentSpawnStatus;
   steps: StepRow[];
 }): React.ReactElement {
   const activitySteps: ActivityStep[] = steps.map((step, index) => ({
@@ -290,8 +294,19 @@ function AgentSpawnSteps({
       uiStateKey={`${keyPrefix}:activity`}
       cwd={cwd}
       defaultExpanded={activitySteps.length <= STEPS_DEFAULT_EXPANDED_MAX}
+      pendingOutcome={unmatchedOutcome(runStatus)}
     />
   );
+}
+
+// unmatchedOutcome —— run 已经终结、某一步却始终没配到 tool_result 时,那一步
+// 归属不明:按 run 的终态报 失败 / 已取消,其余(含 completed)一律「结果未知」。
+// 判据与旧 AgentSpawnStepCard 的 terminalFallbackStatus 完全一致 —— 步骤区换成
+// 活动块不改变「它到底发生了什么」,只改变它长什么样。
+function unmatchedOutcome(status?: AgentSpawnStatus): PendingOutcome {
+  if (!status || status === "running" || status === "waiting") return "running";
+  if (status === "failed" || status === "canceled") return status;
+  return "unknown";
 }
 
 const EMPTY_CHILD_BLOCKS: AgentSpawnChildBlocks = {
@@ -662,7 +677,18 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
               // 滚动时卡顿;展开才挂载。折叠态下 steps 数量仍从 steps.length
               // 读取,头部/进度/摘要不受影响。
               expanded ? (
-                <AgentSpawnSteps steps={steps} cwd={cwd} keyPrefix={keyBase} />
+                <AgentSpawnSteps
+                  steps={steps}
+                  cwd={cwd}
+                  keyPrefix={keyBase}
+                  runStatus={
+                    normalizedRun &&
+                    normalizedStatus &&
+                    isTerminalRunStatus(normalizedStatus)
+                      ? normalizedStatus
+                      : undefined
+                  }
+                />
               ) : null}
             </AgentSpawnSection>
             <AgentSpawnSection
@@ -938,6 +964,7 @@ function GroupedAgentSpawnCard({
                     steps={fallbackSteps}
                     cwd={cwd}
                     keyPrefix={`${keyBase}:fallback`}
+                    runStatus={outerStatus}
                   />
                 </AgentSpawnSection>
               </div>
@@ -1080,6 +1107,7 @@ function AgentSpawnRunGroup({
                     steps={steps}
                     cwd={cwd}
                     keyPrefix={uiStateKey}
+                    runStatus={terminal ? status : undefined}
                   />
                 ) : null
               ) : (
