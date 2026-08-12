@@ -804,6 +804,39 @@ func TestPrepareTurnRun_RemoteNoSessionProviderKeyFallsBackToAgentBinding(t *tes
 	assert.Nil(t, prepared.req.Provider)
 }
 
+// TestPrepareTurnRun_GivenSelfFingerprintBackend_ThenRunsLocally R13 认领后本机
+// backend 的 DeviceID 是本机指纹（sha256:self）。prepareTurnRun 必须把这种档当作
+// 本地档走全局 runtime 注册表，而不是走 borrowRemoteRuntimeForTurn —— 本机指纹
+// 永远不是本机配对表里的 paired agentred 行，borrow 会报 AgentBackendInvalidDevice，
+// 本地会话将全部起不了轮。
+func TestPrepareTurnRun_GivenSelfFingerprintBackend_ThenRunsLocally(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+	rds.EXPECT().DeviceFingerprint().Return("sha256:self", nil).AnyTimes()
+	rds.EXPECT().List(gomock.Any()).Return(nil, nil).AnyTimes()
+	prevSvc := remote_device_svc.Default()
+	remote_device_svc.SetDefault(rds)
+	t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+	// 不装 conn pool：任何 borrow 尝试都会因 nil pool 而失败，测试据此暴露错误分支。
+	svc := &chatSvc{}
+	RegisterCwdResolver(func(context.Context, *chat_entity.Session) (string, error) { return "", nil })
+	t.Cleanup(func() { RegisterCwdResolver(nil) })
+
+	sess := &chat_entity.Session{ID: 100, AgentID: 7}
+	a := &agent_entity.Agent{ID: 7, AgentBackendID: 12}
+	be := &agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "",
+		DeviceID: "sha256:self",
+	}
+
+	prepared, err := svc.prepareTurnRun(context.Background(), sess, a, be, nil, nil, nil, "", false, false)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+}
+
 // TestBorrowRemoteRuntime_SharesConnAcrossSessions verifies the refcount cache:
 // 同一 device 多次借出返回同一 *remote.Runtime 实例;release 减计数,归零摘出 map。
 func TestBorrowRemoteRuntime_SharesConnAcrossSessions(t *testing.T) {

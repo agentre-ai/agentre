@@ -13,6 +13,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/project_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/server_state_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/syncwire"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
@@ -191,6 +192,29 @@ func TestListExecTargetAvailability_GivenSelfFingerprint_ThenKindLocalAndAvailab
 	require.Len(t, statuses, 1)
 	assert.True(t, statuses[0].Available)
 	assert.Equal(t, "local", statuses[0].Kind, "self stays local and never becomes a peer dial target")
+}
+
+// Given a self-fingerprint backend (R13 canonicalized local) with a project-bound
+// session whose project IS configured locally, when availability is listed, then
+// the tier is available and carries the local project path — not misjudged as
+// project-path-missing. The local path lives on projects.path; project_locations
+// has no row keyed by the self fingerprint (self is never a paired agentred).
+func TestListExecTargetAvailability_GivenSelfFingerprintAndProjectBound_ThenLocalPathUsed(t *testing.T) {
+	ctx, m, svc := setupDesktopTargetTest(t, nil) // 本机档不查账号清单
+	m.execTarget.EXPECT().ListByAgent(ctx, int64(45)).Return([]*agent_entity.AgentExecTarget{
+		{ID: 1, AgentID: 45, AgentBackendID: 76, SortOrder: 0},
+	}, nil)
+	m.backend.EXPECT().Find(ctx, int64(76)).Return(&agent_backend_entity.AgentBackend{
+		ID: 76, Type: string(agent_backend_entity.TypeClaudeCode), DeviceID: "sha256:self",
+	}, nil)
+	m.project.EXPECT().Find(ctx, int64(403)).Return(&project_entity.Project{ID: 403, LocalPathMissing: false, Path: "/local/proj"}, nil).Times(2)
+	// 不注册 projectLocation 的任何 EXPECT：本机档一次都不该查 project_locations。
+
+	statuses, err := svc.ListExecTargetAvailability(ctx, 45, 403)
+	require.NoError(t, err)
+	require.Len(t, statuses, 1)
+	assert.True(t, statuses[0].Available, "a locally-configured project must be usable on the self backend")
+	assert.Equal(t, "/local/proj", statuses[0].ProjectPath)
 }
 
 // Given a named desktop fingerprint that is not in the account device list, when

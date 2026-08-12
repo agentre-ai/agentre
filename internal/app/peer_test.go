@@ -83,6 +83,49 @@ func TestAppInboundPeer_GivenPermanentExit_ThenLaterLoginRestartsRegistration(t 
 	app.stopInboundPeer(context.Background())
 }
 
+// Given a registration whose Run already returned (done closed) but whose
+// cleanup goroutine has not yet cleared the lifecycle state, when a login event
+// calls startInboundPeer in that window, then the login must not be dropped on
+// the stale cancel token: a fresh registration is created. This is the narrow
+// race window the permanent-exit fix leaves open — login lands between
+// Run-return and cleanup.
+func TestAppInboundPeer_GivenDeadRegistrationWithStaleCancel_WhenStart_ThenRebuilds(t *testing.T) {
+	first := &inboundPeerStub{started: make(chan struct{}), stopped: make(chan struct{})}
+	second := &inboundPeerStub{started: make(chan struct{}), stopped: make(chan struct{})}
+	calls := 0
+	previous := newInboundPeer
+	newInboundPeer = func(context.Context) (inboundPeer, error) {
+		calls++
+		if calls == 1 {
+			return first, nil
+		}
+		return second, nil
+	}
+	t.Cleanup(func() { newInboundPeer = previous })
+
+	app := &App{}
+	app.startInboundPeer(context.Background())
+	select {
+	case <-first.started:
+	case <-time.After(time.Second):
+		t.Fatal("App did not start its inbound relay peer")
+	}
+	// Simulate the cleanup window: Run has returned (done closed) but the
+	// cleanup goroutine has not yet cleared peerCancel/peerDone — the exact
+	// stale-cancel state a concurrent login event races with.
+	app.peerMu.Lock()
+	close(app.peerDone)
+	app.peerMu.Unlock()
+
+	app.startInboundPeer(context.Background())
+	select {
+	case <-second.started:
+	case <-time.After(time.Second):
+		t.Fatal("a login landing in the dead-registration cleanup window must rebuild, not skip on the stale cancel")
+	}
+	app.stopInboundPeer(context.Background())
+}
+
 // permanentlyExitingInboundPeer 模拟 HubLink 重试时钟崩溃后的永久退出：Run 直接
 // 返回错误，不等待 ctx 取消，也不自行恢复。
 type permanentlyExitingInboundPeer struct {

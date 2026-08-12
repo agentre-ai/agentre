@@ -32,7 +32,19 @@ func (a *App) startInboundPeer(ctx context.Context) {
 	a.peerMu.Lock()
 	defer a.peerMu.Unlock()
 	if a.peerCancel != nil {
-		return
+		// A registration whose Run has already returned is dead even if its
+		// cleanup goroutine has not yet cleared the lifecycle state. Rebuild on
+		// this login instead of dropping it on the stale cancel token (the login
+		// can land between Run-return and cleanup); the dead goroutine's
+		// identity check in startInboundPeer's cleanup will not clear a fresh
+		// registration.
+		select {
+		case <-a.peerDone:
+			a.peerCancel = nil
+			a.peerDone = nil
+		default:
+			return
+		}
 	}
 	inbound, err := newInboundPeer(ctx)
 	if errors.Is(err, server_svc.ErrNotLoggedIn) {

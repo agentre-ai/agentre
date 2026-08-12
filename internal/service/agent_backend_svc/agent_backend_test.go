@@ -566,6 +566,39 @@ func TestTestBackend_HappyPath(t *testing.T) {
 	})
 }
 
+// TestTestBackend_SelfFingerprintRunsLocalProbe R13 认领后本机 backend 的 DeviceID
+// 是本机指纹。测试按钮必须把它当本地档跑本地 prober，而不是误报「远端设备不存在」
+// （本机指纹永远不是配对 agentred 行）。
+func TestTestBackend_SelfFingerprintRunsLocalProbe(t *testing.T) {
+	convey.Convey("给定指向本机指纹的 claudecode backend, Test 走本地 prober", t, func() {
+		ctx, backendMock, _, _, proberMock, svc := setupSvcTest(t)
+
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+		rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+		rds.EXPECT().DeviceFingerprint().Return("sha256:self", nil).AnyTimes()
+		rds.EXPECT().List(gomock.Any()).Return(nil, nil).AnyTimes()
+		prevSvc := remote_device_svc.Default()
+		remote_device_svc.SetDefault(rds)
+		t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+		saved := &agent_backend_entity.AgentBackend{
+			ID: 8, Type: string(agent_backend_entity.TypeClaudeCode), Name: "claude",
+			LLMProviderKey: "", Status: consts.ACTIVE, DeviceID: "sha256:self",
+		}
+		backendMock.EXPECT().Find(gomock.Any(), int64(8)).Return(saved, nil)
+		proberMock.EXPECT().
+			Run(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{}), gomock.Any()).
+			Return("pong", nil)
+
+		res, err := svc.Test(ctx, &TestBackendRequest{ID: 8})
+		assert.NoError(t, err)
+		assert.NotNil(t, res)
+		assert.True(t, res.OK)
+		assert.Equal(t, "pong", res.Message)
+	})
+}
+
 func TestTestBackend_NoProvider(t *testing.T) {
 	convey.Convey("claudecode/codex 不关联供应商时跳过 gateway，调 prober 走 CLI 自身登录", t, func() {
 		convey.Convey("claudecode draft 无 provider → 不签 token，prober 收到空 deps", func() {

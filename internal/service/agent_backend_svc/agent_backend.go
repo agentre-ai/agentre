@@ -398,14 +398,20 @@ func (s *agentBackendSvc) test(ctx context.Context, req *TestBackendRequest, tra
 	// 远端 device → 不在本地装 deps / gateway / provider，由 daemon 自己装。
 	// 主进程只负责拨号 + 转发参数 + 折叠结果。provider FK 校验也下放给 daemon，
 	// 因为远端可能有自己的 provider 状态视图（如离线时本地 provider 表过期）。
+	// ErrRemoteDeviceNotFound 只对具名指纹发生：本机指纹（R13 认领后的本机 backend）
+	// 不是配对 agentred 行——它是本地档，回落到下面的本地测试路径；只有真正未配对
+	// 的其他远端指纹才报「远端设备不存在」。
 	if did, ok, err := localPairedDeviceID(ctx, entity.DeviceID); err != nil {
-		if errors.Is(err, ErrRemoteDeviceNotFound) {
+		if !errors.Is(err, ErrRemoteDeviceNotFound) {
+			return nil, i18n.NewError(ctx, code.InvalidParameter)
+		}
+		if !isSelfFingerprint(ctx, entity.DeviceID) {
 			return &TestBackendResponse{OK: false, Message: i18n.NewError(ctx, code.RemoteDeviceNotFound).Error()}, nil
 		}
-		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	} else if ok {
 		return s.probeRemote(ctx, entity, did)
 	}
+
 	// builtin 必须有 active provider；claudecode / codex 关联了 provider 则严格匹配类型，
 	// 未关联时表示走 CLI 自身登录态，跳过 provider 校验。
 	var matchedProvider *llm_provider_entity.LLMProvider
@@ -1035,6 +1041,21 @@ func pairedDeviceView(ctx context.Context, fingerprint string) (*remote_device_s
 		}
 	}
 	return nil, nil
+}
+
+// isSelfFingerprint reports whether a deviceID is this installation's own
+// canonical fingerprint. After R13 canonicalization a local backend's DeviceID
+// is the desktop's own fingerprint; it is never a paired agentred row, so
+// dispatch/probe boundaries must treat it as local.
+func isSelfFingerprint(ctx context.Context, deviceID string) bool {
+	if !strings.HasPrefix(deviceID, "sha256:") || remote_device_svc.Default() == nil {
+		return false
+	}
+	fp, err := remote_device_svc.Default().DeviceFingerprint()
+	if err != nil || fp == "" {
+		return false
+	}
+	return deviceID == fp
 }
 
 // localPairedDeviceID translates a persisted fingerprint only at a local

@@ -67,7 +67,9 @@ func resolveSessionCwd(ctx context.Context, sess *chat_entity.Session, be *agent
 	if sess == nil {
 		return "", nil
 	}
-	if be == nil || be.IsLocal() {
+	// self 档（R13 认领后本机 backend 的 DeviceID 是本机指纹）也按本机处理：
+	// cwd 走本机 CwdResolver（project.Path / AgentCwd fallback）。
+	if be == nil || be.IsLocal() || beTargetsSelf(ctx, be) {
 		if resolveCwdFn != nil {
 			return resolveCwdFn(ctx, sess)
 		}

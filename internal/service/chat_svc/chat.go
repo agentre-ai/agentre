@@ -1794,7 +1794,7 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, sess *chat_entity.Ses
 			if remoteProviderKnownMissing(be) {
 				return nil, nil, nil, remoteProviderNotConfiguredError(ctx, be.LLMProviderKey)
 			}
-			if be.IsRemote() {
+			if be.IsRemote() && !s.beIsSelf(ctx, be) {
 				break
 			}
 			if s.gateway == nil || s.gateway.Status().State != "running" {
@@ -1803,7 +1803,7 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, sess *chat_entity.Ses
 		}
 		// LLMProviderKey == "" → CLI 自身 login 状态生效，不强制 gateway。
 	case agent_backend_entity.TypeOpenClaw:
-		if be.IsRemote() {
+		if be.IsRemote() && !s.beIsSelf(ctx, be) {
 			return nil, nil, nil, fmt.Errorf("openclaw remote secret enrollment is unavailable")
 		}
 	default:
@@ -1853,7 +1853,7 @@ func (s *chatSvc) resolveTurnBackendID(
 // 一并写入，三列同生共死，不拆成两个写入点。写库失败只记日志、不阻断这一轮 —— 下一轮
 // 会再次落进"没值"分支重新挑选并重试写回，不会永久卡住对话。
 func (s *chatSvc) pinExecTargetIfUnset(ctx context.Context, sess *chat_entity.Session, be *agent_backend_entity.AgentBackend) {
-	if sess == nil || sess.ID <= 0 || be == nil || sess.ExecAgentBackendID != 0 || be.IsRemote() {
+	if sess == nil || sess.ID <= 0 || be == nil || sess.ExecAgentBackendID != 0 || (be.IsRemote() && !s.beIsSelf(ctx, be)) {
 		return
 	}
 	if err := chat_repo.Session().UpdateExecDaemon(ctx, sess.ID, 0, "", be.ID); err != nil {
@@ -1900,7 +1900,7 @@ func (s *chatSvc) resolveSessionProvider(
 	be *agent_backend_entity.AgentBackend,
 	prov *llm_provider_entity.LLMProvider,
 ) (*llm_provider_entity.LLMProvider, *blocks.NoticeBlock) {
-	if sess == nil || sess.ProviderKey == "" || be == nil || be.IsRemote() {
+	if sess == nil || sess.ProviderKey == "" || be == nil || (be.IsRemote() && !s.beIsSelf(ctx, be)) {
 		return prov, nil
 	}
 	return s.sessionProviderOverride(ctx, be, sess.ProviderKey, prov)
@@ -1954,7 +1954,7 @@ func (s *chatSvc) AgentBackendHasCapability(ctx context.Context, agentID int64, 
 	if be == nil {
 		return false, nil
 	}
-	if !be.IsLocal() {
+	if !be.IsLocal() && !s.beIsSelf(ctx, be) {
 		return false, nil
 	}
 	r := agentruntime.RuntimeFor(agent_backend_entity.BackendType(be.Type))
@@ -3836,7 +3836,7 @@ func (s *chatSvc) prepareTurnRun(
 		release = func() {}
 		err     error
 	)
-	if be.IsRemote() {
+	if be.IsRemote() && !s.beIsSelf(ctx, be) {
 		runner, release, err = s.borrowRemoteRuntimeForTurn(ctx, be, sess.ID)
 	} else {
 		runner, err = s.selectRunner(ctx, be, sess.ID)
@@ -3856,7 +3856,7 @@ func (s *chatSvc) prepareTurnRun(
 		logger.Ctx(ctx).Error("chat_svc.prepareTurnRun: selectRunner failed", fields...)
 		return nil, err
 	}
-	s.bindLocalPiAbort(sess.ID, be, runner)
+	s.bindLocalPiAbort(ctx, sess.ID, be, runner)
 	fail := func(err error) (*preparedTurnRun, error) {
 		release()
 		return nil, err
@@ -3909,7 +3909,7 @@ func (s *chatSvc) prepareTurnRun(
 		}
 		req.History = history
 	}
-	if be.IsRemote() {
+	if be.IsRemote() && !s.beIsSelf(ctx, be) {
 		// 远端 backend: daemon 自家有 ProviderLookup + Gateway,该自家解。
 		// GatewayURL/Token 是 desktop 的 127.0.0.1，Provider 又含明文 APIKey，
 		// 都不跨机器；wire 透传 effectiveProviderKey（会话 provider_key 优先，
@@ -3975,11 +3975,12 @@ func (s *chatSvc) prepareTurnRun(
 var errTurnAbortedBeforeStream = errors.New("chat_svc: turn aborted before stream")
 
 func (s *chatSvc) bindLocalPiAbort(
+	ctx context.Context,
 	sessionID int64,
 	be *agent_backend_entity.AgentBackend,
 	runner agentruntime.Runtime,
 ) {
-	if be == nil || !be.IsPiAgent() || be.IsRemote() || runner == nil {
+	if be == nil || !be.IsPiAgent() || (be.IsRemote() && !s.beIsSelf(ctx, be)) || runner == nil {
 		return
 	}
 	aborter, ok := runner.(agentruntime.Aborter)

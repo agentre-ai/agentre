@@ -7,9 +7,12 @@ import (
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
+	"go.uber.org/mock/gomock"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 )
 
 // runGit 在 dir 下执行 git args。测试 helper, 失败直接 t.Fatal。
@@ -83,6 +86,43 @@ func TestGetSessionGitState_LocalBackend(t *testing.T) {
 		sess := &chat_entity.Session{ID: 42, ProjectID: 0}
 		be := &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeBuiltin)}
 		// 用 stub 把 resolveSessionCwd 绕到 dir
+		RegisterCwdResolver(func(_ context.Context, _ *chat_entity.Session) (string, error) {
+			return dir, nil
+		})
+		t.Cleanup(func() { RegisterCwdResolver(nil) })
+
+		Convey("When GetSessionGitState is called", func() {
+			s := &chatSvc{}
+			resp, err := s.getSessionGitStateForSession(context.Background(), sess, be)
+			So(err, ShouldBeNil)
+			So(resp.State.Branch, ShouldEqual, "main")
+		})
+	})
+}
+
+// TestGetSessionGitState_SelfBackend_ReportsRepoState R13 认领后本机 backend 的
+// DeviceID 是本机指纹：git 状态必须按本机档解析 cwd 并如实报告仓库状态，而不是像远端
+// 档那样直接降级成 notARepo。
+func TestGetSessionGitState_SelfBackend_ReportsRepoState(t *testing.T) {
+	Convey("Given a self-fingerprint backend session whose cwd resolves to a real git repo", t, func() {
+		dir := t.TempDir()
+		runGit(t, dir, "init", "-q", "-b", "main")
+		runGit(t, dir, "config", "user.email", "t@t")
+		runGit(t, dir, "config", "user.name", "t")
+		runGit(t, dir, "commit", "--allow-empty", "-m", "init")
+
+		ctrl := gomock.NewController(t)
+		rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+		rds.EXPECT().DeviceFingerprint().Return("sha256:self", nil).AnyTimes()
+		prevSvc := remote_device_svc.Default()
+		remote_device_svc.SetDefault(rds)
+		t.Cleanup(func() {
+			remote_device_svc.SetDefault(prevSvc)
+			ctrl.Finish()
+		})
+
+		sess := &chat_entity.Session{ID: 42, ProjectID: 0}
+		be := &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode), DeviceID: "sha256:self"}
 		RegisterCwdResolver(func(_ context.Context, _ *chat_entity.Session) (string, error) {
 			return dir, nil
 		})

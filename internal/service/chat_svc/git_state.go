@@ -119,7 +119,7 @@ func (s *chatSvc) GetSessionGitState(ctx context.Context, req *GetSessionGitStat
 }
 
 func (s *chatSvc) getSessionGitStateForSession(ctx context.Context, sess *chat_entity.Session, be *agent_backend_entity.AgentBackend) (*GetSessionGitStateResponse, error) {
-	if be != nil && be.IsRemote() {
+	if be != nil && be.IsRemote() && !beTargetsSelf(ctx, be) {
 		return notARepoResponse(), nil
 	}
 	cwd, err := resolveSessionCwd(ctx, sess, be)
