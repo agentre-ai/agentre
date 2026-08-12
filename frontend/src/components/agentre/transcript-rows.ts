@@ -2,6 +2,12 @@
 // renderMessageBlocks 的配对状态机抽取到这里,让行级虚拟化(每个 RenderItem 一个
 // 虚拟行)能在不碰 JSX 的前提下单测配对 / 合并 / skip / FIFO / 归集 / key 稳定性。
 import type { AgentSpawnChildBlocks } from "@/components/agentre/canonical-tool/props";
+import {
+  tier,
+  toolCategory,
+  type ToolCategory,
+} from "@/components/agentre/canonical-tool/tier";
+import type { CanonicalDTO } from "@/components/agentre/canonical-tool/types";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
 import type { LocalCommandEntry } from "@/stores/local-commands-store";
 import type { chat_svc } from "../../../wailsjs/go/models";
@@ -76,10 +82,72 @@ export type RenderItem =
   | { block: ChatBlockData; type: "notice" }
   | { block: ChatBlockData; type: "compact_boundary" };
 
-// VisibleRenderItem = 过滤掉已 merge 审批后的渲染项 + 预计算的 uiStateKey。
-// uiStateKey 进 TranscriptUIStateContext 持久化卡片折叠态,格式与旧
-// renderMessageBlocks 字节级一致:message:${messageId}:${type}:${identity ?? visibleIdx}。
-export type VisibleRenderItem = RenderItem & { uiStateKey: string };
+// ─── 活动块 ─────────────────────────────────────────────────────────────────
+// 一段连续的「思考 / 只读探查 / 中性 / 写 / 命令 / 失败」折成一个活动块:一个
+// RenderItem = 一个 TranscriptRow = 一个虚拟行,折叠态只出组头,展开态出 steps。
+// 正文与出组项(子代理 / 审批 / 提问 / 计划…)打断聚合,时间顺序原样保留。
+
+/** 组头汇总的类目。思考不是工具调用,其余由 canonical-tool/tier 的 toolCategory 判定。 */
+export type ActivityCategory = "thinking" | ToolCategory;
+
+/** 组头汇总的固定输出顺序(位置可预期),失败计数不在其中——它不参与截断。 */
+export const ACTIVITY_CATEGORY_ORDER: readonly ActivityCategory[] = [
+  "thinking",
+  "read",
+  "edit",
+  "write",
+  "command",
+  "other",
+];
+
+/** 组头最多列这么多类,再多的折成一个省略号(truncated)。 */
+export const ACTIVITY_SUMMARY_MAX_PARTS = 4;
+
+export type ActivitySummaryPart = {
+  category: ActivityCategory;
+  /** 本类目的步数。 */
+  count: number;
+  /** 仅 edit:本组改到的文件数(同一路径改多次算一个)。 */
+  files?: number;
+  /** 仅 edit:本组增行合计。 */
+  plus?: number;
+  /** 仅 edit:本组删行合计。 */
+  minus?: number;
+};
+
+export type ActivitySummary = {
+  /** 组内步数(= steps.length),组头的「N 步」。 */
+  steps: number;
+  /** 固定顺序、已截断到 ACTIVITY_SUMMARY_MAX_PARTS 的类目汇总。 */
+  parts: ActivitySummaryPart[];
+  /** 还有类目没进 parts —— 组头在末尾补省略号。 */
+  truncated: boolean;
+  /** 组内失败步数。永不参与截断:折叠态不得让发生过的事消失。 */
+  failures: number;
+};
+
+/** 组内一步。形状与它单独成行时完全一致,展开体因此能复用同一套渲染。 */
+export type ActivityStep = (
+  | Extract<RenderItem, { type: "thinking" }>
+  | Extract<RenderItem, { type: "tool" }>
+) & { uiStateKey: string };
+
+export type ActivityRenderItem = {
+  steps: ActivityStep[];
+  summary: ActivitySummary;
+  type: "activity";
+};
+
+/** 渲染层拿到的活动块 —— 与其它渲染项一样带 uiStateKey(折叠态挂在它上面)。 */
+export type VisibleActivityItem = ActivityRenderItem & { uiStateKey: string };
+
+// VisibleRenderItem = 过滤掉已 merge 审批、并把连续可折叠项聚合成活动块之后的
+// 渲染项 + 预计算的 uiStateKey。uiStateKey 进 TranscriptUIStateContext 持久化
+// 折叠态,格式:message:${messageId}:${type}:${identity ?? visibleIdx}——聚合前
+// 就已经算好,所以组内步骤的 key 与「它单独成行」时字节级一致(折叠态零迁移)。
+export type VisibleRenderItem = (RenderItem | ActivityRenderItem) & {
+  uiStateKey: string;
+};
 
 export type BuildRenderItemsArgs = {
   messageId: number;
@@ -322,7 +390,7 @@ export function buildRenderItems({
   appendText(liveTail, true);
 
   // 被 merge 到下方 tool_use 卡的审批 RenderItem 不再独立渲染。
-  return items
+  const visible: (RenderItem & { uiStateKey: string })[] = items
     .filter(
       (item) => !(item.type === "tool_permission_request" && item._consumed),
     )
@@ -331,6 +399,126 @@ export function buildRenderItems({
         uiStateKey: itemUIStateKey(messageId, item, idx),
       }),
     );
+  return groupActivityItems(messageId, visible);
+}
+
+// isFoldableStep:这一项能不能折进活动块。
+//   - 思考进组(extended thinking 下 think/tool 高频交替,让思考打断聚合等于不聚合),
+//     但**正在流的思考不进组** —— 它是那一刻唯一承载 live tail 的表面。
+//   - 工具按 tier 判档:出组档(子代理 / 提问 / 计划审批 / 工具权限)永不进组。
+//   - tool_use 之外的 block(ask_user_question 等)即使 canonical 缺失也不进组 ——
+//     阻塞用户的卡片折叠等于把会话卡死,不能依赖 canonical 是否齐全。
+//   - 其余项(正文 / 计划 / 审批 / 图片 / notice / compact / unknown)一律打断聚合。
+function isFoldableStep(
+  item: RenderItem & { uiStateKey: string },
+): item is ActivityStep {
+  if (item.type === "thinking") return !item.streaming;
+  if (item.type !== "tool") return false;
+  const block = item.toolBlock;
+  if (!block || block.type !== "tool_use") return false;
+  return tier(block) !== "out";
+}
+
+// groupActivityItems 线性扫一遍可见项:连续可折叠项攒成一段,遇到别的项就先结束
+// 当前段再原样输出那一项 —— 顺序与输入完全一致,任何情况下都不跨越出组项合并。
+// 单条不成组:一段只有一步时输出原来那一项,不套「1 步」的壳。
+function groupActivityItems(
+  messageId: number,
+  items: (RenderItem & { uiStateKey: string })[],
+): VisibleRenderItem[] {
+  const out: VisibleRenderItem[] = [];
+  let run: ActivityStep[] = [];
+  let runStartIdx = 0;
+
+  const flush = () => {
+    if (run.length === 0) return;
+    out.push(
+      run.length === 1 ? run[0] : makeActivityItem(messageId, run, runStartIdx),
+    );
+    run = [];
+  };
+
+  items.forEach((item, idx) => {
+    if (isFoldableStep(item)) {
+      if (run.length === 0) runStartIdx = idx;
+      run.push(item);
+      return;
+    }
+    flush();
+    out.push(item);
+  });
+  flush();
+  return out;
+}
+
+// 活动块的 identity 取**首步**的身份(缺身份时回退首步的可见下标)。首步在流式
+// 生长中不变,组头 key 因此不随新步骤追加而漂移 —— 用户展开的块不会在轮次中途
+// 因为 key 变了而重新折叠。
+function makeActivityItem(
+  messageId: number,
+  steps: ActivityStep[],
+  runStartIdx: number,
+): VisibleActivityItem {
+  const first = steps[0];
+  const firstBlock = first.type === "tool" ? first.toolBlock : first.block;
+  const identity = stableBlockIdentity(firstBlock) ?? runStartIdx;
+  return {
+    steps,
+    summary: summarizeActivity(steps),
+    type: "activity",
+    uiStateKey: `message:${messageId}:activity:${identity}`,
+  };
+}
+
+// summarizeActivity 汇总组头:类目计数按固定顺序输出并截断,写操作额外报出对象
+// 规模(改到几个文件 / 增删多少行),失败计数单列且不参与截断。
+function summarizeActivity(steps: ActivityStep[]): ActivitySummary {
+  const counts = new Map<ActivityCategory, number>();
+  const editedPaths = new Set<string>();
+  let plus = 0;
+  let minus = 0;
+  let failures = 0;
+
+  for (const step of steps) {
+    if (step.type === "thinking") {
+      counts.set("thinking", (counts.get("thinking") ?? 0) + 1);
+      continue;
+    }
+    const block = step.toolBlock;
+    if (!block) continue;
+    const category = toolCategory(block);
+    counts.set(category, (counts.get(category) ?? 0) + 1);
+    for (const patch of fileEditPatches(block)) {
+      editedPaths.add(patch.path);
+      plus += patch.plus ?? 0;
+      minus += patch.minus ?? 0;
+    }
+    if (step.resultBlock?.isError) failures++;
+  }
+
+  const all: ActivitySummaryPart[] = ACTIVITY_CATEGORY_ORDER.filter((c) =>
+    counts.has(c),
+  ).map((category) => {
+    const count = counts.get(category) ?? 0;
+    return category === "edit"
+      ? { category, count, files: editedPaths.size, minus, plus }
+      : { category, count };
+  });
+
+  return {
+    failures,
+    parts: all.slice(0, ACTIVITY_SUMMARY_MAX_PARTS),
+    steps: steps.length,
+    truncated: all.length > ACTIVITY_SUMMARY_MAX_PARTS,
+  };
+}
+
+// fileEditPatches:后端 translator 已把每次编辑算成按文件的 patch(路径 + 增删行),
+// 组头的「改 N 个文件 +P −M」直接汇总它,不在前端重算 diff。
+function fileEditPatches(block: ChatBlockData) {
+  const canonical = (block as { canonical?: CanonicalDTO }).canonical;
+  if (canonical?.kind !== "file.edit") return [];
+  return canonical.fileEdit?.files ?? [];
 }
 
 // itemUIStateKey 的 type 段沿用旧 renderMessageBlocks 渲染层的命名
@@ -784,6 +972,11 @@ export function estimateRowSize(row: TranscriptRow): number {
     case "image":
       return scaleRowSize(160); // 179
     case "thinking":
+      return scaleRowSize(40); // 45
+    case "activity":
+      // 折叠态活动块只有一行组头(一行 --text-meta + 上下内边距),与折叠态
+      // thinking 同档 —— 比整张折叠卡片(下方 default 的 54)矮一档。展开态由
+      // measureElement 实测覆盖。
       return scaleRowSize(40); // 45
     case "compact_boundary":
       return scaleRowSize(48); // 54

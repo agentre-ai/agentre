@@ -48,6 +48,29 @@ function hasAnyKey(input: Record<string, unknown>, keys: string[]): boolean {
   return keys.some((k) => input[k] != null);
 }
 
+// ToolCategory 比 Tier 细一档 —— 活动块组头要把写层再分「改文件 / 写入 / 命令」
+// (组头固定顺序 思考 / 查阅 / 改 N 个文件 / 写入 / 命令 / 其它 / N 失败)。
+// 判据顺序与 tier 完全一致:canonical.kind → input shape → 中性兜底,同样不查
+// 工具名表。出组项(tier === "out")不进活动块,调用方先用 tier 过滤;真传进来
+// 也只会落 "other",不会被谎报成读层。
+export type ToolCategory = "read" | "edit" | "write" | "command" | "other";
+
+export function toolCategory(block: ChatBlockData): ToolCategory {
+  // 档位仍由 tier 独家判定 —— 这里只在写层内部再分岔,不另起一套判据。
+  const t = tier(block);
+  if (t === "out") return "other";
+
+  const kind = (block as { canonical?: CanonicalDTO }).canonical?.kind;
+  if (kind === "file.edit") return "edit";
+  if (kind === "file.write") return "write";
+
+  const input = block.toolInput as Record<string, unknown> | undefined;
+  if (t === "write" && input && hasAnyKey(input, COMMAND_KEYS))
+    return "command";
+  if (t === "write") return "write";
+  return t === "read" ? "read" : "other";
+}
+
 // displayName 把 `mcp__<server>__<tool>` 形态拆成 "server · tool";其余原样返回。
 export function displayName(toolName: string): string {
   const prefix = "mcp__";
