@@ -7,6 +7,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentskill"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 )
 
 // Service 技能包组合服务。依赖通过消费者侧窄接口注入(DIP)。
@@ -32,6 +33,25 @@ func (s *Service) discover(ctx context.Context, a *agent_entity.Agent) (discover
 	return s.discoverForBackend(ctx, be)
 }
 
+// beTargetsSelf reports whether a backend points at this installation's own
+// device fingerprint. After R13 canonicalization a local backend carries the
+// desktop's own fingerprint as its DeviceID, so skill discovery must treat it
+// as local: its installed packs live on this machine, not on a daemon.
+func beTargetsSelf(ctx context.Context, be *agent_backend_entity.AgentBackend) bool {
+	if be == nil || !strings.HasPrefix(be.DeviceID, "sha256:") {
+		return false
+	}
+	rds := remote_device_svc.Default()
+	if rds == nil {
+		return false
+	}
+	fp, err := rds.DeviceFingerprint()
+	if err != nil || fp == "" {
+		return false
+	}
+	return be.DeviceID == fp
+}
+
 // discoverForBackend 是 discover 的核心：拿指定 backend 的已安装包。抽成独立函数是
 // 因为任务 12(组织架构页"一档一块")需要按**给定的执行目标**发现，不是按 Agent
 // 的主档——discover 本身保持不变(仍按 a.AgentBackendID 找 backend 再委派到这里)。
@@ -39,7 +59,9 @@ func (s *Service) discoverForBackend(ctx context.Context, be *agent_backend_enti
 	backendType := agent_backend_entity.BackendType(be.Type)
 	// 远端 backend:技能包装在 daemon 那台机器上,desktop 本地的 claude plugin list
 	// 看不到。经 RemoteDiscoverer 走 daemon skills.list 发现(借 device 连接池)。
-	if be.IsRemote() {
+	// 指向本机指纹的档(R13 认领后本机 backend 的 DeviceID == 本机指纹)不是远端:
+	// 它跟 DeviceID 空一样走本地 Discoverer。
+	if be.IsRemote() && !beTargetsSelf(ctx, be) {
 		deviceID, ok := be.DeviceIDInt()
 		if !ok || s.remote == nil {
 			return discoveryResult{backendType: backendType, backend: be, packs: []agentskill.SkillPack{}}, nil

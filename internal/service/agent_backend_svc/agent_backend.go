@@ -390,7 +390,7 @@ func (s *agentBackendSvc) test(ctx context.Context, req *TestBackendRequest, tra
 		return nil, err
 	}
 	if entity.IsOpenClaw() {
-		if entity.IsRemote() {
+		if entity.IsRemote() && !isSelfFingerprint(ctx, entity.DeviceID) {
 			return &TestBackendResponse{OK: false, Code: "OPENCLAW_REMOTE_SECRET_UNAVAILABLE"}, nil
 		}
 		return s.testOpenClaw(ctx, req, entity, transientToken)
@@ -648,7 +648,7 @@ func (s *agentBackendSvc) resolveOpenClawRuntimeConfig(ctx context.Context, back
 	if backend == nil || !backend.IsOpenClaw() {
 		return openclawgateway.Config{}, i18n.NewError(ctx, code.AgentBackendNotFound)
 	}
-	if backend.IsRemote() {
+	if backend.IsRemote() && !isSelfFingerprint(ctx, backend.DeviceID) {
 		return openclawgateway.Config{}, ErrOpenClawRemoteSecretUnavailable
 	}
 	if err := backend.Check(ctx); err != nil {

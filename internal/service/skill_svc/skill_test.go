@@ -10,6 +10,8 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentskill"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 	"github.com/agentre-ai/agentre/internal/service/skill_svc/mock_skill_svc"
 )
 
@@ -61,6 +63,44 @@ func (f *fakeRemoteDisc) ListSkills(_ context.Context, deviceID int64, backendTy
 	f.gotDeviceID = deviceID
 	f.gotBackend = backendType
 	return f.packs, nil
+}
+
+// TestListAgentSkillPacks_SelfFingerprintBackendUsesLocalDiscovery R13 认领后本机
+// backend 的 DeviceID 是本机指纹:技能发现必须当本机档走本地 Discoverer,而不是当
+// 远端档(DeviceIDInt 解析不出数字)返回空包。
+func TestListAgentSkillPacks_SelfFingerprintBackendUsesLocalDiscovery(t *testing.T) {
+	Convey("给定指向本机指纹的 claudecode backend, 发现走本地 Discoverer", t, func() {
+		ctrl := gomock.NewController(t)
+		al := mock_skill_svc.NewMockAgentLookup(ctrl)
+		bl := mock_skill_svc.NewMockBackendLookup(ctrl)
+		ag := &agent_entity.Agent{ID: 1, AgentBackendID: 9}
+		al.EXPECT().Find(gomock.Any(), int64(1)).Return(ag, nil).AnyTimes()
+		bl.EXPECT().Find(gomock.Any(), int64(9)).Return(&agent_backend_entity.AgentBackend{
+			Type: string(agent_backend_entity.TypeClaudeCode), DeviceID: "sha256:self",
+		}, nil).AnyTimes()
+
+		rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+		rds.EXPECT().DeviceFingerprint().Return("sha256:self", nil).AnyTimes()
+		prevSvc := remote_device_svc.Default()
+		remote_device_svc.SetDefault(rds)
+		t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+		restore := agentskill.SwapDiscovererForTest(agent_backend_entity.TypeClaudeCode, fakeDisc{[]agentskill.SkillPack{
+			{ID: "local-only@desktop", Name: "local-only", Installed: true, Source: agentskill.SourceInstalled},
+		}})
+		defer restore()
+		et := &fakeExecTargets{}
+		s := newForTest(al, bl, et)
+
+		cat, err := s.ListAgentSkillPacks(context.Background(), 1, false)
+		So(err, ShouldBeNil)
+		byID := map[string]SkillPackDTO{}
+		for _, p := range cat.Packs {
+			byID[p.ID] = p
+		}
+		// 本地发现器的包必须出现在目录里(不能是空包)。
+		So(byID["local-only@desktop"].Installed, ShouldBeTrue)
+	})
 }
 
 func TestListAgentSkillPacks_RemoteBackendUsesDaemonDiscovery(t *testing.T) {
