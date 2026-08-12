@@ -76,12 +76,12 @@ type Runtime struct {
 	pool   *agentruntime.CLISessionPool
 
 	// launchedModel 记录每个 chat 会话(spawn 时)下发的启动期参数快照
-	// (launchedSpawnKey:effectiveModel + effectiveProviderKey),key 与
+	// (launchedSpawnKey:effectiveModel + ModelKey + effectiveProviderKey),key 与
 	// CLISessionPool 一致(sessionKey)。--model 与 model_provider/base_url(-c 覆盖项)
 	// 都是启动期 flag(绑定在 Client 创建时),app-server 进程又会被池跨轮复用 ——
-	// 解析出的 ModelID 或 effectiveProviderKey 任一变化都必须 evict + 重 spawn(镜像
-	// claudecode 的 launchedEffort 先例;决策 4 把比对键从单纯 model 扩展为二者的组合,
-	// 否则两个配同一 model id 的不同供应商换绑定时会漏判,复用旧进程打到旧供应商)。
+	// 解析出的 ModelID、稳定 ModelKey 或 effectiveProviderKey 任一变化都必须 evict +
+	// 重 spawn(镜像 claudecode 的 launchedEffort 先例;比对三者的完整启动身份,
+	// 否则同 ModelID 的不同稳定模型或不同供应商会漏判,复用旧进程打到旧目标)。
 	// 否则下一轮复用旧参数进程,新供应商/模型不生效(RunResult.Model 仍旧模型)。
 	//
 	// 池按 LRU 上限(MarkIdle 的 prune)逐出空闲会话时不会回调这里,故条目可能只增不减
