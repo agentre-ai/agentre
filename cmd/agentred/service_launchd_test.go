@@ -227,6 +227,25 @@ func TestGivenLaunchAgentStillRunningAfterBootoutWhenStoppingThenItWaitsUntilUnl
 	assert.Len(t, runner.calls, 3)
 }
 
+func TestGivenLaunchAgentPreviouslyExitedCleanlyWhenStartingThenItKeepsWaitingUntilRunning(t *testing.T) {
+	home := t.TempDir()
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", "ai.agentre.agentred.plist")
+	require.NoError(t, os.MkdirAll(filepath.Dir(plistPath), 0o755))
+	require.NoError(t, os.WriteFile(plistPath, []byte("plist"), 0o644))
+	runner := &fakeServiceCommandRunner{results: []fakeServiceCommandResult{
+		{output: "Could not find service", err: &exec.ExitError{}},
+		{},
+		{output: "state = waiting\nlast exit code = 0\n"},
+		{output: "state = running\nlast exit code = 0\n"},
+	}}
+	manager := newLaunchdServiceManager(serviceManagerConfig{HomeDir: home, UID: 501, Runner: runner})
+
+	status, err := manager.Start(context.Background())
+	require.NoError(t, err)
+	assert.True(t, status.Running)
+	assert.Len(t, runner.calls, 4, "a historical successful exit must not be treated as terminal failure")
+}
+
 func TestGivenLaunchAgentExitsWhileStartingThenItReturnsFailureWithoutWaitingForTimeout(t *testing.T) {
 	home := t.TempDir()
 	plistPath := filepath.Join(home, "Library", "LaunchAgents", "ai.agentre.agentred.plist")

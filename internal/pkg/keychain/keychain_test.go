@@ -106,6 +106,19 @@ func TestValidateFileDir(t *testing.T) {
 		So(err, ShouldNotBeNil)
 	})
 
+	Convey("an existing probe-named file is preserved", t, func() {
+		dir := filepath.Join(t.TempDir(), "kc")
+		So(os.MkdirAll(dir, 0o700), ShouldBeNil)
+		probe := filepath.Join(dir, ".keychain-probe")
+		So(os.WriteFile(probe, []byte("existing"), 0o600), ShouldBeNil)
+
+		err := keychain.ValidateFileDir(dir)
+		So(err, ShouldBeNil)
+		got, readErr := os.ReadFile(probe) //nolint:gosec // G304: probe is assembled under the test's temporary directory.
+		So(readErr, ShouldBeNil)
+		So(string(got), ShouldEqual, "existing")
+	})
+
 	Convey("a directory without owner write fails", t, func() {
 		if os.Geteuid() == 0 {
 			t.Skip("running as root; permission bits do not gate writes")

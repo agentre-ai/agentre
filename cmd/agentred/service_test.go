@@ -143,6 +143,35 @@ func TestGivenRunningManagerButUnreadableLocalDaemonWhenStartingThenCommandFails
 	assert.Contains(t, err.Error(), "Run manually: launchctl print gui/501/ai.agentre.agentred")
 }
 
+func TestGivenCanceledStatusCommandWhenLoadingLocalDaemonThenCancellationIsPropagated(t *testing.T) {
+	manager := &fakeServiceManager{status: ServiceStatus{Installed: true, Running: true}}
+	seenContext := make(chan context.Context, 1)
+	cmd := newServiceCmdWithDeps(serviceCommandDeps{
+		managerFactory: func() (ServiceManager, error) { return manager, nil },
+		localStatus: func(ctx context.Context) (map[string]any, error) {
+			seenContext <- ctx
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return nil, errors.New("status loader lost command cancellation")
+		},
+	})
+	cmd.SilenceUsage = true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"status"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cmd.SetContext(ctx)
+
+	require.NoError(t, cmd.Execute())
+	seen := <-seenContext
+	assert.ErrorIs(t, seen.Err(), context.Canceled)
+	assert.Contains(t, out.String(), context.Canceled.Error())
+	assert.NotContains(t, out.String(), "lost command cancellation")
+}
+
 func TestGivenLocalDaemonNeverBecomesReadyWhenStartingThenCancellationStopsObservation(t *testing.T) {
 	manager := &fakeServiceManager{status: ServiceStatus{
 		Installed: true,
@@ -229,6 +258,59 @@ func TestGivenLifecycleStartActionsWhenLocalDaemonBecomesReadableThenTheyPrintRu
 			assert.Equal(t, "Daemon running", strings.Split(strings.TrimSpace(out.String()), "\n")[0])
 		})
 	}
+}
+
+func TestGivenReadableLocalStatusWithoutPIDWhenStartingThenItKeepsWaitingForDaemonIdentity(t *testing.T) {
+	manager := &fakeServiceManager{status: ServiceStatus{Installed: true, Running: true}}
+	attempts := 0
+	cmd := newServiceCmdWithDeps(serviceCommandDeps{
+		managerFactory: func() (ServiceManager, error) { return manager, nil },
+		localStatus: func(context.Context) (map[string]any, error) {
+			attempts++
+			if attempts == 1 {
+				return map[string]any{"version": "starting"}, nil
+			}
+			return map[string]any{"pid": float64(42)}, nil
+		},
+	})
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"start"})
+
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, 2, attempts, "a decodable status without daemon PID must not satisfy readiness")
+	assert.Equal(t, []string{"start", "status"}, manager.calls)
+}
+
+func TestGivenRestartPreflightWhenLocalStatusStallsThenItsProbeIsBounded(t *testing.T) {
+	manager := &fakeServiceManager{status: ServiceStatus{
+		Installed: true,
+		Running:   true,
+		Details:   []string{"Manager: systemd --user"},
+	}}
+	attempts := 0
+	cmd := newServiceCmdWithDeps(serviceCommandDeps{
+		managerFactory: func() (ServiceManager, error) { return manager, nil },
+		localStatus: func(ctx context.Context) (map[string]any, error) {
+			attempts++
+			if _, bounded := ctx.Deadline(); !bounded {
+				return nil, errors.New("pre-restart local status probe has no deadline")
+			}
+			if attempts < 3 {
+				return map[string]any{"pid": float64(41)}, nil
+			}
+			return map[string]any{"pid": float64(42)}, nil
+		},
+	})
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"restart"})
+
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, 3, attempts, "the bounded preflight must capture the old PID before restart")
+	assert.Equal(t, []string{"restart", "status"}, manager.calls)
 }
 
 func TestGivenRestartWhenOldDaemonStillAnswersThenItWaitsForANewDaemonPID(t *testing.T) {

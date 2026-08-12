@@ -40,11 +40,21 @@ func ValidateFileDir(dir string) error {
 	if perm := info.Mode().Perm(); perm != 0o700 {
 		return fmt.Errorf("keychain dir %q permissions %#o are not isolated; want 0700", dir, perm)
 	}
-	probe := filepath.Join(dir, ".keychain-probe")
-	if err := os.WriteFile(probe, []byte("probe"), 0o600); err != nil {
+	probe, err := os.CreateTemp(dir, ".keychain-probe-")
+	if err != nil {
 		return fmt.Errorf("keychain dir %q not writable: %w", dir, err)
 	}
-	if err := os.Remove(probe); err != nil {
+	probePath := probe.Name()
+	if err := probe.Chmod(0o600); err != nil {
+		_ = probe.Close()
+		_ = os.Remove(probePath)
+		return fmt.Errorf("keychain dir %q probe permissions: %w", dir, err)
+	}
+	if err := probe.Close(); err != nil {
+		_ = os.Remove(probePath)
+		return fmt.Errorf("keychain dir %q probe close: %w", dir, err)
+	}
+	if err := os.Remove(probePath); err != nil {
 		return fmt.Errorf("keychain dir %q probe cleanup: %w", dir, err)
 	}
 	return nil
