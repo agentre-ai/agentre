@@ -357,7 +357,6 @@
       "defaultName": "Agent",
       "groupedName": "Agents",
       "runToggle": "Toggle run {{index}}: {{name}}",
-      "stepToggle": "Toggle {{tool}} step details",
       "stop": "Stop",
       "emptyPrompt": "No prompt",
       "emptyResult": "(empty result)",
@@ -386,10 +385,13 @@
         "tools_other": "{{count}} tools",
         "tokens": "{{value}} tokens"
       },
+      "outcome": {
+        "steps": "{{count}} steps",
+        "steps_one": "{{count}} step",
+        "steps_other": "{{count}} steps"
+      },
       "sections": {
         "prompt": "TASK PROMPT",
-        "params": "PARAMS",
-        "result": "RESULT",
         "tasks": "TASKS",
         "steps": "STEPS",
         "output": "OUTPUT",
@@ -398,11 +400,9 @@
       "status": {
         "done": "DONE",
         "error": "ERROR",
-        "fail": "FAIL",
         "failed": "FAILED",
         "partial": "PARTIAL",
         "running": "RUNNING",
-        "runningLower": "running",
         "waiting": "WAITING",
         "skipped": "SKIPPED",
         "unknown": "UNKNOWN",

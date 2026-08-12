@@ -472,7 +472,7 @@ function makeActivityItem(
 
 // summarizeActivity 汇总组头:类目计数按固定顺序输出并截断,写操作额外报出对象
 // 规模(改到几个文件 / 增删多少行),失败计数单列且不参与截断。
-function summarizeActivity(steps: ActivityStep[]): ActivitySummary {
+export function summarizeActivity(steps: ActivityStep[]): ActivitySummary {
   const counts = new Map<ActivityCategory, number>();
   const editedPaths = new Set<string>();
   let plus = 0;

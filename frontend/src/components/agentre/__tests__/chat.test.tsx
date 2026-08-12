@@ -2609,14 +2609,17 @@ describe("ChatTranscript subagent blocks", () => {
 
   it("renders Agent tool as SubagentInvocationCard, hides child blocks from top level", () => {
     const card = renderTranscriptWithSubagent();
-    // 头部是一行：Agent · probe + general-purpose chip + DONE 状态胶囊。R8/R9
-    // 把完整的工具数/tokens/耗时下沉到展开区 meta 行,完成态的头部不再渲染
-    // 任何数字形式的用量(旧的 "N tools" 文案与新的无文案极简进度都不出现)。
+    // 头部是一行：Agent · probe + general-purpose chip + 完成态的次级信息
+    // 「N 步 · token · 耗时」(成功态不再挂状态胶囊)。R8/R9 把带标签的完整
+    // 工具数/tokens/耗时下沉到展开区 meta 行。
     expect(within(card).getByText("Agent")).toBeInTheDocument();
     expect(within(card).getByText("probe")).toBeInTheDocument();
     expect(within(card).getByText("general-purpose")).toBeInTheDocument();
     expect(within(card).queryByText(/last:/)).toBeNull();
-    expect(within(card).getByText(/DONE · 7\.8s/)).toBeInTheDocument();
+    expect(within(card).queryByTestId("agent-spawn-status-pill")).toBeNull();
+    expect(within(card).getByTestId("agent-spawn-outcome")).toHaveTextContent(
+      "7.8s",
+    );
     // 详情区(展开区 meta 行)折叠时仍常驻 DOM,只查全卡片文案测不出「头部
     // 不再显示数字」——把查询限定在头部按钮本身。
     const header = within(card).getByRole("button", { expanded: false });
@@ -2643,15 +2646,10 @@ describe("ChatTranscript subagent blocks", () => {
     expect(
       within(card).getByText("Run echo hello and return."),
     ).toBeInTheDocument();
-    // Bash 子步骤的 header 出现在 STEPS 区
-    expect(within(card).getByText("Bash")).toHaveAttribute(
-      "data-copyable-control-text",
-      "true",
-    );
-    expect(within(card).getByText("echo hello")).toHaveAttribute(
-      "data-copyable-control-text",
-      "true",
-    );
+    // Bash 子步骤出现在 STEPS 区 —— 现在是活动块里的一行(同转录的活动行),
+    // 不再是各自带边框与状态胶囊的 step 卡。
+    expect(within(card).getByTestId("activity-name")).toHaveTextContent("Bash");
+    expect(within(card).getByText("echo hello")).toBeInTheDocument();
     // SUMMARY 区有最终文本
     expect(within(card).getByText(/Raw output:/)).toBeInTheDocument();
   });
