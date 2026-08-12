@@ -106,7 +106,7 @@ func TestCLIProbe_WithProvider_ClaudeCode_HappyPath(t *testing.T) {
 
 	gomock.InOrder(
 		mpl.EXPECT().FindByKey(ctx, "key-5").Return(&llm_provider_entity.LLMProvider{
-			ProviderKey: "key-5", Type: "anthropic", Model: "claude-opus-4",
+			ProviderKey: "key-5", Type: "anthropic",
 		}, nil),
 		mgw.EXPECT().URL().Return("http://127.0.0.1:9090"),
 		mgw.EXPECT().IssueToken(ctx, gomock.Any(), gomock.Any()).
@@ -143,7 +143,7 @@ func TestCLIProbe_WithProvider_Codex_PopulatesCodexConfigs(t *testing.T) {
 	ctx, mgw, mpl, h := setupCLITest(t)
 
 	mpl.EXPECT().FindByKey(ctx, "key-7").Return(&llm_provider_entity.LLMProvider{
-		ProviderKey: "key-7", Type: "openai", Model: "gpt-5-codex",
+		ProviderKey: "key-7", Type: "openai",
 	}, nil)
 	mgw.EXPECT().URL().Return("http://127.0.0.1:9090")
 	mgw.EXPECT().IssueToken(ctx, gomock.Any(), gomock.Any()).Return("tok-abc", nil)

@@ -2983,6 +2983,9 @@
     "defaultLabel": "Follow default model",
     "invalidHint": "This target is no longer valid (provider or model missing/disabled). Choose again.",
     "remoteMissing": "Target device is missing this provider. Sync it first.",
-    "noDefaultModel": "No default model set"
+    "noDefaultModel": "No default model set",
+    "remoteSyncNeeded": "Local only — sync to this device first",
+    "fixedModelUnsupported": "This device does not support fixed models — upgrade agentred",
+    "remoteGateHint": "Disabled items need sync to the device or an unsupported capability"
   }
 }

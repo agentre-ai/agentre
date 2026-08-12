@@ -2983,6 +2983,9 @@
     "defaultLabel": "跟随默认模型",
     "invalidHint": "该目标已失效（供应商或模型缺失/停用），请重新选择。",
     "remoteMissing": "目标设备缺少该供应商，请在远端同步后再选择。",
-    "noDefaultModel": "未设置默认模型"
+    "noDefaultModel": "未设置默认模型",
+    "remoteSyncNeeded": "本机独有，同步到该设备后可用",
+    "fixedModelUnsupported": "该设备不支持固定模型，请升级 agentred",
+    "remoteGateHint": "灰色项需先同步到目标设备，或设备不支持该能力"
   }
 }

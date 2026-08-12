@@ -56,17 +56,41 @@ func (s *chatSvc) effectiveLLMForTurn(ctx context.Context, prov *llm_provider_en
 }
 
 // effectiveLLMForNonRemoteTurn 是 turn 入口用变体：远端 backend 由 daemon 自家解析
-// （desktop 本地 provider 表反映不了 daemon 配置，wire 只透传 key），所以返回 nil、
-// 不做本地模型解析，也不让本地模型配置损坏阻塞远端轮。非远端后端直接委托
-// effectiveLLMForTurn，并带上本轮该用的 ModelKey（sessionModelKeyFor，spec 2026-08-11
-// 决策 1）：会话钉了 provider 时用会话的 ModelKey（空 = provider-default，非空 =
-// fixed-model），未钉（inherit-agent）或会话 provider 已回退时才跟随 backend 的固定
+// （desktop 本地 provider 表反映不了 daemon 配置，wire 只透传 key），所以返回一个
+// 只含目标 key 的 keys-only 配置（不做本地模型解析，也不让本地模型配置损坏阻塞远端轮）；
+// 非远端后端直接委托 effectiveLLMForTurn，并带上本轮该用的 ModelKey（sessionModelKeyFor，
+// spec 2026-08-11 决策 1）：会话钉了 provider 时用会话的 ModelKey（空 = provider-default，
+// 非空 = fixed-model），未钉（inherit-agent）或会话 provider 已回退时才跟随 backend 的固定
 // ModelKey。
+//
+// keys-only 配置只填 Mode / ProviderKey / ModelKey（task 6 决策 11）：daemon 按 wire
+// 的 key 从自家目录解析真实 Provider/Model，desktop 不透传解析结果或任何凭证。
 func (s *chatSvc) effectiveLLMForNonRemoteTurn(ctx context.Context, sess *chat_entity.Session, be *agent_backend_entity.AgentBackend, prov *llm_provider_entity.LLMProvider) (*agentruntime.EffectiveLLMConfig, error) {
 	if be != nil && be.IsRemote() {
-		return nil, nil
+		return remoteKeysOnlyEffective(sess, be), nil
 	}
 	return s.effectiveLLMForTurn(ctx, prov, sessionModelKeyFor(sess, be, prov))
+}
+
+// remoteKeysOnlyEffective 组装远端执行的 keys-only 目标（决策 11）：会话钉了
+// provider 时用会话的 ProviderKey/ModelKey，未钉时跟随 backend 主绑定。
+func remoteKeysOnlyEffective(sess *chat_entity.Session, be *agent_backend_entity.AgentBackend) *agentruntime.EffectiveLLMConfig {
+	mode := agentruntime.EffectiveModeNative
+	var providerKey, modelKey string
+	if sess != nil && strings.TrimSpace(sess.ProviderKey) != "" {
+		providerKey = sess.ProviderKey
+		modelKey = sess.ModelKey
+	} else if be != nil && strings.TrimSpace(be.LLMProviderKey) != "" {
+		providerKey = be.LLMProviderKey
+		modelKey = be.LLMModelKey
+	}
+	switch {
+	case providerKey != "" && modelKey != "":
+		mode = agentruntime.EffectiveModeFixedModel
+	case providerKey != "":
+		mode = agentruntime.EffectiveModeProviderDefault
+	}
+	return &agentruntime.EffectiveLLMConfig{Mode: mode, ProviderKey: providerKey, ModelKey: modelKey}
 }
 
 // sessionModelKeyFor 返回本轮解析用的 ModelKey（spec 2026-08-11 决策 1）：

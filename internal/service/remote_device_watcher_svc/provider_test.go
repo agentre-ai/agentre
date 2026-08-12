@@ -16,11 +16,17 @@ import (
 type spyRecorder struct {
 	mu    sync.Mutex
 	calls []recordCall
+	caps  []recordCapsCall
 }
 
 type recordCall struct {
 	deviceID int64
 	ps       []remote_device_watcher_svc.ProviderSummary
+}
+
+type recordCapsCall struct {
+	deviceID int64
+	caps     []string
 }
 
 func (s *spyRecorder) RecordDeviceProviders(deviceID int64, ps []remote_device_watcher_svc.ProviderSummary) {
@@ -29,6 +35,14 @@ func (s *spyRecorder) RecordDeviceProviders(deviceID int64, ps []remote_device_w
 	cp := make([]remote_device_watcher_svc.ProviderSummary, len(ps))
 	copy(cp, ps)
 	s.calls = append(s.calls, recordCall{deviceID: deviceID, ps: cp})
+}
+
+func (s *spyRecorder) RecordDeviceCapabilities(deviceID int64, caps []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]string, len(caps))
+	copy(cp, caps)
+	s.caps = append(s.caps, recordCapsCall{deviceID: deviceID, caps: cp})
 }
 
 func (s *spyRecorder) snapshot() []recordCall {

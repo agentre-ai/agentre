@@ -52,11 +52,11 @@ func TestRemoteDeviceSvc_SyncProvider(t *testing.T) {
 			Status:   consts.ACTIVE,
 		}
 
-		Convey("copies local provider metadata and API key to remote llm.upsert", func() {
+		Convey("copies local provider metadata, API key and model catalog to remote llm.upsert", func() {
 			lease := svcmock.NewMockLease(ctrl)
 			client := mock_agentruntime.NewMockDaemonClientPort(ctrl)
 			providerRepo.EXPECT().FindByKey(gomock.Any(), "prov-1").Return(provider, nil)
-			providerRepo.EXPECT().FindModelByKey(gomock.Any(), "model-key-1").Return(defaultModel, nil)
+			providerRepo.EXPECT().ListModels(gomock.Any(), int64(0)).Return([]*llm_provider_model_entity.LLMProviderModel{defaultModel}, nil)
 			pool.EXPECT().Borrow(gomock.Any(), int64(42)).Return(lease, nil)
 			lease.EXPECT().Client().Return(client)
 			client.EXPECT().
@@ -70,6 +70,10 @@ func TestRemoteDeviceSvc_SyncProvider(t *testing.T) {
 					So(got.BaseURL, ShouldEqual, "https://api.anthropic.com")
 					// 默认模型的 ModelID，而不是 default_model_key。
 					So(got.Model, ShouldEqual, "claude-sonnet-4-6")
+					So(got.DefaultModelKey, ShouldEqual, "model-key-1")
+					So(got.Models, ShouldHaveLength, 1)
+					So(got.Models[0].ModelKey, ShouldEqual, "model-key-1")
+					So(got.Models[0].ModelID, ShouldEqual, "claude-sonnet-4-6")
 					So(got.APIKey, ShouldEqual, "sk-secret")
 					So(got.UpdatedAt, ShouldEqual, int64(1716000500))
 					_, ok = result.(*handlers.OK)
@@ -86,6 +90,9 @@ func TestRemoteDeviceSvc_SyncProvider(t *testing.T) {
 			So(cached[0].Key, ShouldEqual, "prov-1")
 			So(cached[0].Name, ShouldEqual, "Anthropic Prod")
 			So(cached[0].Type, ShouldEqual, "anthropic")
+			So(cached[0].DefaultModelKey, ShouldEqual, "model-key-1")
+			So(cached[0].Models, ShouldHaveLength, 1)
+			So(cached[0].Models[0].ModelID, ShouldEqual, "claude-sonnet-4-6")
 		})
 
 		Convey("returns provider-not-found before dialing when local provider is missing", func() {
@@ -106,7 +113,8 @@ func TestRemoteDeviceSvc_SyncProvider(t *testing.T) {
 			lease := svcmock.NewMockLease(ctrl)
 			client := mock_agentruntime.NewMockDaemonClientPort(ctrl)
 			providerRepo.EXPECT().FindByKey(gomock.Any(), "prov-1").Return(noDefault, nil)
-			// 无默认模型 → 不查模型表，直接发空 model。
+			// 无默认模型 → 目录照发、默认 model 留空。
+			providerRepo.EXPECT().ListModels(gomock.Any(), int64(0)).Return(nil, nil)
 			pool.EXPECT().Borrow(gomock.Any(), int64(42)).Return(lease, nil)
 			lease.EXPECT().Client().Return(client)
 			client.EXPECT().
@@ -115,6 +123,7 @@ func TestRemoteDeviceSvc_SyncProvider(t *testing.T) {
 					got, ok := params.(handlers.LLMUpsertParams)
 					require.True(t, ok)
 					So(got.Model, ShouldEqual, "")
+					So(got.DefaultModelKey, ShouldEqual, "")
 					_, ok = result.(*handlers.OK)
 					require.True(t, ok)
 					return nil
@@ -135,7 +144,7 @@ func TestRemoteDeviceSvc_SyncProvider(t *testing.T) {
 			lease := svcmock.NewMockLease(ctrl)
 			client := mock_agentruntime.NewMockDaemonClientPort(ctrl)
 			providerRepo.EXPECT().FindByKey(gomock.Any(), "prov-1").Return(provider, nil)
-			providerRepo.EXPECT().FindModelByKey(gomock.Any(), "model-key-1").Return(disabled, nil)
+			providerRepo.EXPECT().ListModels(gomock.Any(), int64(0)).Return([]*llm_provider_model_entity.LLMProviderModel{disabled}, nil)
 			pool.EXPECT().Borrow(gomock.Any(), int64(42)).Return(lease, nil)
 			lease.EXPECT().Client().Return(client)
 			client.EXPECT().
@@ -144,6 +153,9 @@ func TestRemoteDeviceSvc_SyncProvider(t *testing.T) {
 					got, ok := params.(handlers.LLMUpsertParams)
 					require.True(t, ok)
 					So(got.Model, ShouldEqual, "")
+					// 停用模型仍进目录（daemon 据此拒绝 fixed-model），Enabled=false。
+					So(got.Models, ShouldHaveLength, 1)
+					So(got.Models[0].Enabled, ShouldBeFalse)
 					_, ok = result.(*handlers.OK)
 					require.True(t, ok)
 					return nil
@@ -154,9 +166,9 @@ func TestRemoteDeviceSvc_SyncProvider(t *testing.T) {
 			So(err, ShouldBeNil)
 		})
 
-		Convey("propagates an error when resolving the default model fails", func() {
+		Convey("propagates an error when listing the model catalog fails", func() {
 			providerRepo.EXPECT().FindByKey(gomock.Any(), "prov-1").Return(provider, nil)
-			providerRepo.EXPECT().FindModelByKey(gomock.Any(), "model-key-1").Return(nil, errors.New("db boom"))
+			providerRepo.EXPECT().ListModels(gomock.Any(), int64(0)).Return(nil, errors.New("db boom"))
 
 			err := svc.SyncProvider(context.Background(), 42, "prov-1")
 			So(err, ShouldNotBeNil)
@@ -166,7 +178,7 @@ func TestRemoteDeviceSvc_SyncProvider(t *testing.T) {
 			lease := svcmock.NewMockLease(ctrl)
 			client := mock_agentruntime.NewMockDaemonClientPort(ctrl)
 			providerRepo.EXPECT().FindByKey(gomock.Any(), "prov-1").Return(provider, nil)
-			providerRepo.EXPECT().FindModelByKey(gomock.Any(), "model-key-1").Return(defaultModel, nil)
+			providerRepo.EXPECT().ListModels(gomock.Any(), int64(0)).Return([]*llm_provider_model_entity.LLMProviderModel{defaultModel}, nil)
 			pool.EXPECT().Borrow(gomock.Any(), int64(42)).Return(lease, nil)
 			lease.EXPECT().Client().Return(client)
 			client.EXPECT().

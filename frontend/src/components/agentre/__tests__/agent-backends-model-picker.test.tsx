@@ -18,7 +18,11 @@ function catalog() {
       name: "Anthropic",
       type: "anthropic",
       enabled: true,
-      defaultModel: { modelKey: "mk-1", modelId: "claude-sonnet-4-6", enabled: true },
+      defaultModel: {
+        modelKey: "mk-1",
+        modelId: "claude-sonnet-4-6",
+        enabled: true,
+      },
       models: [
         { modelKey: "mk-1", modelId: "claude-sonnet-4-6", enabled: true },
         { modelKey: "mk-opus", modelId: "claude-opus-4-8", enabled: true },
@@ -185,7 +189,9 @@ describe("ModelTargetPicker", () => {
       />,
     );
     await user.click(screen.getByRole("button", { name: "LLM Provider" }));
-    expect(await screen.findByText(/Loading model catalog/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Loading model catalog/),
+    ).toBeInTheDocument();
 
     rerender(
       <ModelTargetPicker
@@ -198,7 +204,9 @@ describe("ModelTargetPicker", () => {
         error
       />,
     );
-    expect(await screen.findByText(/Failed to load model catalog/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Failed to load model catalog/),
+    ).toBeInTheDocument();
   });
 
   it("已失效目标显示失效提示，键盘方向键 + Enter 可选中", async () => {
@@ -251,10 +259,155 @@ describe("ModelTargetPicker", () => {
     await user.click(screen.getByRole("button", { name: "LLM Provider" }));
     const list = await screen.findByRole("listbox", { name: "LLM Provider" });
     // inherit-main 特殊项在最前。
-    expect(within(list).getByRole("option", { name: /Inherit main binding/ })).toBeInTheDocument();
+    expect(
+      within(list).getByRole("option", { name: /Inherit main binding/ }),
+    ).toBeInTheDocument();
     // recent 里 claudecode 不兼容的 OpenAI 项被隐藏，只有 Anthropic 的 recent（固定模型）可见。
     // claude-opus-4-8 同时出现在 recent 与目录 fixed 项中（两处）。
-    expect(within(list).getAllByText("claude-opus-4-8").length).toBeGreaterThan(0);
+    expect(within(list).getAllByText("claude-opus-4-8").length).toBeGreaterThan(
+      0,
+    );
     expect(within(list).queryByText(/gpt-5/)).not.toBeInTheDocument();
+  });
+});
+
+describe("ModelTargetPicker remote gating (task 6)", () => {
+  function remoteCatalogWith() {
+    return [
+      {
+        providerKey: "k-anthropic",
+        id: 0,
+        name: "Anthropic",
+        type: "anthropic",
+        enabled: true,
+        defaultModel: {
+          modelKey: "mk-1",
+          modelId: "claude-sonnet-4-6",
+          enabled: true,
+        },
+        models: [
+          { modelKey: "mk-1", modelId: "claude-sonnet-4-6", enabled: true },
+        ],
+      },
+    ];
+  }
+
+  it("旧 daemon（不支持 fixed-model）禁用所有 fixed-model，provider-default 仍可选", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <ModelTargetPicker
+        scenario="backend"
+        aria-label="LLM Provider"
+        backendType="claudecode"
+        selected={null}
+        onChange={onChange}
+        catalog={catalog()}
+        executionLocation="7"
+        supportsFixedModel={false}
+        remoteCatalog={remoteCatalogWith()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "LLM Provider" }));
+    const list = await screen.findByRole("listbox", { name: "LLM Provider" });
+    const options = within(list).getAllByRole("option");
+    // provider-default（Anthropic）可选；fixed-model（claude-opus-4-8）被禁用。
+    expect(options[1]).not.toHaveAttribute("aria-disabled", "true");
+    expect(options[2]).toHaveAttribute("aria-disabled", "true");
+    expect(options[2]).toHaveAttribute("title");
+  });
+
+  it("desktop 独有的 provider（daemon 目录里没有）整组禁用并提示同步", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <ModelTargetPicker
+        scenario="backend"
+        aria-label="LLM Provider"
+        backendType="claudecode"
+        selected={null}
+        onChange={onChange}
+        catalog={catalog()}
+        executionLocation="7"
+        supportsFixedModel
+        remoteCatalog={remoteCatalogWith()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "LLM Provider" }));
+    const list = await screen.findByRole("listbox", { name: "LLM Provider" });
+    const options = within(list).getAllByRole("option");
+    // daemon 上存在 k-anthropic → 可选；k-openai 是 claudecode 不兼容（被过滤）。
+    expect(options[1]).not.toHaveAttribute("aria-disabled", "true");
+    // 远端门控提示行出现。
+    expect(
+      await screen.findByText(/sync to the device|同步到目标设备/),
+    ).toBeInTheDocument();
+  });
+
+  it("模型在 daemon 上不存在 → fixed-model 禁用；本机行为不受影响（默认门控关闭）", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <ModelTargetPicker
+        scenario="backend"
+        aria-label="LLM Provider"
+        backendType="claudecode"
+        selected={null}
+        onChange={onChange}
+        catalog={catalog()}
+        executionLocation="7"
+        supportsFixedModel
+        remoteCatalog={[
+          {
+            providerKey: "k-anthropic",
+            id: 0,
+            name: "Anthropic",
+            type: "anthropic",
+            enabled: true,
+            defaultModel: {
+              modelKey: "mk-1",
+              modelId: "claude-sonnet-4-6",
+              enabled: true,
+            },
+            // 只有默认模型，没有 mk-opus → 该 fixed-model 需同步。
+            models: [
+              { modelKey: "mk-1", modelId: "claude-sonnet-4-6", enabled: true },
+            ],
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "LLM Provider" }));
+    const list = await screen.findByRole("listbox", { name: "LLM Provider" });
+    const options = within(list).getAllByRole("option");
+    expect(options[2]).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("本机（无 remoteCatalog）fixed-model 照常可选，不受门控影响", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <ModelTargetPicker
+        scenario="backend"
+        aria-label="LLM Provider"
+        backendType="claudecode"
+        selected={null}
+        onChange={onChange}
+        catalog={catalog()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "LLM Provider" }));
+    const list = await screen.findByRole("listbox", { name: "LLM Provider" });
+    const options = within(list).getAllByRole("option");
+    expect(options[2]).not.toHaveAttribute("aria-disabled", "true");
+    await user.click(options[2]);
+    expect(onChange).toHaveBeenCalledWith({
+      providerKey: "k-anthropic",
+      modelKey: "mk-opus",
+    });
   });
 });

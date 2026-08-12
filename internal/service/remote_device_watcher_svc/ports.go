@@ -63,14 +63,28 @@ const EventName = "remote.device.state"
 // ProviderSummary mirrors remote_device_svc.ProviderSummary so the watcher
 // package stays free of a direct dependency on remote_device_svc.
 type ProviderSummary struct {
-	Key  string `json:"key"`
-	Name string `json:"name"`
-	Type string `json:"type"`
+	Key             string         `json:"key"`
+	Name            string         `json:"name"`
+	Type            string         `json:"type"`
+	DefaultModelKey string         `json:"defaultModelKey,omitempty"`
+	Models          []ModelSummary `json:"models,omitempty"`
+}
+
+// ModelSummary mirrors remote_device_svc.ModelSummary（非敏感模型摘要）。
+type ModelSummary struct {
+	Key     string `json:"key"`
+	ModelID string `json:"modelId"`
+	Name    string `json:"name,omitempty"`
+	Enabled bool   `json:"enabled"`
 }
 
 // ProviderRecorder is the narrow interface watcher calls after each successful
-// health.ping to stash the daemon's provider list. Production implementation is
-// remote_device_svc.RemoteDeviceSvc; tests may inject a spy or nil (no-op).
+// health.ping to stash the daemon's provider list and capability bits.
+// Production implementation is remote_device_svc.RemoteDeviceSvc; tests may
+// inject a spy or nil (no-op).
 type ProviderRecorder interface {
 	RecordDeviceProviders(deviceID int64, ps []ProviderSummary)
+	// RecordDeviceCapabilities 记下 daemon 公布的 llm-model-target-v1 能力位（决策 11），
+	// 桌面端据此决定是否允许选择远端 fixed-model。
+	RecordDeviceCapabilities(deviceID int64, caps []string)
 }

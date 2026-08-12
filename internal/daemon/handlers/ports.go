@@ -161,6 +161,13 @@ type GatewayPort interface {
 	RevokeToken(token string)
 }
 
+// EffectiveModel 是 daemon 侧解析出的执行模型（决策 11）：固定模型或当前默认模型。
+// ModelKey 稳定，ModelID 是实际发给上游的模型 id。
+type EffectiveModel struct {
+	ModelKey string
+	ModelID  string
+}
+
 // LLMProviderLookupPort daemon-side LLM provider 查询端口：按稳定 UUID key 解出
 // 含 APIKey 的完整 LLMProvider 实体。daemon 内 *ProviderLookup 自然满足本接口。
 // 未命中按 (nil, error) 返回，调用方按 error 处理。
@@ -170,4 +177,10 @@ type GatewayPort interface {
 // internal/pkg/httpgateway。
 type LLMProviderLookupPort interface {
 	FindByKey(ctx context.Context, key string) (*llm_provider_entity.LLMProvider, error)
+	// ResolveModel 从 daemon 自家目录解析 Provider 的执行模型（决策 11）：
+	//   - modelKey 空 → provider-default：Provider 当前默认模型（DefaultModelKey →
+	//     Models；缺省回落旧单模型字段 Model）。无默认模型 → (EffectiveModel{}, nil)；
+	//   - modelKey 非空 → fixed-model：精确查 Models 中启用模型。模型缺失或停用 → error，
+	//     调用方严格阻止本轮，绝不静默降级为默认模型。
+	ResolveModel(ctx context.Context, providerKey, modelKey string) (EffectiveModel, error)
 }

@@ -335,6 +335,69 @@ func (mr *MockSessionQueryPortMockRecorder) List(ctx, peerFingerprint any) *gomo
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockSessionQueryPort)(nil).List), ctx, peerFingerprint)
 }
 
+// MockSteerSourcePort is a mock of SteerSourcePort interface.
+type MockSteerSourcePort struct {
+	ctrl     *gomock.Controller
+	recorder *MockSteerSourcePortMockRecorder
+	isgomock struct{}
+}
+
+// MockSteerSourcePortMockRecorder is the mock recorder for MockSteerSourcePort.
+type MockSteerSourcePortMockRecorder struct {
+	mock *MockSteerSourcePort
+}
+
+// NewMockSteerSourcePort creates a new mock instance.
+func NewMockSteerSourcePort(ctrl *gomock.Controller) *MockSteerSourcePort {
+	mock := &MockSteerSourcePort{ctrl: ctrl}
+	mock.recorder = &MockSteerSourcePortMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockSteerSourcePort) EXPECT() *MockSteerSourcePortMockRecorder {
+	return m.recorder
+}
+
+// Consume mocks base method.
+func (m *MockSteerSourcePort) Consume(queuedID string) (handlers.SteerSourceEntry, bool) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Consume", queuedID)
+	ret0, _ := ret[0].(handlers.SteerSourceEntry)
+	ret1, _ := ret[1].(bool)
+	return ret0, ret1
+}
+
+// Consume indicates an expected call of Consume.
+func (mr *MockSteerSourcePortMockRecorder) Consume(queuedID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Consume", reflect.TypeOf((*MockSteerSourcePort)(nil).Consume), queuedID)
+}
+
+// Forget mocks base method.
+func (m *MockSteerSourcePort) Forget(queuedID string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "Forget", queuedID)
+}
+
+// Forget indicates an expected call of Forget.
+func (mr *MockSteerSourcePortMockRecorder) Forget(queuedID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Forget", reflect.TypeOf((*MockSteerSourcePort)(nil).Forget), queuedID)
+}
+
+// Record mocks base method.
+func (m *MockSteerSourcePort) Record(queuedID string, entry handlers.SteerSourceEntry) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "Record", queuedID, entry)
+}
+
+// Record indicates an expected call of Record.
+func (mr *MockSteerSourcePortMockRecorder) Record(queuedID, entry any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Record", reflect.TypeOf((*MockSteerSourcePort)(nil).Record), queuedID, entry)
+}
+
 // MockJournalReaderPort is a mock of JournalReaderPort interface.
 type MockJournalReaderPort struct {
 	ctrl     *gomock.Controller
@@ -552,4 +615,19 @@ func (m *MockLLMProviderLookupPort) FindByKey(ctx context.Context, key string) (
 func (mr *MockLLMProviderLookupPortMockRecorder) FindByKey(ctx, key any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindByKey", reflect.TypeOf((*MockLLMProviderLookupPort)(nil).FindByKey), ctx, key)
+}
+
+// ResolveModel mocks base method.
+func (m *MockLLMProviderLookupPort) ResolveModel(ctx context.Context, providerKey, modelKey string) (handlers.EffectiveModel, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ResolveModel", ctx, providerKey, modelKey)
+	ret0, _ := ret[0].(handlers.EffectiveModel)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ResolveModel indicates an expected call of ResolveModel.
+func (mr *MockLLMProviderLookupPortMockRecorder) ResolveModel(ctx, providerKey, modelKey any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ResolveModel", reflect.TypeOf((*MockLLMProviderLookupPort)(nil).ResolveModel), ctx, providerKey, modelKey)
 }

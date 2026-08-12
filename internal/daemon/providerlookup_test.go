@@ -65,3 +65,80 @@ func TestProviderLookup_FindByKey_APIKeyMiss(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "apiKey not configured")
 }
+
+// TestProviderLookup_ResolveModel 钉死决策 11 的 daemon 侧模型解析（task 6 多模型目录）：
+// fixed-model 精确匹配（缺失/停用拒绝），provider-default 取当前默认（缺省回落旧单模型）。
+func TestProviderLookup_ResolveModel(t *testing.T) {
+	const key = "prov-uuid-1"
+	st, _ := state.Load(t.TempDir())
+	st.Mutate(func(s *state.State) {
+		s.LLMProviders[key] = state.LLMProviderMeta{ //nolint:gosec // credential-shaped API key is a test fixture.
+			Name:            "anthropic-main",
+			Type:            "anthropic",
+			APIKey:          "fixture-ant-key",
+			Model:           "claude-sonnet-legacy", // 旧单模型字段
+			DefaultModelKey: "model-default",
+			Models: []state.LLMModelMeta{
+				{ModelKey: "model-default", ModelID: "claude-sonnet-4-6", Enabled: true},
+				{ModelKey: "model-opus", ModelID: "claude-opus-4-5", Enabled: true},
+				{ModelKey: "model-disabled", ModelID: "claude-haiku-gone", Enabled: false},
+			},
+		}
+	})
+	lookup := NewProviderLookup(st)
+	ctx := context.Background()
+
+	t.Run("fixed-model resolves exact model", func(t *testing.T) {
+		eff, err := lookup.ResolveModel(ctx, key, "model-opus")
+		require.NoError(t, err)
+		assert.Equal(t, "model-opus", eff.ModelKey)
+		assert.Equal(t, "claude-opus-4-5", eff.ModelID)
+	})
+
+	t.Run("fixed-model missing rejects", func(t *testing.T) {
+		_, err := lookup.ResolveModel(ctx, key, "model-gone")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "model-gone")
+	})
+
+	t.Run("fixed-model disabled rejects (no silent downgrade)", func(t *testing.T) {
+		_, err := lookup.ResolveModel(ctx, key, "model-disabled")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "disabled")
+	})
+
+	t.Run("provider-default resolves DefaultModelKey", func(t *testing.T) {
+		eff, err := lookup.ResolveModel(ctx, key, "")
+		require.NoError(t, err)
+		assert.Equal(t, "model-default", eff.ModelKey)
+		assert.Equal(t, "claude-sonnet-4-6", eff.ModelID)
+	})
+
+	t.Run("provider-default falls back to legacy single model", func(t *testing.T) {
+		legacyKey := "prov-legacy"
+		st.Mutate(func(s *state.State) {
+			s.LLMProviders[legacyKey] = state.LLMProviderMeta{
+				Name: "old", Type: "anthropic", APIKey: "k", Model: "claude-opus-4",
+			}
+		})
+		eff, err := lookup.ResolveModel(ctx, legacyKey, "")
+		require.NoError(t, err)
+		assert.Equal(t, "", eff.ModelKey)
+		assert.Equal(t, "claude-opus-4", eff.ModelID)
+	})
+
+	t.Run("provider-default no model at all returns empty", func(t *testing.T) {
+		bareKey := "prov-bare"
+		st.Mutate(func(s *state.State) {
+			s.LLMProviders[bareKey] = state.LLMProviderMeta{Name: "bare", Type: "anthropic", APIKey: "k"}
+		})
+		eff, err := lookup.ResolveModel(ctx, bareKey, "")
+		require.NoError(t, err)
+		assert.Equal(t, "", eff.ModelID)
+	})
+
+	t.Run("unknown provider rejects", func(t *testing.T) {
+		_, err := lookup.ResolveModel(ctx, "prov-nope", "")
+		require.Error(t, err)
+	})
+}

@@ -141,6 +141,18 @@ func (mr *MockRemoteDeviceSvcMockRecorder) RecordDaemonOutdated(deviceID, outdat
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RecordDaemonOutdated", reflect.TypeOf((*MockRemoteDeviceSvc)(nil).RecordDaemonOutdated), deviceID, outdated)
 }
 
+// RecordDeviceCapabilities mocks base method.
+func (m *MockRemoteDeviceSvc) RecordDeviceCapabilities(deviceID int64, caps []string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "RecordDeviceCapabilities", deviceID, caps)
+}
+
+// RecordDeviceCapabilities indicates an expected call of RecordDeviceCapabilities.
+func (mr *MockRemoteDeviceSvcMockRecorder) RecordDeviceCapabilities(deviceID, caps any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RecordDeviceCapabilities", reflect.TypeOf((*MockRemoteDeviceSvc)(nil).RecordDeviceCapabilities), deviceID, caps)
+}
+
 // RecordDeviceProviders mocks base method.
 func (m *MockRemoteDeviceSvc) RecordDeviceProviders(deviceID int64, ps []remote_device_svc.ProviderSummary) {
 	m.ctrl.T.Helper()
@@ -206,6 +218,20 @@ func (m *MockRemoteDeviceSvc) SetWatcher(w remote_device_svc.WatcherPort) {
 func (mr *MockRemoteDeviceSvcMockRecorder) SetWatcher(w any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetWatcher", reflect.TypeOf((*MockRemoteDeviceSvc)(nil).SetWatcher), w)
+}
+
+// SupportsLLMModelTarget mocks base method.
+func (m *MockRemoteDeviceSvc) SupportsLLMModelTarget(deviceID int64) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SupportsLLMModelTarget", deviceID)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// SupportsLLMModelTarget indicates an expected call of SupportsLLMModelTarget.
+func (mr *MockRemoteDeviceSvcMockRecorder) SupportsLLMModelTarget(deviceID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SupportsLLMModelTarget", reflect.TypeOf((*MockRemoteDeviceSvc)(nil).SupportsLLMModelTarget), deviceID)
 }
 
 // SyncProvider mocks base method.

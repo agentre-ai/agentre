@@ -106,3 +106,38 @@ func TestLLMList(t *testing.T) {
 		}
 	}
 }
+
+// TestLLMUpsert_PersistsModelCatalog 钉死 task 6 多模型同步：llm.upsert 把 Provider
+// 的 DefaultModelKey + 非敏感模型目录连同凭证一并落 state。
+func TestLLMUpsert_PersistsModelCatalog(t *testing.T) {
+	ctx, st, h := setupLLMTest(t)
+
+	_, err := h.Upsert(ctx, handlers.LLMUpsertParams{ //nolint:gosec // credential-shaped API key is a test fixture.
+		ProviderKey:     testProviderKey,
+		Name:            "anthropic-main",
+		Type:            "anthropic",
+		Model:           "claude-sonnet-4-6",
+		DefaultModelKey: "model-1",
+		Models: []state.LLMModelMeta{
+			{ModelKey: "model-1", ModelID: "claude-sonnet-4-6", Enabled: true},
+			{ModelKey: "model-2", ModelID: "claude-opus-4-5", Enabled: true},
+		},
+		APIKey:    "sk-ant-secret",
+		UpdatedAt: 1716000000,
+	})
+	require.NoError(t, err)
+
+	meta, ok := st.LLMProviders[testProviderKey]
+	require.True(t, ok)
+	assert.Equal(t, "model-1", meta.DefaultModelKey)
+	require.Len(t, meta.Models, 2)
+	assert.Equal(t, "claude-sonnet-4-6", meta.Models[0].ModelID)
+	assert.Equal(t, "claude-opus-4-5", meta.Models[1].ModelID)
+	assert.True(t, meta.Models[0].Enabled)
+
+	res, err := h.List(ctx)
+	require.NoError(t, err)
+	require.Len(t, res.Providers, 1)
+	assert.Equal(t, "model-1", res.Providers[0].DefaultModelKey)
+	require.Len(t, res.Providers[0].Models, 2)
+}

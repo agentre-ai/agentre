@@ -576,7 +576,23 @@ func buildRunParams(req agentruntime.RunRequest) (wire.RunParams, error) {
 		MCPServers:        req.MCPServers,
 		EnabledPlugins:    req.EnabledPlugins,
 		LLMProviderKey:    req.LLMProviderKey,
+		LLMModelKey:       remoteModelKey(req),
 	}, nil
+}
+
+// remoteModelKey 返回本轮远端执行目标的稳定 ModelKey（决策 11）：优先取执行侧
+// 解析结果（EffectiveLLMConfig v1 seam，chat_svc 对远端只透传目标 key 不做本地
+// 解析）的 ModelKey；未提供时回落 backend 主绑定的固定模型。空串 = provider-default。
+func remoteModelKey(req agentruntime.RunRequest) string {
+	if req.Effective != nil {
+		if mk := strings.TrimSpace(req.Effective.ModelKey); mk != "" {
+			return mk
+		}
+	}
+	if req.Backend != nil {
+		return strings.TrimSpace(req.Backend.LLMModelKey)
+	}
+	return ""
 }
 
 func encodeHistory(in []agentruntime.HistoryMessage) ([]wire.HistoryMessageWire, error) {
@@ -1042,7 +1058,37 @@ func (r *Runtime) goalParams(req agentruntime.GoalRequest) (wire.GoalParams, err
 		Objective:         req.Objective,
 		Status:            req.Status,
 		TokenBudget:       req.TokenBudget,
+		LLMProviderKey:    remoteGoalProviderKey(req),
+		LLMModelKey:       remoteGoalModelKey(req),
 	}, nil
+}
+
+// remoteGoalProviderKey 返回 goal 的执行侧 ProviderKey（决策 11）：优先取执行侧
+// 解析结果，缺省回落 backend 主绑定 —— 与 Run 的 effectiveProviderKey 同口径，
+// 保证 goal 与 turn 共用同一个 CLI 会话池时启动期比对键不翻转。
+func remoteGoalProviderKey(req agentruntime.GoalRequest) string {
+	if req.Effective != nil {
+		if pk := strings.TrimSpace(req.Effective.ProviderKey); pk != "" {
+			return pk
+		}
+	}
+	if req.Backend != nil {
+		return strings.TrimSpace(req.Backend.LLMProviderKey)
+	}
+	return ""
+}
+
+// remoteGoalModelKey 返回 goal 的执行侧 ModelKey（决策 11），语义同 remoteModelKey。
+func remoteGoalModelKey(req agentruntime.GoalRequest) string {
+	if req.Effective != nil {
+		if mk := strings.TrimSpace(req.Effective.ModelKey); mk != "" {
+			return mk
+		}
+	}
+	if req.Backend != nil {
+		return strings.TrimSpace(req.Backend.LLMModelKey)
+	}
+	return ""
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────

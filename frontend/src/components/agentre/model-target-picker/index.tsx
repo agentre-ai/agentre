@@ -62,6 +62,14 @@ export type ModelTargetPickerProps = {
   invalid?: boolean;
   // remoteMissing：目标执行设备上缺少所选 Provider（远端场景提示，task 6 深化）。
   remoteMissing?: boolean;
+  // supportsFixedModel：目标执行设备是否公布 llm-model-target-v1 能力位（task 6 决策 11）。
+  // 远端且为 false 时禁用所有 fixed-model 选项，避免旧 daemon 静默降级为默认模型；
+  // 本机 / 未传 → 默认 true（不限制）。
+  supportsFixedModel?: boolean;
+  // remoteCatalog：目标执行设备的 daemon 目录（task 6 决策 12，远端可运行事实源）。
+  // 未传 = 本机（不启用远端门控）。传了以后，desktop 目录里在 daemon 上不存在的
+  // Provider/Model 被禁用并标注「需同步」，绝不保存一个未经验证的远端目标。
+  remoteCatalog?: PickerProvider[];
   // footer：弹层底部常显说明（chat 场景的「自下一轮生效」等），随弹层一起出现。
   footer?: React.ReactNode;
   // compact：表单内嵌（claude tier 路由）用小号触发按钮。
@@ -84,6 +92,9 @@ type Option = {
   target: ModelTarget;
   disabled: boolean;
   group?: string;
+  // disabledHint 远端门控的禁用原因（task 6）：桌面目录里 daemon 上没有的
+  // Provider/Model，或旧 daemon 不支持的 fixed-model。
+  disabledHint?: string;
 };
 
 export function ModelTargetPicker({
@@ -99,6 +110,8 @@ export function ModelTargetPicker({
   disabled = false,
   invalid = false,
   remoteMissing = false,
+  supportsFixedModel = true,
+  remoteCatalog,
   footer,
   compact = false,
   align = "start",
@@ -170,11 +183,30 @@ export function ModelTargetPicker({
     return out.slice(0, 5);
   }, [compatible, executionLocation, scenario, t]);
 
+  // remoteByKey：daemon 目录的 Provider/Model 存在性索引（task 6 决策 12）。
+  // providerKey → provider（含其 models 的 modelKey 集合）。
+  const remoteByKey = React.useMemo(() => {
+    if (!remoteCatalog) return null;
+    const m = new Map<string, PickerProvider>();
+    for (const p of remoteCatalog) m.set(p.providerKey, p);
+    return m;
+  }, [remoteCatalog]);
+
+  const remoteSyncHint = t("modelTargetPicker.remoteSyncNeeded");
+  const remoteFixedHint = t("modelTargetPicker.fixedModelUnsupported");
+
   // 目录选项（provider-default 首项，再 fixed-model 列表）。
   const catalogOptions = React.useMemo(() => {
     const out: Option[] = [];
     for (const p of compatible) {
       const groupLabel = p.name;
+      // 远端门控：daemon 上没有该 Provider → 本机独有，需同步后才能选。
+      const remoteProvider =
+        remoteByKey && executionLocation
+          ? remoteByKey.get(p.providerKey)
+          : undefined;
+      const providerSyncNeeded =
+        remoteByKey != null && executionLocation !== "" && !remoteProvider;
       // provider-default 首项：当前默认模型解析结果（可能缺失 = 目标已失效，但仍可选，
       // 由后端/父组件按 kind 决定是否阻止保存）。
       const defaultModel = p.defaultModel;
@@ -186,11 +218,26 @@ export function ModelTargetPicker({
         sublabel:
           defaultModel?.modelId ?? t("modelTargetPicker.noDefaultModel"),
         target: { providerKey: p.providerKey, modelKey: "" },
-        disabled: !p.enabled,
+        disabled: !p.enabled || providerSyncNeeded,
+        disabledHint: providerSyncNeeded ? remoteSyncHint : undefined,
       });
       // fixed-model 列表。
       for (const m of p.models) {
         if (m.modelKey === defaultModel?.modelKey) continue;
+        // 远端门控：模型在 daemon 上不存在 / 停用 → 需同步；daemon 不支持
+        // fixed-model（旧协议）→ 一律禁用，绝不静默降级。
+        const remoteModelOk =
+          !remoteProvider ||
+          remoteProvider.models.some(
+            (rm) => rm.modelKey === m.modelKey && rm.enabled,
+          );
+        const fixedUnsupported =
+          remoteByKey != null && executionLocation !== "" && !supportsFixedModel;
+        const fixedSyncNeeded =
+          remoteByKey != null &&
+          executionLocation !== "" &&
+          remoteProvider != null &&
+          !remoteModelOk;
         out.push({
           key: `fixed-${p.providerKey}-${m.modelKey}`,
           kind: "fixed",
@@ -198,12 +245,21 @@ export function ModelTargetPicker({
           label: p.name,
           sublabel: m.modelId,
           target: { providerKey: p.providerKey, modelKey: m.modelKey },
-          disabled: !p.enabled || !m.enabled,
+          disabled:
+            !p.enabled || !m.enabled || providerSyncNeeded ||
+            fixedUnsupported ||
+            fixedSyncNeeded,
+          disabledHint: fixedUnsupported
+            ? remoteFixedHint
+            : providerSyncNeeded || fixedSyncNeeded
+              ? remoteSyncHint
+              : undefined,
         });
       }
     }
     return out;
-  }, [compatible, t]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compatible, executionLocation, remoteByKey, supportsFixedModel, t]);
 
   // 特殊项（native / inherit）。
   const specialOption: Option = {
@@ -413,6 +469,7 @@ export function ModelTargetPicker({
                       aria-disabled={opt.disabled}
                       data-option-index={i}
                       disabled={opt.disabled}
+                      title={opt.disabledHint}
                       onMouseEnter={() => setActiveIndex(i)}
                       onClick={() => {
                         if (opt.disabled) return;
@@ -484,6 +541,12 @@ export function ModelTargetPicker({
         {invalid ? (
           <div className="border-t border-border bg-status-waiting-bg px-3 py-2 text-2xs text-status-waiting">
             {t("modelTargetPicker.invalidHint")}
+          </div>
+        ) : null}
+        {remoteByKey != null && executionLocation !== "" &&
+        catalogOptions.some((o) => o.disabledHint) ? (
+          <div className="border-t border-border bg-secondary px-3 py-2 text-2xs text-muted-foreground">
+            {t("modelTargetPicker.remoteGateHint")}
           </div>
         ) : null}
         {remoteMissing ? (

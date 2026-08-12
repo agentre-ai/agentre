@@ -81,8 +81,24 @@ type BackendType = "builtin" | "claudecode" | "codex" | "piagent" | "openclaw";
 
 // DeviceView — local shim matching remote_device_svc.DeviceView.
 // wailsjs/go/models is generated at build time and not present in this worktree.
-type DeviceView = { id: number; name: string; online: boolean };
-type ProviderSummary = { key?: string; name?: string; type?: string };
+type DeviceView = {
+  id: number;
+  name: string;
+  online: boolean;
+  supportsLLMModelTarget?: boolean;
+};
+type ProviderSummary = {
+  key?: string;
+  name?: string;
+  type?: string;
+  defaultModelKey?: string;
+  models?: {
+    key: string;
+    modelId: string;
+    name?: string;
+    enabled: boolean;
+  }[];
+};
 
 // 选择器里的展示顺序：三个 CLI 引擎在前（最常用且需要装命令行），内置与网关收尾。
 // openclaw 排最后是因为它在两列网格里独占整行，避免出现空格子。
@@ -1199,6 +1215,64 @@ function BackendEditor({
       .catch(() => setDevices([]));
   }, [state.kind]);
 
+  // 远端执行时以目标 daemon 目录为可运行事实源（task 6 决策 12）：拉一次该设备的
+  // Provider/Model 目录 + 能力位，传给 Picker 做远端门控（desktop 独有的行禁用、
+  // 旧 daemon 禁用 fixed-model）。daemon 离线时目录为空 → 未验证的 fixed-model 无法保存。
+  const remoteDeviceID =
+    deviceId !== "" && /^\d+$/.test(deviceId) ? Number(deviceId) : 0;
+  const [remoteProviders, setRemoteProviders] = React.useState<
+    ProviderSummary[]
+  >([]);
+  React.useEffect(() => {
+    if (state.kind === "closed" || remoteDeviceID <= 0) {
+      setRemoteProviders([]);
+      return;
+    }
+    let mounted = true;
+    void RemoteDeviceListProviders(remoteDeviceID)
+      .then((rows) => {
+        if (mounted) setRemoteProviders((rows ?? []) as ProviderSummary[]);
+      })
+      .catch(() => {
+        if (mounted) setRemoteProviders([]);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [state.kind, remoteDeviceID]);
+
+  const remoteSupportsFixedModel = React.useMemo(() => {
+    const dv = devices.find((d) => d.id === remoteDeviceID);
+    return dv?.supportsLLMModelTarget ?? false;
+  }, [devices, remoteDeviceID]);
+
+  // 把 daemon 目录转成 PickerProvider[]（非敏感摘要）：供 Picker 判断哪些 desktop
+  // 行在 daemon 上不存在 / 模型未同步，以及 fixed-model 是否被能力位允许。
+  const remotePickerCatalog = React.useMemo<PickerProvider[]>(() => {
+    if (remoteDeviceID <= 0) return [];
+    return remoteProviders.map((p) => {
+      const models = (p.models ?? []).map((m) => ({
+        modelKey: m.key,
+        modelId: m.modelId,
+        name: m.name,
+        enabled: m.enabled,
+      }));
+      const defaultModel =
+        (p.defaultModelKey &&
+          models.find((m) => m.modelKey === p.defaultModelKey)) ||
+        null;
+      return {
+        providerKey: p.key ?? "",
+        id: 0,
+        name: p.name ?? p.key ?? "",
+        type: p.type ?? "",
+        enabled: true,
+        defaultModel,
+        models,
+      };
+    });
+  }, [remoteDeviceID, remoteProviders]);
+
   const reservedOffenders = React.useMemo(
     () =>
       envEntries
@@ -1787,6 +1861,10 @@ function BackendEditor({
             routes={routes}
             onChange={setRoutes}
             executionLocation={deviceId}
+            supportsFixedModel={
+              remoteDeviceID > 0 ? remoteSupportsFixedModel : true
+            }
+            remoteCatalog={remoteDeviceID > 0 ? remotePickerCatalog : undefined}
           />
         ) : null}
 
@@ -2115,6 +2193,8 @@ function ModelTargetField({
   catalogLoading,
   catalogError,
   executionLocation,
+  supportsFixedModel = true,
+  remoteCatalog,
 }: {
   type: BackendType;
   providers: Provider[];
@@ -2130,6 +2210,8 @@ function ModelTargetField({
   catalogLoading: boolean;
   catalogError: boolean;
   executionLocation: string;
+  supportsFixedModel?: boolean;
+  remoteCatalog?: PickerProvider[];
 }) {
   const { t } = useTranslation();
   // claudecode / codex / piagent 允许「不关联」走 CLI 自身登录；builtin 必填。
@@ -2233,6 +2315,8 @@ function ModelTargetField({
           loading={catalogLoading}
           error={catalogError}
           invalid={invalid}
+          supportsFixedModel={supportsFixedModel}
+          remoteCatalog={remoteCatalog}
           aria-label={t("agentBackends.provider.label")}
         />
       )}
@@ -2329,6 +2413,8 @@ function ModelRoutesField({
   routes,
   onChange,
   executionLocation,
+  supportsFixedModel = true,
+  remoteCatalog,
 }: {
   catalog: PickerProvider[];
   catalogLoading: boolean;
@@ -2336,6 +2422,8 @@ function ModelRoutesField({
   routes: Record<ClaudeTier, RouteTarget>;
   onChange: (r: Record<ClaudeTier, RouteTarget>) => void;
   executionLocation: string;
+  supportsFixedModel?: boolean;
+  remoteCatalog?: PickerProvider[];
 }) {
   const { t } = useTranslation();
   return (
@@ -2391,6 +2479,8 @@ function ModelRoutesField({
                 loading={catalogLoading}
                 error={catalogError}
                 invalid={tierInvalid}
+                supportsFixedModel={supportsFixedModel}
+                remoteCatalog={remoteCatalog}
                 compact
                 aria-label={t("agentBackends.modelRoutes.tierAria", { tier })}
               />
