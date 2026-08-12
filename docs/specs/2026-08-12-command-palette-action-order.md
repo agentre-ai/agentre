@@ -1,6 +1,6 @@
 # 命令面板操作分组后置
 
-> Status: Draft
+> Status: Approved
 > Owner: chat experience / frontend
 > Last updated: 2026-08-12
 
