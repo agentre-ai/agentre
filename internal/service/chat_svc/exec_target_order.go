@@ -2,7 +2,6 @@ package chat_svc
 
 import (
 	"context"
-	"strings"
 
 	"go.uber.org/zap"
 
@@ -28,31 +27,11 @@ func (s *chatSvc) selfFingerprint(ctx context.Context) string {
 	return fp
 }
 
-// beTargetsSelf reports whether a backend points at this installation's own
-// device fingerprint. After R13 canonicalization a local backend carries the
-// desktop's own fingerprint as its DeviceID, so every consumer that once branched
-// on be.IsLocal()/be.IsRemote() must treat a self backend as local. Only
-// sha256:-prefixed named fingerprints can match; empty / legacy numeric values
-// short-circuit without a keychain read.
-func beTargetsSelf(ctx context.Context, be *agent_backend_entity.AgentBackend) bool {
-	if be == nil || !strings.HasPrefix(be.DeviceID, "sha256:") {
-		return false
-	}
-	rds := remote_device_svc.Default()
-	if rds == nil {
-		return false
-	}
-	fp, err := rds.DeviceFingerprint()
-	if err != nil || fp == "" {
-		return false
-	}
-	return be.DeviceID == fp
-}
-
-// beIsSelf 报告一个 backend 是否指向「本机」（它的 DeviceID 就是本机设备指纹），
-// 是 beTargetsSelf 的 receiver 形式，供持有 chatSvc 的调用方使用。
+// beIsSelf 报告一个 backend 是否指向「本机」（它的 DeviceID 就是本机设备指纹）。
+// 委托 remote_device_svc.IsSelfDevice 这一个事实来源；receiver 形式只是让持
+// 有 chatSvc 的调用方不用关心 remote_device_svc。nil be 与空串一样不是「自己」。
 func (s *chatSvc) beIsSelf(ctx context.Context, be *agent_backend_entity.AgentBackend) bool {
-	return beTargetsSelf(ctx, be)
+	return be != nil && remote_device_svc.IsSelfDevice(be.DeviceID)
 }
 
 // selfBackendIDs 找出一个 Agent 执行目标列表里指向本机（DeviceID == 本机指纹）的那

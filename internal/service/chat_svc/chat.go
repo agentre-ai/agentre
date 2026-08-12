@@ -1555,7 +1555,7 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 	// 指向本机指纹的档（R13 认领后本机 backend 的 DeviceID == 本机指纹）按本机处理：
 	// 图片能力校验同样适用于它——它跑在本地 runtime 上，缺 CapImageInput 时也该早退
 	// AgentBackendTypeUnsupported，而不是绕过校验把图喂给不支持的 runtime。
-	if len(imageBlocks) > 0 && (be.IsLocal() || beTargetsSelf(ctx, be)) {
+	if len(imageBlocks) > 0 && (be.IsLocal() || remote_device_svc.IsSelfDevice(be.DeviceID)) {
 		runner, err := s.selectRunner(ctx, be, req.SessionID)
 		if err != nil {
 			return nil, err

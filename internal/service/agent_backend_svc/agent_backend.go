@@ -390,7 +390,7 @@ func (s *agentBackendSvc) test(ctx context.Context, req *TestBackendRequest, tra
 		return nil, err
 	}
 	if entity.IsOpenClaw() {
-		if entity.IsRemote() && !isSelfFingerprint(ctx, entity.DeviceID) {
+		if entity.IsRemote() && !remote_device_svc.IsSelfDevice(entity.DeviceID) {
 			return &TestBackendResponse{OK: false, Code: "OPENCLAW_REMOTE_SECRET_UNAVAILABLE"}, nil
 		}
 		return s.testOpenClaw(ctx, req, entity, transientToken)
@@ -405,7 +405,7 @@ func (s *agentBackendSvc) test(ctx context.Context, req *TestBackendRequest, tra
 		if !errors.Is(err, ErrRemoteDeviceNotFound) {
 			return nil, i18n.NewError(ctx, code.InvalidParameter)
 		}
-		if !isSelfFingerprint(ctx, entity.DeviceID) {
+		if !remote_device_svc.IsSelfDevice(entity.DeviceID) {
 			return &TestBackendResponse{OK: false, Message: i18n.NewError(ctx, code.RemoteDeviceNotFound).Error()}, nil
 		}
 	} else if ok {
@@ -648,7 +648,7 @@ func (s *agentBackendSvc) resolveOpenClawRuntimeConfig(ctx context.Context, back
 	if backend == nil || !backend.IsOpenClaw() {
 		return openclawgateway.Config{}, i18n.NewError(ctx, code.AgentBackendNotFound)
 	}
-	if backend.IsRemote() && !isSelfFingerprint(ctx, backend.DeviceID) {
+	if backend.IsRemote() && !remote_device_svc.IsSelfDevice(backend.DeviceID) {
 		return openclawgateway.Config{}, ErrOpenClawRemoteSecretUnavailable
 	}
 	if err := backend.Check(ctx); err != nil {
@@ -1041,21 +1041,6 @@ func pairedDeviceView(ctx context.Context, fingerprint string) (*remote_device_s
 		}
 	}
 	return nil, nil
-}
-
-// isSelfFingerprint reports whether a deviceID is this installation's own
-// canonical fingerprint. After R13 canonicalization a local backend's DeviceID
-// is the desktop's own fingerprint; it is never a paired agentred row, so
-// dispatch/probe boundaries must treat it as local.
-func isSelfFingerprint(ctx context.Context, deviceID string) bool {
-	if !strings.HasPrefix(deviceID, "sha256:") || remote_device_svc.Default() == nil {
-		return false
-	}
-	fp, err := remote_device_svc.Default().DeviceFingerprint()
-	if err != nil || fp == "" {
-		return false
-	}
-	return deviceID == fp
 }
 
 // localPairedDeviceID translates a persisted fingerprint only at a local

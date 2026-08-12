@@ -393,7 +393,7 @@ func (s *chatSvc) evalExecTargetProjectPath(ctx context.Context, be *agent_backe
 	if configured {
 		return "", "", nil
 	}
-	if be.IsLocal() || beTargetsSelf(ctx, be) {
+	if be.IsLocal() || remote_device_svc.IsSelfDevice(be.DeviceID) {
 		return BlockReasonExecTargetProjectPathMissing, i18n.T(ctx, code.ChatExecTargetHintLocalPathMissing), nil
 	}
 	return BlockReasonExecTargetProjectPathMissing, i18n.T(ctx, code.ChatExecTargetHintRemotePathMissing), nil
@@ -407,7 +407,7 @@ func (s *chatSvc) evalExecTargetProjectPath(ctx context.Context, be *agent_backe
 func (s *chatSvc) execTargetProjectPath(
 	ctx context.Context, be *agent_backend_entity.AgentBackend, projectID int64,
 ) (string, bool, error) {
-	if be.IsLocal() || beTargetsSelf(ctx, be) {
+	if be.IsLocal() || remote_device_svc.IsSelfDevice(be.DeviceID) {
 		p, err := project_repo.Project().Find(ctx, projectID)
 		if err != nil {
 			return "", false, operationFailedWithCause(ctx, err, zap.Int64("projectId", projectID))
@@ -482,7 +482,7 @@ func blockReasonForBackend(
 		if remoteProviderKnownMissing(be) {
 			return false, BlockReasonRemoteProviderMissing, i18n.T(ctx, code.ChatBackendHintRemoteProviderMissing)
 		}
-		if be.IsRemote() && !beTargetsSelf(ctx, be) {
+		if be.IsRemote() && !remote_device_svc.IsSelfDevice(be.DeviceID) {
 			return true, "", ""
 		}
 		if !gatewayRunning {
@@ -490,7 +490,7 @@ func blockReasonForBackend(
 		}
 		return true, "", ""
 	case agent_backend_entity.TypeOpenClaw:
-		if be.IsRemote() && !beTargetsSelf(ctx, be) {
+		if be.IsRemote() && !remote_device_svc.IsSelfDevice(be.DeviceID) {
 			return false, BlockReasonRemoteOpenClawUnavailable, i18n.T(ctx, code.ChatBackendHintRemoteOpenClaw)
 		}
 		return true, "", ""
