@@ -1078,9 +1078,9 @@ describe("AgentBackendsPanel", () => {
     ).toHaveLength(1);
   });
 
-  it("Given a saved remote backend DTO, When the edit dialog opens, Then its deviceId stays selected and remote Provider sync remains available", async () => {
+  it("Given a saved remote backend DTO, When it is edited and saved, Then its deviceId stays selected and remote Provider sync remains available", async () => {
     const user = userEvent.setup();
-    installAppMock({
+    const mocks = installAppMock({
       ListAgentBackends: vi.fn(() =>
         Promise.resolve({
           items: [
@@ -1108,7 +1108,11 @@ describe("AgentBackendsPanel", () => {
       RemoteDeviceList: vi.fn(() =>
         Promise.resolve([{ id: 7, name: "linux-srv", online: true }]),
       ),
-      RemoteDeviceListProviders: vi.fn(() => Promise.resolve([])),
+      RemoteDeviceListProviders: vi.fn(() =>
+        Promise.resolve([
+          { key: "key-1", name: "Anthropic", type: "anthropic" },
+        ]),
+      ),
     });
     render(<AgentBackendsPanel />);
 
@@ -1125,6 +1129,13 @@ describe("AgentBackendsPanel", () => {
       expect(
         within(dialog).getByText("Remote Provider Sync"),
       ).toBeInTheDocument();
+    });
+
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(mocks.UpdateAgentBackend).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 12, deviceId: "7" }),
+      );
     });
   });
 
