@@ -165,3 +165,33 @@ func TestGivenOutOfRangePortWhenRunStartsThenItReturnsUsageErrorWithoutStartingD
 	assert.Contains(t, err.Error(), "port must be between 1 and 65535")
 	assert.False(t, started)
 }
+
+func TestGivenOnlyOneTLSPathWhenRunStartsThenItReturnsUsageErrorWithoutPersistingConfiguration(t *testing.T) {
+	clearRunEnvironment(t)
+	dir := t.TempDir()
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	original := st.Snapshot()
+	started := false
+	cmd := newRunCmdWithDeps(runDeps{
+		dataDir: func() (string, error) { return dir, nil },
+		newDaemon: func(daemon.Options) (runDaemon, error) {
+			started = true
+			return fakeRunDaemon{}, nil
+		},
+	})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--tls-cert", "/tmp/cert.pem"})
+
+	err = cmd.Execute()
+	require.Error(t, err)
+	var usage *usageError
+	assert.ErrorAs(t, err, &usage)
+	assert.Contains(t, err.Error(), "both --tls-cert and --tls-key")
+	assert.False(t, started)
+
+	reloaded, err := state.Load(dir)
+	require.NoError(t, err)
+	assert.Equal(t, original.Listen, reloaded.Listen)
+}

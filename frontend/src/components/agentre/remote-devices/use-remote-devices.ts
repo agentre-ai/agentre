@@ -109,6 +109,7 @@ export function useRemoteDevices() {
   });
   const [loadState, setLoadState] = useState<RemoteDevicesLoadState>("loading");
   const hasLoaded = useRef(false);
+  const reloadSequence = useRef(0);
 
   // 合并后的行 = LAN 来源 + 账号来源。在线态事件只改 LAN 来源,merge 重算路径。
   const devices = useMemo(
@@ -117,11 +118,11 @@ export function useRemoteDevices() {
   );
 
   const reload = useCallback(async () => {
+    const sequence = ++reloadSequence.current;
     if (!hasLoaded.current) setLoadState("loading");
 
     try {
       const list = (await RemoteDeviceList()) ?? [];
-      setLanDevices(list);
       // 账号来源:未登录时 ServerListDevices 本地即返回 ErrNotLoggedIn(known=false,
       // 不判未认领);已登录但拉取失败(服务器离线)同样 known=false,不把每台都误标未认领。
       let acc: AccountSource;
@@ -131,11 +132,15 @@ export function useRemoteDevices() {
       } catch {
         acc = { known: false, devices: [] };
       }
+      if (sequence !== reloadSequence.current) return;
+      setLanDevices(list);
       setAccount(acc);
       hasLoaded.current = true;
       setLoadState("ready");
     } catch (error) {
-      if (!hasLoaded.current) setLoadState("error");
+      if (sequence === reloadSequence.current && !hasLoaded.current) {
+        setLoadState("error");
+      }
       throw error;
     }
   }, []);

@@ -139,6 +139,9 @@ func resolveRunConfig(cmd *cobra.Command, persisted state.State, flagHost string
 	config.listen.TLSCertFile = strings.TrimSpace(config.listen.TLSCertFile)
 	config.listen.TLSKeyFile = strings.TrimSpace(config.listen.TLSKeyFile)
 	config.serverURL = strings.TrimSpace(config.serverURL)
+	if (config.listen.TLSCertFile == "") != (config.listen.TLSKeyFile == "") {
+		return resolvedRunConfig{}, newUsageError("both --tls-cert and --tls-key must be set or neither")
+	}
 	if config.serverURL != "" {
 		config.serverURL, err = validServerURL(config.serverURL)
 		if err != nil {

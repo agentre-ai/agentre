@@ -226,6 +226,33 @@ describe("useRemoteDevices", () => {
     expect(result.current.devices[0].name).toBe("linux-srv");
   });
 
+  it("keeps the newest result when overlapping reloads finish out of order", async () => {
+    let resolveInitial!: (devices: DeviceView[]) => void;
+    mockList
+      .mockImplementationOnce(
+        () =>
+          new Promise<DeviceView[]>((resolve) => {
+            resolveInitial = resolve;
+          }),
+      )
+      .mockResolvedValueOnce([lanDevice({ id: 2, name: "newest" })]);
+
+    const { result } = renderHook(() => useRemoteDevices());
+    await waitFor(() => expect(mockList).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      await result.current.reload();
+    });
+    expect(result.current.devices[0].name).toBe("newest");
+
+    await act(async () => {
+      resolveInitial([lanDevice({ name: "stale" })]);
+      await Promise.resolve();
+    });
+
+    expect(result.current.devices[0].name).toBe("newest");
+  });
+
   it("loads devices on mount", async () => {
     mockList.mockResolvedValueOnce([{ id: 1, name: "a" }]);
     const { result } = renderHook(() => useRemoteDevices());
