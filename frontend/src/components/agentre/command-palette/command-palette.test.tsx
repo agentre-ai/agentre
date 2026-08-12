@@ -822,6 +822,86 @@ describe("CommandPalette — 命令模式分组顺序：新建对话先于操作
     // 既有上下文表现保留：ContextBar 仍可见
     expect(screen.getByLabelText("Switch project context")).toBeTruthy();
   });
+
+  it("Given keyboard selection was moved to an agent in project A, When Tab switches to project B where that agent is disabled, Then selection returns to the first enabled project command", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [
+        mkAgent({ id: 5, name: "Builder" }),
+        mkAgent({ id: 6, name: "Reviewer" }),
+      ],
+    });
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: {
+          id: 1,
+          parentID: 0,
+          name: "Project A",
+          icon: "",
+          color: "",
+          description: "",
+          path: "",
+          isGitRepo: false,
+          createtime: 0,
+          updatetime: 0,
+        },
+        children: [],
+      },
+      {
+        project: {
+          id: 2,
+          parentID: 0,
+          name: "Project B",
+          icon: "",
+          color: "",
+          description: "",
+          path: "",
+          isGitRepo: false,
+          createtime: 0,
+          updatetime: 0,
+        },
+        children: [],
+      },
+    ]);
+    appMocks.ProjectGet.mockImplementation(async (projectID: number) => ({
+      project: null,
+      directMembers:
+        projectID === 1 ? [{ agentID: 5 }, { agentID: 6 }] : [{ agentID: 5 }],
+      inheritedMembers: [],
+    }));
+    useNewChatContextStore
+      .getState()
+      .setContext({ projectID: 1, projectName: "Project A" });
+
+    renderHarness("/projects");
+    await act(async () => {
+      useCommandPaletteStore.getState().openWith("> ");
+    });
+    expect(await screen.findByText("New chat in Project A")).toBeTruthy();
+
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(
+      screen
+        .getByText("Reviewer")
+        .closest("[cmdk-item]")
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
+
+    fireEvent.keyDown(input, { key: "Tab" });
+    expect(await screen.findByText("New chat in Project B")).toBeTruthy();
+
+    await vi.waitFor(() => {
+      const reviewerItem = screen.getByText("Reviewer").closest("[cmdk-item]");
+      expect(reviewerItem?.getAttribute("aria-disabled")).toBe("true");
+      expect(reviewerItem?.getAttribute("aria-selected")).toBe("false");
+      expect(
+        screen
+          .getByText("Builder")
+          .closest("[cmdk-item]")
+          ?.getAttribute("aria-selected"),
+      ).toBe("true");
+    });
+  });
 });
 
 describe("CommandPalette — 非成员（其它 Agent）行不可选/不可点（disabled）", () => {

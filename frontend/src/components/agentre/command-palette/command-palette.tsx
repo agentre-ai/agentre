@@ -86,7 +86,7 @@ export function CommandPalette(): React.ReactElement {
   const selectionTouchedRef = React.useRef({ scope: "", touched: false });
   const candidatesRef = React.useRef({
     scope: "",
-    byPriority: new Map<number, string | null>(),
+    byPriority: new Map<number, string[]>(),
   });
   const { mode, payload } = parseMode(query);
   // 不可对话分支选中后由面板宿主打开引导弹窗（onSelect 里先 close 面板再设置）。
@@ -163,19 +163,16 @@ export function CommandPalette(): React.ReactElement {
   // eslint-disable-next-line react-hooks/preserve-manual-memoization
   const sourceSelection = React.useMemo(
     () => ({
-      reportFirstSelectable: (
-        sourcePriority: number,
-        itemKey: string | null,
-      ) => {
+      reportFirstSelectable: (sourcePriority: number, itemKeys: string[]) => {
         if (mode !== "command") return;
 
         if (candidatesRef.current.scope !== selectionScope) {
           candidatesRef.current = {
             scope: selectionScope,
-            byPriority: new Map<number, string | null>(),
+            byPriority: new Map<number, string[]>(),
           };
         }
-        candidatesRef.current.byPriority.set(sourcePriority, itemKey);
+        candidatesRef.current.byPriority.set(sourcePriority, itemKeys);
 
         if (selectionTouchedRef.current.scope !== selectionScope) {
           selectionTouchedRef.current = {
@@ -183,17 +180,24 @@ export function CommandPalette(): React.ReactElement {
             touched: false,
           };
         }
-        if (selectionTouchedRef.current.touched) return;
 
         const firstAvailable = Array.from(
           candidatesRef.current.byPriority.entries(),
         )
           .sort(([left], [right]) => left - right)
-          .find(([, candidate]) => candidate != null)?.[1];
-        if (firstAvailable && firstAvailable !== selectedValueRef.current) {
-          selectedValueRef.current = firstAvailable;
-          setSelectedValue(firstAvailable);
-        }
+          .find(([, candidates]) => candidates.length > 0)?.[1][0];
+        const selectionUnavailable =
+          selectedValueRef.current !== "" &&
+          !document.querySelector(
+            `[cmdk-item][data-value="${CSS.escape(selectedValueRef.current)}"]:not([aria-disabled="true"])`,
+          );
+        if (!firstAvailable || firstAvailable === selectedValueRef.current)
+          return;
+        if (selectionTouchedRef.current.touched && !selectionUnavailable)
+          return;
+
+        selectedValueRef.current = firstAvailable;
+        setSelectedValue(firstAvailable);
       },
       markTouched: () => {
         selectionTouchedRef.current = { scope: selectionScope, touched: true };
@@ -430,10 +434,7 @@ type SourceGroupProps<T extends CommandItemBase> = {
   sourcePriority: number;
   query: string;
   ctx: OnSelectCtx;
-  onFirstSelectableChange: (
-    sourcePriority: number,
-    itemKey: string | null,
-  ) => void;
+  onFirstSelectableChange: (sourcePriority: number, itemKeys: string[]) => void;
 };
 
 function SourceGroup<T extends CommandItemBase>({
@@ -471,16 +472,21 @@ function SourceGroup<T extends CommandItemBase>({
     return withScore.slice(0, 50);
   }, [items, q, source]);
 
-  const firstSelectableKey = React.useMemo(
+  const selectableKeys = React.useMemo(
     () =>
-      ranked.find(({ item }) => !(source.isDisabled?.(item) ?? false))?.item
-        .key ?? null,
+      ranked
+        .filter(({ item }) => !(source.isDisabled?.(item) ?? false))
+        .map(({ item }) => item.key),
     [ranked, source],
   );
+  const selectableKeySignature = selectableKeys.join("\u0000");
 
-  React.useEffect(() => {
-    onFirstSelectableChange(sourcePriority, firstSelectableKey);
-  }, [firstSelectableKey, onFirstSelectableChange, sourcePriority]);
+  React.useLayoutEffect(() => {
+    onFirstSelectableChange(sourcePriority, selectableKeys);
+    // selectableKeySignature is the stable semantic dependency; selectableKeys
+    // is intentionally omitted because its array identity changes every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onFirstSelectableChange, selectableKeySignature, sourcePriority]);
 
   const heading = q
     ? t("commandPalette.group.matches", { count: ranked.length })
