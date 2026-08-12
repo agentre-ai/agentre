@@ -974,20 +974,35 @@ func (r *Runtime) SubmitAnswer(ctx context.Context, sessionID int64, requestID s
 	if !r.hasSession(sessionID) {
 		return agentruntime.ErrNoActiveTurn
 	}
-	return r.callSession(ctx, sessionID, wire.MethodSubmitAnswer, wire.SubmitAnswerParams{
+	var res wire.PeerSessionControlResult
+	if err := r.callSession(ctx, sessionID, wire.MethodSubmitAnswer, wire.SubmitAnswerParams{
 		SessionID: sessionID, PeerFingerprint: r.originFor(sessionID), RequestID: requestID,
 		Questions: questions, Answers: answers, Skipped: skipped,
-	}, &wire.OK{})
+	}, &res); err != nil {
+		return err
+	}
+	return controlResultError(res)
 }
 
 func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, requestID string, allow, alwaysAllowSession bool, denyReason string) error {
 	if !r.hasSession(sessionID) {
 		return agentruntime.ErrNoActiveTurn
 	}
-	return r.callSession(ctx, sessionID, wire.MethodSubmitToolPermission, wire.SubmitToolPermissionParams{
+	var res wire.PeerSessionControlResult
+	if err := r.callSession(ctx, sessionID, wire.MethodSubmitToolPermission, wire.SubmitToolPermissionParams{
 		SessionID: sessionID, PeerFingerprint: r.originFor(sessionID), RequestID: requestID,
 		Allow: allow, AlwaysAllowSession: alwaysAllowSession, DenyReason: denyReason,
-	}, &wire.OK{})
+	}, &res); err != nil {
+		return err
+	}
+	return controlResultError(res)
+}
+
+func controlResultError(res wire.PeerSessionControlResult) error {
+	if res.AlreadyHandled {
+		return agentruntime.ErrWaiterNotFound
+	}
+	return nil
 }
 
 func (r *Runtime) GetGoal(ctx context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
