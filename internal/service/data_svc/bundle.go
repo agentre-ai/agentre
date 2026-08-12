@@ -61,19 +61,34 @@ type BundleLLMProviderModel struct {
 }
 
 // BundleAgentBackend 一条 Agent 后端记录。
+//
+// ModelTarget 用 LLMProviderKey + LLMModelKey 两个稳定字符串键表达（两者都空 =
+// native；ProviderKey 非空且 ModelKey 空 = provider-default；两者都非空 = fixed-model），
+// 与任务 3 的 agent_backend_entity 同形。ModelRoutes 是类型化的 Claude Tier Route
+// target 对象（key = OPUS/SONNET/HAIKU），不再是原始 JSON 字符串；预发布 bundle
+// 直接切换到新形状，不保留 string 旧 fixture 的兼容解析。
 type BundleAgentBackend struct {
-	ExportKey             string `json:"exportKey"`
-	Type                  string `json:"type"`
-	Name                  string `json:"name"`
-	LLMProviderKey        string `json:"llmProviderKey"`
-	DeviceID              string `json:"deviceId"`
-	CLIPath               string `json:"cliPath"`
-	ModelRoutes           string `json:"modelRoutes"`
-	Sandbox               string `json:"sandbox"`
-	Approval              string `json:"approval"`
-	EnvJSON               string `json:"envJSON"`
-	ReasoningEffort       string `json:"reasoningEffort"`
-	DefaultPermissionMode string `json:"defaultPermissionMode"`
+	ExportKey      string `json:"exportKey"`
+	Type           string `json:"type"`
+	Name           string `json:"name"`
+	LLMProviderKey string `json:"llmProviderKey"`
+	// LLMModelKey 主绑定目标的稳定 ModelKey（空 = provider-default）。
+	LLMModelKey           string                       `json:"llmModelKey"`
+	DeviceID              string                       `json:"deviceId"`
+	CLIPath               string                       `json:"cliPath"`
+	ModelRoutes           map[string]BundleRouteTarget `json:"modelRoutes"`
+	Sandbox               string                       `json:"sandbox"`
+	Approval              string                       `json:"approval"`
+	EnvJSON               string                       `json:"envJSON"`
+	ReasoningEffort       string                       `json:"reasoningEffort"`
+	DefaultPermissionMode string                       `json:"defaultPermissionMode"`
+}
+
+// BundleRouteTarget 一条 Claude Tier Route 的结构化目标（与 agent_backend_entity.
+// ModelRouteTarget 同形）：alias 缺失表示 inherit-main；ModelKey 空 = provider-default。
+type BundleRouteTarget struct {
+	ProviderKey string `json:"providerKey"`
+	ModelKey    string `json:"modelKey"`
 }
 
 // BundleDepartment 一条部门记录。

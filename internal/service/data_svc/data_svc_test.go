@@ -967,6 +967,196 @@ func TestExport_AgentBackends_RemoteDeviceUsesInstanceUUID(t *testing.T) {
 	})
 }
 
+// TestExport_AgentBackend_TypedModelTargetAndStructuredRoutes 导出侧验收：backend 的
+// ModelTarget（LLMProviderKey + LLMModelKey 两个稳定字符串键）与结构化 Route target
+// 原样落入 bundle，modelRoutes 是对象而非字符串，不携带任何 Provider/模型正文。
+func TestExport_AgentBackend_TypedModelTargetAndStructuredRoutes(t *testing.T) {
+	m := setupDataSvcTest(t)
+	m.backends.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{
+		{ID: 10, Type: "claudecode", Name: "Local",
+			LLMProviderKey: "anthropic-main", LLMModelKey: "anthropic-opus-01",
+			ModelRoutes: `{"OPUS":{"providerKey":"anthropic-main","modelKey":"anthropic-opus-01"}` +
+				`,"HAIKU":{"providerKey":"anthropic-main","modelKey":"anthropic-haiku-01"}}`},
+	}, nil)
+
+	Convey("export backend 携带类型化 ModelTarget 与结构化 Route target", t, func() {
+		res, err := m.svc.Export(m.ctx, &data_svc.ExportRequest{
+			Scopes: []string{string(data_svc.ScopeAgentBackends)},
+		})
+		So(err, ShouldBeNil)
+		var b data_svc.BundleV1
+		So(json.Unmarshal(res.JSON, &b), ShouldBeNil)
+		So(b.Items.AgentBackends, ShouldHaveLength, 1)
+		bk := b.Items.AgentBackends[0]
+		So(bk.LLMProviderKey, ShouldEqual, "anthropic-main")
+		So(bk.LLMModelKey, ShouldEqual, "anthropic-opus-01")
+		So(bk.ModelRoutes, ShouldResemble, map[string]data_svc.BundleRouteTarget{
+			"OPUS":  {ProviderKey: "anthropic-main", ModelKey: "anthropic-opus-01"},
+			"HAIKU": {ProviderKey: "anthropic-main", ModelKey: "anthropic-haiku-01"},
+		})
+	})
+}
+
+// TestApplyImport_Backend_TypedModelTargetAndStructuredRoutes 导入侧验收：bundle 的
+// 类型化 ModelTarget 与结构化 Route target 落回 backend 实体——LLMModelKey 原样保留，
+// ModelRoutes 序列化回结构化 JSON 字符串。
+func TestApplyImport_Backend_TypedModelTargetAndStructuredRoutes(t *testing.T) {
+	m := setupDataSvcTest(t)
+	m.providers.EXPECT().List(gomock.Any()).Return([]*llm_provider_entity.LLMProvider{}, nil).Times(2)
+	m.devices.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
+	m.backends.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{}, nil).Times(2)
+	m.depts.EXPECT().List(gomock.Any()).Return(nil, nil).Times(1)
+
+	// provider 在导入范围内，backend 的 provider_key 引用才不 dangling。
+	m.providers.EXPECT().CreateWithModels(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider, _ []*llm_provider_model_entity.LLMProviderModel, _ string) error {
+			p.ID = 50
+			return nil
+		})
+
+	m.backends.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
+		DoAndReturn(func(_ context.Context, bk *agent_backend_entity.AgentBackend) error {
+			So(bk.LLMProviderKey, ShouldEqual, "anthropic-main")
+			So(bk.LLMModelKey, ShouldEqual, "anthropic-opus-01")
+			So(bk.ModelRoutes, ShouldEqual, `{"OPUS":{"providerKey":"anthropic-main","modelKey":"anthropic-opus-01"}}`)
+			bk.ID = 60
+			return nil
+		})
+
+	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectCommit()
+
+	bundle := data_svc.BundleV1{
+		Format: data_svc.BundleFormat, Version: 1,
+		Scopes: []string{string(data_svc.ScopeLLMProviders), string(data_svc.ScopeAgentBackends)},
+		Items: data_svc.BundleItems{
+			LLMProviders: []data_svc.BundleLLMProvider{{ProviderKey: "anthropic-main", Name: "P"}},
+			AgentBackends: []data_svc.BundleAgentBackend{
+				{ExportKey: "ab-1", Type: "claudecode", Name: "B",
+					LLMProviderKey: "anthropic-main", LLMModelKey: "anthropic-opus-01",
+					ModelRoutes: map[string]data_svc.BundleRouteTarget{
+						"OPUS": {ProviderKey: "anthropic-main", ModelKey: "anthropic-opus-01"},
+					}},
+			},
+		},
+	}
+	raw, _ := json.Marshal(bundle)
+
+	Convey("import backend 携带类型化 ModelTarget 与结构化 Route target", t, func() {
+		res, err := m.svc.ApplyImport(m.ctx, &data_svc.ApplyImportRequest{
+			Raw: raw, FallbackStrategy: data_svc.ActionCreate,
+		})
+		So(err, ShouldBeNil)
+		So(res.Counts["created"], ShouldEqual, 2)
+	})
+}
+
+// TestApplyImport_Backend_LegacyStringModelRoutes_Rejected 预发布 bundle 直接切换
+// 到新形状：modelRoutes 仍是 JSON 字符串的旧 fixture 在解析阶段就被明确拒绝，不保留
+// 兼容解析。ApplyImport 在反序列化阶段就返回，不会触达任何 repo。
+func TestApplyImport_Backend_LegacyStringModelRoutes_Rejected(t *testing.T) {
+	m := setupDataSvcTest(t)
+
+	raw := []byte(`{"format":"agentre-data-bundle","version":1,` +
+		`"scopes":["agent_backends"],` +
+		`"items":{"agentBackends":[{"exportKey":"ab-1","type":"claudecode",` +
+		`"name":"B","modelRoutes":"{\"OPUS\":{\"providerKey\":\"p\",\"modelKey\":\"m\"}}"}]}}`)
+
+	Convey("旧 string modelRoutes fixture 被明确拒绝", t, func() {
+		_, err := m.svc.ApplyImport(m.ctx, &data_svc.ApplyImportRequest{
+			Raw: raw, FallbackStrategy: data_svc.ActionCreate,
+		})
+		So(err, ShouldNotBeNil)
+	})
+}
+
+// TestExportImport_RoundTrip_TypedModelTargetAndStructuredRoutes 验收判据本身：设备 A
+// 导出携带类型化 ModelTarget 与结构化 Route target 的 backend（连同它引用的
+// Provider），把导出的 bundle 喂给一台全新的设备 B，LLMModelKey 与 ModelRoutes
+// （结构化 JSON）必须逐字段保留——即便两台设备上 backend 的本地自增 ID 完全不同。
+func TestExportImport_RoundTrip_TypedModelTargetAndStructuredRoutes(t *testing.T) {
+	mA := setupDataSvcTest(t)
+	mA.providers.EXPECT().List(gomock.Any()).Return([]*llm_provider_entity.LLMProvider{
+		{ID: 1, ProviderKey: "anthropic-main", Name: "Anthropic", Type: "anthropic"},
+	}, nil)
+	mA.providers.EXPECT().ListModels(gomock.Any(), int64(1)).Return(nil, nil)
+	mA.backends.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{
+		{ID: 30, Type: "claudecode", Name: "B",
+			LLMProviderKey: "anthropic-main", LLMModelKey: "anthropic-opus-01",
+			ModelRoutes: `{"OPUS":{"providerKey":"anthropic-main","modelKey":"anthropic-opus-01"}` +
+				`,"HAIKU":{"providerKey":"anthropic-main","modelKey":"anthropic-haiku-01"}}`},
+	}, nil)
+
+	exportRes, err := mA.svc.Export(mA.ctx, &data_svc.ExportRequest{
+		Scopes: []string{string(data_svc.ScopeLLMProviders), string(data_svc.ScopeAgentBackends)},
+	})
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	var srcBundle data_svc.BundleV1
+	if err := json.Unmarshal(exportRes.JSON, &srcBundle); err != nil {
+		t.Fatalf("unmarshal exported bundle: %v", err)
+	}
+	srcBk := srcBundle.Items.AgentBackends[0]
+	if srcBk.LLMModelKey != "anthropic-opus-01" {
+		t.Fatalf("exported bundle lost llmModelKey: %q", srcBk.LLMModelKey)
+	}
+	if len(srcBk.ModelRoutes) != 2 {
+		t.Fatalf("expected 2 structured routes in exported bundle, got %d", len(srcBk.ModelRoutes))
+	}
+
+	// 设备 B：全新空库，provider 与 backend 都拿到与设备 A 不同的本地 ID。
+	mB := setupDataSvcTest(t)
+	mB.providers.EXPECT().List(gomock.Any()).Return([]*llm_provider_entity.LLMProvider{}, nil).Times(2)
+	mB.devices.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
+	mB.backends.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{}, nil).Times(2)
+	mB.depts.EXPECT().List(gomock.Any()).Return([]*department_entity.Department{}, nil)
+
+	mB.providers.EXPECT().CreateWithModels(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider, _ []*llm_provider_model_entity.LLMProviderModel, _ string) error {
+			p.ID = 7
+			return nil
+		})
+
+	var got *agent_backend_entity.AgentBackend
+	mB.backends.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
+		DoAndReturn(func(_ context.Context, bk *agent_backend_entity.AgentBackend) error {
+			got = bk
+			bk.ID = 100
+			return nil
+		})
+
+	mB.dbMock.ExpectBegin()
+	mB.dbMock.ExpectCommit()
+
+	raw, err := json.Marshal(srcBundle)
+	if err != nil {
+		t.Fatalf("marshal src bundle: %v", err)
+	}
+
+	applyRes, err := mB.svc.ApplyImport(mB.ctx, &data_svc.ApplyImportRequest{
+		Raw: raw, FallbackStrategy: data_svc.ActionCreate,
+	})
+	if err != nil {
+		t.Fatalf("apply import: %v", err)
+	}
+	if applyRes.Counts["created"] == 0 {
+		t.Fatalf("expected creations, got counts=%v", applyRes.Counts)
+	}
+	if got == nil {
+		t.Fatalf("backend was not created on device B")
+	}
+	if got.LLMProviderKey != "anthropic-main" || got.LLMModelKey != "anthropic-opus-01" {
+		t.Fatalf("typed ModelTarget lost in round-trip: provider=%q model=%q", got.LLMProviderKey, got.LLMModelKey)
+	}
+	// MarshalModelRoutes 按 alias 字典序序列化（HAIKU < OPUS）。
+	if got.ModelRoutes != `{"HAIKU":{"providerKey":"anthropic-main","modelKey":"anthropic-haiku-01"},`+
+		`"OPUS":{"providerKey":"anthropic-main","modelKey":"anthropic-opus-01"}}` {
+		t.Fatalf("structured routes lost in round-trip: %s", got.ModelRoutes)
+	}
+}
+
 func TestApplyImport_RemoteDevice_Create(t *testing.T) {
 	m := setupDataSvcTest(t)
 	m.providers.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)

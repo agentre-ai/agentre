@@ -104,7 +104,11 @@ func (s *dataSvc) Export(ctx context.Context, req *ExportRequest) (*ExportResult
 		if needBackends {
 			bundle.Items.AgentBackends = make([]BundleAgentBackend, 0, len(backends))
 			for _, b := range backends {
-				bundle.Items.AgentBackends = append(bundle.Items.AgentBackends, toBundleBackend(b, backendKey[b.ID], deviceUUIDByID))
+				item, err := toBundleBackend(b, backendKey[b.ID], deviceUUIDByID)
+				if err != nil {
+					return nil, err
+				}
+				bundle.Items.AgentBackends = append(bundle.Items.AgentBackends, item)
 			}
 			summary[string(ScopeAgentBackends)] = len(bundle.Items.AgentBackends)
 		}
@@ -227,19 +231,40 @@ func deviceUUIDByRowID(devices []*paired_agentred_entity.PairedAgentred) map[str
 	return out
 }
 
-func toBundleBackend(b *agent_backend_entity.AgentBackend, exportKey string, deviceUUIDByID map[string]string) BundleAgentBackend {
+func toBundleBackend(b *agent_backend_entity.AgentBackend, exportKey string, deviceUUIDByID map[string]string) (BundleAgentBackend, error) {
 	deviceID := b.DeviceID
 	if uuid, ok := deviceUUIDByID[b.DeviceID]; ok {
 		deviceID = uuid
 	}
+	routes, err := agent_backend_entity.ParseModelRoutes(b.ModelRoutes)
+	if err != nil {
+		// 已入库的 backend 在 Check 阶段就校验过 model_routes，理论到不了这里；
+		// 真到了就亮失败而不是静默丢路由（结构化 Route 是 bundle 契约的一部分）。
+		return BundleAgentBackend{}, err
+	}
 	return BundleAgentBackend{
 		ExportKey: exportKey,
 		Type:      b.Type, Name: b.Name,
-		LLMProviderKey: b.LLMProviderKey, DeviceID: deviceID, CLIPath: b.CLIPath,
-		ModelRoutes: b.ModelRoutes, Sandbox: b.Sandbox, Approval: b.Approval,
+		LLMProviderKey: b.LLMProviderKey, LLMModelKey: b.LLMModelKey,
+		DeviceID: deviceID, CLIPath: b.CLIPath,
+		ModelRoutes: bundleRoutesFromEntity(routes),
+		Sandbox:     b.Sandbox, Approval: b.Approval,
 		EnvJSON: b.EnvJSON, ReasoningEffort: b.ReasoningEffort,
 		DefaultPermissionMode: b.DefaultPermissionMode,
+	}, nil
+}
+
+// bundleRoutesFromEntity 把实体的 map[alias]ModelRouteTarget 转成 bundle 的
+// map[alias]BundleRouteTarget（两者同形，逐字段拷贝）。
+func bundleRoutesFromEntity(routes map[string]agent_backend_entity.ModelRouteTarget) map[string]BundleRouteTarget {
+	if len(routes) == 0 {
+		return map[string]BundleRouteTarget{}
 	}
+	out := make(map[string]BundleRouteTarget, len(routes))
+	for alias, r := range routes {
+		out[alias] = BundleRouteTarget{ProviderKey: r.ProviderKey, ModelKey: r.ModelKey}
+	}
+	return out
 }
 
 func toBundleDept(d *department_entity.Department, deptKey, agentKey map[int64]string) BundleDepartment {

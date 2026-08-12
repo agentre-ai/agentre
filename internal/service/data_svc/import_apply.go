@@ -419,7 +419,9 @@ func applyAgentBackends(ctx context.Context, b BundleV1, actions map[string]Item
 			if err != nil {
 				return err
 			}
-			assignBackendFields(local, bk, now, deviceID)
+			if err := assignBackendFields(ctx, local, bk, now, deviceID); err != nil {
+				return err
+			}
 			if err := agent_backend_repo.AgentBackend().Update(ctx, local); err != nil {
 				return err
 			}
@@ -430,7 +432,10 @@ func applyAgentBackends(ctx context.Context, b BundleV1, actions map[string]Item
 			if err != nil {
 				return err
 			}
-			row := newBackendEntity(bk, now, deviceID)
+			row, err := newBackendEntity(bk, now, deviceID)
+			if err != nil {
+				return err
+			}
 			row.Name = uniqueName(bk.Name, func(n string) bool {
 				for _, e := range existing {
 					if e.Name == n {
@@ -452,7 +457,10 @@ func applyAgentBackends(ctx context.Context, b BundleV1, actions map[string]Item
 			if err != nil {
 				return err
 			}
-			row := newBackendEntity(bk, now, deviceID)
+			row, err := newBackendEntity(bk, now, deviceID)
+			if err != nil {
+				return err
+			}
 			if err := agent_backend_repo.AgentBackend().Create(ctx, row); err != nil {
 				return err
 			}
@@ -480,14 +488,19 @@ func importBackendDeviceID(ctx context.Context, bk BundleAgentBackend, km *keyMa
 	return strconv.FormatInt(id, 10), nil
 }
 
-func newBackendEntity(bk BundleAgentBackend, now int64, deviceID string) *agent_backend_entity.AgentBackend {
+func newBackendEntity(bk BundleAgentBackend, now int64, deviceID string) (*agent_backend_entity.AgentBackend, error) {
+	modelRoutes, err := marshalBundleRoutes(bk.ModelRoutes)
+	if err != nil {
+		return nil, err
+	}
 	return &agent_backend_entity.AgentBackend{
 		Type:                  bk.Type,
 		Name:                  bk.Name,
 		LLMProviderKey:        bk.LLMProviderKey,
+		LLMModelKey:           bk.LLMModelKey,
 		DeviceID:              deviceID,
 		CLIPath:               bk.CLIPath,
-		ModelRoutes:           bk.ModelRoutes,
+		ModelRoutes:           modelRoutes,
 		Sandbox:               bk.Sandbox,
 		Approval:              bk.Approval,
 		EnvJSON:               bk.EnvJSON,
@@ -496,22 +509,41 @@ func newBackendEntity(bk BundleAgentBackend, now int64, deviceID string) *agent_
 		Status:                consts.ACTIVE,
 		Createtime:            now,
 		Updatetime:            now,
-	}
+	}, nil
 }
 
-func assignBackendFields(local *agent_backend_entity.AgentBackend, bk BundleAgentBackend, now int64, deviceID string) {
+func assignBackendFields(ctx context.Context, local *agent_backend_entity.AgentBackend, bk BundleAgentBackend, now int64, deviceID string) error {
+	modelRoutes, err := marshalBundleRoutes(bk.ModelRoutes)
+	if err != nil {
+		return i18n.NewError(ctx, code.DataBundleFormatInvalid)
+	}
 	local.Type = bk.Type
 	local.Name = bk.Name
 	local.LLMProviderKey = bk.LLMProviderKey
+	local.LLMModelKey = bk.LLMModelKey
 	local.DeviceID = deviceID
 	local.CLIPath = bk.CLIPath
-	local.ModelRoutes = bk.ModelRoutes
+	local.ModelRoutes = modelRoutes
 	local.Sandbox = bk.Sandbox
 	local.Approval = bk.Approval
 	local.EnvJSON = bk.EnvJSON
 	local.ReasoningEffort = bk.ReasoningEffort
 	local.DefaultPermissionMode = bk.DefaultPermissionMode
 	local.Updatetime = now
+	return nil
+}
+
+// marshalBundleRoutes 把 bundle 的类型化 Route target 序列化回实体持久化的结构化
+// JSON 字符串（交给 agent_backend_entity.MarshalModelRoutes 同一份转换）。
+func marshalBundleRoutes(routes map[string]BundleRouteTarget) (string, error) {
+	if len(routes) == 0 {
+		return "{}", nil
+	}
+	entityRoutes := make(map[string]agent_backend_entity.ModelRouteTarget, len(routes))
+	for alias, r := range routes {
+		entityRoutes[alias] = agent_backend_entity.ModelRouteTarget{ProviderKey: r.ProviderKey, ModelKey: r.ModelKey}
+	}
+	return agent_backend_entity.MarshalModelRoutes(entityRoutes)
 }
 
 // uniqueName 给同名记录加 (copy) / (copy 2) 后缀直到不冲突。
