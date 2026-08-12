@@ -4,8 +4,6 @@ import { ChevronRight, Layers } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
-import { summarizeRawTool } from "../canonical-tool/raw/summary";
-import { displayName } from "../canonical-tool/tier";
 import { shouldIgnoreClickForSelection } from "../copyable-text";
 import type {
   ActivityStep,
@@ -14,7 +12,7 @@ import type {
 } from "../transcript-rows";
 import { useTranscriptBooleanState } from "../transcript-ui-state";
 
-import type { PendingOutcome } from "./facts";
+import { stepLabel, type PendingOutcome } from "./facts";
 import { ActivityRow } from "./row";
 
 // ActivityBlock —— 一段连续活动(思考 / 只读探查 / 中性 / 写 / 命令 / 失败)的
@@ -127,7 +125,7 @@ export function ActivityBlock({
             aria-live="polite"
             className="min-w-0 flex-1 truncate font-mono text-subtle-foreground"
           >
-            {currentStepLabel(steps, cwd)}
+            {currentStepLabel(t, steps, cwd)}
           </span>
         ) : (
           <SummaryText summary={summary} />
@@ -263,16 +261,18 @@ function categoryLabel(
 }
 
 // currentStepLabel:运行中的组头播报当前这一步(名字 + 摘要),取组内最后一步。
-function currentStepLabel(steps: ActivityStep[], cwd?: string): string {
+// 名字与摘要走与活动行同一个 stepLabel —— 同一步在组头与展开后必须叫同一个名字。
+function currentStepLabel(
+  t: ReturnType<typeof useTranslation>["t"],
+  steps: ActivityStep[],
+  cwd?: string,
+): string {
   const last = steps.at(-1);
   if (!last) return "";
   if (last.type === "thinking") return "";
-  const block = last.toolBlock;
-  const input = block?.toolInput as Record<string, unknown> | undefined;
-  const name =
-    typeof input?.command === "string"
-      ? "Bash"
-      : displayName(block?.toolName ?? "tool");
-  const summary = summarizeRawTool(block?.toolName ?? "", input, { cwd });
-  return summary ? `${name} ${summary}` : name;
+  const { fileCount, name, summary } = stepLabel(last.toolBlock, cwd);
+  const tail = fileCount
+    ? t("canonical.fileEdit.fileCount", { count: fileCount })
+    : summary;
+  return tail ? `${name} ${tail}` : name;
 }

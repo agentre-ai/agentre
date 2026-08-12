@@ -7,7 +7,12 @@
 
 import type { ChatBlockData } from "@/stores/chat-streams-store";
 
-import { tier } from "../canonical-tool/tier";
+import { commandResultOf } from "../canonical-tool/command-result";
+import {
+  relativizePath,
+  summarizeRawTool,
+} from "../canonical-tool/raw/summary";
+import { displayName, tier } from "../canonical-tool/tier";
 import type { CanonicalDTO } from "../canonical-tool/types";
 import { isFailedStep, type ActivityStep } from "../transcript-rows";
 
@@ -80,7 +85,7 @@ export function stepFacts(
     return { failed: false, resultText: text };
   }
   const result = step.resultBlock;
-  const command = parseCommandResult(result?.text);
+  const command = commandResultOf(result);
   const resultText = command ? command.output : (result?.text ?? "");
   const canonical = canonicalOf(step.toolBlock);
   const pending = result ? undefined : pendingOutcome;
@@ -142,37 +147,52 @@ function backgroundFacts(
   };
 }
 
-type CommandResult = { exitCode?: number; output: string; status?: string };
+// ─── 行首标签 ────────────────────────────────────────────────────────────────
 
-// parseCommandResult 与 canonical-tool/raw/card.tsx 的同名解析同源:command_execution
-// 类工具的 tool_result 是 JSON {exitCode, output, status},其余工具是纯文本。
-// **靠 result shape 判定**,不靠 toolName。
-function parseCommandResult(text?: string): CommandResult | null {
-  if (typeof text !== "string") return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return null;
+/**
+ * 一步在行首怎么称呼自己。活动行与组头的运行态尾巴共用 —— 两处各拼一遍必然漂移
+ * (一处认得 canonical、另一处不认,同一步在展开前后叫两个名字)。
+ */
+export type StepLabel = {
+  /** 工具名。shell 形态统一叫 Bash(与 RawToolCard 同一条规矩:认 input 不认工具名)。 */
+  name: string;
+  /** 一行以内的摘要。fileCount 有值时由调用方改用 i18n 的「N 个文件」。 */
+  summary: string;
+  /** 仅多文件 file.edit:改到几个文件(文案在组件层,这里不引 i18n)。 */
+  fileCount?: number;
+};
+
+// 行首摘要的长度上限。摘要与行尾预览一样是**折叠态就在 DOM 里**的文字,而工具入参
+// 没有大小上限 —— summarizeRawTool 认不出语义字段时会退到「首个键=JSON」,一次
+// 几百 KB 的写入 / 一段 unified diff 会整段进到一个 whitespace-nowrap 的行盒里。
+const SUMMARY_MAX_CHARS = 200;
+
+export function stepLabel(block?: ChatBlockData, cwd?: string): StepLabel {
+  const input = block?.toolInput as Record<string, unknown> | undefined;
+  // RawToolCard 的同一条规矩:input 里有 command 就是 shell 形态,标签用 Bash
+  // (codex 的 command_execution 与 claudecode 的 Bash 同形)。
+  const name =
+    typeof input?.command === "string"
+      ? "Bash"
+      : displayName(block?.toolName ?? "tool");
+  // canonical.file.edit 的路径只在 canonical 里:codex 的 file_change input 是
+  // {changes:[{path,kind,diff}]},没有 path/file_path 键,summarizeRawTool 会退到
+  // 「首个键=JSON」把整段 diff 当摘要 —— 路径丢了(旧 FileEditCard 卡头一直显示它),
+  // 还把无上限的 diff 挂进折叠行。
+  const canonical = canonicalOf(block);
+  if (canonical?.kind === "file.edit") {
+    const files = canonical.fileEdit?.files ?? [];
+    if (files.length === 1) {
+      return { name, summary: relativizePath(files[0].path, cwd) };
+    }
+    if (files.length > 1) return { fileCount: files.length, name, summary: "" };
   }
-  if (!parsed || typeof parsed !== "object") return null;
-  const data = parsed as Record<string, unknown>;
-  if (!("output" in data) && !("exitCode" in data) && !("status" in data)) {
-    return null;
-  }
+  const summary = summarizeRawTool(block?.toolName ?? "", input, { cwd });
   return {
-    exitCode: typeof data.exitCode === "number" ? data.exitCode : undefined,
-    output: stringifyOutput(data.output),
-    status: typeof data.status === "string" ? data.status : undefined,
+    name,
+    summary:
+      summary.length > SUMMARY_MAX_CHARS
+        ? summary.slice(0, SUMMARY_MAX_CHARS)
+        : summary,
   };
-}
-
-function stringifyOutput(output: unknown): string {
-  if (output == null) return "";
-  if (typeof output === "string") return output;
-  try {
-    return JSON.stringify(output, null, 2);
-  } catch {
-    return String(output);
-  }
 }

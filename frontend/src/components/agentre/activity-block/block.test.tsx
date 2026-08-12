@@ -64,6 +64,16 @@ const failedStep = toolStep(
   { isError: true, text: '{"exitCode":1,"output":"boom"}' },
 );
 
+// 命令类结果的失败信号在结果 JSON 里(exitCode / status),不在 isError 上:
+// codex 只有 item 自身失败才置 isError,一条退出码非零的命令 isError 是 false
+// (pkg/codex/types.go toolResponseForItem 把 exitCode/status 放进 response,
+// translator 的 IsError 只跟 item.Err 走)。
+const exitOnlyFailedStep = toolStep(
+  "message:1:tool:tool:bash-3",
+  { toolInput: { command: "pnpm exec tsc -b" }, toolName: "Bash" },
+  { text: '{"exitCode":2,"output":"2 errors","status":"completed"}' },
+);
+
 // subagent sidecar 是 wails 生成的 class 类型(带 convertValues),测试只用其中
 // 两个字段,按纯数据对象构造后 cast —— 与 store 里同一手法。
 function subagentState(status: string, taskId: string) {
@@ -341,6 +351,56 @@ describe("ActivityBlock 活动行(展开态)", () => {
     );
     expect(within(failed).getByText("exit 1")).toBeInTheDocument();
     expect(screen.queryByText("boom")).toBeNull();
+  });
+
+  // 「没有标记 = 成功」的前提是所有没成功的步骤都带标记。命令失败的判据一直是
+  // RawToolCard 的那一条(退出码非零 / status 是 failed|error|interrupted),
+  // 只看 isError 会让一条 tsc 报错的命令与成功的一步完全同形。
+  it("Given 一步命令以非零退出码结束、结果却没标 isError, Then 该行仍按失败呈现", () => {
+    renderBlock({ steps: [readStep, exitOnlyFailedStep] });
+    fireEvent.click(screen.getByTestId("activity-header"));
+
+    const row = screen.getAllByTestId("activity-row")[1];
+    expect(row).toHaveAttribute("data-failed", "true");
+    expect(within(row).getByText("exit 2").className).toContain(
+      "text-status-error",
+    );
+  });
+
+  // codex 的每一次文件改动都是 file_change 工具,input 形如
+  // {changes:[{path,kind,diff}]} —— 没有 path/file_path 键,summarizeRawTool 会
+  // 落到「首个键=JSON」的兜底,把整段 unified diff 塞进折叠行的行首摘要。
+  // 那既丢了路径(旧 FileEditCard 卡头一直显示它),又把一段无上限的文本挂进
+  // 一个 whitespace-nowrap 的行盒里。
+  it("Given 一步是 codex 的 file_change, Then 行摘要是文件路径而不是整段 diff", () => {
+    const diff = `@@ -1,2 +1,2 @@\n-${"old ".repeat(20_000)}\n+${"new ".repeat(20_000)}`;
+    const codexEdit = toolStep("message:1:tool:tool:fc-1", {
+      canonical: {
+        fileEdit: {
+          files: [
+            {
+              hunks: [],
+              kind: "modified",
+              minus: 1,
+              path: "/repo/internal/app/chat.go",
+              plus: 1,
+            },
+          ],
+        },
+        kind: "file.edit",
+      } as unknown as ChatBlockData["canonical"],
+      toolInput: {
+        changes: [{ diff, kind: "update", path: "/repo/internal/app/chat.go" }],
+      },
+      toolName: "file_change",
+    });
+    renderBlock({ cwd: "/repo", steps: [readStep, codexEdit] });
+    fireEvent.click(screen.getByTestId("activity-header"));
+
+    const row = screen.getAllByTestId("activity-row")[1];
+    expect(row).toHaveTextContent("./internal/app/chat.go");
+    expect(row.textContent ?? "").not.toContain(diff);
+    expect((row.textContent ?? "").length).toBeLessThan(400);
   });
 
   // 行尾预览是折叠态就在 DOM 里的那段文字。结果原文没有大小上限(单行 JSON /

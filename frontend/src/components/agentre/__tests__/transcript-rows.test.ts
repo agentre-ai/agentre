@@ -1439,6 +1439,31 @@ describe("活动块聚合", () => {
     expect(summarizeActivity(steps, true).failures).toBe(2);
   });
 
+  // 命令类结果把失败写在结果 JSON 里(exitCode / status),isError 只在 item 自身
+  // 失败时才置位 —— 一条 exit 1 的命令 isError 是 false。组头只看 isError 就会
+  // 宣称「零失败」,而同一条结果在 RawToolCard 里一直是按错误渲染的。
+  it("命令以非零退出码结束但结果没标 isError 时,仍计进组头失败数", () => {
+    const items = buildRenderItems({
+      messageId: 1,
+      blocks: [
+        toolUse("toolu-1"),
+        toolResult(
+          "toolu-1",
+          '{"exitCode":1,"output":"boom","status":"completed"}',
+        ),
+        toolUse("toolu-2"),
+        toolResult(
+          "toolu-2",
+          '{"exitCode":0,"output":"ok","status":"completed"}',
+        ),
+        toolUse("toolu-3"),
+        toolResult("toolu-3", '{"output":"gone","status":"interrupted"}'),
+      ],
+    });
+
+    expect(activityAt(items, 0).summary.failures).toBe(2);
+  });
+
   it("同一文件改两次算一个文件,增删行累加", () => {
     const items = buildRenderItems({
       messageId: 1,

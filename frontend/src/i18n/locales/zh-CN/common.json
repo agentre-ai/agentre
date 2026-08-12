@@ -64,7 +64,6 @@
       "failures": "{{count}} 失败"
     },
     "row": {
-      "toggle": "展开/收起 {{tool}} 这一步的明细",
       "thinking": "思考",
       "thinkingMeta": "{{count}} 字",
       "exit": "exit {{code}}",

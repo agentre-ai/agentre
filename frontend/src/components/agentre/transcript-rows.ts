@@ -1,6 +1,10 @@
 // transcript-rows: chat transcript 的「block → 渲染项 → 虚拟行」纯函数层,零 React 依赖。
 // renderMessageBlocks 的配对状态机抽取到这里,让行级虚拟化(每个 RenderItem 一个
 // 虚拟行)能在不碰 JSX 的前提下单测配对 / 合并 / skip / FIFO / 归集 / key 稳定性。
+import {
+  commandResultOf,
+  isFailedCommandResult,
+} from "@/components/agentre/canonical-tool/command-result";
 import type { AgentSpawnChildBlocks } from "@/components/agentre/canonical-tool/props";
 import {
   tier,
@@ -474,15 +478,21 @@ function makeActivityItem(
 }
 
 // isFailedStep —— 「这一步失败了没有」的唯一判据,组头失败计数与活动行的红色标记
-// 共用它。有结果就看结果;没有结果的一步只有在调用方声明「这一轮已经以失败终结」
-// (unresolvedFailed)时才算失败 —— 转录里的一轮默认还在跑,没结果 ≠ 失败。
+// 共用它。没有结果的一步只有在调用方声明「这一轮已经以失败终结」(unresolvedFailed)
+// 时才算失败 —— 转录里的一轮默认还在跑,没结果 ≠ 失败。
 // 两处各写一遍必然漂移:组头会宣称零失败,而展开后是几行红的。
+//
+// 有结果时 isError 只是失败信号之一:命令类工具把退出码 / status 写在结果 JSON 里,
+// 一条 exit 1 的命令 isError 是 false(见 command-result 的 isFailedCommandResult)。
+// RawToolCard 一直是按这两条一起判的,活动块只认 isError 就等于把它降级了。
 export function isFailedStep(
   step: ActivityStep,
   unresolvedFailed = false,
 ): boolean {
   if (step.type === "thinking") return false;
-  return step.resultBlock ? !!step.resultBlock.isError : unresolvedFailed;
+  const result = step.resultBlock;
+  if (!result) return unresolvedFailed;
+  return !!result.isError || isFailedCommandResult(commandResultOf(result));
 }
 
 // summarizeActivity 汇总组头:类目计数按固定顺序输出并截断,写操作额外报出对象

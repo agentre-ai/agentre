@@ -20,8 +20,7 @@ import {
 } from "../collapsible-code";
 import { FileBlock } from "../canonical-tool/file-edit/hunk-renderer";
 import { FileWriteContent } from "../canonical-tool/file-write/content-renderer";
-import { summarizeRawTool } from "../canonical-tool/raw/summary";
-import { displayName, toolCategory } from "../canonical-tool/tier";
+import { toolCategory } from "../canonical-tool/tier";
 import { shouldIgnoreClickForSelection } from "../copyable-text";
 import type { ActivityStep } from "../transcript-rows";
 import { useTranscriptBooleanState } from "../transcript-ui-state";
@@ -29,6 +28,7 @@ import { useTranscriptBooleanState } from "../transcript-ui-state";
 import {
   canonicalOf,
   stepFacts,
+  stepLabel,
   stepWeight,
   type PendingOutcome,
 } from "./facts";
@@ -93,18 +93,18 @@ export function ActivityRow({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- step 每次重建都是新对象,按内容取依赖才能真正命中
     [toolBlock, resultBlock, thinkingText, pendingOutcome],
   );
-  const input = toolBlock?.toolInput as Record<string, unknown> | undefined;
-  // RawToolCard 的同一条规矩:input 里有 command 就是 shell 形态,标签用 Bash,
-  // 不认工具名(codex 的 command_execution 与 claudecode 的 Bash 同形)。
-  const isShellShape = typeof input?.command === "string";
-  const name = isThinking
-    ? t("activity.row.thinking")
-    : isShellShape
-      ? "Bash"
-      : displayName(toolBlock?.toolName ?? "tool");
+  // 行首标签与组头运行态尾巴共用 stepLabel。summarizeRawTool 的兜底会把整个
+  // 入参 JSON.stringify 一遍(几百 KB 的写入 / 一段 diff),按块 memo 掉。
+  const label = React.useMemo(
+    () => stepLabel(toolBlock, cwd),
+    [toolBlock, cwd],
+  );
+  const name = isThinking ? t("activity.row.thinking") : label.name;
   const summary = isThinking
     ? t("activity.row.thinkingMeta", { count: thinkingText.length })
-    : summarizeRawTool(toolBlock?.toolName ?? "", input, { cwd });
+    : label.fileCount
+      ? t("canonical.fileEdit.fileCount", { count: label.fileCount })
+      : label.summary;
   const Icon = facts.failed
     ? TriangleAlert
     : isThinking
@@ -124,7 +124,10 @@ export function ActivityRow({
         data-weight={weight}
         data-failed={facts.failed ? "true" : undefined}
         aria-expanded={expanded}
-        aria-label={t("activity.row.toggle", { tool: name })}
+        // 与组头同一条规矩(block.tsx):**刻意不给 aria-label**。这一行折叠时的
+        // 可见内容(名字 / 摘要 / 运行中·失败·exit N 这些标记)就是它唯一的信息
+        // 出口,套一个「展开 X 的详情」的标签会把这些全盖掉,读屏用户只剩工具名。
+        // 可访问名由行内文本自然算出,不会为空(名字至少是 "tool")。
         onClick={handleToggle}
         className="group flex w-full items-center gap-2 rounded px-1.5 py-0.5 text-left font-mono text-meta text-muted-foreground transition-colors duration-150 ease-out hover:bg-muted/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 motion-reduce:transition-none"
       >

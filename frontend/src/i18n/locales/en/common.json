@@ -64,7 +64,6 @@
       "failures": "{{count}} failed"
     },
     "row": {
-      "toggle": "Toggle {{tool}} step details",
       "thinking": "Thought",
       "thinkingMeta": "{{count}} chars",
       "exit": "exit {{code}}",
