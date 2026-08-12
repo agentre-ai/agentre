@@ -823,6 +823,46 @@ describe("CommandPalette — 命令模式分组顺序：新建对话先于操作
     expect(screen.getByLabelText("Switch project context")).toBeTruthy();
   });
 
+  it("Given agents are still loading, When the pointer moves over a non-command control, Then the first agent command takes selection after loading", async () => {
+    let resolveAgents!: (value: { agents: chat_svc.ChatAgentItem[] }) => void;
+    const agentsPromise = new Promise<{ agents: chat_svc.ChatAgentItem[] }>(
+      (resolve) => {
+        resolveAgents = resolve;
+      },
+    );
+    appMocks.ListChatAgents.mockReturnValue(agentsPromise);
+    appMocks.ProjectListTree.mockResolvedValue([]);
+    renderHarness("/chat");
+
+    await act(async () => {
+      useCommandPaletteStore.getState().openWith("> ");
+    });
+    await flush();
+
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    expect(
+      screen
+        .getByText("New agent")
+        .closest("[cmdk-item]")
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
+    fireEvent.pointerMove(input);
+
+    await act(async () => {
+      resolveAgents({ agents: [mkAgent({ id: 1, name: "Builder" })] });
+      await agentsPromise;
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        screen
+          .getByText("Builder")
+          .closest("[cmdk-item]")
+          ?.getAttribute("aria-selected"),
+      ).toBe("true");
+    });
+  });
+
   it("Given keyboard selection was moved to an agent in project A, When Tab switches to project B where that agent is disabled, Then selection returns to the first enabled project command", async () => {
     appMocks.ListChatAgents.mockResolvedValue({
       agents: [

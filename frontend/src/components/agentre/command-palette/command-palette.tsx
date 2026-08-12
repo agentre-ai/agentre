@@ -249,8 +249,16 @@ export function CommandPalette(): React.ReactElement {
                 sourceSelection.markTouched();
               }
             }}
-            onPointerMoveCapture={sourceSelection.markTouched}
-            onPointerDownCapture={sourceSelection.markTouched}
+            onPointerMoveCapture={(event) => {
+              if ((event.target as Element).closest("[cmdk-item]")) {
+                sourceSelection.markTouched();
+              }
+            }}
+            onPointerDownCapture={(event) => {
+              if ((event.target as Element).closest("[cmdk-item]")) {
+                sourceSelection.markTouched();
+              }
+            }}
             label={t("commandPalette.title")}
             className="flex h-full flex-col overflow-hidden"
           >
