@@ -178,8 +178,9 @@ type EffectiveModel struct {
 type LLMProviderLookupPort interface {
 	FindByKey(ctx context.Context, key string) (*llm_provider_entity.LLMProvider, error)
 	// ResolveModel 从 daemon 自家目录解析 Provider 的执行模型（决策 11）：
-	//   - modelKey 空 → provider-default：Provider 当前默认模型（DefaultModelKey →
-	//     Models；缺省回落旧单模型字段 Model）。无默认模型 → (EffectiveModel{}, nil)；
+	//   - modelKey 空 → provider-default：Provider 当前默认模型（DefaultModelKey 精确命中
+	//     Models 且启用）。Provider 存在但无合法启用默认模型（无默认 / 默认缺失 / 默认停用）
+	//     → error（配置损坏，严格阻止），绝不回落旧单模型字段或空值静默执行；
 	//   - modelKey 非空 → fixed-model：精确查 Models 中启用模型。模型缺失或停用 → error，
 	//     调用方严格阻止本轮，绝不静默降级为默认模型。
 	ResolveModel(ctx context.Context, providerKey, modelKey string) (EffectiveModel, error)

@@ -38,6 +38,10 @@ export function ProviderPill({
   invalid,
   disabled,
   disabledReason,
+  executionLocation = "",
+  remoteCatalog,
+  supportsFixedModel = true,
+  remoteMissing = false,
 }: ProviderPillProps) {
   const { t } = useTranslation();
 
@@ -65,6 +69,7 @@ export function ProviderPill({
     <ModelTargetPicker
       scenario="chat"
       backendType={backendType}
+      executionLocation={executionLocation}
       selected={{ providerKey, modelKey }}
       onChange={setTarget}
       catalog={catalog}
@@ -73,6 +78,9 @@ export function ProviderPill({
       errorText={error ?? undefined}
       disabled={disabled}
       invalid={invalid}
+      remoteCatalog={remoteCatalog}
+      supportsFixedModel={supportsFixedModel}
+      remoteMissing={remoteMissing}
       triggerLabel={boundLabel}
       title={disabledTitle ?? undefined}
       footer={t("providerPill.switchNote")}

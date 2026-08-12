@@ -18,6 +18,8 @@ const appMocks = vi.hoisted(() => ({
   ListLLMProviders: vi.fn(),
   ListLLMModels: vi.fn().mockResolvedValue({ items: [] }),
   SetChatSessionModelTarget: vi.fn(),
+  RemoteDeviceList: vi.fn().mockResolvedValue([]),
+  RemoteDeviceListProviders: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("../../../../wailsjs/go/app/App", () => appMocks);
@@ -34,6 +36,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   appMocks.ListLLMProviders.mockResolvedValue({ items: [] });
   appMocks.ListLLMModels.mockResolvedValue({ items: [] });
+  appMocks.RemoteDeviceList.mockResolvedValue([]);
+  appMocks.RemoteDeviceListProviders.mockResolvedValue([]);
 });
 
 function Harness(props: UseProviderPillOptions) {
@@ -80,6 +84,33 @@ const ALL_PROVIDERS = [ANTHROPIC_PROVIDER, CHAT_PROVIDER, RESPONSE_PROVIDER];
 
 function model(key: string, modelId: string, enabled = true) {
   return { modelKey: key, modelId, name: modelId, enabled };
+}
+
+// ── 远端 daemon 门控（gap 1：chat Picker 接收远端能力/目录）──────────────────────
+
+function device(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 7,
+    name: "Build box",
+    online: true,
+    supportsLLMModelTarget: true,
+    ...overrides,
+  };
+}
+
+function remoteModel(key: string, modelId: string, enabled = true) {
+  return { key, modelId, name: modelId, enabled };
+}
+
+function remoteProvider(overrides: Record<string, unknown> = {}) {
+  return {
+    key: "acme-anthropic",
+    name: "Acme Claude",
+    type: "anthropic",
+    defaultModelKey: "mk-sonnet",
+    models: [remoteModel("mk-sonnet", "claude-sonnet-4-5")],
+    ...overrides,
+  };
 }
 
 describe("provider compatibility gate（与后端 ProviderTypeMatch 对齐）", () => {
@@ -340,7 +371,6 @@ describe("ProviderPill · 已有会话（决策 1/9/10：选择立即持久化 +
       />,
     );
 
-    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
     // 目录异步加载（providers 空时 catalogLoading 已为 false，不能只等 not.toBeDisabled），
     // 必须等模型目录解析完成、pill 标签显示「供应商 · 模型」才断言。
     await waitFor(() =>
@@ -461,5 +491,164 @@ describe("ProviderPill · 已有会话（决策 1/9/10：选择立即持久化 +
     );
     await user.click(screen.getByTestId("provider-pill"));
     expect(screen.getByText("nope")).toBeInTheDocument();
+  });
+});
+
+describe("ProviderPill · 远端执行（gap 1：chat Picker 接收 daemon 能力/目录门控）", () => {
+  it("远端 daemon 支持 llm-model-target-v1 且目录含 Provider → 该 provider 可选；desktop 独有 Provider 禁用 + 需同步提示", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER, CHAT_PROVIDER],
+    });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [
+        model("mk-sonnet", "claude-sonnet-4-5"),
+        model("mk-opus", "claude-opus-4-5"),
+      ],
+    });
+    appMocks.RemoteDeviceList.mockResolvedValue([device({ id: 7 })]);
+    appMocks.RemoteDeviceListProviders.mockResolvedValue([remoteProvider()]);
+    render(<Harness backendType="builtin" executionLocation="7" />);
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+
+    const user = userEvent.setup();
+    await user.click(pill);
+
+    const listbox = screen.getByRole("listbox");
+    // daemon 目录里有 acme-anthropic → provider-default 可选（首项）。
+    const claudeOptions = within(listbox).getAllByRole("option", {
+      name: /Acme Claude/,
+    });
+    expect(claudeOptions[0]).not.toBeDisabled();
+    // 不在 daemon 模型目录里的 fixed-model（claude-opus-4-5）→ 需同步禁用。
+    const opusOptions = within(listbox).getAllByRole("option", {
+      name: /claude-opus-4-5/,
+    });
+    expect(opusOptions.length).toBeGreaterThan(0);
+    for (const opus of opusOptions) {
+      expect(opus).toHaveAttribute("aria-disabled", "true");
+      expect(opus).toHaveAttribute(
+        "title",
+        "Local only — sync to this device first",
+      );
+    }
+    // desktop 独有的 Provider（Acme Chat）→ 全部目标（default + fixed）需同步禁用。
+    const chatOptions = within(listbox).getAllByRole("option", {
+      name: /Acme Chat/,
+    });
+    expect(chatOptions.length).toBeGreaterThan(0);
+    for (const chat of chatOptions) {
+      expect(chat).toHaveAttribute("aria-disabled", "true");
+      expect(chat).toHaveAttribute(
+        "title",
+        "Local only — sync to this device first",
+      );
+    }
+    // 弹层底部出现远端门控说明。
+    expect(
+      screen.getByText(
+        "Disabled items need sync to the device or an unsupported capability",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("远端 daemon 无 llm-model-target-v1 能力位（旧/离线）→ 全部 fixed-model 禁用，provider-default 仍可选", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER],
+    });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [
+        model("mk-sonnet", "claude-sonnet-4-5"),
+        model("mk-opus", "claude-opus-4-5"),
+      ],
+    });
+    appMocks.RemoteDeviceList.mockResolvedValue([
+      device({ id: 7, supportsLLMModelTarget: false }),
+    ]);
+    appMocks.RemoteDeviceListProviders.mockResolvedValue([
+      remoteProvider({
+        models: [
+          remoteModel("mk-sonnet", "claude-sonnet-4-5"),
+          remoteModel("mk-opus", "claude-opus-4-5"),
+        ],
+      }),
+    ]);
+    render(<Harness backendType="builtin" executionLocation="7" />);
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+
+    const user = userEvent.setup();
+    await user.click(pill);
+
+    const listbox = screen.getByRole("listbox");
+    // provider-default 仍可选（目录里存在且能力位只影响 fixed-model）。
+    const claudeOptions = within(listbox).getAllByRole("option", {
+      name: /Acme Claude/,
+    });
+    expect(claudeOptions[0]).not.toBeDisabled();
+    // fixed-model 一律禁用：daemon 不支持，绝不静默降级。
+    const opus = within(listbox).getByRole("option", {
+      name: /claude-opus-4-5/,
+    });
+    expect(opus).toHaveAttribute("aria-disabled", "true");
+    expect(opus).toHaveAttribute(
+      "title",
+      "This device does not support fixed models — upgrade agentred",
+    );
+  });
+
+  it("远端执行且当前选中 Provider 在 daemon 缺失 → 弹层底部 remoteMissing 提示", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({ items: [CHAT_PROVIDER] });
+    appMocks.RemoteDeviceList.mockResolvedValue([device({ id: 7 })]);
+    appMocks.RemoteDeviceListProviders.mockResolvedValue([]);
+    render(
+      <Harness
+        backendType="builtin"
+        executionLocation="7"
+        sessionId={42}
+        persistedProviderKey="acme-chat"
+      />,
+    );
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+
+    const user = userEvent.setup();
+    await user.click(pill);
+
+    expect(
+      screen.getByText(
+        "Target device is missing this provider. Sync it first.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("本机（无 executionLocation）不拉远端目录、不启用远端门控，fixed-model 照常可选", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER],
+    });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [
+        model("mk-sonnet", "claude-sonnet-4-5"),
+        model("mk-opus", "claude-opus-4-5"),
+      ],
+    });
+    render(<Harness backendType="builtin" />);
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+
+    expect(appMocks.RemoteDeviceList).not.toHaveBeenCalled();
+    expect(appMocks.RemoteDeviceListProviders).not.toHaveBeenCalled();
+
+    const user = userEvent.setup();
+    await user.click(pill);
+    // 本机不设能力位限制：fixed-model 可选。
+    const opus = within(screen.getByRole("listbox")).getByRole("option", {
+      name: /claude-opus-4-5/,
+    });
+    expect(opus).not.toBeDisabled();
   });
 });

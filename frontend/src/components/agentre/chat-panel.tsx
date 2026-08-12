@@ -1356,6 +1356,9 @@ function ChatPanel({
     sessionId,
     persistedProviderKey: sessionId > 0 ? session?.providerKey : undefined,
     persistedModelKey: sessionId > 0 ? session?.modelKey : undefined,
+    // 远端执行时以目标 daemon 目录为可运行事实源（task 6 决策 12）：pill 据此禁用
+    // daemon 上缺失/未同步的目标，并对旧 daemon 禁用 fixed-model。
+    executionLocation: session?.deviceID ?? newSessionAgent?.deviceID ?? "",
     onSwitched: () => void reloadSession(),
   });
 

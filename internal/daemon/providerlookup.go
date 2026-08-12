@@ -50,8 +50,10 @@ func (l *ProviderLookup) FindByKey(ctx context.Context, key string) (*llm_provid
 // ResolveModel satisfies handlers.LLMProviderLookupPort: resolve the provider's
 // execution model from the daemon's own catalog (decision 11).
 //
-//   - modelKey 空 → provider-default：provider 当前默认模型。优先 DefaultModelKey
-//     精确查 Models；未同步多模型（旧单模型状态）时回落 meta.Model。两者都没有 → 空。
+//   - modelKey 空 → provider-default：必须解析出 Provider 当前启用的默认模型。
+//     Provider 存在但无合法启用默认模型（无默认 / 默认缺失 / 默认停用）按配置损坏
+//     严格阻止——绝不回落到旧单模型字段或空值静默执行。只有 Provider 本身缺失/停用
+//     才走 resolveTarget 的 provider-default 回退语义（回退 agent 绑定或 CLI 登录态）。
 //   - modelKey 非空 → fixed-model：精确查 Models 里启用模型，缺失/停用返回 error，
 //     由调用方严格阻止本轮 —— 绝不静默降级为默认模型。
 func (l *ProviderLookup) ResolveModel(ctx context.Context, providerKey, modelKey string) (handlers.EffectiveModel, error) {
@@ -61,18 +63,16 @@ func (l *ProviderLookup) ResolveModel(ctx context.Context, providerKey, modelKey
 		return handlers.EffectiveModel{}, fmt.Errorf("provider %q not configured", providerKey)
 	}
 	if modelKey == "" {
-		// provider-default：默认模型优先 DefaultModelKey，缺省回落旧单模型字段。
-		mk := meta.DefaultModelKey
-		if mk == "" {
-			return handlers.EffectiveModel{ModelID: meta.Model}, nil
-		}
+		// provider-default：只认默认模型精确命中且启用。其余一律配置损坏 → 报错阻止，
+		// 不沿用旧单模型字段 Model 的宽松 CLI 默认行为。
 		for _, m := range meta.Models {
-			if m.ModelKey == mk && m.Enabled {
+			if m.ModelKey == meta.DefaultModelKey && m.Enabled {
 				return handlers.EffectiveModel{ModelKey: m.ModelKey, ModelID: m.ModelID}, nil
 			}
 		}
-		// 默认模型缺失/停用：与「无默认模型」同语义（旧状态回落到旧单模型字段）。
-		return handlers.EffectiveModel{ModelID: meta.Model}, nil
+		return handlers.EffectiveModel{}, fmt.Errorf(
+			"provider %q has no legal enabled default model (defaultModelKey=%q): configuration corruption",
+			providerKey, meta.DefaultModelKey)
 	}
 	// fixed-model：精确匹配，缺失/停用一律拒绝。
 	for _, m := range meta.Models {

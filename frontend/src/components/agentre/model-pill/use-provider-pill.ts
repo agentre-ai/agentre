@@ -2,6 +2,8 @@ import * as React from "react";
 
 import {
   ListLLMProviders,
+  RemoteDeviceList,
+  RemoteDeviceListProviders,
   SetChatSessionModelTarget,
 } from "../../../../wailsjs/go/app/App";
 import { llm_provider_svc } from "../../../../wailsjs/go/models";
@@ -13,6 +15,27 @@ import {
   type ModelTarget,
   type PickerProvider,
 } from "../model-target-picker";
+
+// DeviceView / ProviderSummary — local shims matching remote_device_svc DTOs
+//（wailsjs/go/models 是构建期生成，此处按 agent-backends 同款做法本地声明）。
+type DeviceView = {
+  id: number;
+  name: string;
+  online: boolean;
+  supportsLLMModelTarget?: boolean;
+};
+type ProviderSummary = {
+  key?: string;
+  name?: string;
+  type?: string;
+  defaultModelKey?: string;
+  models?: {
+    key: string;
+    modelId: string;
+    name?: string;
+    enabled: boolean;
+  }[];
+};
 
 /**
  * 供应商选择器可渲染的后端集合（规格决策 4/5）：openclaw 不消费 agentre provider，
@@ -85,6 +108,13 @@ export interface UseProviderPillOptions {
    * transcript；pill 标签本身已由 SetChatSessionModelTarget 的响应直接更新，不依赖它）。
    */
   onSwitched?: () => void;
+  /**
+   * 目标执行位置：空串 = 本机；非空数字串 = 远端设备 id（spec「Remote execution」）。
+   * 非空时以目标 daemon 目录为可运行事实源（task 6 决策 12）：daemon 上不存在的
+   * Provider/Model 禁用并标注需同步，旧 daemon（无 llm-model-target-v1 能力位）禁用
+   * 全部 fixed-model，绝不静默降级；daemon 离线/目录为空 → 未验证的 fixed-model 无法选。
+   */
+  executionLocation?: string;
 }
 
 export interface UseProviderPillReturn {
@@ -102,6 +132,14 @@ export interface UseProviderPillReturn {
   backendType: string;
   /** Picker 目录（provider-default + fixed-model），由共享 useModelTargetCatalog 组装。 */
   catalog: PickerProvider[];
+  /** 目标执行设备的 daemon 目录（非敏感摘要）；undefined = 本机（不启用远端门控）。 */
+  remoteCatalog?: PickerProvider[];
+  /** 目标执行设备是否公布 llm-model-target-v1 能力位；本机恒 true（不限制）。 */
+  supportsFixedModel: boolean;
+  /** 目标执行设备上是否缺少当前选中的 Provider（远端场景提示）。 */
+  remoteMissing: boolean;
+  /** 目标执行位置（透传自选项，供 ProviderPill 传给共享 Picker）。 */
+  executionLocation: string;
   /** 模型目录加载中 → pill 禁用。 */
   catalogLoading: boolean;
   /** 模型目录拉取失败（全部失败）→ 弹层底部错误行。 */
@@ -145,6 +183,7 @@ export function useProviderPill({
   persistedProviderKey,
   persistedModelKey,
   onSwitched,
+  executionLocation = "",
 }: UseProviderPillOptions): UseProviderPillReturn {
   const selectable = isProviderSelectableBackend(backendType);
   const [providerKey, setProviderKeyState] = React.useState(
@@ -273,6 +312,80 @@ export function useProviderPill({
     return !m || !m.enabled;
   }, [catalog, providerKey, modelKey]);
 
+  // ── 远端门控（gap 1）：目标执行设备是远端时，以 daemon 目录为可运行事实源。──────
+  // 只认纯数字串设备 id（与 agent-backends 同款解析）；本机 / 非数字 id → 不启用远端门控。
+  const remoteDeviceID =
+    executionLocation !== "" && /^\d+$/.test(executionLocation)
+      ? Number(executionLocation)
+      : 0;
+  const [remoteDevices, setRemoteDevices] = React.useState<DeviceView[]>([]);
+  const [remoteProviders, setRemoteProviders] = React.useState<
+    ProviderSummary[]
+  >([]);
+  const fetchRemote = React.useCallback(async () => {
+    if (remoteDeviceID <= 0) {
+      setRemoteDevices([]);
+      setRemoteProviders([]);
+      return;
+    }
+    try {
+      const [dvRows, provRows] = await Promise.all([
+        RemoteDeviceList(),
+        RemoteDeviceListProviders(remoteDeviceID),
+      ]);
+      setRemoteDevices((dvRows ?? []) as unknown as DeviceView[]);
+      setRemoteProviders((provRows ?? []) as unknown as ProviderSummary[]);
+    } catch {
+      // daemon 离线 / 拉取失败 → 目录视为空：未验证的 fixed-model 无法选（严格）。
+      setRemoteDevices([]);
+      setRemoteProviders([]);
+    }
+  }, [remoteDeviceID]);
+  React.useEffect(() => {
+    void fetchRemote();
+  }, [fetchRemote]);
+
+  const supportsFixedModel = React.useMemo(() => {
+    if (remoteDeviceID <= 0) return true; // 本机：不设能力位限制。
+    const dv = remoteDevices.find((d) => d.id === remoteDeviceID);
+    // 设备离线 / 能力位未知 → false：远端 fixed-model 一律禁用（绝不静默降级）。
+    return dv?.supportsLLMModelTarget ?? false;
+  }, [remoteDevices, remoteDeviceID]);
+
+  // 把 daemon 目录转成 PickerProvider[]（非敏感摘要），供 Picker 远端门控。
+  const remoteCatalog = React.useMemo<PickerProvider[] | undefined>(() => {
+    if (remoteDeviceID <= 0) return undefined;
+    return remoteProviders.map((p) => {
+      const models = (p.models ?? []).map((m) => ({
+        modelKey: m.key,
+        modelId: m.modelId,
+        name: m.name,
+        enabled: m.enabled,
+      }));
+      const defaultModel =
+        (p.defaultModelKey &&
+          models.find((m) => m.modelKey === p.defaultModelKey)) ||
+        null;
+      return {
+        providerKey: p.key ?? "",
+        id: 0,
+        name: p.name ?? p.key ?? "",
+        type: p.type ?? "",
+        enabled: true,
+        defaultModel,
+        models,
+      };
+    });
+  }, [remoteDeviceID, remoteProviders]);
+
+  // 当前选中的 provider 在 daemon 目录里缺失 → 弹层底部 remoteMissing 提示。
+  const remoteMissing = React.useMemo(() => {
+    if (remoteDeviceID <= 0 || !remoteCatalog) return false;
+    const key = providerKey || boundProviderKey || "";
+    if (key === "") return false;
+    return !remoteCatalog.some((p) => p.providerKey === key);
+  }, [remoteDeviceID, remoteCatalog, providerKey, boundProviderKey]);
+
   return {
     providerKey,
     modelKey,
@@ -289,5 +402,9 @@ export function useProviderPill({
     invalid,
     disabled: loading || catalogLoading || disabledReason !== null,
     disabledReason,
+    executionLocation,
+    remoteCatalog,
+    supportsFixedModel,
+    remoteMissing,
   };
 }

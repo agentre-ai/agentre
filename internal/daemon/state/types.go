@@ -63,7 +63,8 @@ type LLMProviderMeta struct {
 	Model       string            `json:"model"`
 	ModelRoutes map[string]string `json:"modelRoutes"`
 	// DefaultModelKey 是该 Provider 当前默认模型的稳定 key（task 6 多模型）。
-	// 空 = 无默认模型（旧单模型状态回落 Model 字段，见 ProviderLookup.ResolveModel）。
+	// 空 = 无默认模型。provider-default 解析要求默认模型存在且启用，否则按配置损坏
+	// 严格阻止（见 ProviderLookup.ResolveModel），不回落旧单模型字段。
 	DefaultModelKey string         `json:"defaultModelKey,omitempty"`
 	Models          []LLMModelMeta `json:"models,omitempty"`
 	UpdatedAt       int64          `json:"updatedAt"`
