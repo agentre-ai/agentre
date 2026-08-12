@@ -158,6 +158,9 @@ func launchdTerminalFailure(output []byte) bool {
 	if strings.Contains(detail, "state = exited") || strings.Contains(detail, "state = crashed") {
 		return true
 	}
+	if strings.Contains(detail, "state = running") || strings.Contains(detail, "state = xpcproxy") {
+		return false
+	}
 	for _, line := range strings.Split(detail, "\n") {
 		value, ok := strings.CutPrefix(strings.TrimSpace(line), "last exit code =")
 		if !ok {

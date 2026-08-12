@@ -261,6 +261,39 @@ func TestGivenLaunchAgentInXPCProxyWhenStartingThenItKeepsWaitingUntilRunning(t 
 	assert.Len(t, runner.calls, 4, "an active xpcproxy job must be polled until launchd reports it running")
 }
 
+func TestGivenLaunchAgentInXPCProxyWithHistoricalFailureWhenStartingThenItKeepsWaitingUntilRunning(t *testing.T) {
+	home := t.TempDir()
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", "ai.agentre.agentred.plist")
+	require.NoError(t, os.MkdirAll(filepath.Dir(plistPath), 0o755))
+	require.NoError(t, os.WriteFile(plistPath, []byte("plist"), 0o644))
+	runner := &fakeServiceCommandRunner{results: []fakeServiceCommandResult{
+		{output: "Could not find service", err: &exec.ExitError{}},
+		{},
+		{output: `gui/501/ai.agentre.agentred = {
+	active count = 1
+	state = xpcproxy
+	runs = 2
+	pid = 40108
+	last exit code = 78
+}
+`},
+		{output: `gui/501/ai.agentre.agentred = {
+	active count = 1
+	state = running
+	runs = 2
+	pid = 40108
+	last exit code = 78
+}
+`},
+	}}
+	manager := newLaunchdServiceManager(serviceManagerConfig{HomeDir: home, UID: 501, Runner: runner})
+
+	status, err := manager.Start(context.Background())
+	require.NoError(t, err)
+	assert.True(t, status.Running)
+	assert.Len(t, runner.calls, 4, "a historical exit code must not terminate an active xpcproxy startup")
+}
+
 func TestGivenLaunchAgentPreviouslyExitedCleanlyWhenStartingThenItKeepsWaitingUntilRunning(t *testing.T) {
 	home := t.TempDir()
 	plistPath := filepath.Join(home, "Library", "LaunchAgents", "ai.agentre.agentred.plist")
