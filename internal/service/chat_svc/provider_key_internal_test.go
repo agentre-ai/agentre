@@ -292,8 +292,9 @@ func TestSessionProviderOverride_FallbackNoticeCarriesProviderName(t *testing.T)
 		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.DELETE,
 	}, nil)
 
-	_, notice := s.sessionProviderOverride(ctx, be, "stale-key", nil)
+	_, notice, err := s.sessionProviderOverride(ctx, be, "stale-key", "", nil)
 
+	require.NoError(t, err)
 	require.NotNil(t, notice)
 	assert.JSONEq(t, `{"providerKey":"stale-key","providerName":"中转 · GLM 5.2"}`, notice.Text)
 }
@@ -309,8 +310,9 @@ func TestSessionProviderOverride_FallbackNoticeOmitsNameWhenProviderGone(t *test
 	}
 	m.provider.EXPECT().FindByKey(ctx, "gone-key").Return(nil, nil)
 
-	_, notice := s.sessionProviderOverride(ctx, be, "gone-key", nil)
+	_, notice, err := s.sessionProviderOverride(ctx, be, "gone-key", "", nil)
 
+	require.NoError(t, err)
 	require.NotNil(t, notice)
 	assert.JSONEq(t, `{"providerKey":"gone-key"}`, notice.Text)
 }

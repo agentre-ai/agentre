@@ -89,7 +89,7 @@ var ErrInvalidBackend = errors.New("httpgateway: invalid backend for token issue
 // provider），LLM 转发端点会因 ResolveModel→"" 找不到 provider 自然 502，
 // 互不干扰。**不允许**会让 hook 子进程在 CLI 登录模式下永远拿不到 token，
 // 排队消息没法 mid-turn 注入。
-func (r *TokenRegistry) Issue(b *agent_backend_entity.AgentBackend, providerKey string, ttl time.Duration) (string, error) {
+func (r *TokenRegistry) Issue(b *agent_backend_entity.AgentBackend, providerKey, modelKey string, ttl time.Duration) (string, error) {
 	if b == nil {
 		return "", ErrInvalidBackend
 	}
@@ -109,7 +109,7 @@ func (r *TokenRegistry) Issue(b *agent_backend_entity.AgentBackend, providerKey 
 	entry := TokenEntry{
 		BackendID:   b.ID,
 		BackendType: agent_backend_entity.BackendType(b.Type),
-		Main:        TokenTarget{ProviderKey: providerKey},
+		Main:        TokenTarget{ProviderKey: providerKey, ModelKey: modelKey},
 		Routes:      upper,
 	}
 	if ttl > 0 {
@@ -142,14 +142,14 @@ func (r *TokenRegistry) Resolve(token string) (TokenEntry, bool) {
 	return entry, true
 }
 
-// SetProviderKey 把既有 token 的主路由目标改成 providerKey（ModelKey 重置为空 =
-// provider-default），**token 字符串不变**，返回它原来的主供应商与是否命中
-// （未签发过 / 已过期 → ("", false)）。
+// SetTokenTarget 把既有 token 的主路由目标改成 providerKey + modelKey
+// （ModelTarget 契约，spec 2026-08-11 决策 9），**token 字符串不变**，返回它原来的
+// 主供应商与是否命中（未签发过 / 已过期 → ("", false)）。
 //
-// 会话中途换供应商走这里而不是重签：token 是会话级常驻、首轮就烤进 CLI 子进程 env 的，
+// 会话中途换 target 走这里而不是重签：token 是会话级常驻、首轮就烤进 CLI 子进程 env 的，
 // 重签会让在跑的子进程手里那个立刻失效（曾经的 401 事故）。tier 路由（Routes）与 backend
 // 身份不动 —— 换的只是主路由目标这一件事。
-func (r *TokenRegistry) SetProviderKey(token, providerKey string) (previous string, ok bool) {
+func (r *TokenRegistry) SetTokenTarget(token, providerKey, modelKey string) (previous string, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	entry, found := r.tokens[token]
@@ -157,7 +157,7 @@ func (r *TokenRegistry) SetProviderKey(token, providerKey string) (previous stri
 		return "", false
 	}
 	previous = entry.Main.ProviderKey
-	entry.Main = TokenTarget{ProviderKey: providerKey}
+	entry.Main = TokenTarget{ProviderKey: providerKey, ModelKey: modelKey}
 	r.tokens[token] = entry
 	return previous, true
 }

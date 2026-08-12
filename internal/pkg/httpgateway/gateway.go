@@ -334,18 +334,20 @@ func (g *Gateway) RegisterControl(h http.Handler) {
 //
 // 会话可能覆盖供应商的场景（chat turn）用 IssueTokenFor 显式传 effective key。
 func (g *Gateway) IssueToken(ctx context.Context, backend *agent_backend_entity.AgentBackend, ttl time.Duration) (string, error) {
-	var key string
+	var key, modelKey string
 	if backend != nil {
 		key = backend.LLMProviderKey
+		modelKey = backend.LLMModelKey
 	}
-	return g.IssueTokenFor(ctx, backend, key, ttl)
+	return g.IssueTokenFor(ctx, backend, key, modelKey, ttl)
 }
 
-// IssueTokenFor 与 IssueToken 同形，但 token 路由到显式传入的 providerKey：
-// chat flow 传本轮的 effective provider（会话 provider_key > agent 绑定，决策 3），
-// 于是「会话换了供应商」不必换 backend、也不必污染 agent 绑定就能改上游。
+// IssueTokenFor 与 IssueToken 同形，但 token 路由到显式传入的 ModelTarget
+// （providerKey + modelKey，spec 决策 3/9）：chat flow 传本轮的 effective target
+// （会话 provider_key/model_key > agent 绑定），于是「会话换了 target」不必换 backend、
+// 也不必污染 agent 绑定就能改上游。providerKey 为空 = CLI 登录态（只供 hook inbox）。
 func (g *Gateway) IssueTokenFor(
-	_ context.Context, backend *agent_backend_entity.AgentBackend, providerKey string, ttl time.Duration,
+	_ context.Context, backend *agent_backend_entity.AgentBackend, providerKey, modelKey string, ttl time.Duration,
 ) (string, error) {
 	g.mu.RLock()
 	running := g.state == stateRunning
@@ -353,14 +355,14 @@ func (g *Gateway) IssueTokenFor(
 	if !running {
 		return "", ErrGatewayNotRunning
 	}
-	return g.tokens.Issue(backend, providerKey, ttl)
+	return g.tokens.Issue(backend, providerKey, modelKey, ttl)
 }
 
-// SetTokenProvider 改既有 token 的路由目标（token 字符串不变），返回它原来的供应商与
-// 是否命中。会话中途换供应商时由 chat flow / daemon 在下一轮调用 —— 见 TokenRegistry.
-// SetProviderKey 的重签禁忌说明。
-func (g *Gateway) SetTokenProvider(token, providerKey string) (previous string, ok bool) {
-	return g.tokens.SetProviderKey(token, providerKey)
+// SetTokenTarget 改既有 token 的路由目标（token 字符串不变），返回它原来的供应商与
+// 是否命中。会话中途换 target 时由 chat flow / daemon 在下一轮调用 —— 见 TokenRegistry.
+// SetTokenTarget 的重签禁忌说明。
+func (g *Gateway) SetTokenTarget(token, providerKey, modelKey string) (previous string, ok bool) {
+	return g.tokens.SetTokenTarget(token, providerKey, modelKey)
 }
 
 // RevokeToken 立刻删除 token。

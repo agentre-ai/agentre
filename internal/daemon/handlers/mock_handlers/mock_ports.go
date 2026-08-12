@@ -523,18 +523,18 @@ func (mr *MockGatewayPortMockRecorder) IssueToken(ctx, b, ttl any) *gomock.Call 
 }
 
 // IssueTokenFor mocks base method.
-func (m *MockGatewayPort) IssueTokenFor(ctx context.Context, b *agent_backend_entity.AgentBackend, providerKey string, ttl time.Duration) (string, error) {
+func (m *MockGatewayPort) IssueTokenFor(ctx context.Context, b *agent_backend_entity.AgentBackend, providerKey, modelKey string, ttl time.Duration) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "IssueTokenFor", ctx, b, providerKey, ttl)
+	ret := m.ctrl.Call(m, "IssueTokenFor", ctx, b, providerKey, modelKey, ttl)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // IssueTokenFor indicates an expected call of IssueTokenFor.
-func (mr *MockGatewayPortMockRecorder) IssueTokenFor(ctx, b, providerKey, ttl any) *gomock.Call {
+func (mr *MockGatewayPortMockRecorder) IssueTokenFor(ctx, b, providerKey, modelKey, ttl any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IssueTokenFor", reflect.TypeOf((*MockGatewayPort)(nil).IssueTokenFor), ctx, b, providerKey, ttl)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IssueTokenFor", reflect.TypeOf((*MockGatewayPort)(nil).IssueTokenFor), ctx, b, providerKey, modelKey, ttl)
 }
 
 // RevokeToken mocks base method.
@@ -549,19 +549,19 @@ func (mr *MockGatewayPortMockRecorder) RevokeToken(token any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RevokeToken", reflect.TypeOf((*MockGatewayPort)(nil).RevokeToken), token)
 }
 
-// SetTokenProvider mocks base method.
-func (m *MockGatewayPort) SetTokenProvider(token, providerKey string) (string, bool) {
+// SetTokenTarget mocks base method.
+func (m *MockGatewayPort) SetTokenTarget(token, providerKey, modelKey string) (string, bool) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SetTokenProvider", token, providerKey)
+	ret := m.ctrl.Call(m, "SetTokenTarget", token, providerKey, modelKey)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(bool)
 	return ret0, ret1
 }
 
-// SetTokenProvider indicates an expected call of SetTokenProvider.
-func (mr *MockGatewayPortMockRecorder) SetTokenProvider(token, providerKey any) *gomock.Call {
+// SetTokenTarget indicates an expected call of SetTokenTarget.
+func (mr *MockGatewayPortMockRecorder) SetTokenTarget(token, providerKey, modelKey any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetTokenProvider", reflect.TypeOf((*MockGatewayPort)(nil).SetTokenProvider), token, providerKey)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetTokenTarget", reflect.TypeOf((*MockGatewayPort)(nil).SetTokenTarget), token, providerKey, modelKey)
 }
 
 // URL mocks base method.

@@ -342,7 +342,7 @@ describe("LlmProvidersPanel", () => {
     });
   });
 
-  it("Given a non-default enabled model, When its Set default radio is picked, Then SetLLMModelDefault is called with providerId and modelKey", async () => {
+  it("Given a non-default enabled model, When its Set default radio is picked, Then the impact dialog opens and confirming calls SetLLMModelDefault", async () => {
     const mocks = installAppMock({
       ListLLMProviders: vi.fn(() =>
         Promise.resolve({ items: [makeProvider()] }),
@@ -360,6 +360,11 @@ describe("LlmProvidersPanel", () => {
           ],
         }),
       ),
+      LLMProviderRefCounts: vi.fn(() =>
+        Promise.resolve({
+          counts: { backends: 2, sessions: 0, routes: 1 },
+        }),
+      ),
     });
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
@@ -370,6 +375,18 @@ describe("LlmProvidersPanel", () => {
         name: "Set claude-opus-4-1 as default",
       }),
     );
+
+    // spec 2026-08-11「Provider management」：改默认模型前先展示动态影响并二次确认。
+    await screen.findByRole("heading", {
+      name: /Set default model to claude-opus-4-1/i,
+    });
+    await waitFor(() => {
+      expect(mocks.LLMProviderRefCounts).toHaveBeenCalledWith(
+        expect.objectContaining({ providerKey: "pk-1" }),
+      );
+    });
+
+    await user.click(screen.getByRole("button", { name: "Set as default" }));
 
     await waitFor(() => {
       expect(mocks.SetLLMModelDefault).toHaveBeenCalledWith(

@@ -1556,6 +1556,20 @@
       "testTitle": "Test call (send hi)",
       "testing": "Testing"
     },
+    "defaultSet": {
+      "title": "Set default model to {{model}} · {{provider}}",
+      "description": "Changing the provider default takes effect from the next turn; references using provider-default will follow it dynamically.",
+      "checking": "Checking reference impact…",
+      "confirmHint": "Make “{{model}}” the default model for “{{provider}}”?",
+      "impactTitle": "Dynamic impact",
+      "impactDetail": "This change dynamically affects {{refs}}; they will resolve the new default model on their next turn.",
+      "refBackends": "backend(s)",
+      "refSessions": "session(s)",
+      "refRoutes": "route(s)",
+      "noRefs": "no saved references",
+      "dynamicHint": "Saving does not rewrite these references or append notices to historical sessions; the current turn keeps the old model and the new default resolves from the next turn.",
+      "confirmButton": "Set as default"
+    },
     "empty": {
       "addFirst": "Add First Provider",
       "apiKeyHelp": "How to get an API key",

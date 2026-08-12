@@ -654,8 +654,10 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		}
 		// 展示侧使用同一解析规则（EffectiveLLMConfig v1 seam）：上下文窗口 / 模型目录
 		// 走解析出的模型，不直接读 Provider 行。查询失败不阻塞加载会话本身（与 prov
-		// 同一容忍度）。
-		cfg, _ := s.effectiveLLMForTurn(ctx, prov, backendModelKeyFor(be, prov))
+		// 同一容忍度）。modelKey 与 turn 同一口径（sessionModelKeyFor）：会话钉了
+		// fixed-model 时展示会话那个模型，而不是 backend 的绑定（spec「Effective
+		// configuration」：展示与执行同一解析结果）。
+		cfg, _ := s.effectiveLLMForTurn(ctx, prov, sessionModelKeyFor(sess, be, prov))
 		resp.Session.ContextWindow = resolveContextWindowWithRuntime(sess, cfg, msgs)
 
 		// Device + cwd 信息: 给前端 chat header 渲染"远端运行 · /home/me/proj"小字使用。
@@ -752,8 +754,10 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 		return nil, operationFailedWithCause(ctx, err)
 	}
 	// 执行侧配置（EffectiveLLMConfig v1 seam）：--model 用解析出的 ModelID，
-	// 不再读 Provider 旧单模型字段。
-	cfg, err := s.effectiveLLMForTurn(ctx, prov, backendModelKeyFor(be, prov))
+	// 不再读 Provider 旧单模型字段。modelKey 与 turn 同一口径（sessionModelKeyFor），
+	// 保证复制出去的启动命令与这条会话实际执行用的模型一致（spec 2026-08-11
+	// 「Effective configuration」：复制启动命令与执行同一解析结果）。
+	cfg, err := s.effectiveLLMForTurn(ctx, prov, sessionModelKeyFor(sess, be, prov))
 	if err != nil {
 		return nil, operationFailedWithCause(ctx, err)
 	}
@@ -766,8 +770,9 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	gatewayURL, gatewayToken := "", ""
 	if prov != nil && s.gateway != nil {
 		gatewayURL = s.gateway.URL()
-		// 按 effective provider 签：复制出去的命令要打到这条会话实际用的那家。
-		if tok, terr := s.gateway.IssueTokenFor(ctx, be, prov.ProviderKey, 0); terr == nil {
+		// 按 effective target 签：复制出去的命令要打到这条会话实际用的那家 +
+		// 模型（spec 2026-08-11 决策 9：token 路由目标 = ProviderKey+ModelKey）。
+		if tok, terr := s.gateway.IssueTokenFor(ctx, be, prov.ProviderKey, sessionModelKeyFor(sess, be, prov), 0); terr == nil {
 			gatewayToken = tok
 		}
 	}
@@ -1188,10 +1193,14 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 	// 会话 provider_key 优先于 agent 绑定解析（决策 3），与 send / Regenerate / Edit
 	// 同源：Compact 也是本地 turn 入口，#26 时代经 prepareTurnRun 的 ModelOverride 走
 	// 会话级模型覆盖，override 移除后这里必须补上同款解析，否则带 provider_key 的会话
-	// 在 compact 轮会悄悄退回 agent 绑定。所选供应商缺失/停用/不兼容 → 回退 agent 绑定
-	// 并追加一条持久 notice（决策 8，随 turnExtras 携带）。远端 backend 不走这里——
-	// 会话 provider 随 wire 透传由 daemon 自解（决策 9）。
-	prov, providerFallbackNotice := s.resolveSessionProvider(ctx, sess, be, prov)
+	// 在 compact 轮会悄悄退回 agent 绑定。provider-default 所选供应商缺失/停用/禁用/不兼容
+	// → 回退 agent 绑定并追加一条持久 notice（决策 8，随 turnExtras 携带）；fixed-model
+	// 目标失效 → 严格阻止本轮（决策 7）。远端 backend 不走这里——会话 provider 随 wire
+	// 透传由 daemon 自解（决策 9）。
+	prov, providerFallbackNotice, err := s.resolveSessionProvider(ctx, sess, be, prov)
+	if err != nil {
+		return nil, err
+	}
 	gate, err := s.acquireTurnGate(ctx, sess, be)
 	if err != nil {
 		return nil, err
@@ -1381,8 +1390,11 @@ func (s *chatSvc) goalSessionContext(ctx context.Context, sessionID int64) (*cha
 	// 的启动期比对键(effectiveModel + effectiveProviderKey,决策 4)在 goal 与 turn 之间
 	// 反复翻转 —— 一次 /goal 就把这条会话正在用的 app-server evict 掉重 spawn,而且这次
 	// goal 本身打在用户没选的那家上游。回退 notice 丢弃:goal 不写 transcript,回退提示
-	// 由真正跑轮的那条路径产出。
-	prov, _ = s.resolveSessionProvider(ctx, sess, be, prov)
+	// 由真正跑轮的那条路径产出。fixed-model 目标失效 → 严格阻止（决策 7）。
+	prov, _, err = s.resolveSessionProvider(ctx, sess, be, prov)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
 	return sess, a, be, prov, nil
 }
 
@@ -1625,7 +1637,11 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 	// 远端 backend 不走这里：会话 provider 随 wire 透传由 daemon 自解（决策 9, task 2）。
 	var providerFallbackNotice *blocks.NoticeBlock
 	if req.SessionID > 0 {
-		prov, providerFallbackNotice = s.resolveSessionProvider(ctx, sess, be, prov)
+		var err error
+		prov, providerFallbackNotice, err = s.resolveSessionProvider(ctx, sess, be, prov)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var prelocked *trylockMutex
@@ -1898,42 +1914,49 @@ func (s *chatSvc) validateNewSessionProvider(ctx context.Context, be *agent_back
 }
 
 // resolveSessionProvider 把「会话 provider_key > agent 绑定」应用到已有会话的 turn 入口
-// （send / Regenerate / Edit，决策 3）：本地后端按会话 provider_key 解析 prov，所选
-// 供应商缺失/停用/不兼容时回退 agent 绑定并返回一条持久 notice（决策 8）。远端后端不
-// 走这里——会话 provider 随 wire 透传给 daemon 自解（决策 9，prepareTurnRun 里按
-// effectiveProviderKey 取 key），本地 provider 表反映不了 daemon 配置，不得据此发 notice。
+// （send / Regenerate / Edit / Compact，决策 3）：本地后端按会话 provider_key 解析 prov，
+// provider-default 的所选供应商缺失/停用/禁用/不兼容时回退 agent 绑定并返回一条持久
+// notice（决策 8）；fixed-model 目标失效时返回 error，由调用方严格阻止本轮（决策 7，绝不
+// 回退）。远端后端不走这里——会话 provider 随 wire 透传给 daemon 自解（决策 9，
+// prepareTurnRun 里按 effectiveProviderKey 取 key），本地 provider 表反映不了 daemon 配置，
+// 不得据此发 notice。
 func (s *chatSvc) resolveSessionProvider(
 	ctx context.Context,
 	sess *chat_entity.Session,
 	be *agent_backend_entity.AgentBackend,
 	prov *llm_provider_entity.LLMProvider,
-) (*llm_provider_entity.LLMProvider, *blocks.NoticeBlock) {
-	if sess == nil || sess.ProviderKey == "" || be == nil || be.IsRemote() {
-		return prov, nil
+) (*llm_provider_entity.LLMProvider, *blocks.NoticeBlock, error) {
+	if sess == nil || strings.TrimSpace(sess.ProviderKey) == "" || be == nil || be.IsRemote() {
+		return prov, nil, nil
 	}
-	return s.sessionProviderOverride(ctx, be, sess.ProviderKey, prov)
+	return s.sessionProviderOverride(ctx, be, sess.ProviderKey, sess.ModelKey, prov)
 }
 
 // sessionProviderOverride 应用「会话 provider_key > agent 绑定」的供应商优先级
-// （spec 决策 3）。sessKey 为空时原样返回 baseProv（无会话覆盖）。
-// 会话所选供应商缺失 / 停用 / 与后端 kind 不兼容 → 回退 agent 绑定（baseProv）并返回
-// 一条持久 notice（spec 决策 8），供 runTurn 追加进 transcript；provider_key 不清除，
-// 供应商恢复后自动回到会话所选。
+// （spec 决策 3 + 2026-08-11 决策 7 的失败语义）。sessKey 为空时原样返回 baseProv（无会话
+// 覆盖）。sessModelKey 用于区分 provider-default 与 fixed-model：
+//
+//   - provider-default（sessModelKey 空）：会话所选供应商缺失 / 停用（enabled=0）/
+//     软删除 / 与后端 kind 不兼容 → 回退 agent 绑定（baseProv）并返回一条持久 notice
+//     （决策 8），provider_key 不清除，供应商恢复后自动回到会话所选。
+//   - fixed-model（sessModelKey 非空）：Provider 或 Model 缺失 / 停用 / 禁用 / 类型
+//     不兼容 → 返回 error（spec 决策 7「fixed-model 失效严格阻止下一轮」），绝不回退
+//     Agent、不改用 Provider 默认、不清除 key —— 系统保留原 target，Picker 显示失效。
 func (s *chatSvc) sessionProviderOverride(
 	ctx context.Context,
 	be *agent_backend_entity.AgentBackend,
-	sessKey string,
+	sessKey, sessModelKey string,
 	baseProv *llm_provider_entity.LLMProvider,
-) (*llm_provider_entity.LLMProvider, *blocks.NoticeBlock) {
+) (*llm_provider_entity.LLMProvider, *blocks.NoticeBlock, error) {
 	key := strings.TrimSpace(sessKey)
 	if key == "" {
-		return baseProv, nil
+		return baseProv, nil, nil
 	}
 	prov, err := llm_provider_repo.LLMProvider().FindByKey(ctx, key)
 	kind := be.Kind()
-	if err == nil && prov != nil && prov.IsActive() && kind != nil &&
+	if err == nil && prov != nil && prov.IsActive() && prov.IsEnabled() && kind != nil &&
 		kind.ProviderTypeMatch(llm_provider_entity.ProviderType(prov.Type)) {
-		return prov, nil
+		return prov, nil, nil
 	}
 	// 展示名(决策 2):实体查到了(只是停用/类型不兼容)就带上它的名字;查询失败或
 	// 实体本身不存在(供应商已删)则 providerDisplayName 返回空串,notice 保持只显示 key。
@@ -1941,10 +1964,14 @@ func (s *chatSvc) sessionProviderOverride(
 	if err == nil {
 		name = providerDisplayName(prov)
 	}
+	// fixed-model：严格阻止下一轮，绝不回退（spec 2026-08-11 决策 7 / Failure）。
+	if strings.TrimSpace(sessModelKey) != "" {
+		return nil, nil, i18n.NewError(ctx, code.LLMProviderModelTargetInvalid)
+	}
 	return baseProv, &blocks.NoticeBlock{
 		Level: "info",
 		Text:  encodeProviderFallback(key, name),
-	}
+	}, nil
 }
 
 // AgentBackendHasCapability 报告某 agent 的后端 runtime 是否声明指定能力(领域无关探针)。
@@ -2750,9 +2777,13 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 		replacement = newTranscriptReplacementLifecycle(sess.ID, anchorSeq, req.MessageID)
 		preTx = nil
 	}
-	// 会话 provider_key 优先于 agent 绑定解析（决策 3），与 send 同源；所选供应商
-	// 缺失/停用/不兼容 → 回退 agent 绑定并追加一条持久 notice（决策 8）。
-	prov, providerFallbackNotice := s.resolveSessionProvider(ctx, sess, be, prov)
+	// 会话 provider_key 优先于 agent 绑定解析（决策 3），与 send 同源；provider-default
+	// 所选供应商缺失/停用/禁用/不兼容 → 回退 agent 绑定并追加一条持久 notice（决策 8）；
+	// fixed-model 目标失效 → 严格阻止本轮（决策 7）。
+	prov, providerFallbackNotice, err := s.resolveSessionProvider(ctx, sess, be, prov)
+	if err != nil {
+		return nil, err
+	}
 	gateOwned = false
 	return s.startTurn(ctx, sess, a, be, prov, userBlocks, preTx, replacement, forkAnchor, turnExtras{
 		providerFallbackNotice: providerFallbackNotice,
@@ -2850,9 +2881,13 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 		replacement = newTranscriptReplacementLifecycle(sess.ID, anchorSeq, req.MessageID)
 		preTx = nil
 	}
-	// 会话 provider_key 优先于 agent 绑定解析（决策 3），与 send 同源；所选供应商
-	// 缺失/停用/不兼容 → 回退 agent 绑定并追加一条持久 notice（决策 8）。
-	prov, providerFallbackNotice := s.resolveSessionProvider(ctx, sess, be, prov)
+	// 会话 provider_key 优先于 agent 绑定解析（决策 3），与 send 同源；provider-default
+	// 所选供应商缺失/停用/禁用/不兼容 → 回退 agent 绑定并追加一条持久 notice（决策 8）；
+	// fixed-model 目标失效 → 严格阻止本轮（决策 7）。
+	prov, providerFallbackNotice, err := s.resolveSessionProvider(ctx, sess, be, prov)
+	if err != nil {
+		return nil, err
+	}
 	gateOwned = false
 	return s.startTurn(
 		ctx,
@@ -3913,8 +3948,11 @@ func (s *chatSvc) prepareTurnRun(
 		//
 		// 按 prov 路由而不是 be.LLMProviderKey：prov 是 turn 入口按会话 provider_key
 		// 覆盖解析出来的那家（缺失/停用已回退过），也正是本轮 `--model` 用的那家 ——
-		// 会话换了供应商，token 的上游随之改变，字符串不变（决策 3）。
-		req.GatewayURL, req.GatewayToken = s.signChatTokenFor(ctx, be, sess.ID, providerKeyOf(prov))
+		// 会话换了供应商，token 的上游随之改变，字符串不变（决策 3）。modelKey 与
+		// effectiveLLMForNonRemoteTurn 同一口径（sessionModelKeyFor）：会话固定模型时带
+		// ModelKey（fixed-model 路由到指定模型），provider-default 时为空串（Gateway
+		// 每轮解析 Provider 当前默认，决策 9）。
+		req.GatewayURL, req.GatewayToken = s.signChatTokenFor(ctx, be, sess.ID, providerKeyOf(prov), sessionModelKeyFor(sess, be, prov))
 		// 本轮有 effective provider 却拿不到网关(未注入/未运行)：LLM 本该经本机网关转发
 		// 到所选供应商,此时装不上 ANTHROPIC_* / codex model_provider,子进程会**静默**
 		// 退回 CLI 自身登录态,把这段对话打到用户没选的那家上游。与 resolveAgentBackend
@@ -4779,11 +4817,11 @@ func remoteProviderNotConfiguredError(ctx context.Context, providerKey string) e
 // session 删除时由 Delete→revokeChatToken 撤销。
 //
 // providerKey 是**本轮真正要跑的那家供应商**(turn 入口按会话 provider_key 覆盖解析后的
-// prov;回退过的话就是回退目标),token 按它路由。会话中途换了供应商时,下一轮走
-// SetTokenProvider 改既有 token 的路由目标而**不重签** —— 见上面那条不变量,重签等于
+// prov;回退过的话就是回退目标),token 按它路由。会话中途换了 target 时,下一轮走
+// SetTokenTarget 改既有 token 的路由目标而**不重签** —— 见上面那条不变量,重签等于
 // 让在跑的子进程手里那个立刻失效。空串 = CLI 自身登录态(token 只用于 hook inbox)。
 func (s *chatSvc) signChatTokenFor(
-	ctx context.Context, be *agent_backend_entity.AgentBackend, sessionID int64, providerKey string,
+	ctx context.Context, be *agent_backend_entity.AgentBackend, sessionID int64, providerKey, modelKey string,
 ) (string, string) {
 	if be == nil || s.gateway == nil {
 		return "", ""
@@ -4794,11 +4832,11 @@ func (s *chatSvc) signChatTokenFor(
 	if sessionID > 0 {
 		if v, ok := s.chatTokens.Load(sessionID); ok {
 			tok := v.(string)
-			s.routeChatTokenTo(ctx, sessionID, tok, providerKey)
+			s.routeChatTokenTo(ctx, sessionID, tok, providerKey, modelKey)
 			return s.gateway.URL(), tok
 		}
 	}
-	tok, err := s.gateway.IssueTokenFor(ctx, be, providerKey, 0)
+	tok, err := s.gateway.IssueTokenFor(ctx, be, providerKey, modelKey, 0)
 	if err != nil {
 		return "", ""
 	}
@@ -4812,12 +4850,12 @@ func (s *chatSvc) signChatTokenFor(
 	return s.gateway.URL(), tok
 }
 
-// routeChatTokenTo 把会话常驻 token 的路由目标对齐到本轮的供应商(决策 3)。
+// routeChatTokenTo 把会话常驻 token 的路由目标对齐到本轮的 ModelTarget(决策 3/9)。
 // token 字符串不变,所以已经烤进子进程 env 的那份继续可用;真的换了才记一条日志。
 // 找不到 entry = gateway 重启过(token 表只在内存里),此时子进程手里那个也已失效,
 // 记 warn 供排查,不在这里重签 —— 重签也救不回已 spawn 的子进程。
-func (s *chatSvc) routeChatTokenTo(ctx context.Context, sessionID int64, token, providerKey string) {
-	previous, ok := s.gateway.SetTokenProvider(token, providerKey)
+func (s *chatSvc) routeChatTokenTo(ctx context.Context, sessionID int64, token, providerKey, modelKey string) {
+	previous, ok := s.gateway.SetTokenTarget(token, providerKey, modelKey)
 	if !ok {
 		logger.Ctx(ctx).Warn("chat_svc.routeChatTokenTo: session token missing from gateway",
 			zap.Int64("sessionId", sessionID),

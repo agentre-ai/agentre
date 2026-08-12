@@ -100,34 +100,36 @@ func TestGateway_TokenLifecycle(t *testing.T) {
 	assert.NoError(t, g.Stop(context.Background()))
 }
 
-// TestGateway_IssueTokenForAndSetTokenProvider 钉死 Gateway 这层的会话供应商路由口
-// （决策 3）：签发按传入的 effective key、切换只改路由不换 token 字符串；gateway 没跑
-// 时 IssueTokenFor 与 IssueToken 一样软失败。
-func TestGateway_IssueTokenForAndSetTokenProvider(t *testing.T) {
+// TestGateway_IssueTokenForAndSetTokenTarget 钉死 Gateway 这层的会话 ModelTarget 路由口
+// （决策 3/9）：签发按传入的 effective ProviderKey+ModelKey、切换只改路由不换 token 字符串；
+// gateway 没跑时 IssueTokenFor 与 IssueToken 一样软失败。
+func TestGateway_IssueTokenForAndSetTokenTarget(t *testing.T) {
 	g := New("127.0.0.1", 0, newFakeLookup())
 	be := &agent_backend_entity.AgentBackend{ID: 1, LLMProviderKey: "agent-bound"}
 
-	_, err := g.IssueTokenFor(context.Background(), be, "session-picked", 0)
+	_, err := g.IssueTokenFor(context.Background(), be, "session-picked", "", 0)
 	assert.ErrorIs(t, err, ErrGatewayNotRunning)
 
 	assert.NoError(t, g.Start(context.Background()))
 	defer func() { _ = g.Stop(context.Background()) }()
 
-	tok, err := g.IssueTokenFor(context.Background(), be, "session-picked", 0)
+	tok, err := g.IssueTokenFor(context.Background(), be, "session-picked", "", 0)
 	assert.NoError(t, err)
 	entry, ok := g.tokens.Resolve(tok)
 	if assert.True(t, ok) {
 		assert.Equal(t, "session-picked", entry.Main.ProviderKey)
+		assert.Equal(t, "", entry.Main.ModelKey)
 	}
 
-	prev, ok := g.SetTokenProvider(tok, "switched")
+	prev, ok := g.SetTokenTarget(tok, "switched", "fixed-mk")
 	assert.True(t, ok)
 	assert.Equal(t, "session-picked", prev)
 	assert.Equal(t, 1, g.tokens.Size(), "切换不得多签一条 token")
 	entry, _ = g.tokens.Resolve(tok)
 	assert.Equal(t, "switched", entry.Main.ProviderKey)
+	assert.Equal(t, "fixed-mk", entry.Main.ModelKey)
 
-	_, ok = g.SetTokenProvider("never-issued", "switched")
+	_, ok = g.SetTokenTarget("never-issued", "switched", "")
 	assert.False(t, ok)
 }
 
@@ -242,7 +244,7 @@ var _ = httptest.NewRecorder
 func TestServeHookInbox(t *testing.T) {
 	g := New("127.0.0.1", 0, newFakeLookup())
 	backend := &agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-99"}
-	tok, err := g.tokens.Issue(backend, backend.LLMProviderKey, time.Minute)
+	tok, err := g.tokens.Issue(backend, backend.LLMProviderKey, "", time.Minute)
 	assert.NoError(t, err)
 
 	g.Steer().Push("abc", "qid-1", "first")

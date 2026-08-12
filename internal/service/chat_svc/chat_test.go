@@ -90,12 +90,12 @@ func (f *fakeChatGateway) IssueToken(context.Context, *agent_backend_entity.Agen
 }
 
 func (f *fakeChatGateway) IssueTokenFor(
-	ctx context.Context, be *agent_backend_entity.AgentBackend, _ string, ttl time.Duration,
+	ctx context.Context, be *agent_backend_entity.AgentBackend, _, _ string, ttl time.Duration,
 ) (string, error) {
 	return f.IssueToken(ctx, be, ttl)
 }
 
-func (f *fakeChatGateway) SetTokenProvider(_, providerKey string) (string, bool) {
+func (f *fakeChatGateway) SetTokenTarget(_, providerKey, _ string) (string, bool) {
 	return providerKey, true
 }
 
@@ -226,6 +226,41 @@ func assertLoadSessionContextWindow(
 	resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: sessionID})
 	assert.NoError(t, err)
 	assert.Equal(t, want, resp.Session.ContextWindow, message)
+}
+
+// TestLoadSession_ContextWindowUsesSessionFixedModel 钉死 spec 2026-08-11「Effective
+// configuration」：展示侧与执行侧同一解析结果 —— 会话钉了 fixed-model 时，LoadSession 的
+// 上下文窗口 / 模型目录必须按会话的 ModelKey 解析（fixed 模型），而不是 backend 绑定
+// （provider-default 会解析成默认模型的窗口）。
+func TestLoadSession_ContextWindowUsesSessionFixedModel(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := context.Background()
+
+	m.session.EXPECT().Find(ctx, int64(11)).Return(&chat_entity.Session{
+		ID: 11, AgentID: 15, ProviderKey: "key-49", ModelKey: "mk-49-fixed", Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(ctx, int64(15)).Return(&agent_entity.Agent{
+		ID: 15, AgentBackendID: 44, Status: consts.ACTIVE,
+	}, nil)
+	m.backend.EXPECT().Find(ctx, int64(44)).Return(&agent_backend_entity.AgentBackend{
+		ID: 44, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-49", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(ctx, "key-49").Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: "key-49", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-49-default", ID: 49,
+		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
+	}, nil).AnyTimes()
+	// 会话钉的 fixed 模型：窗口 88000。default 模型（120000）绝不能被解析进展示。
+	m.provider.EXPECT().FindModelByKey(ctx, "mk-49-fixed").Return(
+		&llm_provider_model_entity.LLMProviderModel{ProviderID: 49, ModelKey: "mk-49-fixed", ModelID: "claude-opus-4-1", ContextWindow: 88000, Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+		nil).AnyTimes()
+	m.provider.EXPECT().FindModelByKey(ctx, "mk-49-default").Return(
+		&llm_provider_model_entity.LLMProviderModel{ProviderID: 49, ModelKey: "mk-49-default", ModelID: "claude-sonnet-4-6", ContextWindow: 120000, Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+		nil).AnyTimes()
+	m.message.EXPECT().List(ctx, int64(11)).Return(nil, nil)
+
+	resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 11})
+	assert.NoError(t, err)
+	assert.Equal(t, 88000, resp.Session.ContextWindow, "会话 fixed-model 的展示必须用会话 ModelKey 解析，而不是 backend 默认")
 }
 
 func expectLaunchCommandBackend(

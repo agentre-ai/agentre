@@ -32,6 +32,7 @@ const (
 	LLMProviderModelReferenced                     // 模型被 Backend/Session/Route 引用，不能删除
 	LLMProviderModelConfirmRequired                // 修改被引用模型的 model_id 需要二次确认
 	LLMProviderDefaultModelInvalid                 // 供应商未配置可用的默认模型
+	LLMProviderModelTargetInvalid                  // 固定模型目标已失效（Provider/模型缺失/停用/不兼容）
 )
 
 // Agent 后端 12000~12999

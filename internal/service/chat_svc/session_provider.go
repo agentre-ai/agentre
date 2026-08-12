@@ -86,7 +86,14 @@ func (s *chatSvc) resolveEffectiveProvider(
 	if sess == nil || strings.TrimSpace(sess.ProviderKey) == "" {
 		return base, nil
 	}
-	prov, _ := s.sessionProviderOverride(ctx, be, sess.ProviderKey, base)
+	prov, _, err := s.sessionProviderOverride(ctx, be, sess.ProviderKey, sess.ModelKey, base)
+	if err != nil {
+		// 展示路径容忍 fixed-model 目标失效：strict-block 只在真正跑轮时强制（决策 7），
+		// LoadSession / 复制启动命令不能因为目标失效就整块打挂 —— 前端 Picker 的
+		// invalid 标记（目录里解析不出 target）负责呈现「目标已失效」。这里回落到 agent
+		// 绑定供头部展示，next 轮仍会被 turn 入口严格阻止。
+		return base, nil //nolint:nilerr // 展示路径故意容忍目标失效，不把 LoadSession 整块打挂
+	}
 	return prov, nil
 }
 

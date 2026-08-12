@@ -147,17 +147,17 @@ type JournalReaderPort interface {
 // 当前由 cli.* handler 使用；chat.* 走 Runner 内部直拿 *httpgateway.Gateway 没经此端口。
 // 具体实现 *httpgateway.Gateway 自然满足本接口（方法签名一致）。
 //
-// IssueTokenFor / SetTokenProvider 是会话级供应商切换用的两件（spec 决策 3/12）：
-// 按 wire 传来的 effective provider 签发、以及在**不换 token 字符串**的前提下改既有
+// IssueTokenFor / SetTokenTarget 是会话级 ModelTarget 切换用的两件（spec 决策 3/9/12）：
+// 按 wire 传来的 effective target 签发、以及在**不换 token 字符串**的前提下改既有
 // token 的路由目标 —— token 首轮就烤进 daemon 本机 spawn 的 CLI 子进程 env，重签会让
 // 它立刻 401。
 type GatewayPort interface {
 	URL() string
 	IssueToken(ctx context.Context, b *agent_backend_entity.AgentBackend, ttl time.Duration) (string, error)
 	IssueTokenFor(
-		ctx context.Context, b *agent_backend_entity.AgentBackend, providerKey string, ttl time.Duration,
+		ctx context.Context, b *agent_backend_entity.AgentBackend, providerKey, modelKey string, ttl time.Duration,
 	) (string, error)
-	SetTokenProvider(token, providerKey string) (previous string, ok bool)
+	SetTokenTarget(token, providerKey, modelKey string) (previous string, ok bool)
 	RevokeToken(token string)
 }
 

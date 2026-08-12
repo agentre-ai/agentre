@@ -1296,9 +1296,9 @@ func TestRuntime_Run_WithProvider_ReusesPermanentTokenAcrossTurns(t *testing.T) 
 	gw.EXPECT().URL().Return("http://gw").AnyTimes()
 	// ttl=0 (permanent), minted exactly once; NO RevokeToken EXPECT → gomock
 	// fails if anything revokes it (e.g. a leftover turn-end revoke).
-	gw.EXPECT().IssueTokenFor(ctx, gomock.Any(), "pk", time.Duration(0)).Return("sess-token", nil).Times(1)
+	gw.EXPECT().IssueTokenFor(ctx, gomock.Any(), "pk", "", time.Duration(0)).Return("sess-token", nil).Times(1)
 	// 后续轮只把既有 token 的路由目标对齐到同一家（没换供应商 → 原地不动）。
-	gw.EXPECT().SetTokenProvider("sess-token", "pk").Return("pk", true).Times(1)
+	gw.EXPECT().SetTokenTarget("sess-token", "pk", "").Return("pk", true).Times(1)
 
 	runOnce := func() {
 		_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 42, UserText: "hi"})
@@ -1347,9 +1347,9 @@ func TestRuntime_Run_SessionTokenFollowsEffectiveProvider(t *testing.T) {
 	lookup.EXPECT().ResolveModel(ctx, "switched-key", "").Return(handlers.EffectiveModel{ModelKey: "", ModelID: "claude-x"}, nil)
 	gw.EXPECT().URL().Return("http://gw").AnyTimes()
 	// 首轮按 effective key 签一个永久 token；换供应商后**不得**再签第二个。
-	gw.EXPECT().IssueTokenFor(ctx, gomock.Any(), "first-key", time.Duration(0)).
+	gw.EXPECT().IssueTokenFor(ctx, gomock.Any(), "first-key", "", time.Duration(0)).
 		Return("sess-token", nil).Times(1)
-	gw.EXPECT().SetTokenProvider("sess-token", "switched-key").Return("first-key", true).Times(1)
+	gw.EXPECT().SetTokenTarget("sess-token", "switched-key", "").Return("first-key", true).Times(1)
 
 	runOnce := func(providerKey string) {
 		_, err := h.Run(ctx, wire.RunParams{

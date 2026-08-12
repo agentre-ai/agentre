@@ -471,3 +471,84 @@ func TestSend_ExistingSession_MissingSessionProviderFallsBackWithNotice(t *testi
 	}
 	assert.True(t, noticeFound, "回退时 transcript 必须追加一条持久 notice,携带被回退的 provider_key")
 }
+
+// TestSend_ExistingSession_DisabledProviderDefaultsFallsBack 钉死 spec 2026-08-11
+// 决策 3/7：enabled 是独立于软删除 status 的「可运行状态」。provider-default 会话钉的
+// 供应商被**禁用**（enabled=false、status=ACTIVE）时，与 #39 同款回退语义 —— 本轮回退
+// agent 绑定并追加持久 notice（不是配置损坏，不阻止；只有「Provider 存在但默认模型非法」
+// 才阻止）。
+func TestSend_ExistingSession_DisabledProviderDefaultsFallsBack(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+	runner := &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, runner)
+	t.Cleanup(restore)
+
+	// 会话钉的 provider 存在但 enabled=false（被用户停用），status 仍是 ACTIVE。
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", ProviderKey: "disabled-provider", Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(newBuiltinAgent(7, 12), nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
+	m.provider.EXPECT().FindByKey(gomock.Any(), "disabled-provider").Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: "disabled-provider", Type: string(llm_provider_entity.TypeAnthropic),
+		Enabled: llm_provider_entity.EnabledOff, Status: consts.ACTIVE,
+	}, nil).AnyTimes()
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(3, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				msg.ID = 1000
+			} else {
+				msg.ID = 1001
+			}
+			return nil
+		}).Times(2)
+	m.dbMock.ExpectCommit()
+
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+	var persisted *chat_entity.Message
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, msg *chat_entity.Message) error {
+			msgCopy := *msg
+			persisted = &msgCopy
+			return nil
+		}).AnyTimes()
+
+	resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, Text: "hi"})
+	require.NoError(t, err, "provider-default 的停用供应商应回退 agent 绑定，不阻止本轮")
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	select {
+	case req := <-runner.requests:
+		require.NotNil(t, req.Provider)
+		assert.Equal(t, "key-21", req.Provider.ProviderKey, "停用供应商应回退 agent 绑定")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for runtime request")
+	}
+
+	require.NotNil(t, persisted, "assistant 消息应被持久化")
+	persistedBlocks, err := persisted.GetBlocks()
+	require.NoError(t, err)
+	var noticeFound bool
+	for _, b := range persistedBlocks {
+		nb, ok := b.(blocks.NoticeBlock)
+		if !ok {
+			continue
+		}
+		var payload struct {
+			ProviderKey string `json:"providerKey"`
+		}
+		if json.Unmarshal([]byte(nb.Text), &payload) == nil && payload.ProviderKey == "disabled-provider" {
+			noticeFound = true
+		}
+	}
+	assert.True(t, noticeFound, "回退时 transcript 必须追加一条持久 notice,携带被回退的 provider_key")
+}

@@ -10,6 +10,7 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
@@ -20,21 +21,23 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
-	"go.uber.org/mock/gomock"
 )
 
 // recordingGateway is a TokenIssuer that records the TTLs it was asked to issue
 // with, hands back a distinct token per call, and records revocations — enough
 // to assert the chat hook token is permanent + stable per session.
 type recordingGateway struct {
-	mu        sync.Mutex
-	issued    int
-	ttls      []time.Duration
-	revoked   []string
-	issuedFor []string          // 每次签发时传入的 provider key
-	rerouted  []string          // 每次「改路由不换 token」的调用
-	routes    map[string]string // token → 当前路由到的 provider key
-	state     string            // GatewayStatus.State；newRecordingGateway 默认 running
+	mu             sync.Mutex
+	issued         int
+	ttls           []time.Duration
+	revoked        []string
+	issuedFor      []string          // 每次签发时传入的 provider key
+	issuedModelFor []string          // 每次签发时传入的 model key
+	rerouted       []string          // 每次「改路由不换 token」的调用
+	reroutedModels []string          // 每次「改路由不换 token」传入的 model key
+	routes         map[string]string // token → 当前路由到的 provider key
+	routeModels    map[string]string // token → 当前路由到的 model key
+	state          string            // GatewayStatus.State；newRecordingGateway 默认 running
 }
 
 func (g *recordingGateway) IssueToken(_ context.Context, _ *agent_backend_entity.AgentBackend, ttl time.Duration) (string, error) {
@@ -45,18 +48,20 @@ func (g *recordingGateway) IssueToken(_ context.Context, _ *agent_backend_entity
 	return fmt.Sprintf("tok-%d", g.issued), nil
 }
 
-func (g *recordingGateway) IssueTokenFor(_ context.Context, _ *agent_backend_entity.AgentBackend, providerKey string, ttl time.Duration) (string, error) {
+func (g *recordingGateway) IssueTokenFor(_ context.Context, _ *agent_backend_entity.AgentBackend, providerKey, modelKey string, ttl time.Duration) (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.issued++
 	g.ttls = append(g.ttls, ttl)
 	g.issuedFor = append(g.issuedFor, providerKey)
+	g.issuedModelFor = append(g.issuedModelFor, modelKey)
 	tok := fmt.Sprintf("tok-%d", g.issued)
 	g.routes[tok] = providerKey
+	g.routeModels[tok] = modelKey
 	return tok, nil
 }
 
-func (g *recordingGateway) SetTokenProvider(token, providerKey string) (string, bool) {
+func (g *recordingGateway) SetTokenTarget(token, providerKey, modelKey string) (string, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	prev, ok := g.routes[token]
@@ -64,7 +69,9 @@ func (g *recordingGateway) SetTokenProvider(token, providerKey string) (string, 
 		return "", false
 	}
 	g.routes[token] = providerKey
+	g.routeModels[token] = modelKey
 	g.rerouted = append(g.rerouted, token+"→"+providerKey)
+	g.reroutedModels = append(g.reroutedModels, modelKey)
 	return prev, true
 }
 
@@ -75,8 +82,15 @@ func (g *recordingGateway) routeOf(token string) string {
 	return g.routes[token]
 }
 
+// modelRouteOf 返回该 token 当前路由的 model key（测试断言用）。
+func (g *recordingGateway) modelRouteOf(token string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.routeModels[token]
+}
+
 func newRecordingGateway() *recordingGateway {
-	return &recordingGateway{routes: map[string]string{}, state: "running"}
+	return &recordingGateway{routes: map[string]string{}, routeModels: map[string]string{}, state: "running"}
 }
 
 // newStoppedGateway 是「网关已注入但没在跑」（用户在设置里停了本机网关 / 端口占用起不来）。
@@ -145,8 +159,8 @@ func TestSignChatTokenFor_PermanentAndStablePerSession(t *testing.T) {
 	s := &chatSvc{gateway: gw}
 	be := claudeBackendFixture()
 
-	url1, tok1 := s.signChatTokenFor(context.Background(), be, 42, "")
-	_, tok2 := s.signChatTokenFor(context.Background(), be, 42, "") // next turn, same session
+	url1, tok1 := s.signChatTokenFor(context.Background(), be, 42, "", "")
+	_, tok2 := s.signChatTokenFor(context.Background(), be, 42, "", "") // next turn, same session
 
 	if url1 == "" || tok1 == "" {
 		t.Fatalf("expected signed url+token, got url=%q tok=%q", url1, tok1)
@@ -171,8 +185,8 @@ func TestSignChatTokenFor_DistinctPerSession(t *testing.T) {
 	s := &chatSvc{gateway: gw}
 	be := claudeBackendFixture()
 
-	_, a := s.signChatTokenFor(context.Background(), be, 1, "")
-	_, b := s.signChatTokenFor(context.Background(), be, 2, "")
+	_, a := s.signChatTokenFor(context.Background(), be, 1, "", "")
+	_, b := s.signChatTokenFor(context.Background(), be, 2, "", "")
 	if a == b {
 		t.Fatalf("distinct sessions must get distinct tokens: s1=%q s2=%q", a, b)
 	}
@@ -186,13 +200,13 @@ func TestRevokeChatToken_RevokesAndEvicts(t *testing.T) {
 	s := &chatSvc{gateway: gw}
 	be := claudeBackendFixture()
 
-	_, tok := s.signChatTokenFor(context.Background(), be, 42, "")
+	_, tok := s.signChatTokenFor(context.Background(), be, 42, "", "")
 	s.revokeChatToken(42)
 
 	if len(gw.revoked) != 1 || gw.revoked[0] != tok {
 		t.Fatalf("revokeChatToken must revoke session token %q; revoked=%v", tok, gw.revoked)
 	}
-	_, tok2 := s.signChatTokenFor(context.Background(), be, 42, "")
+	_, tok2 := s.signChatTokenFor(context.Background(), be, 42, "", "")
 	if tok2 == tok {
 		t.Fatalf("after revoke the re-signed token must be fresh; got same %q", tok2)
 	}
@@ -210,7 +224,7 @@ func TestSignChatTokenFor_IssuesForEffectiveProvider(t *testing.T) {
 	be := claudeBackendFixture()
 	be.LLMProviderKey = "agent-bound"
 
-	_, tok := s.signChatTokenFor(context.Background(), be, 42, "session-picked")
+	_, tok := s.signChatTokenFor(context.Background(), be, 42, "session-picked", "")
 
 	if got := gw.routeOf(tok); got != "session-picked" {
 		t.Fatalf("token must route to the effective provider; routed to %q", got)
@@ -229,8 +243,8 @@ func TestSignChatTokenFor_SwitchReroutesWithoutReissuing(t *testing.T) {
 	be := claudeBackendFixture()
 	be.LLMProviderKey = "agent-bound"
 
-	_, tok1 := s.signChatTokenFor(context.Background(), be, 42, "agent-bound")
-	_, tok2 := s.signChatTokenFor(context.Background(), be, 42, "session-picked") // 切换后的下一轮
+	_, tok1 := s.signChatTokenFor(context.Background(), be, 42, "agent-bound", "")
+	_, tok2 := s.signChatTokenFor(context.Background(), be, 42, "session-picked", "") // 切换后的下一轮
 
 	if tok1 != tok2 {
 		t.Fatalf("provider switch must NOT change the session token: before=%q after=%q", tok1, tok2)
@@ -246,8 +260,8 @@ func TestSignChatTokenFor_SwitchReroutesWithoutReissuing(t *testing.T) {
 	}
 
 	// 同一供应商的续轮照样把路由重申一遍（幂等，且 gateway 重启丢表时能立刻被
-	// SetTokenProvider 的 ok=false 探到并告警）；变的只有日志——只有真换了才记一条。
-	_, tok3 := s.signChatTokenFor(context.Background(), be, 42, "session-picked")
+	// SetTokenTarget 的 ok=false 探到并告警）；变的只有日志——只有真换了才记一条。
+	_, tok3 := s.signChatTokenFor(context.Background(), be, 42, "session-picked", "")
 	if tok3 != tok1 {
 		t.Fatalf("unchanged provider must keep the same token; got %q", tok3)
 	}
@@ -259,6 +273,34 @@ func TestSignChatTokenFor_SwitchReroutesWithoutReissuing(t *testing.T) {
 	}
 	if got := gw.routeOf(tok3); got != "session-picked" {
 		t.Fatalf("route must stay on the switched provider; routed to %q", got)
+	}
+}
+
+// TestSignChatTokenFor_IssuesForFixedModel 钉死 spec 2026-08-11 决策 9：会话固定模型时，
+// 常驻 token 的 Main 路由目标必须携带 ModelKey（fixed-model 路由到指定模型），而不是只带
+// providerKey 让 Gateway 把请求改写回 Provider 默认模型。
+func TestSignChatTokenFor_IssuesForFixedModel(t *testing.T) {
+	gw := newRecordingGateway()
+	s := &chatSvc{gateway: gw}
+	be := claudeBackendFixture()
+	be.LLMProviderKey = "agent-bound"
+
+	_, tok := s.signChatTokenFor(context.Background(), be, 42, "session-picked", "mk-fixed")
+
+	if got := gw.routeOf(tok); got != "session-picked" {
+		t.Fatalf("token must route to the effective provider; routed to %q", got)
+	}
+	if got := gw.modelRouteOf(tok); got != "mk-fixed" {
+		t.Fatalf("token Main target must carry the fixed ModelKey; got %q", got)
+	}
+
+	// 下一轮切到 provider-default：token 字符串不变，ModelKey 被清空（Gateway 每轮解析当前默认）。
+	_, tok2 := s.signChatTokenFor(context.Background(), be, 42, "session-picked", "")
+	if tok2 != tok {
+		t.Fatalf("target switch must NOT change the session token")
+	}
+	if got := gw.modelRouteOf(tok2); got != "" {
+		t.Fatalf("provider-default must reset Main.ModelKey to empty; got %q", got)
 	}
 }
 

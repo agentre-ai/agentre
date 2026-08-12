@@ -356,7 +356,7 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		// 没用上的也只是随 daemon 退出释放(有界)。
 		// 按解析出来的 provider 路由,而不是 be.LLMProviderKey:桌面端中途换了供应商时,
 		// 下一轮 wire 带的是新的 effective key,这条常驻 token 的上游要跟着变(决策 3/12)。
-		gatewayURL, gatewayToken, terr = h.ensureSessionToken(ctx, em.rid, &be, provider.ProviderKey)
+		gatewayURL, gatewayToken, terr = h.ensureSessionToken(ctx, em.rid, &be, provider.ProviderKey, effective.ModelKey)
 		if terr != nil {
 			return wire.RunAck{}, terr
 		}
@@ -1507,7 +1507,7 @@ func (h *RuntimeHandlers) resolveEffectiveModel(
 // 首轮按它签发,之后每轮把既有 token 的路由目标对齐到它 —— 桌面端换供应商后,同一个
 // token 字符串继续有效,只是上游变了(决策 3/12)。
 func (h *RuntimeHandlers) ensureSessionToken(
-	ctx context.Context, sid int64, be *agent_backend_entity.AgentBackend, providerKey string,
+	ctx context.Context, sid int64, be *agent_backend_entity.AgentBackend, providerKey, modelKey string,
 ) (string, string, error) {
 	if h.deps.Gateway == nil {
 		return "", "", nil
@@ -1519,11 +1519,11 @@ func (h *RuntimeHandlers) ensureSessionToken(
 	if sid > 0 {
 		if v, ok := h.sessionTokens.Load(sid); ok {
 			tok := v.(string)
-			h.routeSessionToken(ctx, sid, tok, providerKey)
+			h.routeSessionToken(ctx, sid, tok, providerKey, modelKey)
 			return url, tok, nil
 		}
 	}
-	tok, err := h.deps.Gateway.IssueTokenFor(ctx, be, providerKey, 0)
+	tok, err := h.deps.Gateway.IssueTokenFor(ctx, be, providerKey, modelKey, 0)
 	if err != nil {
 		return "", "", fmt.Errorf("gateway token: %w", err)
 	}
@@ -1537,11 +1537,11 @@ func (h *RuntimeHandlers) ensureSessionToken(
 	return url, tok, nil
 }
 
-// routeSessionToken 把会话常驻 token 的路由目标对齐到本轮的供应商;token 字符串不变,
-// 已烤进子进程 env 的那份继续可用。真的换了才记一条日志;找不到 entry = gateway 重启过
+// routeSessionToken 把会话常驻 token 的路由目标对齐到本轮的 ModelTarget;token 字符串
+// 不变,已烤进子进程 env 的那份继续可用。真的换了才记一条日志;找不到 entry = gateway 重启过
 // (token 表只在内存里),子进程手里那个也已失效,记 warn 供排查。
-func (h *RuntimeHandlers) routeSessionToken(ctx context.Context, sid int64, token, providerKey string) {
-	previous, ok := h.deps.Gateway.SetTokenProvider(token, providerKey)
+func (h *RuntimeHandlers) routeSessionToken(ctx context.Context, sid int64, token, providerKey, modelKey string) {
+	previous, ok := h.deps.Gateway.SetTokenTarget(token, providerKey, modelKey)
 	if !ok {
 		logger.Ctx(ctx).Warn("handlers.routeSessionToken: session token missing from gateway",
 			zap.Int64("sessionId", sid),

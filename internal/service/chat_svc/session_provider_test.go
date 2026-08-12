@@ -348,7 +348,7 @@ func TestLoadSession_DisplaysEffectiveProvider(t *testing.T) {
 		Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-session-key", Status: consts.ACTIVE,
 	}, nil).AnyTimes()
 	m.provider.EXPECT().FindModelByKey(ctx, "mk-session-key").Return(
-		&llm_provider_model_entity.LLMProviderModel{ModelKey: "mk-session-key", ModelID: "claude-sonnet-4-6", ContextWindow: 222_000, Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+		&llm_provider_model_entity.LLMProviderModel{ProviderID: 34, ModelKey: "mk-session-key", ModelID: "claude-sonnet-4-6", ContextWindow: 222_000, Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
 		nil).AnyTimes()
 	m.message.EXPECT().List(ctx, int64(100)).Return(nil, nil)
 

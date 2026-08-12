@@ -1556,6 +1556,20 @@
       "testTitle": "测试调用（发送 hi）",
       "testing": "测试中"
     },
+    "defaultSet": {
+      "title": "将默认模型设为 {{model}} · {{provider}}",
+      "description": "Provider 默认模型改动从下一轮开始生效，所有使用 provider-default 的引用将动态跟随。",
+      "checking": "正在检查引用影响…",
+      "confirmHint": "确定将「{{model}}」设为「{{provider}}」的默认模型吗？",
+      "impactTitle": "动态影响",
+      "impactDetail": "此改动会动态影响 {{refs}}，它们将在下一轮解析新的默认模型。",
+      "refBackends": "个 Backend",
+      "refSessions": "个会话",
+      "refRoutes": "个路由",
+      "noRefs": "没有已保存的引用",
+      "dynamicHint": "保存不会改写这些引用，也不会向历史会话追加 notice；当前回合继续使用旧模型，下一轮起重新解析默认模型。",
+      "confirmButton": "设为默认"
+    },
     "empty": {
       "addFirst": "新增第一个供应商",
       "apiKeyHelp": "如何获取 API Key",

@@ -26,6 +26,7 @@ var enUS = map[int]string{
 	LLMProviderModelReferenced:      "This model is referenced by backends / sessions / routes and cannot be deleted",
 	LLMProviderModelConfirmRequired: "This model is referenced; changing its Model ID requires explicit confirmation",
 	LLMProviderDefaultModelInvalid:  "This provider has no valid enabled default model",
+	LLMProviderModelTargetInvalid:   "Fixed model target is invalid (provider/model missing, disabled, or incompatible); fix the config or pick another target",
 
 	AgentBackendNotFound:            "Agent backend not found",
 	AgentBackendNameDuplicated:      "Agent backend name already exists",

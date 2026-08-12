@@ -18,7 +18,6 @@ import {
   CreateLLMProvider,
   ListLLMModels,
   ListLLMProviders,
-  SetLLMModelDefault,
   SetLLMModelEnabled,
   SetLLMProviderEnabled,
   TestLLMProvider,
@@ -31,6 +30,10 @@ import {
   type DeleteTarget,
   DeleteDialog,
 } from "./llm-provider-models/delete-dialog";
+import {
+  type DefaultModelTarget,
+  DefaultModelDialog,
+} from "./llm-provider-models/default-model-dialog";
 import { AddModelDialog } from "./llm-provider-models/add-model-dialog";
 import { DiscoverDialog } from "./llm-provider-models/discover-dialog";
 import { ModelEditDialog } from "./llm-provider-models/model-edit-dialog";
@@ -76,6 +79,8 @@ export function LlmProvidersPanel({
   const [deleteTarget, setDeleteTarget] = React.useState<DeleteTarget | null>(
     null,
   );
+  const [setDefaultTarget, setSetDefaultTarget] =
+    React.useState<DefaultModelTarget | null>(null);
   const [testingDefault, setTestingDefault] = React.useState(false);
   const [testingModelId, setTestingModelId] = React.useState<number | null>(
     null,
@@ -262,29 +267,28 @@ export function LlmProvidersPanel({
     [t],
   );
 
+  // 修改 Provider 默认模型前先展示动态影响（Backend / Session / Route 数量）并二次确认
+  // （spec 2026-08-11「Provider management」：保存不改写引用、不批量插入会话 notice，
+  // 默认变化自下一轮被 provider-default 动态跟随）。
   const handleSetDefault = React.useCallback(
-    async (model: Model) => {
-      try {
-        await SetLLMModelDefault(
-          new llm_provider_svc.SetModelDefaultRequest({
-            providerId: model.providerId,
-            modelKey: model.modelKey,
-          }),
-        );
-        setFlash({
-          kind: "ok",
-          text: t("llmProviders.flash.defaultSet", {
-            model: model.modelId,
-          }),
-        });
-        await refreshProviders();
-        await refreshModels();
-      } catch (err) {
-        setFlash({ kind: "err", text: errMessage(err) });
-      }
+    (model: Model) => {
+      const provider = providers.find((p) => p.id === model.providerId) ?? null;
+      if (!provider) return;
+      setSetDefaultTarget({ provider, model });
     },
-    [refreshModels, refreshProviders, t],
+    [providers],
   );
+
+  const handleDefaultSaved = React.useCallback(async () => {
+    setFlash({
+      kind: "ok",
+      text: t("llmProviders.flash.defaultSet", {
+        model: setDefaultTarget?.model.modelId ?? "",
+      }),
+    });
+    await refreshProviders();
+    await refreshModels();
+  }, [refreshModels, refreshProviders, setDefaultTarget?.model.modelId, t]);
 
   const handleToggleModelEnabled = React.useCallback(
     async (model: Model) => {
@@ -552,6 +556,11 @@ export function LlmProvidersPanel({
         target={deleteTarget}
         onClose={() => setDeleteTarget(null)}
         onDeleted={handleDeleted}
+      />
+      <DefaultModelDialog
+        target={setDefaultTarget}
+        onClose={() => setSetDefaultTarget(null)}
+        onSaved={() => void handleDefaultSaved()}
       />
     </div>
   );

@@ -144,7 +144,7 @@ func newRecordingUpstream(t *testing.T, response string) (*httptest.Server, *rec
 // issueAndRequest 帮测试发一条带 token 的请求到 forwarder handler。
 func issueAndRequest(t *testing.T, h http.HandlerFunc, tokens *TokenRegistry, b *agent_backend_entity.AgentBackend, path string, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	tok, err := tokens.Issue(b, b.LLMProviderKey, time.Minute)
+	tok, err := tokens.Issue(b, b.LLMProviderKey, "", time.Minute)
 	assert.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
@@ -191,7 +191,7 @@ func TestForwarder_ProviderDefaultFollowsCurrentDefault(t *testing.T) {
 	tokens := NewTokenRegistry()
 	f := NewForwarder(tokens, lookup)
 	be := &agent_backend_entity.AgentBackend{ID: 5, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-1"}
-	tok, err := tokens.Issue(be, "key-1", 0)
+	tok, err := tokens.Issue(be, "key-1", "", 0)
 	assert.NoError(t, err)
 
 	send := func() map[string]any {
@@ -210,6 +210,35 @@ func TestForwarder_ProviderDefaultFollowsCurrentDefault(t *testing.T) {
 	// 管理员把默认模型切到 mk-b：provider-default 下一轮必须动态跟随，不用重签 token。
 	provider.DefaultModelKey = "mk-b"
 	assert.Equal(t, "claude-sonnet-4-7", send()["model"], "默认切换后同一 token 必须解析到新默认")
+}
+
+// TestForwarder_FixedModelRoutesToSpecifiedModel 钉死 spec 决策 9：token 的可变路由目标
+// 是 ProviderKey+ModelKey —— 主目标带具体 ModelKey（fixed-model）时，请求必须改写为
+// 指定 Model 的 ModelID，而不是 Provider 当前默认模型。
+func TestForwarder_FixedModelRoutesToSpecifiedModel(t *testing.T) {
+	upstream, rec := newRecordingUpstream(t, `{"ok":"x"}`)
+	provider := newAnthropicProvider("key-1", upstream.URL)
+	provider.DefaultModelKey = "mk-a"
+	lookup := newFakeLookup(provider)
+	lookup.withModel(newModel("mk-a", "claude-sonnet-4-6"))
+	lookup.withModel(newModel("mk-b", "claude-sonnet-4-7"))
+
+	tokens := NewTokenRegistry()
+	f := NewForwarder(tokens, lookup)
+	be := &agent_backend_entity.AgentBackend{ID: 5, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-1"}
+	// 主目标 = fixed-model（providerKey + modelKey），与 provider 默认模型（mk-a）不同。
+	tok, err := tokens.Issue(be, "key-1", "mk-b", 0)
+	assert.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"opus"}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec2 := httptest.NewRecorder()
+	f.AnthropicHandler()(rec2, req)
+	assert.Equal(t, http.StatusOK, rec2.Code)
+
+	var body map[string]any
+	assert.NoError(t, json.Unmarshal(rec.Body, &body))
+	assert.Equal(t, "claude-sonnet-4-7", body["model"], "fixed-model 必须路由到指定 ModelID，而不是默认模型")
 }
 
 func TestForwarder_AliasRoutingPicksTierProvider(t *testing.T) {
@@ -307,7 +336,7 @@ func TestForwarder_SwitchedProviderRoutesSameTokenToNewUpstream(t *testing.T) {
 	be := &agent_backend_entity.AgentBackend{
 		ID: 5, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-old",
 	}
-	tok, err := tokens.Issue(be, "key-old", 0)
+	tok, err := tokens.Issue(be, "key-old", "", 0)
 	assert.NoError(t, err)
 
 	send := func() *httptest.ResponseRecorder {
@@ -322,7 +351,7 @@ func TestForwarder_SwitchedProviderRoutesSameTokenToNewUpstream(t *testing.T) {
 	assert.Equal(t, http.StatusOK, send().Code)
 	assert.Equal(t, "/v1/messages", oldRec.Path)
 
-	prev, ok := tokens.SetProviderKey(tok, "key-new")
+	prev, ok := tokens.SetTokenTarget(tok, "key-new", "")
 	assert.True(t, ok)
 	assert.Equal(t, "key-old", prev)
 
@@ -344,9 +373,9 @@ func TestForwarder_SwitchedToMissingProviderKeeps502(t *testing.T) {
 
 	tok, err := tokens.Issue(
 		&agent_backend_entity.AgentBackend{ID: 5, Type: string(agent_backend_entity.TypeClaudeCode)},
-		"key-old", 0)
+		"key-old", "", 0)
 	assert.NoError(t, err)
-	_, ok := tokens.SetProviderKey(tok, "key-gone")
+	_, ok := tokens.SetTokenTarget(tok, "key-gone", "")
 	assert.True(t, ok)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"x"}`))
@@ -390,7 +419,7 @@ func TestForwarder_ProviderDefaultMissingModelKeeps502(t *testing.T) {
 
 	tok, err := tokens.Issue(
 		&agent_backend_entity.AgentBackend{ID: 5, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-1"},
-		"key-1", 0)
+		"key-1", "", 0)
 	assert.NoError(t, err)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"opus"}`))
 	req.Header.Set("Authorization", "Bearer "+tok)

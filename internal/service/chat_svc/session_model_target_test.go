@@ -185,21 +185,26 @@ func TestSend_ExistingSession_InheritAgentNoBackendModelUsesProviderDefault(t *t
 	assert.Equal(t, "model-key-21", req.Effective.ModelID)
 }
 
-// TestSend_ExistingSession_SessionModelIgnoredWhenSessionProviderFallsBack：会话钉的
-// provider 缺失/停用（回退 agent 绑定）时，会话的 ModelKey 属于那家已经不存在的供应商，
-// **不得**拿去解析 —— 下一轮按回退后的 agent 绑定解析（spec 决策 7：不静默降级，回退是
-// provider-default 语义，fixed-model 严格阻止）。
-func TestSend_ExistingSession_SessionModelIgnoredWhenSessionProviderFallsBack(t *testing.T) {
+// TestSend_ExistingSession_FixedModelStrictlyBlocksWhenSessionProviderGone 钉死 spec
+// 2026-08-11 决策 7：会话钉 fixed-model（ProviderKey + ModelKey 都非空）后，其 Provider
+// 缺失 / 停用 / 不兼容时**严格阻止**下一轮 —— 绝不回退 Agent 绑定、不改用 Provider 默认、
+// 不清除 key（系统保留原 target，Picker 显示失效）。
+func TestSend_ExistingSession_FixedModelStrictlyBlocksWhenSessionProviderGone(t *testing.T) {
 	m := setupChatTest(t)
-	// 会话所选 provider 缺失（FindByKey → nil），回退 agent 绑定 key-21。
+	// 会话所选 provider 缺失（FindByKey → nil），且会话钉的是 fixed-model（ModelKey 非空）
+	// → 下一轮被阻止，而不是回退 agent 绑定。
 	m.provider.EXPECT().FindByKey(gomock.Any(), "gone-provider").Return(nil, nil).AnyTimes()
 	expectResolvableProvider(m, "key-21", string(llm_provider_entity.TypeAnthropic))
 	sess := &chat_entity.Session{ID: 100, AgentID: 7, AgentStatus: "idle",
 		ProviderKey: "gone-provider", ModelKey: "mk-fixed", Status: consts.ACTIVE}
 
-	req := runSendAndCapture(t, m, sess, agent_backend_entity.TypeBuiltin, "key-21")
-	require.NotNil(t, req.Effective)
-	assert.Equal(t, "key-21", req.Effective.ProviderKey)
-	assert.NotEqual(t, "mk-fixed", req.Effective.ModelKey, "回退后的解析不得带上失效供应商的 ModelKey")
-	assert.Equal(t, "model-key-21", req.Effective.ModelID)
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(newBuiltinAgent(7, 12), nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
+
+	_, err := m.svc.Send(m.ctx, &chat_svc.SendRequest{SessionID: 100, Text: "hi"})
+	require.Error(t, err, "fixed-model 的 Provider 缺失必须严格阻止下一轮，不静默回退")
 }

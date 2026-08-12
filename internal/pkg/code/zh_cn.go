@@ -26,6 +26,7 @@ var zhCN = map[int]string{
 	LLMProviderModelReferenced:      "该模型正被 Backend / 会话 / 路由引用，不能删除",
 	LLMProviderModelConfirmRequired: "该模型已被引用，修改 Model ID 需要二次确认",
 	LLMProviderDefaultModelInvalid:  "该供应商未配置可用的默认模型",
+	LLMProviderModelTargetInvalid:   "固定模型目标已失效（Provider/模型缺失、停用或类型不兼容），请修复配置或改选其它目标",
 
 	AgentBackendNotFound:            "Agent 后端不存在",
 	AgentBackendNameDuplicated:      "Agent 后端名称已存在",
