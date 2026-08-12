@@ -11,6 +11,7 @@ import {
   isLastRowOfMessage,
   ROW_END_PADDING_DELTA,
   ROW_MID_PADDING_DELTA,
+  summarizeActivity,
   type TranscriptRow,
   type TranscriptRowItem,
   type VisibleActivityItem,
@@ -1414,6 +1415,28 @@ describe("活动块聚合", () => {
     ]);
     expect(summary.truncated).toBe(false);
     expect(summary.failures).toBe(2);
+  });
+
+  // 组头失败计数与活动行的红色标记必须是同一判据。活动行把「本轮已经失败终结、
+  // 这一步却始终没配到 tool_result」也算失败(facts.ts 的 stepFacts),组头漏算就
+  // 会出现「展开是三行红的、折叠说一个失败都没有」—— 折叠是收起,不是让发生过
+  // 的事消失。
+  it("本轮已失败终结时,没配到结果的一步也计进组头失败数", () => {
+    const items = buildRenderItems({
+      messageId: 1,
+      blocks: [
+        readUse("toolu-1"),
+        toolResult("toolu-1", "ok"),
+        toolUse("toolu-2"),
+        toolUse("toolu-3"),
+      ],
+    });
+    const { steps } = activityAt(items, 0);
+
+    // 转录里的一轮永远按「运行中」处理 —— 没有结果不等于失败,计数不变。
+    expect(summarizeActivity(steps).failures).toBe(0);
+    // 调用方(子代理那层)声明这一轮以失败终结时,那两步归属失败。
+    expect(summarizeActivity(steps, true).failures).toBe(2);
   });
 
   it("同一文件改两次算一个文件,增删行累加", () => {

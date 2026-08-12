@@ -343,6 +343,32 @@ describe("ActivityBlock 活动行(展开态)", () => {
     expect(screen.queryByText("boom")).toBeNull();
   });
 
+  // 行尾预览是折叠态就在 DOM 里的那段文字。结果原文没有大小上限(单行 JSON /
+  // base64 / 压缩过的一行输出动辄几 MB),整段塞进一个 whitespace-nowrap 的行尾
+  // 就等于让浏览器为一个折叠着的行去量一条几 MB 宽的行盒 —— 正是「折叠态不 mount
+  // 结果文本」要挡掉的开销。
+  it("Given 一步的结果是超长单行, Then 行尾预览有上限,整段结果不进折叠行的 DOM", () => {
+    const huge = `head ${"x".repeat(50_000)} tail`;
+    renderBlock({
+      steps: [
+        readStep,
+        toolStep(
+          "message:1:tool:tool:huge",
+          { toolInput: { command: "jq -c . big.json" }, toolName: "Bash" },
+          { text: huge },
+        ),
+      ],
+    });
+    fireEvent.click(screen.getByTestId("activity-header"));
+
+    const row = screen.getAllByTestId("activity-row")[1];
+    expect(row.textContent ?? "").not.toContain(huge);
+    expect((row.textContent ?? "").length).toBeLessThan(400);
+    // 截断的是预览,不是结果:点开仍然拿得到完整原文。
+    fireEvent.click(row);
+    expect(screen.getByTestId("activity-row-body").textContent).toContain(huge);
+  });
+
   it("Given 一步思考, When 点开, Then 展开体是思考正文", () => {
     renderBlock({
       steps: [thinkingStep("k-think", "check the store"), readStep],

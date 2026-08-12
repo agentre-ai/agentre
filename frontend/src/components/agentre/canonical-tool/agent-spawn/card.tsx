@@ -287,14 +287,18 @@ function AgentSpawnSteps({
     type: "tool",
     uiStateKey: `${keyPrefix}:step:${step.tool.toolUseId || index}`,
   }));
+  const pendingOutcome = unmatchedOutcome(runStatus);
   return (
     <ActivityBlock
       steps={activitySteps}
-      summary={summarizeActivity(activitySteps)}
+      // 组头失败计数与活动行走同一个 pendingOutcome:run 以失败终结时,没配到
+      // 结果的那些步在行里是红的,组头也必须把它们算进去 —— 21 步以上默认折叠,
+      // 组头漏算就等于宣称「一个失败都没有」。
+      summary={summarizeActivity(activitySteps, pendingOutcome === "failed")}
       uiStateKey={`${keyPrefix}:activity`}
       cwd={cwd}
       defaultExpanded={activitySteps.length <= STEPS_DEFAULT_EXPANDED_MAX}
-      pendingOutcome={unmatchedOutcome(runStatus)}
+      pendingOutcome={pendingOutcome}
     />
   );
 }

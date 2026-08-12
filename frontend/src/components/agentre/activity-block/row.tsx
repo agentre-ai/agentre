@@ -80,9 +80,19 @@ export function ActivityRow({
   );
 
   const weight = stepWeight(step);
-  const facts = stepFacts(step, pendingOutcome);
   const isThinking = step.type === "thinking";
   const toolBlock = isThinking ? undefined : step.toolBlock;
+  const resultBlock = isThinking ? undefined : step.resultBlock;
+  const thinkingText = isThinking ? (step.block.text ?? "") : "";
+  // stepFacts 会把整段结果 JSON.parse + trim 一遍。行模型每次重建都产出新的 step
+  // 对象(流式里每个 chunk 一次),而运行中的活动块是自动展开的 —— 不 memo 的话
+  // 每来一个 chunk 就要重解析组内每一步的完整结果文本。依赖取真正的输入(block
+  // 对象引用稳定,只有内容真的换了才会变),与 raw/card.tsx 对同一份解析的做法一致。
+  const facts = React.useMemo(
+    () => stepFacts(step, pendingOutcome),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- step 每次重建都是新对象,按内容取依赖才能真正命中
+    [toolBlock, resultBlock, thinkingText, pendingOutcome],
+  );
   const input = toolBlock?.toolInput as Record<string, unknown> | undefined;
   // RawToolCard 的同一条规矩:input 里有 command 就是 shell 形态,标签用 Bash,
   // 不认工具名(codex 的 command_execution 与 claudecode 的 Bash 同形)。
@@ -93,7 +103,7 @@ export function ActivityRow({
       ? "Bash"
       : displayName(toolBlock?.toolName ?? "tool");
   const summary = isThinking
-    ? t("activity.row.thinkingMeta", { count: (step.block.text ?? "").length })
+    ? t("activity.row.thinkingMeta", { count: thinkingText.length })
     : summarizeRawTool(toolBlock?.toolName ?? "", input, { cwd });
   const Icon = facts.failed
     ? TriangleAlert

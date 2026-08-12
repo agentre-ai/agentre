@@ -473,9 +473,25 @@ function makeActivityItem(
   };
 }
 
+// isFailedStep —— 「这一步失败了没有」的唯一判据,组头失败计数与活动行的红色标记
+// 共用它。有结果就看结果;没有结果的一步只有在调用方声明「这一轮已经以失败终结」
+// (unresolvedFailed)时才算失败 —— 转录里的一轮默认还在跑,没结果 ≠ 失败。
+// 两处各写一遍必然漂移:组头会宣称零失败,而展开后是几行红的。
+export function isFailedStep(
+  step: ActivityStep,
+  unresolvedFailed = false,
+): boolean {
+  if (step.type === "thinking") return false;
+  return step.resultBlock ? !!step.resultBlock.isError : unresolvedFailed;
+}
+
 // summarizeActivity 汇总组头:类目计数按固定顺序输出并截断,写操作额外报出对象
 // 规模(改到几个文件 / 增删多少行),失败计数单列且不参与截断。
-export function summarizeActivity(steps: ActivityStep[]): ActivitySummary {
+// unresolvedFailed 透传给 isFailedStep —— 见那里的注释。
+export function summarizeActivity(
+  steps: ActivityStep[],
+  unresolvedFailed = false,
+): ActivitySummary {
   const counts = new Map<ActivityCategory, number>();
   const editedPaths = new Set<string>();
   let plus = 0;
@@ -496,7 +512,7 @@ export function summarizeActivity(steps: ActivityStep[]): ActivitySummary {
       plus += patch.plus ?? 0;
       minus += patch.minus ?? 0;
     }
-    if (step.resultBlock?.isError) failures++;
+    if (isFailedStep(step, unresolvedFailed)) failures++;
   }
 
   const all: ActivitySummaryPart[] = ACTIVITY_CATEGORY_ORDER.filter((c) =>

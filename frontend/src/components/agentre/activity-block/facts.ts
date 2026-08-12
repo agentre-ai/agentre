@@ -9,7 +9,7 @@ import type { ChatBlockData } from "@/stores/chat-streams-store";
 
 import { tier } from "../canonical-tool/tier";
 import type { CanonicalDTO } from "../canonical-tool/types";
-import type { ActivityStep } from "../transcript-rows";
+import { isFailedStep, type ActivityStep } from "../transcript-rows";
 
 /** 三档视觉权重:读最轻、中性居中、写最重。出组档不会进活动块,兜底按中性处理。 */
 export type ActivityWeight = "neutral" | "read" | "write";
@@ -58,11 +58,18 @@ export type StepFacts = {
   minus?: number;
   /** 展开体要渲染的结果正文(命令结果取 output,其余取原文)。 */
   resultText: string;
-  /** 单行结果的预览(多行结果改报规模)。 */
+  /** 单行结果的预览,长度封顶 PREVIEW_MAX_CHARS(多行结果改报规模)。 */
   preview?: string;
   /** 多行结果的行数 —— 折叠态报规模而不是把整段结果塞进行里。 */
   lines?: number;
 };
+
+// 行尾预览的长度上限。预览是**折叠态就在 DOM 里**的那段文字,而结果原文没有大小
+// 上限(单行 JSON / base64 / 压缩过的一行输出动辄几 MB)。整段塞进一个
+// whitespace-nowrap 的行尾,浏览器就得为一个折叠着的行去量一条几 MB 宽的行盒 ——
+// 正是「折叠态不 mount 结果文本」要挡掉的开销。行尾可见区只有 max-w-56,这个上限
+// 远超它能显示的字数;真正的省略号由 CSS truncate 画,完整原文点开就在展开体里。
+const PREVIEW_MAX_CHARS = 200;
 
 export function stepFacts(
   step: ActivityStep,
@@ -84,7 +91,8 @@ export function stepFacts(
         ? command.exitCode
         : undefined,
     // run 以失败终结、这一步又没有结果 —— 按失败行呈现(旧 step 卡同一判据)。
-    failed: !!result?.isError || pending === "failed",
+    // 判据本身在 transcript-rows 的 isFailedStep,组头失败计数用的是同一个。
+    failed: isFailedStep(step, pendingOutcome === "failed"),
     pending,
     resultText,
   };
@@ -100,10 +108,20 @@ export function stepFacts(
   }
   const trimmed = resultText.trim();
   if (!trimmed) return facts;
-  const lineCount = trimmed.split("\n").length;
+  const lineCount = countLines(trimmed);
   if (lineCount > 1) facts.lines = lineCount;
-  else facts.preview = trimmed;
+  else facts.preview = trimmed.slice(0, PREVIEW_MAX_CHARS);
   return facts;
+}
+
+// countLines 数行不切片:split("\n") 会给一段 5 万行的结果实例化 5 万个子串,
+// 而这里只要一个数字。
+function countLines(text: string): number {
+  let lines = 1;
+  for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) {
+    lines++;
+  }
+  return lines;
 }
 
 // backgroundFacts 与 raw/card.tsx 的 bgRunning 同源:run_in_background 的命令

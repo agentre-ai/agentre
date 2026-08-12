@@ -1442,6 +1442,43 @@ describe("AgentSpawnCard steps region as an activity block", () => {
     ).toHaveLength(2);
   });
 
+  // 组头是折叠态唯一的信息出口。一个已经失败终结的 run 里,没配到 tool_result 的
+  // 步骤在展开态是红色失败行(pendingOutcome=failed),组头必须报出同样的数量 ——
+  // 否则 21 步以上默认折叠的那一组会宣称「一个失败都没有」。
+  it("Given a failed run whose steps never got a result, When the step group stays collapsed, Then its header still reports them as failures", () => {
+    const { container } = render(
+      <AgentSpawnCard
+        toolBlock={singleSpawn("failed")}
+        childBlocks={groupedChildren(
+          Array.from({ length: 21 }, (_, i) => ({
+            runId: "run-one",
+            toolName: "Read",
+            toolUseId: `call-${i}`,
+            toolInput: { path: `./f${i}.ts` },
+            // 最后两步没有 result —— run 已经失败终结,它们永远等不到了。
+            ...(i < 19 ? { result: "content" } : {}),
+          })),
+        )}
+      />,
+    );
+
+    const details = expandCard(container);
+    const header = within(details).getByTestId("activity-header");
+    expect(header).toHaveTextContent("21 steps");
+    expect(within(details).queryAllByTestId("activity-row")).toHaveLength(0);
+    expect(within(details).getByTestId("activity-failures")).toHaveTextContent(
+      "2 failed",
+    );
+
+    // 展开后确实是那两行红的 —— 组头与行是同一判据。
+    fireEvent.click(header);
+    expect(
+      within(details)
+        .getAllByTestId("activity-row")
+        .filter((row) => row.getAttribute("data-failed") === "true"),
+    ).toHaveLength(2);
+  });
+
   it("Given the new header copy, Then both locales carry it", () => {
     expect(enCommon.canonical.agentSpawn.outcome.steps_one).toBeTruthy();
     expect(enCommon.canonical.agentSpawn.outcome.steps_other).toBeTruthy();
