@@ -31,7 +31,9 @@ type serviceCommandDeps struct {
 func newServiceCmd() *cobra.Command {
 	return newServiceCmdWithDeps(serviceCommandDeps{
 		managerFactory: newPlatformServiceManager,
-		localStatus:    loadLocalDaemonStatus,
+		localStatus: func(ctx context.Context) (map[string]any, error) {
+			return loadLocalDaemonStatus(ctx, localClient())
+		},
 	})
 }
 
@@ -228,16 +230,19 @@ func daemonStatusPID(status map[string]any) string {
 	return fmt.Sprint(status["pid"])
 }
 
-func loadLocalDaemonStatus(ctx context.Context) (map[string]any, error) {
+func loadLocalDaemonStatus(ctx context.Context, client *http.Client) (map[string]any, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://daemon/local/status", nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := localClient().Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("local daemon status request failed: %s", resp.Status)
+	}
 	var status map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
 		return nil, err

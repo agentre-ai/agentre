@@ -7,6 +7,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -429,6 +431,20 @@ func TestGivenRunningServiceWhenStatusIsRequestedThenStableHeaderPrecedesLocalDa
 	assert.Equal(t, "Daemon running", strings.Split(strings.TrimSpace(out.String()), "\n")[0])
 	assert.Contains(t, out.String(), "PID: 42")
 	assert.Contains(t, out.String(), "Version: v1.2.3 (abcdef1)")
+}
+
+func TestGivenLocalStatusEndpointRejectsTheRequestWhenLoadingThenReadinessReturnsTheHTTPFailure(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Status:     "503 Service Unavailable",
+			Body:       io.NopCloser(strings.NewReader(`{"pid":42}`)),
+		}, nil
+	})}
+
+	_, err := loadLocalDaemonStatus(context.Background(), client)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "503 Service Unavailable")
 }
 
 func TestGivenManagerFailureWhenServiceActionRunsThenCommandReturnsActionableError(t *testing.T) {

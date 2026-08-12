@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 type fileKC struct {
@@ -37,7 +38,7 @@ func ValidateFileDir(dir string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("keychain dir %q is not a directory", dir)
 	}
-	if perm := info.Mode().Perm(); perm != 0o700 {
+	if perm := info.Mode().Perm(); !fileDirPermissionsAreIsolated(perm, runtime.GOOS) {
 		return fmt.Errorf("keychain dir %q permissions %#o are not isolated; want 0700", dir, perm)
 	}
 	probe, err := os.CreateTemp(dir, ".keychain-probe-")
@@ -58,6 +59,14 @@ func ValidateFileDir(dir string) error {
 		return fmt.Errorf("keychain dir %q probe cleanup: %w", dir, err)
 	}
 	return nil
+}
+
+func fileDirPermissionsAreIsolated(perm fs.FileMode, goos string) bool {
+	// Windows does not expose POSIX mode bits or a meaningful umask through
+	// os.Stat, so mkdir commonly reports 0777 even though access is governed by
+	// the directory ACL. The writability probe remains the portable startup
+	// validation there; Unix-like platforms additionally enforce owner-only bits.
+	return goos == "windows" || perm == 0o700
 }
 
 func (f *fileKC) Get(account string) (string, error) {
