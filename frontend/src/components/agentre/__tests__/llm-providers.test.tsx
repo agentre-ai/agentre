@@ -270,8 +270,9 @@ describe("LlmProvidersPanel", () => {
     const workspace = await screen.findByRole("region", {
       name: /Anthropic models/,
     });
+    // 模型行由异步 ListLLMModels 渲染，等待真实模型控件出现而非 region。
     expect(
-      within(workspace).getByText("claude-sonnet-4-5"),
+      await within(workspace).findByText("claude-sonnet-4-5"),
     ).toBeInTheDocument();
     expect(within(workspace).getByText("claude-opus-4-1")).toBeInTheDocument();
     // 连接配置（endpoint + 掩码 key）在头部可见
@@ -328,9 +329,8 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
     await user.click(
-      screen.getByRole("button", {
+      await screen.findByRole("button", {
         name: "Test claude-opus-4-1",
       }),
     );
@@ -369,9 +369,8 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
     await user.click(
-      screen.getByRole("radio", {
+      await screen.findByRole("radio", {
         name: "Set claude-opus-4-1 as default",
       }),
     );
@@ -407,8 +406,7 @@ describe("LlmProvidersPanel", () => {
     });
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
-    const deleteBtn = screen.getByRole("button", {
+    const deleteBtn = await screen.findByRole("button", {
       name: "Delete claude-sonnet-4-5",
     });
     expect(deleteBtn).toBeDisabled();
@@ -454,9 +452,8 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
     await user.click(
-      screen.getByRole("button", { name: "Delete claude-opus-4-1" }),
+      await screen.findByRole("button", { name: "Delete claude-opus-4-1" }),
     );
 
     const dialog = await screen.findByRole("dialog", {
@@ -499,9 +496,8 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
     await user.click(
-      screen.getByRole("button", { name: "Delete claude-opus-4-1" }),
+      await screen.findByRole("button", { name: "Delete claude-opus-4-1" }),
     );
     await user.click(
       await screen.findByRole("button", { name: "Delete model" }),
@@ -541,9 +537,8 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
     await user.click(
-      screen.getByRole("button", { name: "Edit claude-opus-4-1" }),
+      await screen.findByRole("button", { name: "Edit claude-opus-4-1" }),
     );
 
     const dialog = await screen.findByRole("dialog", {
@@ -607,9 +602,8 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
     await user.click(
-      screen.getByRole("button", { name: "Edit claude-opus-4-1" }),
+      await screen.findByRole("button", { name: "Edit claude-opus-4-1" }),
     );
     const dialog = await screen.findByRole("dialog", {
       name: /Edit model/,
@@ -680,9 +674,11 @@ describe("LlmProvidersPanel", () => {
     expect(mocks.PreviewLLMModels).toHaveBeenCalledWith(
       expect.objectContaining({ id: 1, apiKey: "" }),
     );
-    // 已存在项标记为跳过
+    // 已存在项标记为跳过（preview 与 existingModels 均为异步加载，等待真实状态）
+    expect(
+      await within(dialog).findByText(/Already exists/),
+    ).toBeInTheDocument();
     expect(within(dialog).getByText(/deepseek-chat/)).toBeInTheDocument();
-    expect(within(dialog).getByText(/Already exists/)).toBeInTheDocument();
 
     await user.click(
       within(dialog).getByRole("button", { name: "Import 1 model" }),
