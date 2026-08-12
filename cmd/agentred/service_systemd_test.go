@@ -159,6 +159,41 @@ func TestGivenSystemdCommandFailureWhenStartingThenErrorIncludesRecoveryCommand(
 	assert.Contains(t, err.Error(), "Run manually: systemctl --user start agentred.service")
 }
 
+func TestGivenSystemdFailedStateWhenInspectingThenItIsReportedAsStopped(t *testing.T) {
+	home := t.TempDir()
+	unitPath := filepath.Join(home, ".config", "systemd", "user", "agentred.service")
+	require.NoError(t, os.MkdirAll(filepath.Dir(unitPath), 0o755))
+	require.NoError(t, os.WriteFile(unitPath, []byte("unit"), 0o644))
+	runner := &fakeServiceCommandRunner{results: []fakeServiceCommandResult{{
+		output: "failed\n",
+		err:    &exec.ExitError{},
+	}}}
+	manager := newSystemdServiceManager(serviceManagerConfig{HomeDir: home, Runner: runner})
+
+	status, err := manager.Status(context.Background())
+	require.NoError(t, err)
+	assert.True(t, status.Installed)
+	assert.False(t, status.Running)
+	assert.Contains(t, status.Details, "State: failed")
+}
+
+func TestGivenSystemdStatusPermissionFailureWhenInspectingThenItIsNotReportedAsStopped(t *testing.T) {
+	home := t.TempDir()
+	unitPath := filepath.Join(home, ".config", "systemd", "user", "agentred.service")
+	require.NoError(t, os.MkdirAll(filepath.Dir(unitPath), 0o755))
+	require.NoError(t, os.WriteFile(unitPath, []byte("unit"), 0o644))
+	runner := &fakeServiceCommandRunner{results: []fakeServiceCommandResult{{
+		output: "Failed to connect to bus: Permission denied\n",
+		err:    &exec.ExitError{},
+	}}}
+	manager := newSystemdServiceManager(serviceManagerConfig{HomeDir: home, Runner: runner})
+
+	_, err := manager.Status(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Permission denied")
+	assert.Contains(t, err.Error(), "Run manually: systemctl --user is-active agentred.service")
+}
+
 func TestGivenMissingSystemdUnitWhenUninstallingThenOperationIsIdempotent(t *testing.T) {
 	runner := &fakeServiceCommandRunner{}
 	manager := newSystemdServiceManager(serviceManagerConfig{HomeDir: t.TempDir(), Runner: runner})

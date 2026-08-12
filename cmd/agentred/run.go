@@ -163,17 +163,24 @@ func resolveString(flagChanged bool, flagValue, envName, persisted, fallback str
 
 func resolvePort(flagChanged bool, flagValue, persisted int) (int, bool, error) {
 	if flagChanged {
-		return flagValue, true, nil
+		return validatePort(flagValue, true)
 	}
 	if raw, ok := os.LookupEnv("AGENTRED_PORT"); ok {
 		port, err := strconv.Atoi(strings.TrimSpace(raw))
 		if err != nil {
 			return 0, false, newUsageError("AGENTRED_PORT must be an integer")
 		}
-		return port, true, nil
+		return validatePort(port, true)
 	}
 	if persisted != 0 {
-		return persisted, false, nil
+		return validatePort(persisted, false)
 	}
 	return defaultAgentredPort, false, nil
+}
+
+func validatePort(port int, override bool) (int, bool, error) {
+	if port < 1 || port > 65535 {
+		return 0, false, newUsageError("port must be between 1 and 65535")
+	}
+	return port, override, nil
 }

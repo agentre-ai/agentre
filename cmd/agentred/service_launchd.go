@@ -55,7 +55,7 @@ func (m *launchdServiceManager) Stop(ctx context.Context) (ServiceStatus, error)
 		return ServiceStatus{}, err
 	}
 	output, err := m.config.Runner.Run(ctx, "launchctl", "bootout", m.target)
-	if err != nil && !isServiceCommandExit(err) {
+	if err != nil && !isLaunchdMissingService(output) {
 		return ServiceStatus{}, serviceCommandError("launchctl", []string{"bootout", m.target}, output, err)
 	}
 	return m.Status(ctx)
@@ -80,7 +80,7 @@ func (m *launchdServiceManager) Uninstall(ctx context.Context) (ServiceStatus, e
 		return ServiceStatus{}, nil
 	}
 	output, err := m.config.Runner.Run(ctx, "launchctl", "bootout", m.target)
-	if err != nil && !isServiceCommandExit(err) {
+	if err != nil && !isLaunchdMissingService(output) {
 		return ServiceStatus{}, serviceCommandError("launchctl", []string{"bootout", m.target}, output, err)
 	}
 	if err := os.Remove(m.plistPath); err != nil && !os.IsNotExist(err) {
@@ -99,7 +99,7 @@ func (m *launchdServiceManager) Status(ctx context.Context) (ServiceStatus, erro
 	}
 	args := []string{"print", m.target}
 	output, err := m.config.Runner.Run(ctx, "launchctl", args...)
-	if err != nil && !isServiceCommandExit(err) {
+	if err != nil && !isLaunchdMissingService(output) {
 		return ServiceStatus{}, serviceCommandError("launchctl", args, output, err)
 	}
 	loaded := err == nil
@@ -116,6 +116,14 @@ func (m *launchdServiceManager) Status(ctx context.Context) (ServiceStatus, erro
 	}, nil
 }
 
+func isLaunchdMissingService(output []byte) bool {
+	detail := strings.ToLower(string(output))
+	return strings.Contains(detail, "could not find service") ||
+		strings.Contains(detail, "service not found") ||
+		strings.Contains(detail, "no such process") ||
+		strings.Contains(detail, "service cannot load in requested session")
+}
+
 func (m *launchdServiceManager) bootstrap(ctx context.Context) error {
 	if err := m.bootout(ctx); err != nil {
 		return err
@@ -125,7 +133,7 @@ func (m *launchdServiceManager) bootstrap(ctx context.Context) error {
 
 func (m *launchdServiceManager) bootout(ctx context.Context) error {
 	output, err := m.config.Runner.Run(ctx, "launchctl", "bootout", m.target)
-	if err != nil && !isServiceCommandExit(err) {
+	if err != nil && !isLaunchdMissingService(output) {
 		return serviceCommandError("launchctl", []string{"bootout", m.target}, output, err)
 	}
 	return nil

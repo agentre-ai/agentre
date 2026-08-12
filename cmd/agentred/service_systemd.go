@@ -105,7 +105,7 @@ func (m *systemdServiceManager) Status(ctx context.Context) (ServiceStatus, erro
 	args := []string{"--user", "is-active", systemdServiceName}
 	output, err := m.config.Runner.Run(ctx, "systemctl", args...)
 	state := strings.TrimSpace(string(output))
-	if err != nil && !isServiceCommandExit(err) {
+	if err != nil && !isSystemdInactiveState(state) {
 		return ServiceStatus{}, serviceCommandError("systemctl", args, output, err)
 	}
 	return ServiceStatus{
@@ -113,6 +113,15 @@ func (m *systemdServiceManager) Status(ctx context.Context) (ServiceStatus, erro
 		Running:   state == "active",
 		Details:   []string{"Manager: systemd --user", "Unit: " + m.unitPath, "State: " + state},
 	}, nil
+}
+
+func isSystemdInactiveState(state string) bool {
+	switch state {
+	case "inactive", "failed", "activating", "deactivating":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *systemdServiceManager) run(ctx context.Context, name string, args ...string) error {

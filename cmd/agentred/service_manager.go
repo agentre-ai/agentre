@@ -115,11 +115,6 @@ func serviceFileExists(path string) (bool, error) {
 	return false, err
 }
 
-func isServiceCommandExit(err error) bool {
-	var exitErr *exec.ExitError
-	return errors.As(err, &exitErr)
-}
-
 func serviceCommandError(name string, args []string, output []byte, err error) error {
 	command := strings.Join(append([]string{name}, args...), " ")
 	if detail := strings.TrimSpace(string(output)); detail != "" {

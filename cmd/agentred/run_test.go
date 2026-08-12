@@ -143,3 +143,25 @@ func TestGivenInvalidPortEnvironmentWhenRunStartsThenItReturnsUsageErrorWithoutS
 	assert.Contains(t, err.Error(), "AGENTRED_PORT")
 	assert.False(t, started)
 }
+
+func TestGivenOutOfRangePortWhenRunStartsThenItReturnsUsageErrorWithoutStartingDaemon(t *testing.T) {
+	clearRunEnvironment(t)
+	started := false
+	cmd := newRunCmdWithDeps(runDeps{
+		dataDir: func() (string, error) { return t.TempDir(), nil },
+		newDaemon: func(daemon.Options) (runDaemon, error) {
+			started = true
+			return fakeRunDaemon{}, nil
+		},
+	})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--port", "70000"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	var usage *usageError
+	assert.ErrorAs(t, err, &usage)
+	assert.Contains(t, err.Error(), "port must be between 1 and 65535")
+	assert.False(t, started)
+}
