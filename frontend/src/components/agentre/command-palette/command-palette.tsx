@@ -64,9 +64,9 @@ function isProjectsRoute(pathname: string): boolean {
 const SOURCES: CommandSource<any>[] = [
   chatSessionsSource,
   navigationSource,
-  newAgentSource,
   newChatSource,
   newProjectChatSource,
+  newAgentSource,
 ];
 
 export function CommandPalette(): React.ReactElement {

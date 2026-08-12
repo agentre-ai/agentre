@@ -759,6 +759,65 @@ describe("CommandPalette — 路由互斥的两个命令 source", () => {
   });
 });
 
+describe("CommandPalette — 命令模式分组顺序：新建对话先于操作 (BDD)", () => {
+  it("Given /chat + ⌘N with both New chat and New agent visible, When the palette opens, Then the 'New Chat' group and its first agent command come before 'Actions / New agent'", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [mkAgent({ id: 1, name: "CEO 助手" })],
+    });
+    appMocks.ProjectListTree.mockResolvedValue([]);
+    renderHarness("/chat");
+    await act(async () => {
+      useCommandPaletteStore.getState().openWith("> ");
+    });
+    await flush();
+
+    // New Chat 分组（含首个 agent 命令）先于 Actions 分组 / New agent 项
+    const newChatHeading = screen.getByText("New Chat");
+    const actionsHeading = screen.getByText("Actions");
+    expect(
+      newChatHeading.compareDocumentPosition(actionsHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    const firstAgent = screen.getByText("CEO 助手");
+    const newAgentItem = screen.getByText("New agent");
+    expect(
+      firstAgent.compareDocumentPosition(newAgentItem) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("Given /projects + ⌘N with project new chat and New agent visible, When the palette opens, Then the 'New Project Chat' group/results come before 'Actions / New agent' while the project ContextBar stays visible", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [mkAgent({ id: 1, name: "CEO 助手" })],
+    });
+    appMocks.ProjectListTree.mockResolvedValue([]);
+    renderHarness("/projects");
+    await act(async () => {
+      useCommandPaletteStore.getState().openWith("> ");
+    });
+    await flush();
+
+    // 项目新对话分组 / 结果先于 Actions 分组 / New agent 项
+    const projectChatHeading = screen.getByText("New Project Chat");
+    const actionsHeading = screen.getByText("Actions");
+    expect(
+      projectChatHeading.compareDocumentPosition(actionsHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    const projectChatItem = screen.getByText("New project chat with");
+    const newAgentItem = screen.getByText("New agent");
+    expect(
+      projectChatItem.compareDocumentPosition(newAgentItem) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    // 既有上下文表现保留：ContextBar 仍可见
+    expect(screen.getByLabelText("Switch project context")).toBeTruthy();
+  });
+});
+
 describe("CommandPalette — 非成员（其它 Agent）行不可选/不可点（disabled）", () => {
   it("/projects: 非成员行 aria-disabled=true + cursor-not-allowed；成员行可选", async () => {
     appMocks.ListChatAgents.mockResolvedValue({
