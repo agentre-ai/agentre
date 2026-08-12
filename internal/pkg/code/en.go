@@ -113,6 +113,7 @@ var enUS = map[int]string{
 	ChatExecTargetHintBackendGone:        "The backend this execution target points at no longer exists",
 	ChatExecTargetHintUnpaired:           "This computer is not paired with that agentred",
 	ChatExecTargetHintOffline:            "That agentred is currently offline",
+	ChatExecTargetHintDesktopNotRunning:  "Agentre is not running on that computer",
 	ChatExecTargetHintLocalPathMissing:   "This computer has no path configured for this project",
 	ChatExecTargetHintRemotePathMissing:  "That machine has no path configured for this project",
 	ChatBackendHintActivateProvider:      "Please activate the LLM provider bound to this Agent backend in Settings → LLM providers",

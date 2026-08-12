@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 
 import { ChatPanel } from "../chat-panel";
 import { pruneChatPanelScrollState } from "../chat-panel-scroll-state";
+import { PeerPanel } from "../peer/peer-panel";
 import { TerminalPanel } from "../terminal/terminal-panel";
 import { reloadSidebarSources } from "@/stores/sidebar-reload";
 import type { ChatTab, TabKind } from "@/stores/chat-tabs-store";
@@ -78,6 +79,8 @@ export function ChatPanelHost() {
             tab={t}
             active={t.id === activeTabId}
           />
+        ) : t.meta.kind === "peer" ? (
+          <HostedPeerPanel key={t.id} tab={t} active={t.id === activeTabId} />
         ) : (
           <HostedPanel key={t.id} tab={t} active={t.id === activeTabId} />
         ),
@@ -248,6 +251,7 @@ const HostedPanel = React.memo(function HostedPanel({
     : null;
   const resolveNewTab = useChatTabsStore((s) => s.resolveNewTab);
   const closeTab = useChatTabsStore((s) => s.closeTab);
+  const openPeerTab = useChatTabsStore((s) => s.openPeerTab);
   const reloadMissingAgentRef = React.useRef<number | null>(null);
   const newSessionContext = React.useMemo(
     () => (isNewTab ? { projectId: newProjectId } : undefined),
@@ -256,6 +260,24 @@ const HostedPanel = React.memo(function HostedPanel({
   const handleSessionCreated = React.useCallback(
     (newSid: number) => resolveNewTab(tab.id, newSid),
     [resolveNewTab, tab.id],
+  );
+  // R18 桌面派发：新建会话派到另一台桌面端成功后，关掉新建 Tab 并打开 Peer Tab。
+  const handlePeerSessionCreated = React.useCallback(
+    (peer: {
+      fingerprint: string;
+      sessionId: number;
+      title: string;
+      deviceName: string;
+    }) => {
+      closeTab(tab.id);
+      openPeerTab({
+        fingerprint: peer.fingerprint,
+        sessionId: peer.sessionId,
+        title: peer.title,
+        deviceName: peer.deviceName,
+      });
+    },
+    [closeTab, openPeerTab, tab.id],
   );
   const handleSessionDeleted = React.useCallback(
     () => closeTab(tab.id),
@@ -327,6 +349,7 @@ const HostedPanel = React.memo(function HostedPanel({
           newSessionAgent={isNewTab ? agent : null}
           newSessionContext={newSessionContext}
           onSessionCreated={handleSessionCreated}
+          onPeerSessionCreated={handlePeerSessionCreated}
           onSessionDeleted={handleSessionDeleted}
           onSidebarShouldReload={handleSidebarShouldReload}
         />
@@ -362,6 +385,41 @@ const HostedTerminalPanel = React.memo(function HostedTerminalPanel({
         deviceId={meta.deviceId}
         active={active}
         attach={meta.attach}
+        onClose={handleClose}
+      />
+    </div>
+  );
+});
+
+// HostedPeerPanel 承载一枚远端桌面会话 Peer Tab（R19）：attach/pull/live 由
+// peer-session-store 管理，关闭 Tab 只 detach 本端接入、不删除对端会话。
+const HostedPeerPanel = React.memo(function HostedPeerPanel({
+  tab,
+  active,
+}: {
+  tab: ChatTab;
+  active: boolean;
+}) {
+  const closeTab = useChatTabsStore((s) => s.closeTab);
+  const meta = tab.meta as Extract<TabKind, { kind: "peer" }>;
+  const handleClose = React.useCallback(
+    () => closeTab(tab.id),
+    [closeTab, tab.id],
+  );
+
+  return (
+    <div
+      data-tab-id={tab.id}
+      data-active={active}
+      aria-hidden={!active}
+      className={panelFrameClassName(active)}
+    >
+      <PeerPanel
+        fingerprint={meta.fingerprint}
+        sessionId={meta.sessionId}
+        title={tab.title ?? ""}
+        deviceName={meta.deviceName}
+        active={active}
         onClose={handleClose}
       />
     </div>

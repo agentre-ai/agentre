@@ -12,6 +12,12 @@ export type TabKind =
       terminalId: string;
       attach?: boolean;
       command?: string;
+    }
+  | {
+      kind: "peer";
+      fingerprint: string;
+      sessionId: number;
+      deviceName: string;
     };
 
 export type ChatTab = {
@@ -53,6 +59,14 @@ type Actions = {
     deviceName?: string,
   ) => void;
   attachTerminal: (args: { terminalId: string; command?: string }) => void;
+  /** 打开一枚远端桌面会话 Peer Tab（R19）。指纹 + 远端会话 id 唯一标识一枚 Tab，
+   *  已打开时只切到它（不重复开）。关闭只 detach，不删除对端会话。 */
+  openPeerTab: (args: {
+    fingerprint: string;
+    sessionId: number;
+    title?: string;
+    deviceName: string;
+  }) => void;
 };
 
 // nextId: 测试用例可以 stub。生产环境用 crypto.randomUUID。
@@ -316,6 +330,36 @@ export const useChatTabsStore = create<State & Actions>((set, _get) => ({
         title: command
           ? i18n.t("chatTabs.terminal.titleWithCommand", { command })
           : i18n.t("chatTabs.terminal.title"),
+      };
+      return { tabs: [...state.tabs, newTab], activeTabId: newTab.id };
+    }),
+  openPeerTab: ({ fingerprint, sessionId, title, deviceName }) =>
+    set((state) => {
+      const existing = state.tabs.find(
+        (t) =>
+          t.meta.kind === "peer" &&
+          t.meta.fingerprint === fingerprint &&
+          t.meta.sessionId === sessionId,
+      );
+      if (existing) {
+        return { activeTabId: existing.id };
+      }
+      const newTab: ChatTab = {
+        id: nextId(),
+        meta: {
+          kind: "peer",
+          fingerprint,
+          sessionId,
+          deviceName,
+        },
+        isPreview: false,
+        isPinned: false,
+        pinAt: 0,
+        openedAt: now(),
+        title:
+          title ||
+          i18n.t("chatTabs.peer.titleWithDevice", { deviceName }) ||
+          i18n.t("chatTabs.peer.title"),
       };
       return { tabs: [...state.tabs, newTab], activeTabId: newTab.id };
     }),

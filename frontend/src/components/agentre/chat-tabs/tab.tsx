@@ -1,6 +1,6 @@
 // frontend/src/components/agentre/chat-tabs/tab.tsx
 import * as React from "react";
-import { Loader2, Pin, TerminalSquare, X } from "lucide-react";
+import { Loader2, MonitorUp, Pin, TerminalSquare, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
@@ -9,7 +9,7 @@ export type TabStatus = "idle" | "running" | "waiting" | "error";
 
 export type TabProps = {
   title: string;
-  kind?: "session" | "new" | "terminal" | "run";
+  kind?: "session" | "new" | "terminal" | "run" | "peer";
   avatar: { letter: string; color: string };
   active: boolean;
   isPreview: boolean;
@@ -93,6 +93,11 @@ export const Tab = React.forwardRef<
       ) : null}
       {kind === "terminal" ? (
         <TerminalSquare
+          className="size-4 text-muted-foreground"
+          aria-hidden="true"
+        />
+      ) : kind === "peer" ? (
+        <MonitorUp
           className="size-4 text-muted-foreground"
           aria-hidden="true"
         />

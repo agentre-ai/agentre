@@ -89,6 +89,8 @@ func (a *App) Startup(ctx context.Context) {
 	})
 	bootstrap.ServerBoot(context.Background())
 	a.startInboundPeer(context.Background())
+	// 出站对端客户端（R18/R19）：接线后前端才能把对话派到另一台桌面端 / 接入其会话。
+	a.registerPeerService()
 	// 工作区多端同步的下行轮询（R3：30 秒一轮）。未登录时每一轮都是空操作（R12）。
 	bootstrap.SyncBoot(context.Background())
 
@@ -166,6 +168,10 @@ func (a *App) resetStaleSessionsOnStartup(ctx context.Context) {
 // Shutdown is wired to wails OnShutdown.
 func (a *App) Shutdown(ctx context.Context) {
 	a.stopInboundPeer(ctx)
+	// 关闭全部出站对端中继连接（R19：本端退出即结束接入，对端会话不受影响）。
+	if err := a.PeerClose(); err != nil {
+		logger.Ctx(ctx).Warn("app shutdown: close outbound peer relay", zap.Error(err))
+	}
 	if a.hookPollerCancel != nil {
 		a.hookPollerCancel()
 		a.hookPollerCancel = nil

@@ -36,6 +36,9 @@ export type ExecTargetCandidate = {
   available: boolean;
   reason: string;
   hint: string;
+  // kind: 这一档的目标种类（R18）—— "local" 本机 / "desktop" 另一台桌面端（派发走
+  // peer 中继）/ "daemon" agentred。由后端 ListAgentExecTargetAvailability 逐档给出。
+  kind: "local" | "desktop" | "daemon";
   // projectPath: 这一档所在的机器上、这个项目的路径(本机档取 projects.path，
   // agentred 档取 project_locations 里那一行)。会话不绑项目或那台机器上没配时
   // 为空串——选机器时真正要判断的是"换过去在哪个目录干活"，比机器名更有信息量。
@@ -88,6 +91,7 @@ export function useExecTargetCandidates(agentId: number, projectId: number) {
             reason: a.reason,
             hint: a.hint,
             projectPath: a.projectPath,
+            kind: (a.kind as ExecTargetCandidate["kind"]) ?? "daemon",
           };
         }),
       );
@@ -139,6 +143,7 @@ const REASON_I18N_KEY: Record<string, string> = {
   "unknown-backend": "unknownBackend",
   "exec-target-unpaired": "unpaired",
   "exec-target-offline": "offline",
+  "exec-target-desktop-not-running": "desktopNotRunning",
   "exec-target-project-path-missing": "projectPathMissing",
 };
 
@@ -196,6 +201,15 @@ export type NewSessionExecTargetLineProps = {
       permission mode caps —— 空会话态改选到另一个类型的后端后，mode 的 allowed
       集合/默认值必须跟随实际后端，否则首发会带上旧类型才合法的 mode。 */
   onOverrideBackendType?: (backendType: string | null) => void;
+  /** 把改选后实际生效档的目标种类与设备身份报给父级（R18 桌面派发）。父级在首发时
+      据此决定走本地 Send 还是 peer RunFresh。 */
+  onEffectiveTarget?: (
+    target: {
+      kind: "local" | "desktop" | "daemon";
+      deviceId: string;
+      deviceName: string;
+    } | null,
+  ) => void;
 };
 
 export function NewSessionExecTargetLine(props: NewSessionExecTargetLineProps) {
@@ -236,6 +250,21 @@ export function NewSessionExecTargetLine(props: NewSessionExecTargetLineProps) {
     props.onOverrideBackendType?.(overrideCandidate?.backendType ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.onOverrideBackendType, overrideCandidate?.backendType]);
+
+  // 把改选后实际生效档的目标种类与设备身份报给父级（R18）：父级据此在首发时决定
+  // 走本地 Send 还是 peer RunFresh。无生效档（候选为空/全不可用）报 null。
+  React.useEffect(() => {
+    props.onEffectiveTarget?.(
+      effective
+        ? {
+            kind: effective.kind,
+            deviceId: effective.deviceId,
+            deviceName: effective.deviceName,
+          }
+        : null,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.onEffectiveTarget, effective]);
 
   if (candidates.length <= 1) return null;
 

@@ -162,6 +162,7 @@ export function useRemoteDevices() {
   return {
     devices,
     loading,
+    accountDevices: account.devices,
     reload,
     add: async (req: AddRequest) => {
       await RemoteDeviceAdd(req);

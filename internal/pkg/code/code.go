@@ -196,6 +196,7 @@ const (
 	ChatExecTargetHintBackendGone                       // 这一档引用的 backend 已不存在
 	ChatExecTargetHintUnpaired                          // 本机没配对这台 agentred（R2b）
 	ChatExecTargetHintOffline                           // 已配对但这台 agentred 当前离线
+	ChatExecTargetHintDesktopNotRunning                 // 目标桌面端 App 没有运行（R2，与 agentred 离线区分）
 	ChatExecTargetHintLocalPathMissing                  // 本机没配这个项目的路径（决策 34）
 	ChatExecTargetHintRemotePathMissing                 // 那台 agentred 上没配这个项目的路径（决策 34）
 	ChatBackendHintActivateProvider                     // 后端关联的 LLM 供应商缺失 / 未激活

@@ -14,6 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 
 import { AddDeviceDialog } from "./add-device-dialog";
+import { DesktopDeviceRow } from "./desktop-device-row";
 import { DeviceRow } from "./device-row";
 import { hostOf } from "./format";
 import { LoginDialog } from "./login-dialog";
@@ -66,8 +67,17 @@ function AccountStatus({
 
 export function RemoteDevicesPanel() {
   const { t } = useTranslation();
-  const { devices, loading, add, remove, updateTLS, rename, refresh, reload } =
-    useRemoteDevices();
+  const {
+    devices,
+    accountDevices,
+    loading,
+    add,
+    remove,
+    updateTLS,
+    rename,
+    refresh,
+    reload,
+  } = useRemoteDevices();
   const serverLogin = useServerLogin();
   const [now, setNow] = useState(() => Date.now());
   const [addOpen, setAddOpen] = useState(false);
@@ -85,6 +95,10 @@ export function RemoteDevicesPanel() {
   }, []);
 
   const onlineCount = devices.filter((d) => d.online).length;
+  // 账号设备清单里的桌面端（R19）：不参与 LAN 配对行合并，单独作为可展开行。
+  const desktopDevices = (accountDevices ?? []).filter(
+    (d) => d.Kind === "desktop",
+  );
 
   if (loading) return null;
 
@@ -131,7 +145,7 @@ export function RemoteDevicesPanel() {
         </div>
       </header>
 
-      {devices.length === 0 ? (
+      {devices.length === 0 && desktopDevices.length === 0 ? (
         <EmptyState onAdd={() => setAddOpen(true)} />
       ) : (
         <div className="flex flex-col gap-2">
@@ -145,6 +159,11 @@ export function RemoteDevicesPanel() {
               onEditTLS={() => setEditTLSFor(d)}
               onRemove={() => setRemoveFor(d)}
             />
+          ))}
+          {/* 账号设备清单里 kind=desktop 的行（R19）：正在运行的桌面端可展开出会话
+              列表，未运行时按 R2 说明「Agentre 未运行」而不是「离线」。 */}
+          {desktopDevices.map((d) => (
+            <DesktopDeviceRow key={d.ID} device={d} now={now} />
           ))}
           <button
             type="button"

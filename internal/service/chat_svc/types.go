@@ -604,6 +604,9 @@ const (
 	BlockReasonExecTargetUnpaired BlockReason = "exec-target-unpaired"
 	// BlockReasonExecTargetOffline 已配对，但该 agentred 当前不在线。
 	BlockReasonExecTargetOffline BlockReason = "exec-target-offline"
+	// BlockReasonExecTargetDesktopNotRunning 目标是一台具名桌面端，且它的 Agentre App
+	// 没有运行（R2：与「机器离线」是两种说法——一个是开应用，一个是开机）。
+	BlockReasonExecTargetDesktopNotRunning BlockReason = "exec-target-desktop-not-running"
 	// BlockReasonExecTargetProjectPathMissing 会话绑定了项目，但这一档所在的机器上
 	// 没有配置这个项目的路径（决策 34）。不绑项目的会话不受这一项约束。
 	BlockReasonExecTargetProjectPathMissing BlockReason = "exec-target-project-path-missing"

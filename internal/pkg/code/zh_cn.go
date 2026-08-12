@@ -113,6 +113,7 @@ var zhCN = map[int]string{
 	ChatExecTargetHintBackendGone:        "该执行目标引用的后端已不存在",
 	ChatExecTargetHintUnpaired:           "本机未配对这台 agentred",
 	ChatExecTargetHintOffline:            "这台 agentred 当前离线",
+	ChatExecTargetHintDesktopNotRunning:  "那台电脑上的 Agentre 没有运行",
 	ChatExecTargetHintLocalPathMissing:   "本机没有配置这个项目的路径",
 	ChatExecTargetHintRemotePathMissing:  "这台机器上没有配置这个项目的路径",
 	ChatBackendHintActivateProvider:      "请先在设置 → LLM 供应商激活该 Agent 后端关联的供应商",
