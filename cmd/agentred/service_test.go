@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +62,33 @@ func executeServiceCommand(t *testing.T, manager ServiceManager, args ...string)
 	cmd.SetArgs(args)
 	err := cmd.Execute()
 	return out.String(), err
+}
+
+func TestGivenWindowsLifecycleIsOutOfScopeWhenReviewingServiceManagersThenNoReadinessWaitIsAdded(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "service_windows.go", nil, 0)
+	require.NoError(t, err)
+
+	checked := 0
+	for _, declaration := range file.Decls {
+		method, ok := declaration.(*ast.FuncDecl)
+		if !ok || method.Recv == nil || (method.Name.Name != "Start" && method.Name.Name != "Stop" && method.Name.Name != "Restart") {
+			continue
+		}
+		checked++
+		ast.Inspect(method.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if ok {
+				assert.NotEqual(t, "waitForState", selector.Sel.Name,
+					"Windows lifecycle behavior is an explicit non-goal of this change")
+			}
+			return true
+		})
+	}
+	assert.Equal(t, 3, checked)
 }
 
 func TestGivenServiceCommandWhenInspectingSubcommandsThenLifecycleSurfaceIsStable(t *testing.T) {

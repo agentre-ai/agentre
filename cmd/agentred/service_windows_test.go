@@ -93,42 +93,6 @@ func TestGivenInstalledWindowsTaskWhenManagingThenScheduledTaskStatesAreReported
 	}, runner.calls)
 }
 
-func TestGivenWindowsTaskTransitionsWhenManagingThenActionsWaitForTerminalStates(t *testing.T) {
-	runner := &fakeServiceCommandRunner{results: []fakeServiceCommandResult{
-		{}, {output: "Queued"}, {output: "Running"},
-		{output: "Running"}, {}, {output: "Running"}, {output: "Ready"},
-	}}
-	manager := newWindowsServiceManager(serviceManagerConfig{DataDir: t.TempDir(), Runner: runner})
-
-	started, err := manager.Start(context.Background())
-	require.NoError(t, err)
-	assert.True(t, started.Running)
-	stopped, err := manager.Stop(context.Background())
-	require.NoError(t, err)
-	assert.False(t, stopped.Running)
-	assert.Equal(t, []serviceCommandCall{
-		{name: "schtasks.exe", args: []string{"/Run", "/TN", windowsServiceTaskName}},
-		windowsStatusCall(), windowsStatusCall(),
-		windowsStatusCall(), {name: "schtasks.exe", args: []string{"/End", "/TN", windowsServiceTaskName}},
-		windowsStatusCall(), windowsStatusCall(),
-	}, runner.calls)
-}
-
-func TestGivenWindowsTaskNeverRunsWhenStartingThenCancellationIsActionable(t *testing.T) {
-	runner := &fakeServiceCommandRunner{results: []fakeServiceCommandResult{
-		{}, {output: "Queued"},
-	}}
-	manager := newWindowsServiceManager(serviceManagerConfig{DataDir: t.TempDir(), Runner: runner})
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := manager.Start(ctx)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, context.Canceled)
-	assert.Contains(t, err.Error(), "wait for Windows task AgentreAgentred to become running")
-	assert.Contains(t, err.Error(), "Run manually: schtasks.exe /Query /TN AgentreAgentred")
-}
-
 func TestGivenMissingWindowsTaskWhenUninstallingThenOperationIsIdempotent(t *testing.T) {
 	runner := &fakeServiceCommandRunner{results: []fakeServiceCommandResult{{err: windowsCommandExitError{code: 3}}}}
 	manager := newWindowsServiceManager(serviceManagerConfig{DataDir: t.TempDir(), Runner: runner})

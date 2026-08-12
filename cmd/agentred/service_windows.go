@@ -8,7 +8,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 const (
@@ -48,7 +47,7 @@ func (m *windowsServiceManager) Start(ctx context.Context) (ServiceStatus, error
 	if err := m.run(ctx, "schtasks.exe", "/Run", "/TN", windowsServiceTaskName); err != nil {
 		return ServiceStatus{}, err
 	}
-	return m.waitForState(ctx, true)
+	return m.Status(ctx)
 }
 
 func (m *windowsServiceManager) Stop(ctx context.Context) (ServiceStatus, error) {
@@ -65,7 +64,7 @@ func (m *windowsServiceManager) Stop(ctx context.Context) (ServiceStatus, error)
 	if err := m.run(ctx, "schtasks.exe", "/End", "/TN", windowsServiceTaskName); err != nil {
 		return ServiceStatus{}, err
 	}
-	return m.waitForState(ctx, false)
+	return m.Status(ctx)
 }
 
 func (m *windowsServiceManager) Restart(ctx context.Context) (ServiceStatus, error) {
@@ -80,14 +79,11 @@ func (m *windowsServiceManager) Restart(ctx context.Context) (ServiceStatus, err
 		if err := m.run(ctx, "schtasks.exe", "/End", "/TN", windowsServiceTaskName); err != nil {
 			return ServiceStatus{}, err
 		}
-		if _, err := m.waitForState(ctx, false); err != nil {
-			return ServiceStatus{}, err
-		}
 	}
 	if err := m.run(ctx, "schtasks.exe", "/Run", "/TN", windowsServiceTaskName); err != nil {
 		return ServiceStatus{}, err
 	}
-	return m.waitForState(ctx, true)
+	return m.Status(ctx)
 }
 
 func (m *windowsServiceManager) Uninstall(ctx context.Context) (ServiceStatus, error) {
@@ -131,37 +127,6 @@ func (m *windowsServiceManager) Status(ctx context.Context) (ServiceStatus, erro
 			"State: " + state,
 		},
 	}, nil
-}
-
-func (m *windowsServiceManager) waitForState(ctx context.Context, running bool) (ServiceStatus, error) {
-	waitCtx, cancel := context.WithTimeout(ctx, serviceReadyTimeout)
-	defer cancel()
-	for {
-		status, err := m.Status(waitCtx)
-		if err != nil {
-			return ServiceStatus{}, err
-		}
-		if !status.Installed {
-			return ServiceStatus{}, fmt.Errorf("wait for Windows task %s: task disappeared; Run manually: schtasks.exe /Query /TN %s", windowsServiceTaskName, windowsServiceTaskName)
-		}
-		state := ""
-		if len(status.Details) != 0 {
-			state = strings.TrimPrefix(status.Details[len(status.Details)-1], "State: ")
-		}
-		terminal := strings.EqualFold(state, "Ready") || strings.EqualFold(state, "Disabled")
-		if (running && status.Running) || (!running && terminal) {
-			return status, nil
-		}
-		select {
-		case <-waitCtx.Done():
-			want := "stopped"
-			if running {
-				want = "running"
-			}
-			return ServiceStatus{}, fmt.Errorf("wait for Windows task %s to become %s: %w; Run manually: schtasks.exe /Query /TN %s", windowsServiceTaskName, want, waitCtx.Err(), windowsServiceTaskName)
-		case <-time.After(serviceReadyPollInterval):
-		}
-	}
 }
 
 func (m *windowsServiceManager) run(ctx context.Context, name string, args ...string) error {
