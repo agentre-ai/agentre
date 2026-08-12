@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/service/llm_provider_svc"
@@ -57,13 +58,33 @@ func (s *chatSvc) effectiveLLMForTurn(ctx context.Context, prov *llm_provider_en
 // effectiveLLMForNonRemoteTurn 是 turn 入口用变体：远端 backend 由 daemon 自家解析
 // （desktop 本地 provider 表反映不了 daemon 配置，wire 只透传 key），所以返回 nil、
 // 不做本地模型解析，也不让本地模型配置损坏阻塞远端轮。非远端后端直接委托
-// effectiveLLMForTurn，并带上 backend 的固定 ModelKey（Backend fixed-model，spec
-// 决策 5/10）：非空时解析指定模型，为空则走 provider-default。
-func (s *chatSvc) effectiveLLMForNonRemoteTurn(ctx context.Context, be *agent_backend_entity.AgentBackend, prov *llm_provider_entity.LLMProvider) (*agentruntime.EffectiveLLMConfig, error) {
+// effectiveLLMForTurn，并带上本轮该用的 ModelKey（sessionModelKeyFor，spec 2026-08-11
+// 决策 1）：会话钉了 provider 时用会话的 ModelKey（空 = provider-default，非空 =
+// fixed-model），未钉（inherit-agent）或会话 provider 已回退时才跟随 backend 的固定
+// ModelKey。
+func (s *chatSvc) effectiveLLMForNonRemoteTurn(ctx context.Context, sess *chat_entity.Session, be *agent_backend_entity.AgentBackend, prov *llm_provider_entity.LLMProvider) (*agentruntime.EffectiveLLMConfig, error) {
 	if be != nil && be.IsRemote() {
 		return nil, nil
 	}
-	return s.effectiveLLMForTurn(ctx, prov, backendModelKeyFor(be, prov))
+	return s.effectiveLLMForTurn(ctx, prov, sessionModelKeyFor(sess, be, prov))
+}
+
+// sessionModelKeyFor 返回本轮解析用的 ModelKey（spec 2026-08-11 决策 1）：
+//   - 会话钉了 Provider（inherit-agent 之外）且当前生效 provider 就是会话钉的那家：用会话
+//     的 ModelKey —— 空 = provider-default（每轮解析该 Provider 当前默认，不能被 backend
+//     的固定模型带偏），非空 = fixed-model（解析指定子模型）；
+//   - 会话未钉（inherit-agent），或会话所钉 provider 缺失/停用已回退到 agent 绑定：跟随
+//     backend 绑定 —— backend 钉了固定模型且生效 provider 就是 backend 自家绑定的 provider
+//     时沿用该固定模型，否则 provider-default。
+//
+// 回退分支特别重要：会话 ModelKey 属于那家已失效的供应商，绝不能在回退后拿去解析
+// （否则会解析出错误模型或 ModelNotOwned 硬失败）。
+func sessionModelKeyFor(sess *chat_entity.Session, be *agent_backend_entity.AgentBackend, prov *llm_provider_entity.LLMProvider) string {
+	if sess != nil && strings.TrimSpace(sess.ProviderKey) != "" &&
+		prov != nil && prov.ProviderKey == sess.ProviderKey {
+		return sess.ModelKey
+	}
+	return backendModelKeyFor(be, prov)
 }
 
 // backendModelKeyFor 返回 backend 固定模型的 ModelKey；仅当 effective provider 就是

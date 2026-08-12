@@ -41,8 +41,10 @@ const appMocks = vi.hoisted(() => ({
   GetChatLaunchCommand: vi.fn(),
   GetChatGoal: vi.fn(),
   ListLLMProviders: vi.fn().mockResolvedValue({ items: [] }),
+  ListLLMModels: vi.fn().mockResolvedValue({ items: [] }),
   LoadChatSession: vi.fn(),
   SetChatSessionProvider: vi.fn(),
+  SetChatSessionModelTarget: vi.fn(),
   MarkChatSessionRead: vi.fn().mockResolvedValue({}),
   RegenerateChatMessage: vi.fn(),
   RenameChatSession: vi.fn(),
@@ -2832,6 +2834,8 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
           providerKey: "acme-anthropic",
           name: "Acme Claude",
           type: "anthropic",
+          enabled: true,
+          defaultModelKey: "",
           model: "claude-sonnet-4-5",
         },
       ],
@@ -2857,7 +2861,9 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
     const user = userEvent.setup();
     await user.click(pill);
     await user.click(
-      within(screen.getByRole("listbox")).getByText("Acme Claude"),
+      within(screen.getByRole("listbox")).getByRole("option", {
+        name: /Acme Claude/,
+      }),
     );
 
     const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
@@ -2887,6 +2893,8 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
           providerKey: "acme-anthropic",
           name: "Acme Claude",
           type: "anthropic",
+          enabled: true,
+          defaultModelKey: "",
           model: "claude-sonnet-4-5",
         },
       ],
@@ -2947,6 +2955,8 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
           providerKey: "acme-anthropic",
           name: "Acme",
           type: "anthropic",
+          enabled: true,
+          defaultModelKey: "",
           model: "claude-sonnet-4-5",
         },
       ],
@@ -2981,7 +2991,7 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
     );
   });
 
-  it("已有会话选中供应商：调用 SetChatSessionProvider(sessionId, providerKey) 并 reload 会话以取新的切换 notice", async () => {
+  it("已有会话选中供应商：调用 SetChatSessionModelTarget(sessionId, providerKey, modelKey) 并 reload 会话以取新的切换 notice", async () => {
     resetStore();
     appMocks.ListLLMProviders.mockClear();
     appMocks.ListLLMProviders.mockResolvedValue({
@@ -2991,13 +3001,17 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
           providerKey: "acme-anthropic",
           name: "Acme",
           type: "anthropic",
+          enabled: true,
+          defaultModelKey: "",
           model: "claude-sonnet-4-5",
         },
       ],
     });
-    appMocks.SetChatSessionProvider.mockResolvedValue({
+    appMocks.SetChatSessionModelTarget.mockResolvedValue({
       providerKey: "acme-anthropic",
+      modelKey: "",
       agentProviderKey: "",
+      agentModelKey: "",
     });
     reloadSpy.mockClear();
     mockSessionStore.session = makeSession({
@@ -3012,12 +3026,15 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
 
     const user = userEvent.setup();
     await user.click(pill);
-    await user.click(within(screen.getByRole("listbox")).getByText("Acme"));
+    await user.click(
+      within(screen.getByRole("listbox")).getByRole("option", { name: /Acme/ }),
+    );
 
     await waitFor(() => {
-      expect(appMocks.SetChatSessionProvider).toHaveBeenCalledWith({
+      expect(appMocks.SetChatSessionModelTarget).toHaveBeenCalledWith({
         sessionId: 42,
         providerKey: "acme-anthropic",
+        modelKey: "",
       });
     });
     await waitFor(() => expect(reloadSpy).toHaveBeenCalled());

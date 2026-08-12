@@ -30,9 +30,7 @@ import {
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
-import {
-  readRecentTargets,
-} from "./recents";
+import { readRecentTargets } from "./recents";
 import {
   isNativeTarget,
   providerCompatibleForBackend,
@@ -55,16 +53,26 @@ export type ModelTargetPickerProps = {
   onChange: (target: ModelTarget) => void;
   catalog: PickerProvider[];
   loading?: boolean;
+  // error：模型目录拉取失败 → 弹层错误行。errorText 覆盖默认错误文案（chat 场景把
+  // 持久化切换失败的真实信息透出来）。
   error?: boolean;
+  errorText?: string;
   disabled?: boolean;
   // invalid：当前选中的 target 在目录里解析不出来（Provider/Model 缺失/停用/被删）。
   invalid?: boolean;
   // remoteMissing：目标执行设备上缺少所选 Provider（远端场景提示，task 6 深化）。
   remoteMissing?: boolean;
+  // footer：弹层底部常显说明（chat 场景的「自下一轮生效」等），随弹层一起出现。
+  footer?: React.ReactNode;
   // compact：表单内嵌（claude tier 路由）用小号触发按钮。
   compact?: boolean;
   align?: "start" | "end";
   className?: string;
+  title?: string;
+  // triggerLabel：覆盖触发按钮文案。chat 场景「未选但 agent 已绑 provider」时显示
+  // 绑定供应商名，而不是顶部特殊项「跟随 Agent 绑定」；undefined 时按目录解析。
+  triggerLabel?: string;
+  "data-testid"?: string;
   "aria-label"?: string;
 };
 
@@ -87,12 +95,17 @@ export function ModelTargetPicker({
   catalog,
   loading = false,
   error = false,
+  errorText,
   disabled = false,
   invalid = false,
   remoteMissing = false,
+  footer,
   compact = false,
   align = "start",
   className,
+  title,
+  triggerLabel,
+  "data-testid": testId,
   "aria-label": ariaLabel,
 }: ModelTargetPickerProps) {
   const { t } = useTranslation();
@@ -116,9 +129,7 @@ export function ModelTargetPicker({
   // 兼容目录：按 effective backend type 过滤。
   const compatible = React.useMemo(
     () =>
-      catalog.filter((p) =>
-        providerCompatibleForBackend(backendType, p.type),
-      ),
+      catalog.filter((p) => providerCompatibleForBackend(backendType, p.type)),
     [catalog, backendType],
   );
 
@@ -130,7 +141,8 @@ export function ModelTargetPicker({
     for (const r of all) {
       const p = compatible.find((x) => x.providerKey === r.providerKey);
       if (!p) continue; // 当前 backend 不兼容 → 隐藏
-      const isDefault = r.modelKey === "" || r.modelKey === p.defaultModel?.modelKey;
+      const isDefault =
+        r.modelKey === "" || r.modelKey === p.defaultModel?.modelKey;
       const modelOk =
         r.modelKey === "" ||
         p.models.some((m) => m.modelKey === r.modelKey && m.enabled);
@@ -145,9 +157,12 @@ export function ModelTargetPicker({
         key: `recent-${dedupeKey}`,
         kind: "recent",
         label: target.modelKey
-          ? (p.models.find((m) => m.modelKey === target.modelKey)?.modelId ?? target.modelKey)
+          ? (p.models.find((m) => m.modelKey === target.modelKey)?.modelId ??
+            target.modelKey)
           : p.name,
-        sublabel: target.modelKey ? p.name : t("modelTargetPicker.defaultLabel"),
+        sublabel: target.modelKey
+          ? p.name
+          : t("modelTargetPicker.defaultLabel"),
         target,
         disabled: !p.enabled || !modelOk || !isDefault,
       });
@@ -271,7 +286,7 @@ export function ModelTargetPicker({
 
   const hasCatalog = catalogOptions.length > 0;
 
-  const triggerLabel = selectedLabel;
+  const triggerText = triggerLabel ?? selectedLabel;
 
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
@@ -279,6 +294,8 @@ export function ModelTargetPicker({
         <button
           type="button"
           disabled={disabled}
+          data-testid={testId}
+          title={title}
           aria-label={ariaLabel}
           aria-expanded={open}
           aria-haspopup="listbox"
@@ -296,9 +313,7 @@ export function ModelTargetPicker({
           <span className="flex min-w-0 items-center gap-1.5">
             {invalid ? (
               <ShieldAlert
-                className={cn(
-                  "size-3.5 shrink-0 text-status-waiting",
-                )}
+                className={cn("size-3.5 shrink-0 text-status-waiting")}
                 aria-hidden="true"
               />
             ) : null}
@@ -308,7 +323,7 @@ export function ModelTargetPicker({
                 invalid ? "text-status-waiting" : "text-foreground",
               )}
             >
-              {triggerLabel}
+              {triggerText}
             </span>
           </span>
           <ChevronDown
@@ -326,7 +341,10 @@ export function ModelTargetPicker({
       >
         {/* 搜索框 */}
         <div className="flex items-center gap-1.5 border-b border-border px-2.5 py-2">
-          <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <Search
+            className="size-3.5 shrink-0 text-muted-foreground"
+            aria-hidden="true"
+          />
           <Input
             ref={searchRef}
             value={search}
@@ -360,7 +378,7 @@ export function ModelTargetPicker({
             </div>
           ) : error ? (
             <div className="px-2.5 py-3 text-xs text-status-waiting">
-              {t("modelTargetPicker.error")}
+              {errorText ?? t("modelTargetPicker.error")}
             </div>
           ) : !hasCatalog && isNativeTarget(selected) ? (
             <div className="px-2.5 py-3 text-xs text-muted-foreground">
@@ -473,13 +491,23 @@ export function ModelTargetPicker({
             {t("modelTargetPicker.remoteMissing")}
           </div>
         ) : null}
+        {footer ? (
+          <div className="border-t border-border px-3 py-2 text-2xs text-muted-foreground">
+            {footer}
+          </div>
+        ) : null}
       </PopoverContent>
     </Popover>
   );
 }
 
 export { readRecentTargets, recordRecentTarget } from "./recents";
-export type { ModelTarget, PickerModel, PickerProvider, PickerScenario } from "./types";
+export type {
+  ModelTarget,
+  PickerModel,
+  PickerProvider,
+  PickerScenario,
+} from "./types";
 export { buildPickerCatalog, useModelTargetCatalog } from "./catalog";
 export {
   isNativeTarget,

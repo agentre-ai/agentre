@@ -33,6 +33,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
@@ -184,7 +185,7 @@ func expectLoadSessionBackend(
 		ID: backendID, Type: string(backendType), LLMProviderKey: providerKey, Status: consts.ACTIVE,
 	}, nil)
 	if provider != nil {
-		m.provider.EXPECT().FindByKey(ctx, provider.ProviderKey).Return(provider, nil)
+		m.provider.EXPECT().FindByKey(ctx, provider.ProviderKey).Return(provider, nil).AnyTimes()
 	}
 	m.message.EXPECT().List(ctx, sessionID).Return(messages, nil)
 }
@@ -204,13 +205,23 @@ func assertLoadSessionContextWindow(
 ) {
 	t.Helper()
 	expectLoadSessionBackend(m, ctx, sessionID, agentID, backendID, agent_backend_entity.TypeClaudeCode, &llm_provider_entity.LLMProvider{
-		ID:          providerID,
-		ProviderKey: providerKey,
-		Type:        string(llm_provider_entity.TypeAnthropic),
-		Status:      consts.ACTIVE,
+		ID:              providerID,
+		ProviderKey:     providerKey,
+		Type:            string(llm_provider_entity.TypeAnthropic),
+		Status:          consts.ACTIVE,
+		Enabled:         llm_provider_entity.EnabledOn,
+		DefaultModelKey: "mk-" + providerKey,
 	}, &chat_entity.Message{
 		ID: sessionID * 10, SessionID: sessionID, Role: "assistant", BlocksJSON: "[]", Seq: 1, Model: "claude-haiku-4-5",
 	})
+	// 展示侧与执行侧同一解析（EffectiveLLMConfig v1 seam）：contextWindow 来自解析出的
+	// 模型（providerContextWindow），不再是 Provider 行字段。显式配 0 = 未配置 → 落到
+	// message.Model catalog。
+	m.provider.EXPECT().FindModelByKey(ctx, "mk-"+providerKey).Return(
+		&llm_provider_model_entity.LLMProviderModel{
+			ModelKey: "mk-" + providerKey, ModelID: "claude-sonnet-4-6",
+			ContextWindow: providerContextWindow, Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE,
+		}, nil).AnyTimes()
 
 	resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: sessionID})
 	assert.NoError(t, err)
@@ -236,7 +247,7 @@ func expectLaunchCommandBackend(
 	m.backend.EXPECT().Find(ctx, backendID).Return(&agent_backend_entity.AgentBackend{
 		ID: backendID, Type: string(backendType), LLMProviderKey: provider.ProviderKey, Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(ctx, provider.ProviderKey).Return(provider, nil)
+	m.provider.EXPECT().FindByKey(ctx, provider.ProviderKey).Return(provider, nil).AnyTimes()
 }
 
 func loadLaunchCommand(
@@ -835,9 +846,11 @@ func TestLoadSession(t *testing.T) {
 			m.backend.EXPECT().Find(ctx, int64(33)).Return(&agent_backend_entity.AgentBackend{
 				ID: 33, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-44", Status: consts.ACTIVE,
 			}, nil)
-			m.provider.EXPECT().FindByKey(ctx, "key-44").Return(&llm_provider_entity.LLMProvider{
-				ID: 44, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-			}, nil)
+			m.provider.EXPECT().FindByKey(ctx, "key-44").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-44", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-44", ID: 44, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+			// 解析出的模型显式配了 200k（EffectiveLLMConfig v1 seam：ContextWindow 来自模型，不再读 Provider 行）。
+			m.provider.EXPECT().FindModelByKey(ctx, "mk-key-44").Return(
+				&llm_provider_model_entity.LLMProviderModel{ModelKey: "mk-key-44", ModelID: "claude-sonnet-4-6", ContextWindow: 200000, Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+				nil).AnyTimes()
 			m.message.EXPECT().List(ctx, int64(4)).Return(nil, nil)
 
 			resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 4})
@@ -856,9 +869,10 @@ func TestLoadSession(t *testing.T) {
 				ID: 34, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-45", Status: consts.ACTIVE,
 			}, nil)
 			// ContextWindow 留 0；Model 取 cago 内置 catalog 已知的 claude-sonnet-4-6
-			m.provider.EXPECT().FindByKey(ctx, "key-45").Return(&llm_provider_entity.LLMProvider{
-				ID: 45, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-			}, nil)
+			m.provider.EXPECT().FindByKey(ctx, "key-45").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-45", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-45", ID: 45, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+			m.provider.EXPECT().FindModelByKey(ctx, "mk-key-45").Return(
+				&llm_provider_model_entity.LLMProviderModel{ModelKey: "mk-key-45", ModelID: "claude-sonnet-4-6", Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+				nil).AnyTimes()
 			m.message.EXPECT().List(ctx, int64(5)).Return(nil, nil)
 
 			resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 5})
@@ -927,9 +941,8 @@ func TestLoadSession(t *testing.T) {
 			m.backend.EXPECT().Find(ctx, int64(43)).Return(&agent_backend_entity.AgentBackend{
 				ID: 43, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "key-48", Status: consts.ACTIVE,
 			}, nil)
-			m.provider.EXPECT().FindByKey(ctx, "key-48").Return(&llm_provider_entity.LLMProvider{
-				ID: 48, Type: string(llm_provider_entity.TypeOpenAIResponse), Status: consts.ACTIVE,
-			}, nil)
+			m.provider.EXPECT().FindByKey(ctx, "key-48").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-48", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-48", ID: 48, Type: string(llm_provider_entity.TypeOpenAIResponse), Status: consts.ACTIVE}, nil).AnyTimes()
+			expectProviderResolvable(m, "key-48")
 			m.message.EXPECT().List(ctx, int64(10)).Return([]*chat_entity.Message{
 				{ID: 110, SessionID: 10, Role: "assistant", BlocksJSON: "[]", Seq: 1, Model: "gpt-5-codex"},
 			}, nil)
@@ -1165,8 +1178,12 @@ func TestGetLaunchCommand(t *testing.T) {
 
 		convey.Convey("claudecode + provider → 单行命令含 BASE_URL、永久 token、model、--resume", func() {
 			expectLaunchCommandBackend(m, ctx, 3, 7, 22, agent_backend_entity.TypeClaudeCode, "sess-uuid", &llm_provider_entity.LLMProvider{
-				ID: 33, ProviderKey: "key-33", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
+				ID: 33, ProviderKey: "key-33", Type: string(llm_provider_entity.TypeAnthropic),
+				Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-33", Status: consts.ACTIVE,
 			})
+			m.provider.EXPECT().FindModelByKey(ctx, "mk-key-33").Return(
+				&llm_provider_model_entity.LLMProviderModel{ModelKey: "mk-key-33", ModelID: "claude-sonnet-4-6", Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+				nil).AnyTimes()
 
 			command := loadLaunchCommand(t, m, ctx, 3, agent_backend_entity.TypeClaudeCode)
 			// gateway URL + fake gateway 发出的真实 token（"chat-token"）
@@ -1180,8 +1197,12 @@ func TestGetLaunchCommand(t *testing.T) {
 
 		convey.Convey("codex + provider session → 单行命令用 resume 子命令带 session id", func() {
 			expectLaunchCommandBackend(m, ctx, 6, 8, 23, agent_backend_entity.TypeCodex, "codex-thread-123", &llm_provider_entity.LLMProvider{
-				ID: 34, ProviderKey: "key-34", Type: string(llm_provider_entity.TypeOpenAIResponse), Status: consts.ACTIVE,
+				ID: 34, ProviderKey: "key-34", Type: string(llm_provider_entity.TypeOpenAIResponse),
+				Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-34", Status: consts.ACTIVE,
 			})
+			m.provider.EXPECT().FindModelByKey(ctx, "mk-key-34").Return(
+				&llm_provider_model_entity.LLMProviderModel{ModelKey: "mk-key-34", ModelID: "gpt-5-codex", Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+				nil).AnyTimes()
 
 			command := loadLaunchCommand(t, m, ctx, 6, agent_backend_entity.TypeCodex)
 			assert.Contains(t, command, "OPENAI_API_KEY='chat-token'")
@@ -1293,12 +1314,16 @@ func TestSend_ImageInput(t *testing.T) {
 				Status:         consts.ACTIVE,
 			}
 			agent := &agent_entity.Agent{ID: 7, Name: "Builtin", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`}
-			provider := &llm_provider_entity.LLMProvider{ID: 11, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}
+			provider := &llm_provider_entity.LLMProvider{
+				ProviderKey: "key-11", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
+				Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-11",
+			}
 
 			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
 			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(agent, nil)
 			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(backend, nil)
-			m.provider.EXPECT().FindByKey(gomock.Any(), "key-11").Return(provider, nil)
+			m.provider.EXPECT().FindByKey(gomock.Any(), "key-11").Return(provider, nil).AnyTimes()
+			expectProviderResolvable(m, "key-11")
 			m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 			m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
 			m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
@@ -2131,9 +2156,8 @@ func TestSend_NewSession(t *testing.T) {
 		m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 			ID: 12, Type: "builtin", LLMProviderKey: "key-21", Status: consts.ACTIVE,
 		}, nil)
-		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-			ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-		}, nil)
+		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+		expectProviderResolvable(m, "key-21")
 
 		fp := providertest.New().
 			QueueStream(
@@ -2321,9 +2345,8 @@ func TestSend_ExistingSessionUsesSessionAgentBackend(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	m.dbMock.ExpectBegin()
@@ -2499,7 +2522,8 @@ func TestSend_CodexLoginStateWithSessionProviderInjectsGatewayDeps(t *testing.T)
 		ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "session-picked").
-		Return(newActiveProvider("session-picked", string(llm_provider_entity.TypeOpenAIResponse)), nil)
+		Return(newActiveProvider("session-picked", string(llm_provider_entity.TypeOpenAIResponse)), nil).AnyTimes()
+	expectProviderResolvable(m, "session-picked")
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	m.dbMock.ExpectBegin()
@@ -2635,8 +2659,10 @@ func TestCompact_ExistingSession_ProviderKeyOverridesAgentBinding(t *testing.T) 
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeOpenAIResponse)), nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-99").Return(newActiveProvider("key-99", string(llm_provider_entity.TypeOpenAIResponse)), nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeOpenAIResponse)), nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-99").Return(newActiveProvider("key-99", string(llm_provider_entity.TypeOpenAIResponse)), nil).AnyTimes()
+	expectProviderResolvable(m, "key-99")
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	m.dbMock.ExpectBegin()
@@ -2693,8 +2719,9 @@ func TestCompact_ExistingSession_MissingSessionProviderFallsBackWithNotice(t *te
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeOpenAIResponse)), nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "gone-provider").Return(nil, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeOpenAIResponse)), nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
+	m.provider.EXPECT().FindByKey(gomock.Any(), "gone-provider").Return(nil, nil).AnyTimes()
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	m.dbMock.ExpectBegin()
@@ -3027,9 +3054,8 @@ func TestGoal_UsesSessionEffectiveProvider(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "session-picked").Return(&llm_provider_entity.LLMProvider{
-		ID: 34, ProviderKey: "session-picked", Type: string(llm_provider_entity.TypeOpenAIResponse), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "session-picked").Return(&llm_provider_entity.LLMProvider{ProviderKey: "session-picked", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-session-picked", ID: 34, Type: string(llm_provider_entity.TypeOpenAIResponse), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "session-picked")
 
 	_, err := m.svc.GetGoal(ctx, &chat_svc.GoalRequest{SessionID: 100})
 	require.NoError(t, err)
@@ -3346,11 +3372,11 @@ func TestSend_ClaudeCodeRemoteSkipsClientGatewayDeps(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeClaudeCode),
 		LLMProviderKey: "key-5", DeviceID: "7", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-5").Return(&llm_provider_entity.LLMProvider{
-		ID: 5, Type: string(llm_provider_entity.TypeAnthropic), Name: "huu-glm",
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-5").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-5", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-5", ID: 5, Type: string(llm_provider_entity.TypeAnthropic), Name: "huu-glm",
 		APIKey:  "secret-key-should-not-cross-the-wire",
 		BaseURL: "https://huu.dqy.ink", Status: consts.ACTIVE,
 	}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-5")
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	m.dbMock.ExpectBegin()
@@ -3839,9 +3865,8 @@ func TestSend_TerminalDaemonDisconnectLandsErrorStatus(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 
 	var sessionUpdates []*chat_entity.Session
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).
@@ -3913,9 +3938,8 @@ func runStopErrTurnErrorText(t *testing.T, stop error) string {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	m.dbMock.ExpectBegin()
@@ -4199,9 +4223,8 @@ func TestSend_RuntimeErrorsStayVisibleAndPersistedWithoutEnteringLogs(t *testing
 			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 				ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 			}, nil)
-			m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-				ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-			}, nil)
+			m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+			expectProviderResolvable(m, "key-21")
 			m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 			m.dbMock.ExpectBegin()
@@ -4323,9 +4346,8 @@ func TestSend_StreamErrorEventCarriesFinalAssistantMessage(t *testing.T) {
 			}
 			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(backend, nil)
 			if tt.backendType == agent_backend_entity.TypeBuiltin {
-				m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-					ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-				}, nil)
+				m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+				expectProviderResolvable(m, "key-21")
 			}
 			m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 			if tt.backendType == agent_backend_entity.TypePiAgent {
@@ -4396,9 +4418,8 @@ func TestSend_StreamErrorAlsoEmitsSessionStatusError(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	m.dbMock.ExpectBegin()
@@ -4463,9 +4484,8 @@ func TestSend_StreamErrorFollowedByProgressDoesNotFailTurn(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 
 	m.dbMock.ExpectBegin()
 	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
@@ -4540,9 +4560,8 @@ func TestSend_StreamErrorFollowedOnlyByMetadataStillFailsTurn(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 
 	m.dbMock.ExpectBegin()
 	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
@@ -4604,9 +4623,8 @@ func TestSend_FailTurnEmitsSessionStatusError(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	m.dbMock.ExpectBegin()
@@ -4670,9 +4688,8 @@ func TestSend_StreamRetryEventIsForwardedWithoutFailingTurn(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	m.dbMock.ExpectBegin()
@@ -4756,9 +4773,8 @@ func TestSend_StreamUsageEventsAreForwardedAndPersisted(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	m.dbMock.ExpectBegin()
@@ -4925,9 +4941,8 @@ func standardSendMocksWithoutMessageUpdate(t *testing.T, m *chatMocks, sessionID
 	m.backend.EXPECT().Find(gomock.Any(), backendID).Return(&agent_backend_entity.AgentBackend{
 		ID: backendID, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: providerKey, Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), providerKey).Return(&llm_provider_entity.LLMProvider{
-		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), providerKey).Return(newActiveProvider(providerKey, string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
+	expectProviderResolvable(m, providerKey)
 
 	m.dbMock.ExpectBegin()
 	m.message.EXPECT().NextSeq(gomock.Any(), sessionID).Return(1, nil)
@@ -4970,9 +4985,8 @@ func TestSend_ErrorSessionMarksRunningAtTurnStart(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 
 	m.dbMock.ExpectBegin()
 	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
@@ -5023,9 +5037,8 @@ func TestSend_PersistFailureDoesNotPersistRunning(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 
 	m.dbMock.ExpectBegin()
 	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(0, errors.New("database is locked"))
@@ -5047,9 +5060,8 @@ func TestSend_NewSessionCreatesIdleNotRunning(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 
 	var created chat_entity.Session
 	m.session.EXPECT().Create(gomock.Any(), gomock.Any()).
@@ -5094,9 +5106,8 @@ func TestRegenerate_PersistFailureDoesNotPersistRunning(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 
 	m.dbMock.ExpectBegin()
 	m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(100), 1).
@@ -5309,9 +5320,8 @@ func TestSend_CheckpointsAssistantWhenToolResultArrives(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 
 	m.dbMock.ExpectBegin()
 	m.message.EXPECT().NextSeq(gomock.Any(), int64(103)).Return(1, nil)
@@ -5463,9 +5473,8 @@ func TestSend_SteerConsumedSplitsMessages(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	createIDs := []int64{1000, 1001, 1002, 1003}
@@ -5606,9 +5615,8 @@ func TestSend_AutoContinuesWhenSteerInboxNonEmpty(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
 	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
@@ -5714,9 +5722,8 @@ func TestSend_AutoContinuesMultipleLevels(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
 	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
@@ -5832,9 +5839,8 @@ func TestSend_Errors(t *testing.T) {
 			m.backend.EXPECT().Find(ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
 				ID: 12, Type: "claudecode", LLMProviderKey: "key-21", Status: consts.ACTIVE,
 			}, nil)
-			m.provider.EXPECT().FindByKey(ctx, "key-21").Return(&llm_provider_entity.LLMProvider{
-				ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-			}, nil)
+			m.provider.EXPECT().FindByKey(ctx, "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+			expectProviderResolvable(m, "key-21")
 			// chat_svc 默认无 gateway → 当 LLMProviderKey != "" 时按 unavailable 拒掉。
 			_, err := m.svc.Send(ctx, &chat_svc.SendRequest{AgentID: 7, Text: "hi"})
 			assert.Error(t, err)
@@ -5860,9 +5866,8 @@ func TestSend_Errors(t *testing.T) {
 			m.backend.EXPECT().Find(ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
 				ID: 12, Type: "claudecode", LLMProviderKey: "missing-key", DeviceID: "42", Status: consts.ACTIVE,
 			}, nil)
-			m.provider.EXPECT().FindByKey(ctx, "missing-key").Return(&llm_provider_entity.LLMProvider{
-				ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-			}, nil)
+			m.provider.EXPECT().FindByKey(ctx, "missing-key").Return(&llm_provider_entity.LLMProvider{ProviderKey: "missing-key", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-missing-key", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+			expectProviderResolvable(m, "missing-key")
 			mockRDS.EXPECT().ListDeviceProviders(int64(42)).Return([]remote_device_svc.ProviderSummary{
 				{Key: "other-key", Name: "Other", Type: "anthropic"},
 			})
@@ -5997,9 +6002,8 @@ func TestSend_Errors(t *testing.T) {
 			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 				ID: 12, Type: "builtin", LLMProviderKey: "key-21", Status: consts.ACTIVE,
 			}, nil).AnyTimes()
-			m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-				ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-			}, nil).AnyTimes()
+			m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+			expectProviderResolvable(m, "key-21")
 			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
 				ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
 			}, nil).AnyTimes()
@@ -6109,9 +6113,8 @@ func TestRegenerate_BuiltinTruncatesAndRestartsTurn(t *testing.T) {
 		m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 			ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 		}, nil)
-		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-			ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-		}, nil)
+		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+		expectProviderResolvable(m, "key-21")
 		m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 		// 事务里：先 DeleteFromSeq(100, 1) 干掉 user+assistant，再 NextSeq + Create×2。
@@ -6176,9 +6179,8 @@ func TestRegenerate_BuiltinWithProviderSessionStillRestartsTurn(t *testing.T) {
 		m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 			ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 		}, nil)
-		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-			ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-		}, nil)
+		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+		expectProviderResolvable(m, "key-21")
 		m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 		m.dbMock.ExpectBegin()
@@ -6475,9 +6477,8 @@ func TestSend_NonPiUserAnchorPersistenceFailureKeepsCompletedTurn(t *testing.T) 
 			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(backend, nil)
 			if backendType == agent_backend_entity.TypeBuiltin {
 				backend.LLMProviderKey = "provider-key"
-				m.provider.EXPECT().FindByKey(gomock.Any(), "provider-key").Return(&llm_provider_entity.LLMProvider{
-					ID: 11, Type: string(llm_provider_entity.TypeOpenAIChat), Status: consts.ACTIVE,
-				}, nil)
+				m.provider.EXPECT().FindByKey(gomock.Any(), "provider-key").Return(&llm_provider_entity.LLMProvider{ProviderKey: "provider-key", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-provider-key", ID: 11, Type: string(llm_provider_entity.TypeOpenAIChat), Status: consts.ACTIVE}, nil).AnyTimes()
+				expectProviderResolvable(m, "provider-key")
 				m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
 			}
 			m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
@@ -8537,9 +8538,8 @@ func TestEdit_BuiltinTruncatesAndReplaysNewText(t *testing.T) {
 		m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 			ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 		}, nil)
-		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-			ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-		}, nil)
+		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+		expectProviderResolvable(m, "key-21")
 		m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{}, nil).AnyTimes()
 		m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
@@ -8821,9 +8821,8 @@ func TestEnqueue_RoutesToSteerer(t *testing.T) {
 		m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 			ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 		}, nil)
-		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-			ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-		}, nil)
+		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+		expectProviderResolvable(m, "key-21")
 
 		resp, err := m.svc.Enqueue(ctx, &chat_svc.EnqueueRequest{SessionID: 100, Text: "wait"})
 		assert.NoError(t, err)
@@ -8860,9 +8859,8 @@ func TestEnqueue_CancellableTrueWhenRunnerImplementsSteerCanceler(t *testing.T) 
 		m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 			ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 		}, nil)
-		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-			ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-		}, nil)
+		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+		expectProviderResolvable(m, "key-21")
 
 		resp, err := m.svc.Enqueue(ctx, &chat_svc.EnqueueRequest{SessionID: 100, Text: "wait"})
 		assert.NoError(t, err)
@@ -8893,9 +8891,8 @@ func TestEnqueue_NoActiveTurn(t *testing.T) {
 		m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 			ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 		}, nil)
-		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-			ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-		}, nil)
+		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+		expectProviderResolvable(m, "key-21")
 
 		_, err := m.svc.Enqueue(ctx, &chat_svc.EnqueueRequest{SessionID: 100, Text: "wait"})
 		assert.Error(t, err)
@@ -8921,9 +8918,8 @@ func TestEnqueue_BackendNotSteerer(t *testing.T) {
 		m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 			ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 		}, nil)
-		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-			ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-		}, nil)
+		m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+		expectProviderResolvable(m, "key-21")
 
 		_, err := m.svc.Enqueue(ctx, &chat_svc.EnqueueRequest{SessionID: 100, Text: "wait"})
 		assert.Error(t, err)
@@ -8972,9 +8968,8 @@ func cancelQueuedFixture(t *testing.T) (m *chatMocks, ctx context.Context) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 	return m, ctx
 }
 
@@ -9595,9 +9590,8 @@ func setPermissionModeFixture(t *testing.T) (*chatMocks, *chat_entity.Session) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 	return m, sess
 }
 
@@ -10165,9 +10159,8 @@ func TestSend_StreamToolUseCarriesCanonical(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
-	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{ProviderKey: "key-21", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 
 	m.dbMock.ExpectBegin()
 	m.message.EXPECT().NextSeq(gomock.Any(), int64(201)).Return(1, nil)

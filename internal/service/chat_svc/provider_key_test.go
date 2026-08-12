@@ -138,6 +138,101 @@ func TestSend_NewSession_PersistsAndValidatesProviderKey(t *testing.T) {
 	}
 }
 
+// TestSend_NewSession_FixedModelPersistsAndDrivesTurn 钉死 spec 2026-08-11「新建与已有
+// 会话流程」：新会话 SendRequest 带 ProviderKey + ModelKey（fixed-model）时，模型随首条
+// 消息与 Session 一起校验并落库，本轮就用该固定模型解析（EffectiveLLMConfig v1）—— 不是
+// 只落 provider 再等下一轮才生效。
+func TestSend_NewSession_FixedModelPersistsAndDrivesTurn(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+	runner := &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, runner)
+	t.Cleanup(restore)
+
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(newBuiltinAgent(7, 12), nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-99").Return(newActiveProvider("key-99", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
+	// 固定模型必须存在、启用且归属 key-99。
+	m.provider.EXPECT().FindModelByKey(gomock.Any(), "mk-fixed").Return(
+		&llm_provider_model_entity.LLMProviderModel{ProviderID: 0, ModelKey: "mk-fixed", ModelID: "claude-haiku-4-5", Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+		nil).AnyTimes()
+
+	var created *chat_entity.Session
+	m.session.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, s *chat_entity.Session) error {
+		created = s
+		s.ID = 100
+		return nil
+	})
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				msg.ID = 1000
+			} else {
+				msg.ID = 1001
+			}
+			return nil
+		}).Times(2)
+	m.dbMock.ExpectCommit()
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{AgentID: 7, Text: "hi", ProviderKey: "key-99", ModelKey: "mk-fixed"})
+	require.NoError(t, err)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	require.NotNil(t, created)
+	assert.Equal(t, "key-99", created.ProviderKey)
+	assert.Equal(t, "mk-fixed", created.ModelKey, "fixed-model 必须随首条消息与 Session 一起落库")
+
+	select {
+	case req := <-runner.requests:
+		require.NotNil(t, req.Effective)
+		assert.Equal(t, agentruntime.EffectiveModeFixedModel, req.Effective.Mode)
+		assert.Equal(t, "mk-fixed", req.Effective.ModelKey, "本轮就按会话固定模型解析")
+		assert.Equal(t, "claude-haiku-4-5", req.Effective.ModelID)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for runtime request")
+	}
+}
+
+// TestSend_NewSession_RejectsUnusableFixedModel 新建会话选了 fixed-model 时，模型缺失 /
+// 停用 / 归属另一家供应商一律拒绝落库（与 SetChatSessionModelTarget 同一套校验口径）。
+func TestSend_NewSession_RejectsUnusableFixedModel(t *testing.T) {
+	cases := []struct {
+		name  string
+		model *llm_provider_model_entity.LLMProviderModel
+	}{
+		{name: "模型不存在", model: nil},
+		{name: "模型已停用", model: &llm_provider_model_entity.LLMProviderModel{ProviderID: 0, ModelKey: "mk-fixed", ModelID: "haiku", Status: consts.ACTIVE}},
+		{name: "模型归属另一家供应商", model: &llm_provider_model_entity.LLMProviderModel{ProviderID: 999, ModelKey: "mk-fixed", ModelID: "haiku", Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := setupChatTest(t)
+			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(newBuiltinAgent(7, 12), nil)
+			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+				ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+			}, nil)
+			m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
+			m.provider.EXPECT().FindByKey(gomock.Any(), "key-99").Return(newActiveProvider("key-99", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
+			m.provider.EXPECT().FindModelByKey(gomock.Any(), "mk-fixed").Return(tc.model, nil)
+
+			resp, err := m.svc.Send(m.ctx, &chat_svc.SendRequest{AgentID: 7, Text: "hi", ProviderKey: "key-99", ModelKey: "mk-fixed"})
+			require.Nil(t, resp)
+			require.Error(t, err, "非法 fixed-model 必须在落库前报错")
+			assert.NoError(t, m.dbMock.ExpectationsWereMet(), "校验失败不得发任何 DB 写")
+		})
+	}
+}
+
 // TestSend_ExistingSession_ProviderKeyOverridesAgentBinding 钉死决策 3：已有会话解析
 // provider_key > agent 绑定。SendRequest.ProviderKey 对已有会话被忽略（B：不可事后改）。
 func TestSend_ExistingSession_ProviderKeyOverridesAgentBinding(t *testing.T) {
@@ -155,6 +250,8 @@ func TestSend_ExistingSession_ProviderKeyOverridesAgentBinding(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-99").Return(newActiveProvider("key-99", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
 	expectProviderResolvable(m, "key-99")
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
@@ -266,6 +363,8 @@ func TestRegenerate_ExistingSession_ProviderKeyOverridesAgentBinding(t *testing.
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(newActiveProvider("key-21", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-99").Return(newActiveProvider("key-99", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
 	expectProviderResolvable(m, "key-99")
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-99").Return(newActiveProvider("key-99", string(llm_provider_entity.TypeAnthropic)), nil).AnyTimes()
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()

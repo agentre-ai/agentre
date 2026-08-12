@@ -592,6 +592,7 @@
         "sentence": "Selected provider {{provider}} is unavailable; fell back to the agent binding"
       },
       "providerSwitch": {
+        "fixedModel": "Switched to provider {{provider}} · fixed model {{model}} from here",
         "followAgentBinding": "Switched back to follow the agent binding / CLI login state from here",
         "sentence": "Switched to provider {{provider}} from here"
       }

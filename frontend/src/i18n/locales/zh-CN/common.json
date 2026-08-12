@@ -592,6 +592,7 @@
         "sentence": "所选供应商 {{provider}} 不可用，已回退 agent 绑定"
       },
       "providerSwitch": {
+        "fixedModel": "自此改用供应商 {{provider}} · 固定模型 {{model}}",
         "followAgentBinding": "自此改回跟随 agent 绑定 / CLI 登录态",
         "sentence": "自此改用供应商 {{provider}}"
       }

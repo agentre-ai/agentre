@@ -53,10 +53,11 @@ func noticeTextOf(t *testing.T, msg *chat_entity.Message) string {
 	return nb.Text
 }
 
-// TestSetChatSessionProvider_PersistsAndAppendsNotice：切换成功 → 单列写 provider_key
-// （决策 1）+ 向 transcript 追加一条持久 notice（决策 9），notice 是结构化负载而不是
-// 现成文案（前端走 t() 渲染）。
-func TestSetChatSessionProvider_PersistsAndAppendsNotice(t *testing.T) {
+// TestSetChatSessionModelTarget_PersistsAndAppendsNotice：provider-default 切换（非空
+// providerKey + 空 modelKey）→ 同一条原子语句写 provider_key + model_key（spec 2026-08-11
+// 决策 1）+ 向 transcript 追加一条持久 notice（决策 9），notice 是结构化负载而不是现成文案
+// （前端走 t() 渲染），仍用既有 kind=switch。
+func TestSetChatSessionModelTarget_PersistsAndAppendsNotice(t *testing.T) {
 	m := setupChatTest(t)
 	ctx := context.Background()
 
@@ -64,9 +65,9 @@ func TestSetChatSessionProvider_PersistsAndAppendsNotice(t *testing.T) {
 	expectSwitchBackend(m, ctx, sess, agent_backend_entity.TypeClaudeCode, "agent-bound")
 	m.provider.EXPECT().FindByKey(ctx, "session-key").Return(&llm_provider_entity.LLMProvider{
 		ID: 33, ProviderKey: "session-key", Type: string(llm_provider_entity.TypeAnthropic),
-		Status: consts.ACTIVE,
+		Enabled: llm_provider_entity.EnabledOn, Status: consts.ACTIVE,
 	}, nil)
-	m.session.EXPECT().UpdateProviderKey(ctx, int64(100), "session-key").Return(nil)
+	m.session.EXPECT().UpdateModelTarget(ctx, int64(100), "session-key", "").Return(nil)
 	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(7, nil)
 	var created *chat_entity.Message
 	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
@@ -75,20 +76,21 @@ func TestSetChatSessionProvider_PersistsAndAppendsNotice(t *testing.T) {
 			return nil
 		})
 
-	resp, err := m.svc.SetChatSessionProvider(ctx, &chat_svc.SetSessionProviderRequest{
+	resp, err := m.svc.SetChatSessionModelTarget(ctx, &chat_svc.SetChatSessionModelTargetRequest{
 		SessionID: 100, ProviderKey: "session-key",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "session-key", resp.ProviderKey)
+	assert.Empty(t, resp.ModelKey, "provider-default 落库的 modelKey 恒为空")
 	assert.Equal(t, "agent-bound", resp.AgentProviderKey, "回传 agent 绑定 key 供 pill 渲染回落标签")
 	assert.Equal(t, 7, created.Seq)
 	assert.Equal(t, `{"providerKey":"session-key","kind":"switch"}`, noticeTextOf(t, created))
 }
 
-// TestSetChatSessionProvider_NoticeCarriesProviderDisplayName 钉死设计决策 1：切换
-// notice 负载带上供应商显示名（后端产出时已解析到的实体，非前端按 key 查表）——
-// transcript 要读得懂「改用了哪个供应商」，而不是一串 UUID。
-func TestSetChatSessionProvider_NoticeCarriesProviderDisplayName(t *testing.T) {
+// TestSetChatSessionModelTarget_FixedModelPersistsAndAppendsNotice：fixed-model 切换
+// （双 key 非空）→ 原子写两列，notice 负载带上 modelKey + 模型显示名（后端产出时已解析
+// 到的实体，非前端按 key 查表）。
+func TestSetChatSessionModelTarget_FixedModelPersistsAndAppendsNotice(t *testing.T) {
 	m := setupChatTest(t)
 	ctx := context.Background()
 
@@ -96,9 +98,13 @@ func TestSetChatSessionProvider_NoticeCarriesProviderDisplayName(t *testing.T) {
 	expectSwitchBackend(m, ctx, sess, agent_backend_entity.TypeClaudeCode, "agent-bound")
 	m.provider.EXPECT().FindByKey(ctx, "session-key").Return(&llm_provider_entity.LLMProvider{
 		ID: 33, ProviderKey: "session-key", Name: "中转 · GLM 5.2", Type: string(llm_provider_entity.TypeAnthropic),
-		Status: consts.ACTIVE,
+		Enabled: llm_provider_entity.EnabledOn, Status: consts.ACTIVE,
 	}, nil)
-	m.session.EXPECT().UpdateProviderKey(ctx, int64(100), "session-key").Return(nil)
+	m.provider.EXPECT().FindModelByKey(ctx, "mk-haiku").Return(&llm_provider_model_entity.LLMProviderModel{
+		ProviderID: 33, ModelKey: "mk-haiku", ModelID: "glm-5.2", Name: "GLM 5.2",
+		Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE,
+	}, nil)
+	m.session.EXPECT().UpdateModelTarget(ctx, int64(100), "session-key", "mk-haiku").Return(nil)
 	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(7, nil)
 	var created *chat_entity.Message
 	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
@@ -107,24 +113,24 @@ func TestSetChatSessionProvider_NoticeCarriesProviderDisplayName(t *testing.T) {
 			return nil
 		})
 
-	_, err := m.svc.SetChatSessionProvider(ctx, &chat_svc.SetSessionProviderRequest{
-		SessionID: 100, ProviderKey: "session-key",
+	resp, err := m.svc.SetChatSessionModelTarget(ctx, &chat_svc.SetChatSessionModelTargetRequest{
+		SessionID: 100, ProviderKey: "session-key", ModelKey: "mk-haiku",
 	})
 	require.NoError(t, err)
-	assert.Equal(t,
-		`{"providerKey":"session-key","providerName":"中转 · GLM 5.2","kind":"switch"}`,
-		noticeTextOf(t, created))
+	assert.Equal(t, "session-key", resp.ProviderKey)
+	assert.Equal(t, "mk-haiku", resp.ModelKey)
+	assert.Equal(t, `{"providerKey":"session-key","providerName":"中转 · GLM 5.2","modelKey":"mk-haiku","modelName":"GLM 5.2","kind":"switch"}`, noticeTextOf(t, created))
 }
 
-// TestSetChatSessionProvider_ClearsBackToAgentBinding：空串 = 改回跟随 agent 绑定
-// （CLI 登录态双向可切，决策 7）；不查供应商，notice 说明的是「跟随绑定」。
-func TestSetChatSessionProvider_ClearsBackToAgentBinding(t *testing.T) {
+// TestSetChatSessionModelTarget_ClearsBackToAgentBinding：双空 = 改回跟随 agent 绑定
+// （inherit-agent）；不查供应商，notice 说明的是「跟随绑定」。
+func TestSetChatSessionModelTarget_ClearsBackToAgentBinding(t *testing.T) {
 	m := setupChatTest(t)
 	ctx := context.Background()
 
-	sess := &chat_entity.Session{ID: 100, AgentID: 7, Status: consts.ACTIVE, ProviderKey: "session-key"}
+	sess := &chat_entity.Session{ID: 100, AgentID: 7, Status: consts.ACTIVE, ProviderKey: "session-key", ModelKey: "mk-haiku"}
 	expectSwitchBackend(m, ctx, sess, agent_backend_entity.TypeClaudeCode, "")
-	m.session.EXPECT().UpdateProviderKey(ctx, int64(100), "").Return(nil)
+	m.session.EXPECT().UpdateModelTarget(ctx, int64(100), "", "").Return(nil)
 	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(3, nil)
 	var created *chat_entity.Message
 	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
@@ -133,36 +139,64 @@ func TestSetChatSessionProvider_ClearsBackToAgentBinding(t *testing.T) {
 			return nil
 		})
 
-	resp, err := m.svc.SetChatSessionProvider(ctx, &chat_svc.SetSessionProviderRequest{
-		SessionID: 100, ProviderKey: "",
+	resp, err := m.svc.SetChatSessionModelTarget(ctx, &chat_svc.SetChatSessionModelTargetRequest{
+		SessionID: 100, ProviderKey: "", ModelKey: "",
 	})
 	require.NoError(t, err)
 	assert.Empty(t, resp.ProviderKey)
+	assert.Empty(t, resp.ModelKey)
 	assert.Equal(t, `{"kind":"switch"}`, noticeTextOf(t, created))
 }
 
-// TestSetChatSessionProvider_NoOpWhenUnchanged：选中当前已生效的那一项（弹层里点已选中
-// 的行）不写库、也不追加 notice —— 否则每点一次就往 transcript 里塞一条「已改用 X」，
-// 而实际上什么都没变。mock 上没有 UpdateProviderKey / NextSeq / Create 期望。
-func TestSetChatSessionProvider_NoOpWhenUnchanged(t *testing.T) {
+// TestSetChatSessionModelTarget_NoOpWhenUnchanged：选中当前已生效的同一**完整组合**
+// （ProviderKey + ModelKey 都相同，spec 决策 1）不写库、也不追加 notice —— 否则每点一次
+// 就往 transcript 里塞一条「已改用 X」，而实际上什么都没变。mock 上没有 UpdateModelTarget /
+// NextSeq / Create 期望。
+func TestSetChatSessionModelTarget_NoOpWhenUnchanged(t *testing.T) {
 	m := setupChatTest(t)
 	ctx := context.Background()
 
-	sess := &chat_entity.Session{ID: 100, AgentID: 7, Status: consts.ACTIVE, ProviderKey: "session-key"}
+	sess := &chat_entity.Session{ID: 100, AgentID: 7, Status: consts.ACTIVE, ProviderKey: "session-key", ModelKey: "mk-haiku"}
 	expectSwitchBackend(m, ctx, sess, agent_backend_entity.TypeClaudeCode, "agent-bound")
 
-	resp, err := m.svc.SetChatSessionProvider(ctx, &chat_svc.SetSessionProviderRequest{
-		SessionID: 100, ProviderKey: "session-key",
+	resp, err := m.svc.SetChatSessionModelTarget(ctx, &chat_svc.SetChatSessionModelTargetRequest{
+		SessionID: 100, ProviderKey: "session-key", ModelKey: "mk-haiku",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "session-key", resp.ProviderKey)
+	assert.Equal(t, "mk-haiku", resp.ModelKey)
 	assert.Equal(t, "agent-bound", resp.AgentProviderKey)
 }
 
-// TestSetChatSessionProvider_RejectsUnusableProvider：决策 11 —— 复用新建会话那套校验，
-// 不通过一律拒绝写库（会话保持原供应商），也不产出 notice。mock 上没有 UpdateProviderKey
-// / Create 期望，真写了就会失败。
-func TestSetChatSessionProvider_RejectsUnusableProvider(t *testing.T) {
+// TestSetChatSessionModelTarget_NoOpComparesCompletePair：no-op 必须比较完整组合 ——
+// 会话当前是 fixed-model(session-key/mk-haiku)，用户改选同一 provider 的 provider-default
+// （modelKey 空）是不同的目标，必须写入并把 modelKey 清空，不能误判为 no-op。
+func TestSetChatSessionModelTarget_NoOpComparesCompletePair(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := context.Background()
+
+	sess := &chat_entity.Session{ID: 100, AgentID: 7, Status: consts.ACTIVE, ProviderKey: "session-key", ModelKey: "mk-haiku"}
+	expectSwitchBackend(m, ctx, sess, agent_backend_entity.TypeClaudeCode, "agent-bound")
+	m.provider.EXPECT().FindByKey(ctx, "session-key").Return(&llm_provider_entity.LLMProvider{
+		ID: 33, ProviderKey: "session-key", Type: string(llm_provider_entity.TypeAnthropic),
+		Enabled: llm_provider_entity.EnabledOn, Status: consts.ACTIVE,
+	}, nil)
+	m.session.EXPECT().UpdateModelTarget(ctx, int64(100), "session-key", "").Return(nil)
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(7, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
+
+	resp, err := m.svc.SetChatSessionModelTarget(ctx, &chat_svc.SetChatSessionModelTargetRequest{
+		SessionID: 100, ProviderKey: "session-key", ModelKey: "",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "session-key", resp.ProviderKey)
+	assert.Empty(t, resp.ModelKey)
+}
+
+// TestSetChatSessionModelTarget_RejectsUnusableProvider：决策 2/3 —— 复用新建会话那套校验，
+// 不通过一律拒绝写库（会话保持原 target），也不产出 notice。mock 上没有 UpdateModelTarget /
+// Create 期望，真写了就会失败。
+func TestSetChatSessionModelTarget_RejectsUnusableProvider(t *testing.T) {
 	cases := []struct {
 		name     string
 		backend  agent_backend_entity.BackendType
@@ -185,6 +219,14 @@ func TestSetChatSessionProvider_RejectsUnusableProvider(t *testing.T) {
 				Status: consts.ACTIVE,
 			},
 		},
+		{
+			name:    "供应商已禁用(Enabled=Off)",
+			backend: agent_backend_entity.TypeClaudeCode,
+			provider: &llm_provider_entity.LLMProvider{
+				ID: 35, ProviderKey: "session-key", Type: string(llm_provider_entity.TypeAnthropic),
+				Enabled: llm_provider_entity.EnabledOff, Status: consts.ACTIVE,
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -195,7 +237,7 @@ func TestSetChatSessionProvider_RejectsUnusableProvider(t *testing.T) {
 			expectSwitchBackend(m, ctx, sess, tc.backend, "agent-bound")
 			m.provider.EXPECT().FindByKey(ctx, "session-key").Return(tc.provider, nil)
 
-			_, err := m.svc.SetChatSessionProvider(ctx, &chat_svc.SetSessionProviderRequest{
+			_, err := m.svc.SetChatSessionModelTarget(ctx, &chat_svc.SetChatSessionModelTargetRequest{
 				SessionID: 100, ProviderKey: "session-key",
 			})
 			assert.Error(t, err)
@@ -203,17 +245,79 @@ func TestSetChatSessionProvider_RejectsUnusableProvider(t *testing.T) {
 	}
 }
 
-// TestSetChatSessionProvider_SessionNotFound / InvalidParameter：边界。
-func TestSetChatSessionProvider_Boundaries(t *testing.T) {
+// TestSetChatSessionModelTarget_RejectsUnusableModel：fixed-model 的 Model 必须存在、
+// 启用且归属所选供应商；缺失/停用/归属错误一律拒绝写库。
+func TestSetChatSessionModelTarget_RejectsUnusableModel(t *testing.T) {
+	cases := []struct {
+		name  string
+		model *llm_provider_model_entity.LLMProviderModel
+	}{
+		{
+			name:  "模型不存在",
+			model: nil,
+		},
+		{
+			name: "模型已停用",
+			model: &llm_provider_model_entity.LLMProviderModel{
+				ProviderID: 33, ModelKey: "mk-haiku", ModelID: "haiku", Status: consts.ACTIVE,
+			},
+		},
+		{
+			name: "模型归属另一家供应商",
+			model: &llm_provider_model_entity.LLMProviderModel{
+				ProviderID: 999, ModelKey: "mk-haiku", ModelID: "haiku",
+				Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := setupChatTest(t)
+			ctx := context.Background()
+
+			sess := &chat_entity.Session{ID: 100, AgentID: 7, Status: consts.ACTIVE}
+			expectSwitchBackend(m, ctx, sess, agent_backend_entity.TypeClaudeCode, "agent-bound")
+			m.provider.EXPECT().FindByKey(ctx, "session-key").Return(&llm_provider_entity.LLMProvider{
+				ID: 33, ProviderKey: "session-key", Type: string(llm_provider_entity.TypeAnthropic),
+				Enabled: llm_provider_entity.EnabledOn, Status: consts.ACTIVE,
+			}, nil)
+			m.provider.EXPECT().FindModelByKey(ctx, "mk-haiku").Return(tc.model, nil)
+
+			_, err := m.svc.SetChatSessionModelTarget(ctx, &chat_svc.SetChatSessionModelTargetRequest{
+				SessionID: 100, ProviderKey: "session-key", ModelKey: "mk-haiku",
+			})
+			assert.Error(t, err)
+		})
+	}
+}
+
+// TestSetChatSessionModelTarget_Boundaries：边界。
+func TestSetChatSessionModelTarget_Boundaries(t *testing.T) {
 	m := setupChatTest(t)
 	ctx := context.Background()
 
-	_, err := m.svc.SetChatSessionProvider(ctx, &chat_svc.SetSessionProviderRequest{SessionID: 0})
+	_, err := m.svc.SetChatSessionModelTarget(ctx, &chat_svc.SetChatSessionModelTargetRequest{SessionID: 0})
 	assert.Error(t, err, "SessionID <= 0 → InvalidParameter")
 
 	m.session.EXPECT().Find(ctx, int64(404)).Return(nil, nil)
-	_, err = m.svc.SetChatSessionProvider(ctx, &chat_svc.SetSessionProviderRequest{SessionID: 404})
+	_, err = m.svc.SetChatSessionModelTarget(ctx, &chat_svc.SetChatSessionModelTargetRequest{SessionID: 404})
 	assert.Error(t, err, "会话不存在 → ChatSessionNotFound")
+}
+
+// TestSetChatSessionModelTarget_RejectsModelWithoutProvider：modelKey 单独出现（providerKey
+// 空）是畸形目标 —— fixed-model 必须有 provider，不能落出「没有 provider 的固定模型」这种
+// 下一轮必失败的会话。
+func TestSetChatSessionModelTarget_RejectsModelWithoutProvider(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := context.Background()
+
+	sess := &chat_entity.Session{ID: 100, AgentID: 7, Status: consts.ACTIVE}
+	expectSwitchBackend(m, ctx, sess, agent_backend_entity.TypeClaudeCode, "agent-bound")
+
+	_, err := m.svc.SetChatSessionModelTarget(ctx, &chat_svc.SetChatSessionModelTargetRequest{
+		SessionID: 100, ProviderKey: "", ModelKey: "mk-fixed",
+	})
+	assert.Error(t, err, "modelKey 非空 + providerKey 空 → 拒绝写库")
 }
 
 // TestLoadSession_DisplaysEffectiveProvider：展示口径 —— 会话选了供应商时，供应商类型
@@ -224,13 +328,13 @@ func TestLoadSession_DisplaysEffectiveProvider(t *testing.T) {
 	ctx := context.Background()
 
 	m.session.EXPECT().Find(ctx, int64(100)).Return(&chat_entity.Session{
-		ID: 100, AgentID: 7, Status: consts.ACTIVE, ProviderKey: "session-key",
+		ID: 100, AgentID: 7, Status: consts.ACTIVE, ProviderKey: "session-key", ModelKey: "mk-session-key",
 	}, nil)
 	m.agent.EXPECT().Find(ctx, int64(7)).Return(&agent_entity.Agent{
 		ID: 7, AgentBackendID: 12, Status: consts.ACTIVE,
 	}, nil)
 	m.backend.EXPECT().Find(ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
-		ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "agent-bound", Status: consts.ACTIVE,
+		ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "agent-bound", LLMModelKey: "mk-agent-bound", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(ctx, "agent-bound").Return(&llm_provider_entity.LLMProvider{
 		ID: 33, ProviderKey: "agent-bound", Type: string(llm_provider_entity.TypeOpenAIChat),
@@ -255,6 +359,8 @@ func TestLoadSession_DisplaysEffectiveProvider(t *testing.T) {
 	assert.Equal(t, 222_000, resp.Session.ContextWindow, "上下文窗口同样按 effective provider 算")
 	assert.Equal(t, "session-key", resp.Session.ProviderKey)
 	assert.Equal(t, "agent-bound", resp.Session.AgentProviderKey)
+	assert.Equal(t, "mk-session-key", resp.Session.ModelKey, "会话钉的 fixed-model key 随展示透传给前端水合 pill")
+	assert.Equal(t, "mk-agent-bound", resp.Session.AgentModelKey, "agent 绑定固定模型 key 随展示透传给前端渲染「跟随绑定」")
 }
 
 // TestLoadSession_FallsBackToAgentBindingForDisplay：会话 provider_key 为空时展示完全
@@ -266,8 +372,11 @@ func TestLoadSession_FallsBackToAgentBindingForDisplay(t *testing.T) {
 	expectLoadSessionBackend(m, ctx, 100, 7, 12, agent_backend_entity.TypeClaudeCode,
 		&llm_provider_entity.LLMProvider{
 			ID: 33, ProviderKey: "agent-bound", Type: string(llm_provider_entity.TypeAnthropic),
-			Status: consts.ACTIVE,
+			Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-agent-bound", Status: consts.ACTIVE,
 		})
+	m.provider.EXPECT().FindModelByKey(ctx, "mk-agent-bound").Return(
+		&llm_provider_model_entity.LLMProviderModel{ModelKey: "mk-agent-bound", ModelID: "claude-opus-4-1", ContextWindow: 111_000, Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+		nil).AnyTimes()
 
 	resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 100})
 	require.NoError(t, err)

@@ -95,7 +95,7 @@ func noticeOnlyAssistantMessage(t *testing.T, id int64) *chat_entity.Message {
 	t.Helper()
 	m := &chat_entity.Message{ID: id, Role: "assistant"}
 	if err := m.SetBlocks([]blocks.ContentBlock{blocks.NoticeBlock{
-		Level: "info", Text: encodeProviderSwitch("session-key", "中转 · GLM 5.2"),
+		Level: "info", Text: encodeProviderSwitch("session-key", "", "中转 · GLM 5.2", ""),
 	}}); err != nil {
 		t.Fatalf("SetBlocks: %v", err)
 	}

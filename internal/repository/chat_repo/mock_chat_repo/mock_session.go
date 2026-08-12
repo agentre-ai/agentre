@@ -439,6 +439,20 @@ func (mr *MockSessionRepoMockRecorder) UpdateExecDaemon(ctx, sessionID, deviceID
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateExecDaemon", reflect.TypeOf((*MockSessionRepo)(nil).UpdateExecDaemon), ctx, sessionID, deviceID, daemonFingerprint, agentBackendID)
 }
 
+// UpdateModelTarget mocks base method.
+func (m *MockSessionRepo) UpdateModelTarget(ctx context.Context, sessionID int64, providerKey, modelKey string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateModelTarget", ctx, sessionID, providerKey, modelKey)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateModelTarget indicates an expected call of UpdateModelTarget.
+func (mr *MockSessionRepoMockRecorder) UpdateModelTarget(ctx, sessionID, providerKey, modelKey any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateModelTarget", reflect.TypeOf((*MockSessionRepo)(nil).UpdateModelTarget), ctx, sessionID, providerKey, modelKey)
+}
+
 // UpdatePermissionMode mocks base method.
 func (m *MockSessionRepo) UpdatePermissionMode(ctx context.Context, sessionID int64, mode string) error {
 	m.ctrl.T.Helper()
@@ -465,18 +479,4 @@ func (m *MockSessionRepo) UpdatePermissionModeAtLaunch(ctx context.Context, sess
 func (mr *MockSessionRepoMockRecorder) UpdatePermissionModeAtLaunch(ctx, sessionID, mode any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdatePermissionModeAtLaunch", reflect.TypeOf((*MockSessionRepo)(nil).UpdatePermissionModeAtLaunch), ctx, sessionID, mode)
-}
-
-// UpdateProviderKey mocks base method.
-func (m *MockSessionRepo) UpdateProviderKey(ctx context.Context, sessionID int64, providerKey string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateProviderKey", ctx, sessionID, providerKey)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// UpdateProviderKey indicates an expected call of UpdateProviderKey.
-func (mr *MockSessionRepoMockRecorder) UpdateProviderKey(ctx, sessionID, providerKey any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateProviderKey", reflect.TypeOf((*MockSessionRepo)(nil).UpdateProviderKey), ctx, sessionID, providerKey)
 }

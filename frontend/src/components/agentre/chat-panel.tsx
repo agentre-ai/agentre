@@ -1355,6 +1355,7 @@ function ChatPanel({
         : newSessionAgent?.llmProviderKey,
     sessionId,
     persistedProviderKey: sessionId > 0 ? session?.providerKey : undefined,
+    persistedModelKey: sessionId > 0 ? session?.modelKey : undefined,
     onSwitched: () => void reloadSession(),
   });
 
@@ -1650,10 +1651,14 @@ function ChatPanel({
         permissionMode:
           permissionModeOverride ??
           (isModeSwitchable ? permissionMode.mode : ""),
-        // 新建会话首发前预选：瞬态供应商随 SendRequest.ProviderKey 透传,与 Session
-        // 一同落库（决策 2）。已有会话后端忽略该字段（B 不允许事后改,无 Setter）。
+        // 新建会话首发前预选：瞬态 ModelTarget 随 SendRequest.ProviderKey/ModelKey 透传,
+        // 与 Session 一同落库（spec 2026-08-11「新建与已有会话流程」）。已有会话后端忽略
+        // 该字段（改 target 走 SetChatSessionModelTarget）。
         ...(targetSessionId === 0 && providerPill.providerKey
-          ? { providerKey: providerPill.providerKey }
+          ? {
+              providerKey: providerPill.providerKey,
+              modelKey: providerPill.modelKey,
+            }
           : {}),
         // R15a 手动指定执行目标：同一条规则，仅新建会话生效；0/未选时不传，
         // 后端按 R15 顺序自动挑第一个可用的档。

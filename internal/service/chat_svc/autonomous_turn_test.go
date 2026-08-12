@@ -773,12 +773,14 @@ func TestRunTurn_MountsAutonomousWatcher(t *testing.T) {
 		sess := &chat_entity.Session{ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE}
 		backend := &agent_backend_entity.AgentBackend{ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-11", Status: consts.ACTIVE}
 		ag := &agent_entity.Agent{ID: 7, Name: "Builtin", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`}
-		prov := &llm_provider_entity.LLMProvider{ID: 11, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE}
+		prov := &llm_provider_entity.LLMProvider{ID: 11, ProviderKey: "key-11", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
+			Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-11"}
 
 		m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
 		m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(ag, nil)
 		m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(backend, nil)
-		m.provider.EXPECT().FindByKey(gomock.Any(), "key-11").Return(prov, nil)
+		m.provider.EXPECT().FindByKey(gomock.Any(), "key-11").Return(prov, nil).AnyTimes()
+		expectProviderResolvable(m, "key-11")
 		m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 		m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
 		m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()

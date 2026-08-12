@@ -1,50 +1,46 @@
-import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Box, ChevronDown, RotateCcw } from "lucide-react";
-
 import { cn } from "@/lib/utils";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 
 import type { UseProviderPillReturn } from "./use-provider-pill";
-import { LlmModelLogo, LlmProviderLogo } from "../ai-brand-logo";
+import { ModelTargetPicker } from "../model-target-picker";
 
 export type ProviderPillProps = UseProviderPillReturn;
 
 /**
- * ProviderPill: composer 动作行里权限模式旁的 LLM 供应商选择器（规格「新建会话
- * 供应商选择器」决策 4/5 + 「已有会话切换 LLM 供应商」决策 10）。
+ * ProviderPill: composer 动作行里权限模式旁的 LLM ModelTarget 选择器（规格
+ * 2026-08-10「已有会话切换 LLM 供应商」决策 10 + 2026-08-11「新建与已有会话流程」）。
+ *
+ * 用共享 ModelTargetPicker（scenario="chat"）承载主体交互：顶部特殊项「跟随 Agent
+ * 绑定」（inherit-agent），Provider 组内 provider-default 首项 + fixed-model 列表，
+ * 搜索 / 最近使用 / 兼容过滤 / 键盘导航。只发射 providerKey/modelKey，绝不发射名称、
+ * ModelID 或凭据。
  *
  * 状态机:
- *  - 只列与后端兼容的供应商（isProviderCompatible 过滤,后端 ProviderTypeMatch 对齐）。
- *  - 未绑 agent（CLI 登录态）同样显示:弹层第一项「跟随 agent 绑定」语义为
- *    「不选,走 CLI 登录态」;选具体供应商可接管该会话。
- *  - 未选时 pill 标签:agent 已绑 → 绑定供应商名;未绑 → 「选择供应商」占位。
- *  - pill 在所有会话/后端状态下都渲染，不可切换时 disabled 而不是隐藏（决策 10）：
- *    加载中沿用既有行为；后端不支持 agentre 供应商 / 加载成功但无兼容供应商都在
- *    disabled 之外通过 title 说明原因；拉取失败保持可用，弹层底部报错（既有行为）。
- *  - 弹层底部常显一行「自下一轮生效」说明，与轮是否进行中无关（决策 8/切换流程）。
- *  - 新建会话瞬态选择不发任何 IPC，首发 Send 时随 SendRequest.ProviderKey 透传落库；
- *    已有会话选中立即调 SetChatSessionProvider 持久化（hook 侧处理）。
+ *  - 未绑 agent（CLI 登录态）同样显示：顶部特殊项语义为「不选，走 CLI 登录态」。
+ *  - pill 在所有会话/后端状态下都渲染，不可切换时 disabled 而不是隐藏（决策 10）。
+ *  - 已有会话选中立即调 SetChatSessionModelTarget 持久化（hook 侧处理，乐观更新 +
+ *    失败回滚）；新建会话纯瞬态，首发 Send 时随 SendRequest.ProviderKey/ModelKey 透传。
+ *  - 选中目标在目录里解析不出来（Provider/Model 缺失/停用/被删）→「目标已失效」红边，
+ *    不清除 key（spec「Failure and recovery semantics」fixed-model 严格阻止）。
  */
 export function ProviderPill({
   providerKey,
-  setProviderKey,
-  providers,
+  modelKey,
+  setTarget,
+  backendType,
+  catalog,
+  loading,
+  catalogLoading,
+  catalogError,
   error,
   unbound,
   effectiveKey,
+  invalid,
   disabled,
   disabledReason,
 }: ProviderPillProps) {
   const { t } = useTranslation();
-  const [open, setOpen] = React.useState(false);
 
-  const selected = providers.find((p) => p.providerKey === effectiveKey);
-  const label = selected?.name || effectiveKey || t("providerPill.unselected");
   const disabledTitle =
     disabled && disabledReason === "unsupportedBackend"
       ? t("providerPill.disabledUnsupportedBackend")
@@ -52,182 +48,42 @@ export function ProviderPill({
         ? t("providerPill.disabledNoCompatibleProviders")
         : null;
 
-  function handleSelect(key: string) {
-    setOpen(false);
-    setProviderKey(key);
-  }
+  const label =
+    effectiveKey ||
+    (unbound ? t("providerPill.unselected") : t("providerPill.unselected"));
+
+  // 未选（inherit-agent）但 agent 已绑 provider：触发按钮显示绑定供应商名（spec
+  // 「新建与已有会话流程」：Agent Backend 已绑定 ProviderModel 时展示其解析结果），
+  // 而不是顶部特殊项「跟随 Agent 绑定」；已选 / 未绑时交给 Picker 按目录解析。
+  const boundLabel =
+    !providerKey && !modelKey && effectiveKey
+      ? (catalog.find((p) => p.providerKey === effectiveKey)?.name ??
+        effectiveKey)
+      : undefined;
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          disabled={disabled}
-          aria-label={t("providerPill.aria", { provider: label })}
-          title={disabledTitle ?? t("providerPill.title", { provider: label })}
-          data-testid="provider-pill"
-          className={cn(
-            "inline-flex h-6 cursor-pointer items-center gap-1 rounded-md border px-2 text-2xs font-medium leading-none transition-colors",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
-            "disabled:cursor-not-allowed disabled:opacity-60",
-            providerKey
-              ? "bg-primary-soft text-primary-text border-primary-text/60"
-              : "bg-muted text-foreground border-border",
-          )}
-        >
-          <Box
-            className="size-3 shrink-0 text-muted-foreground"
-            aria-hidden="true"
-          />
-          {selected ? (
-            <LlmModelLogo
-              providerType={selected.type}
-              providerName={selected.name}
-              baseUrl={selected.baseUrl}
-              model={selected.model ?? ""}
-              className="size-3.5"
-            />
-          ) : null}
-          <span className="max-w-[140px] truncate font-mono">{label}</span>
-          {providerKey ? (
-            <RotateCcw
-              className="size-2.5 shrink-0 text-primary-text"
-              aria-hidden="true"
-            />
-          ) : (
-            <ChevronDown
-              className="size-2.5 shrink-0 text-muted-foreground"
-              aria-hidden="true"
-            />
-          )}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        side="top"
-        sideOffset={8}
-        className="w-[320px] p-0"
-      >
-        <div className="flex items-center justify-between border-b border-border px-3.5 py-2.5">
-          <div className="flex items-center gap-1.5">
-            <Box className="size-3.5 text-foreground" aria-hidden="true" />
-            <span className="text-xs font-semibold text-foreground">
-              {t("providerPill.heading")}
-            </span>
-          </div>
-        </div>
-
-        <ul className="flex flex-col gap-0.5 p-1.5" role="listbox">
-          {/* 第一项：跟随 agent 绑定。未选时高亮；选中具体供应商后点击可清回。 */}
-          <li>
-            <button
-              type="button"
-              role="option"
-              aria-selected={!providerKey}
-              onClick={() => handleSelect("")}
-              className={cn(
-                "flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors",
-                "cursor-pointer",
-                !providerKey ? "bg-accent" : "hover:bg-accent/60",
-              )}
-            >
-              <span className="mt-px inline-flex size-5 shrink-0 items-center justify-center">
-                <RotateCcw
-                  className="size-3.5 text-muted-foreground"
-                  aria-hidden="true"
-                />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-1.5">
-                  <span className="text-xs font-semibold text-foreground">
-                    {t("providerPill.followAgentBinding")}
-                  </span>
-                  {!providerKey ? (
-                    <span className="ml-auto inline-flex items-center gap-1 rounded-sm bg-primary-soft px-1.5 py-px font-mono text-2xs font-semibold tracking-wider text-primary-text">
-                      <span className="size-1 rounded-full bg-primary" />
-                      {t("providerPill.active")}
-                    </span>
-                  ) : null}
-                </span>
-                <span className="mt-0.5 block text-2xs leading-snug text-muted-foreground">
-                  {unbound
-                    ? t("providerPill.followAgentBindingUnboundDesc")
-                    : t("providerPill.followAgentBindingDesc")}
-                </span>
-              </span>
-            </button>
-          </li>
-
-          {providers.map((p) => {
-            const active = providerKey === p.providerKey;
-            return (
-              <li key={p.providerKey}>
-                <button
-                  type="button"
-                  role="option"
-                  aria-selected={active}
-                  onClick={() => handleSelect(p.providerKey)}
-                  className={cn(
-                    "flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors",
-                    "cursor-pointer",
-                    active ? "bg-primary-soft" : "hover:bg-accent/60",
-                  )}
-                >
-                  <span className="relative mt-0.5 inline-flex size-6 shrink-0 items-center justify-center">
-                    <LlmProviderLogo
-                      providerType={p.type}
-                      providerName={p.name}
-                      baseUrl={p.baseUrl}
-                      className="size-6 rounded-md"
-                    />
-                    {active ? (
-                      <span className="absolute -bottom-0.5 -right-0.5 size-2 rounded-full border border-background bg-primary" />
-                    ) : null}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="truncate font-mono text-xs font-semibold text-foreground">
-                      {p.name}
-                    </span>
-                    <span className="mt-0.5 block truncate font-mono text-2xs leading-snug text-muted-foreground">
-                      <span className="inline-flex items-center gap-1">
-                        {p.model ? (
-                          <LlmModelLogo
-                            providerType={p.type}
-                            providerName={p.name}
-                            baseUrl={p.baseUrl}
-                            model={p.model}
-                            className="size-3"
-                          />
-                        ) : null}
-                        {p.type}
-                      </span>
-                      {p.model ? ` · ${p.model}` : ""}
-                    </span>
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-
-        {/* 决策 8/切换流程：弹层底部常显一行说明，不随轮状态变化——轮中允许切、
-            当前轮不受影响。 */}
-        <div
-          data-testid="provider-pill-note"
-          className="border-t border-border px-3.5 py-1.5 text-2xs text-muted-foreground"
-        >
-          {t("providerPill.switchNote")}
-        </div>
-
-        {error ? (
-          <div
-            data-testid="provider-pill-error"
-            className="border-t border-destructive/40 bg-destructive-soft px-3.5 py-1.5 text-2xs text-destructive"
-          >
-            {error}
-          </div>
-        ) : null}
-      </PopoverContent>
-    </Popover>
+    <ModelTargetPicker
+      scenario="chat"
+      backendType={backendType}
+      selected={{ providerKey, modelKey }}
+      onChange={setTarget}
+      catalog={catalog}
+      loading={loading || catalogLoading}
+      error={catalogError || error !== null}
+      errorText={error ?? undefined}
+      disabled={disabled}
+      invalid={invalid}
+      triggerLabel={boundLabel}
+      title={disabledTitle ?? undefined}
+      footer={t("providerPill.switchNote")}
+      aria-label={t("providerPill.aria", { provider: label })}
+      data-testid="provider-pill"
+      className={cn(
+        "h-6 w-auto px-2 text-2xs font-medium",
+        providerKey
+          ? "border-primary-text/60 bg-primary-soft text-primary-text"
+          : "border-border bg-muted text-foreground",
+      )}
+    />
   );
 }
