@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 	"github.com/stretchr/testify/assert"
@@ -175,6 +176,67 @@ func TestPeerSessionPull_GivenEmptyHistory_ThenReportsZeroOldestSeq(t *testing.T
 	assert.Equal(t, int64(0), page.OldestSeq)
 	assert.Empty(t, page.Notifications)
 }
+
+// Given an attached peer whose relay write is stalled (Notify blocks), when a
+// live canonical event is published from the local turn loop, then the publish
+// returns immediately instead of head-of-line blocking the local session, and
+// the frame is still delivered once the peer's connection drains.
+func TestPublishPeerEvent_GivenStalledSubscriber_ThenLocalPublishDoesNotBlockAndFrameStillDelivers(t *testing.T) {
+	deps := setupPeerSessionTest(t)
+	ctx := context.Background()
+	deps.session.EXPECT().Find(ctx, int64(41)).Return(&chat_entity.Session{ID: 41, AgentID: 7, AgentStatus: "idle"}, nil)
+	deps.agent.EXPECT().Find(ctx, int64(7)).Return(agentForPeerSession(), nil)
+	deps.backend.EXPECT().Find(ctx, int64(11)).Return(nil, nil)
+	deps.message.EXPECT().List(ctx, int64(41)).Return(nil, nil)
+
+	released := make(chan struct{})
+	notified := make(chan struct{}, 2)
+	subscriber := &blockingPeerSubscriber{released: released, notified: notified}
+	attached, err := deps.svc.AttachPeerSession(ctx, wire.SessionAttachParams{SessionID: 41}, subscriber)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), attached.LatestSeq)
+	// 把游标抬到高水位，让该订阅进入「已拉平、收实时帧」的 ready 状态。
+	_, err = deps.svc.PullPeerSession(ctx, wire.SessionPullParams{SessionID: 41}, subscriber)
+	require.NoError(t, err)
+
+	published := make(chan struct{})
+	go func() {
+		deps.svc.publishPeerEvent(41, agentruntime.TextDelta{Text: "live"})
+		close(published)
+	}()
+	select {
+	case <-published:
+		// 发布方没有因为对端卡住而阻塞（旧实现会在 Notify 上卡死本地 turn）。
+	case <-time.After(time.Second):
+		t.Fatal("publishPeerEvent blocked on a stalled peer subscriber; a local turn would stall")
+	}
+
+	// 对端恢复后，缓冲帧仍被送达（投递语义不变）。
+	close(released)
+	select {
+	case <-notified:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued live frame never reached the recovered subscriber")
+	}
+}
+
+// blockingPeerSubscriber 的 Notify 阻塞到 released 关闭，用于证明本地发布不会被
+// 卡住对端的网络写拖死。
+type blockingPeerSubscriber struct {
+	released chan struct{}
+	notified chan struct{}
+}
+
+func (s *blockingPeerSubscriber) Notify(string, any) error {
+	<-s.released
+	select {
+	case s.notified <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (s *blockingPeerSubscriber) Done() <-chan struct{} { return make(chan struct{}) }
 
 type peerNotification struct {
 	method string

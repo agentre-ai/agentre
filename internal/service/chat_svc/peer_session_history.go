@@ -25,12 +25,24 @@ import (
 // desktop session. It is deliberately in-memory: persisted transcript seeds
 // the initial prefix, and subsequent live canonical frames are retained only
 // for the running desktop process so reconnects share one dedup universe.
+//
+// Delivery to subscribers is serialized through a single worker goroutine
+// (peerFlushLoop) rather than being written inline from the canonical event
+// loop: Notify blocks on a relay WebSocket write, and doing that while holding
+// the publication mutex would stall the local turn itself when an attached
+// peer (or the relay path to it) is slow. Frames are only ever queued by the
+// turn loop; the worker drains the queues outside the publication lock.
 type peerSessionPublication struct {
 	mu          sync.Mutex
 	history     []wire.EventFrame
 	nextSeq     int64
 	initialized bool
 	subscribers map[string]*peerSessionSubscription
+
+	// wake carries a single-slot non-blocking signal for the flush worker;
+	// startOnce guarantees at most one worker per publication.
+	wake      chan struct{}
+	startOnce sync.Once
 }
 
 type peerSessionSubscription struct {
@@ -43,8 +55,56 @@ type peerSessionSubscription struct {
 func (s *chatSvc) peerPublication(sessionID int64) *peerSessionPublication {
 	value, _ := s.peerPublications.LoadOrStore(sessionID, &peerSessionPublication{
 		subscribers: map[string]*peerSessionSubscription{},
+		wake:        make(chan struct{}, 1),
 	})
-	return value.(*peerSessionPublication)
+	publication := value.(*peerSessionPublication)
+	publication.startOnce.Do(func() { go s.peerFlushLoop(publication) })
+	return publication
+}
+
+// peerFlushLoop drains every subscriber's queued frames on the publication's
+// own goroutine. A blocked Notify (stalled peer / relay) pauses only this
+// session's peer fan-out, never the local turn's event loop.
+func (s *chatSvc) peerFlushLoop(publication *peerSessionPublication) {
+	for range publication.wake {
+		s.flushPeerPending(publication)
+	}
+}
+
+// flushPeerPending hands each ready subscriber its queued frames in order,
+// outside the publication lock. A subscriber is ready once its pull cursor has
+// reached the attach high-water mark, so the pull path has already drained the
+// history-covered prefix and this queue only ever holds genuinely live frames.
+func (s *chatSvc) flushPeerPending(publication *peerSessionPublication) {
+	type job struct {
+		key    string
+		sub    *peerSessionSubscription
+		frames []wire.EventFrame
+	}
+	publication.mu.Lock()
+	jobs := make([]job, 0, len(publication.subscribers))
+	for key, sub := range publication.subscribers {
+		if sub.cursor < sub.highWater || len(sub.pending) == 0 {
+			continue
+		}
+		frames := sub.pending
+		sub.pending = nil
+		jobs = append(jobs, job{key: key, sub: sub, frames: frames})
+	}
+	publication.mu.Unlock()
+
+	for _, j := range jobs {
+		for _, frame := range j.frames {
+			if err := j.sub.subscriber.Notify(wire.NotifyEvent, frame); err != nil {
+				publication.mu.Lock()
+				if publication.subscribers[j.key] == j.sub {
+					delete(publication.subscribers, j.key)
+				}
+				publication.mu.Unlock()
+				break
+			}
+		}
+	}
 }
 
 // PullPeerSession serves the same runtime.session.pull contract used by
@@ -168,18 +228,19 @@ func (s *chatSvc) publishPeerEventRaw(sessionID int64, raw json.RawMessage) {
 	}
 	publication := value.(*peerSessionPublication)
 	publication.mu.Lock()
-	defer publication.mu.Unlock()
 	publication.nextSeq++
 	frame := wire.EventFrame{SessionID: sessionID, Event: append(json.RawMessage(nil), raw...), Seq: publication.nextSeq}
 	publication.history = append(publication.history, frame)
-	for key, subscription := range publication.subscribers {
-		if subscription.cursor < subscription.highWater {
-			subscription.pending = append(subscription.pending, frame)
-			continue
-		}
-		if err := subscription.subscriber.Notify(wire.NotifyEvent, frame); err != nil {
-			delete(publication.subscribers, key)
-		}
+	for _, subscription := range publication.subscribers {
+		// Queue only: the flush worker performs the (potentially blocking) relay
+		// write. Never Notify inline from a canonical event loop — a stalled
+		// peer must not stall this desktop's own turn.
+		subscription.pending = append(subscription.pending, frame)
+	}
+	publication.mu.Unlock()
+	select {
+	case publication.wake <- struct{}{}:
+	default:
 	}
 }
 
