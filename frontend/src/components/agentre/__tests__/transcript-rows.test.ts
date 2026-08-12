@@ -169,9 +169,11 @@ describe("buildRenderItems", () => {
     expect(items[0].uiStateKey).toBe(
       "message:5:permission:permission:req-denied",
     );
+    // 被消费掉的是那条 allowed 审批：它不再单独成项，工具本身照常进活动块。
+    // （审批信息由工具块上的 toolPermission 承载，不再往 RenderItem 上挂一份。）
     expect(activityAt(items, 1).steps[0]).toMatchObject({
       type: "tool",
-      permissionBlock: { toolPermission: { requestId: "req-allowed" } },
+      toolBlock: { toolName: "Bash" },
     });
   });
 

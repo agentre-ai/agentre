@@ -420,7 +420,6 @@
       "paramCount": "{{count}} params"
     },
     "fileEdit": {
-      "aria": "{{tool}} tool call",
       "badge": {
         "deleted": "DELETED",
         "new": "NEW"
@@ -430,13 +429,10 @@
       "truncated": "Some lines are truncated · full diff has {{count}} lines (showing first {{shown}})"
     },
     "fileWrite": {
-      "aria": "Write tool call",
       "copyDone": "Full content copied",
       "copyFailed": "Failed to copy full content",
       "copyFull": "Copy Full Content",
       "empty": "Created empty file",
-      "newBadge": "NEW",
-      "title": "Write",
       "truncated": "Content truncated · showing first {{lines}} lines"
     },
     "plan": {

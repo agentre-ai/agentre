@@ -666,7 +666,7 @@ function RenderItemView({
       //   - tool_use 形态的 plan.update 刻意不注册,这里仍显示普通工具卡。
       //     type="plan" 且带 actions 的 plan.update 已在上方复用 PlanCard。
       //   - 否则 fallback 到 RawToolCard(Bash/Read/MCP 等通用工具)。
-      // item.permissionBlock 由 RawToolCard 自行从 toolBlock.toolPermission 读。
+      // 审批信息不单独透传:RawToolCard 自己从 toolBlock.toolPermission 读。
       return (
         <CanonicalToolRouter
           cwd={ctx?.cwd}

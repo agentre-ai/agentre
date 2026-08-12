@@ -420,7 +420,6 @@
       "paramCount": "{{count}} 个参数"
     },
     "fileEdit": {
-      "aria": "{{tool}} 工具调用",
       "badge": {
         "deleted": "DELETED",
         "new": "NEW"
@@ -430,13 +429,10 @@
       "truncated": "部分行已截断 · 完整 diff 共 {{count}} 行(展示前 {{shown}} 行)"
     },
     "fileWrite": {
-      "aria": "写文件工具调用",
       "copyDone": "已复制完整内容",
       "copyFailed": "复制完整内容失败",
       "copyFull": "复制完整内容",
       "empty": "新建空文件",
-      "newBadge": "NEW",
-      "title": "写入",
       "truncated": "内容已截断 · 显示前 {{lines}} 行"
     },
     "plan": {

@@ -51,11 +51,10 @@ export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [
   { file: "activity-block/block.tsx" },
   { file: "activity-block/row.tsx" },
   { file: "canonical-tool/raw/card.tsx" },
-  { file: "canonical-tool/file-edit/card.tsx" },
+  // file.write / file.edit 的卡壳已随聚合改动删除(它们只会折进活动块,
+  // 路由永远到不了),留下的是给活动行展开体复用的两个正文渲染器 ——
+  // 守卫范围跟着正文走,别把已覆盖的行漏出去。
   { file: "canonical-tool/file-edit/hunk-renderer.tsx" },
-  { file: "canonical-tool/file-write/card.tsx" },
-  // 写入正文(行号 / 横向滚动 / 截断条)从 card.tsx 抽出来给活动行复用后,
-  // 那些字面量搬到了这里 —— 守卫范围跟着搬,别把已覆盖的行漏出去。
   { file: "canonical-tool/file-write/content-renderer.tsx" },
   { file: "canonical-tool/agent-spawn/card.tsx" },
   { file: "canonical-tool/plan/card.tsx" },

@@ -61,8 +61,6 @@ export type RenderItem =
       type: "thinking";
     }
   | {
-      // permissionBlock 仅在审批通过后由配对逻辑挂上,渲染时透传给 ToolInvocationCard。
-      permissionBlock?: ChatBlockData;
       resultBlock?: ChatBlockData;
       toolBlock?: ChatBlockData;
       // childBlocks 仅 canonical.agent.spawn 需要(parent → run 归集),其它工具留空。
@@ -280,6 +278,8 @@ export function buildRenderItems({
         }
         const item: RenderItem = { toolBlock: b, type: "tool" };
         // 配对消费一条审批 RenderItem —— 找最早未消费且同 toolName 的 allowed 审批。
+        // 只是把那条审批标成已消费(它不再单独出现在转录里);审批本身的信息由
+        // 工具块上的 toolPermission 承载,不需要再挂一份到 RenderItem 上。
         if (b.toolName) {
           const queue = pendingPermsByTool.get(b.toolName);
           if (queue && queue.length > 0) {
@@ -287,7 +287,6 @@ export function buildRenderItems({
             const permItem = items[permIdx];
             if (permItem?.type === "tool_permission_request") {
               permItem._consumed = true;
-              item.permissionBlock = permItem.block;
             }
           }
         }
