@@ -26,9 +26,12 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo/mock_chat_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_location_repo/mock_project_location_repo"
 	chatblocks "github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 	"github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 )
 
@@ -925,6 +928,78 @@ func TestGoal_RemoteReleasesRuntimeAfterOneShotRPC(t *testing.T) {
 func TestBorrowRemoteRuntime_InvalidDevice(t *testing.T) {
 	svc := &chatSvc{}
 	be := &agent_backend_entity.AgentBackend{DeviceID: "not-a-number"}
+	_, err := svc.borrowRemoteRuntime(context.Background(), be, 100)
+	var httpErr *httputils.Error
+	require.ErrorAs(t, err, &httpErr)
+	assert.Equal(t, code.AgentBackendInvalidDevice, httpErr.Code)
+}
+
+// TestBorrowRemoteRuntime_GivenFingerprintDeviceID_ResolvesPairedRowAndBorrows
+// R13 认领后 / 对端同步回来的 agentred backend 以规范指纹（sha256:…）作为
+// DeviceID。本地派发边界必须把它解析成本机 paired_agentreds 的行 ID 再拨号 —— 旧
+// DeviceIDInt 语义只认数值，会让这类「判可用但跑不动」的目标永远报
+// AgentBackendInvalidDevice。
+func TestBorrowRemoteRuntime_GivenFingerprintDeviceID_ResolvesPairedRowAndBorrows(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
+	lease := mock_remote_device_svc.NewMockLease(ctrl)
+	lease.EXPECT().Client().Return(&noopDaemonClient{}).AnyTimes()
+	lease.EXPECT().Closed().Return(make(chan struct{})).AnyTimes()
+	lease.EXPECT().Release().AnyTimes()
+	pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(lease, nil).AnyTimes()
+
+	rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+	rds.EXPECT().List(gomock.Any()).Return([]*remote_device_svc.DeviceView{
+		{ID: 7, DaemonFingerprint: "sha256:daemon-x"},
+	}, nil).AnyTimes()
+	rds.EXPECT().Get(gomock.Any(), int64(7)).
+		Return(&remote_device_svc.DeviceView{ID: 7, DaemonFingerprint: "sha256:daemon-x"}, nil).AnyTimes()
+	prevSvc := remote_device_svc.Default()
+	remote_device_svc.SetDefault(rds)
+	t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+	sessRepo := mock_chat_repo.NewMockSessionRepo(ctrl)
+	prevRepo := chat_repo.Session()
+	chat_repo.RegisterSession(sessRepo)
+	t.Cleanup(func() { chat_repo.RegisterSession(prevRepo) })
+	sessRepo.EXPECT().UpdateExecDaemon(gomock.Any(), int64(100), int64(7), "sha256:daemon-x", int64(0)).Return(nil)
+
+	svc := &chatSvc{}
+	svc.setConnPoolForTest(pool)
+
+	be := &agent_backend_entity.AgentBackend{
+		Type:     string(agent_backend_entity.TypeClaudeCode),
+		DeviceID: "sha256:daemon-x",
+	}
+	rt, err := svc.borrowRemoteRuntime(context.Background(), be, 100)
+	require.NoError(t, err)
+	require.NotNil(t, rt)
+	assert.Equal(t, 1, svc.remoteRuntimeCount(7),
+		"a fingerprint DeviceID must resolve to its local paired row before dialing")
+}
+
+// TestBorrowRemoteRuntime_GivenUnpairedFingerprintDeviceID_RejectsWithInvalidDevice
+// 指纹在本机配对表里查不到（这台 daemon 没在本机配对）时派发边界报不可派发，绝不
+// 猜一个行号去拨号。
+func TestBorrowRemoteRuntime_GivenUnpairedFingerprintDeviceID_RejectsWithInvalidDevice(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
+	pool.EXPECT().Borrow(gomock.Any(), gomock.Any()).Return(nil, errors.New("must not dial")).AnyTimes()
+
+	rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+	rds.EXPECT().List(gomock.Any()).Return(nil, nil).AnyTimes()
+	prevSvc := remote_device_svc.Default()
+	remote_device_svc.SetDefault(rds)
+	t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+	svc := &chatSvc{}
+	svc.setConnPoolForTest(pool)
+
+	be := &agent_backend_entity.AgentBackend{DeviceID: "sha256:not-paired-here"}
 	_, err := svc.borrowRemoteRuntime(context.Background(), be, 100)
 	var httpErr *httputils.Error
 	require.ErrorAs(t, err, &httpErr)

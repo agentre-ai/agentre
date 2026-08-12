@@ -123,6 +123,64 @@ func TestAgentBackendAdapter_LoadUsesFingerprintAndProviderKeyOnly(t *testing.T)
 	assert.NoError(t, syncwire.GuardPayload(out.Payload))
 }
 
+// TestAgentBackendAdapter_GivenLegacyNumericDeviceID_UploadsCanonicalFingerprint
+// 前端创建 agentred backend 时仍会提交本机 paired_agentreds 的数值行 ID（历史路径），
+// 但 wire 层的 AgentredFingerprint 字段语义是「全局指纹」。数值行 ID 跨机毫无意义——
+// 对端按同号解析会落到它自己那张表里另一台机器上（错机派发）。load 必须把它翻译成
+// 指向那台 daemon 的指纹再上行。
+func TestAgentBackendAdapter_GivenLegacyNumericDeviceID_UploadsCanonicalFingerprint(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	state := mock_syncstate_repo.NewMockSyncStateRepo(ctrl)
+	state.EXPECT().FindRow(gomock.Any(), syncwire.KindAgentBackend, "be-1", gomock.Any()).
+		DoAndReturn(func(_ context.Context, _, _ string, dest any) (bool, error) {
+			row := dest.(*agent_backend_entity.AgentBackend)
+			*row = agent_backend_entity.AgentBackend{
+				ID: 9, Type: "claudecode", Name: "构建机 Claude",
+				DeviceID: "3", SyncMeta: syncmeta_entity.SyncMeta{SyncID: "be-1", SyncVersion: 2},
+			}
+			return true, nil
+		})
+	syncstate_repo.RegisterSyncState(state)
+
+	paired := mock_remote_device_repo.NewMockPairedAgentredRepo(ctrl)
+	paired.EXPECT().Get(gomock.Any(), int64(3)).Return(&paired_agentred_entity.PairedAgentred{
+		ID: 3, DaemonFingerprint: "fp-builder",
+	}, nil)
+	remote_device_repo.RegisterPairedAgentred(paired)
+
+	out, err := agentBackendAdapter{}.load(context.Background(), "be-1")
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "fp-builder", out.AgentredFingerprint,
+		"a numeric paired-row ID must never cross the wire as a fingerprint")
+}
+
+// TestAgentBackendAdapter_GivenLegacyNumericDeviceIDOfUnpairedDaemon_SkipsUpload
+// 数值行 ID 指向的 daemon 已解除配对时翻不出指纹。宁可这一条不上行（旧行为），
+// 也不能让数值行 ID 带着错机语义过机。
+func TestAgentBackendAdapter_GivenLegacyNumericDeviceIDOfUnpairedDaemon_SkipsUpload(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	state := mock_syncstate_repo.NewMockSyncStateRepo(ctrl)
+	state.EXPECT().FindRow(gomock.Any(), syncwire.KindAgentBackend, "be-1", gomock.Any()).
+		DoAndReturn(func(_ context.Context, _, _ string, dest any) (bool, error) {
+			row := dest.(*agent_backend_entity.AgentBackend)
+			*row = agent_backend_entity.AgentBackend{
+				ID: 9, Type: "claudecode", Name: "构建机 Claude",
+				DeviceID: "3", SyncMeta: syncmeta_entity.SyncMeta{SyncID: "be-1", SyncVersion: 2},
+			}
+			return true, nil
+		})
+	syncstate_repo.RegisterSyncState(state)
+
+	paired := mock_remote_device_repo.NewMockPairedAgentredRepo(ctrl)
+	paired.EXPECT().Get(gomock.Any(), int64(3)).Return(nil, nil)
+	remote_device_repo.RegisterPairedAgentred(paired)
+
+	out, err := agentBackendAdapter{}.load(context.Background(), "be-1")
+	require.NoError(t, err)
+	require.Nil(t, out, "an unexpressable numeric target must not be uploaded")
+}
+
 func TestAgentBackendAdapter_GivenCanonicalFingerprint_PreservesItWithoutPairLookup(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	state := mock_syncstate_repo.NewMockSyncStateRepo(ctrl)

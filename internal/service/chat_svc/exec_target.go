@@ -70,7 +70,7 @@ func (s *chatSvc) resolveExecTarget(ctx context.Context, sess *chat_entity.Sessi
 		return nil, i18n.NewError(ctx, code.AgentBackendNotFound)
 	}
 	if be.IsRemote() {
-		deviceID, ok := be.DeviceIDInt()
+		deviceID, ok := localPairedDeviceID(ctx, be.DeviceID)
 		if !ok || deviceID <= 0 {
 			return nil, i18n.NewError(ctx, code.AgentBackendInvalidDevice)
 		}

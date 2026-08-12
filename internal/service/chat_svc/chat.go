@@ -326,10 +326,17 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 		return nil, operationFailedWithCause(ctx, err)
 	}
 
-	// 批量查远端 device 视图，避免 per-agent 单次查询的 N+1 问题。
+	// 批量查远端 device 视图，避免 per-agent 单次查询的 N+1 问题。数值行 ID 与指纹
+	// 两类键都建：前者按 id 取（历史 producer），后者按指纹在配对表里找（R13 认领 /
+	// 同步回来的 backend 以指纹为 DeviceID）。
 	deviceIDSet := map[int64]struct{}{}
+	fingerprintSet := map[string]struct{}{}
 	for _, be := range backends {
 		if be == nil || !be.IsRemote() {
+			continue
+		}
+		if strings.HasPrefix(be.DeviceID, "sha256:") {
+			fingerprintSet[be.DeviceID] = struct{}{}
 			continue
 		}
 		if id, ok := be.DeviceIDInt(); ok {
@@ -337,12 +344,22 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 		}
 	}
 	deviceViews := map[int64]*remote_device_svc.DeviceView{}
+	fingerprintViews := map[string]*remote_device_svc.DeviceView{}
 	if rds := remote_device_svc.Default(); rds != nil {
 		for id := range deviceIDSet {
 			if dv, derr := rds.Get(ctx, id); derr == nil && dv != nil {
 				deviceViews[id] = dv
 			}
 			// missing device → leave DeviceID populated but DeviceName empty + Online false.
+		}
+		if len(fingerprintSet) > 0 {
+			if rows, lerr := rds.List(ctx); lerr == nil {
+				for _, row := range rows {
+					if row != nil {
+						fingerprintViews[row.DaemonFingerprint] = row
+					}
+				}
+			}
 		}
 	}
 
@@ -395,6 +412,9 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 					item.DeviceName = dv.Name
 					item.Online = dv.Online
 				}
+			} else if dv := fingerprintViews[be.DeviceID]; dv != nil {
+				item.DeviceName = dv.Name
+				item.Online = dv.Online
 			}
 			gatewayRunning := s.gateway != nil && s.gateway.Status().State == "running"
 			item.Chattable, item.BlockReason, item.ChattableHint =
@@ -676,6 +696,9 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 							zap.Error(derr))
 					}
 				}
+			} else if dv := localPairedDeviceView(ctx, be.DeviceID); dv != nil {
+				resp.Session.DeviceName = dv.Name
+				resp.Session.Online = dv.Online
 			}
 			if cwd, cerr := resolveSessionCwd(ctx, sess, be); cerr == nil {
 				resp.Session.Cwd = cwd
@@ -1197,7 +1220,7 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 	}
 	releasePreflight := func() {}
 	if be.IsRemote() {
-		if deviceID, ok := be.DeviceIDInt(); ok {
+		if deviceID, ok := localPairedDeviceID(ctx, be.DeviceID); ok {
 			releasePreflight = func() { s.releaseRemoteRuntime(deviceID, sess.ID) }
 		}
 	}
@@ -1385,7 +1408,7 @@ func (s *chatSvc) goalControllerForSession(ctx context.Context, sess *chat_entit
 		return nil, agentruntime.GoalRequest{}, release, i18n.NewError(ctx, code.ChatGoalUnsupported)
 	}
 	if be.IsRemote() {
-		if deviceID, ok := be.DeviceIDInt(); ok {
+		if deviceID, ok := localPairedDeviceID(ctx, be.DeviceID); ok {
 			released := false
 			release = func() {
 				if released {
@@ -5255,7 +5278,7 @@ func (s *chatSvc) borrowRemoteRuntimeForTurn(
 	be *agent_backend_entity.AgentBackend,
 	sessionID int64,
 ) (*remote.Runtime, func(), error) {
-	deviceID, ok := be.DeviceIDInt()
+	deviceID, ok := localPairedDeviceID(ctx, be.DeviceID)
 	if !ok {
 		return nil, func() {}, i18n.NewError(ctx, code.AgentBackendInvalidDevice)
 	}
@@ -5273,7 +5296,7 @@ func (s *chatSvc) borrowRemoteRuntimeOwned(
 	sessionID int64,
 	generation *remoteRuntimeGeneration,
 ) (*remote.Runtime, error) {
-	deviceID, ok := be.DeviceIDInt()
+	deviceID, ok := localPairedDeviceID(ctx, be.DeviceID)
 	if !ok {
 		return nil, i18n.NewError(ctx, code.AgentBackendInvalidDevice)
 	}

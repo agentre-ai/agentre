@@ -158,7 +158,7 @@ func resolvePeerProjectID(ctx context.Context, cwd string) (int64, error) {
 func (s *chatSvc) preflightPeerRemoteExecution(ctx context.Context, backend *agent_backend_entity.AgentBackend, sessionID int64) error {
 	_, err := s.selectRunner(ctx, backend, sessionID)
 	if err == nil {
-		if deviceID, ok := backend.DeviceIDInt(); ok {
+		if deviceID, ok := localPairedDeviceID(ctx, backend.DeviceID); ok {
 			s.releaseRemoteRuntime(deviceID, sessionID)
 		}
 		return nil

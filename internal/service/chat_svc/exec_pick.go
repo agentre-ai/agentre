@@ -14,6 +14,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/project_location_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
@@ -298,6 +299,33 @@ func localPairedDeviceView(ctx context.Context, fingerprint string) *remote_devi
 	return nil
 }
 
+// localPairedDeviceID 在本地派发边界把 backend 持久化的 DeviceID —— 规范指纹
+// （sha256:…），或历史数值配对行 ID —— 解析成本机 paired_agentreds 的行 ID。只有
+// 解析出的行 ID 才能交给 daemon 池 / 游标 / 路径缓存（那些子系统全部按数值行 ID 建
+// 键）。
+//
+// 返回 (0,false) 的两种情形：DeviceID 为空（本机档），或指纹在本机配对表里查不到
+// （这台 daemon 没在本机配对，不可达）。调用方把它报告为「不可派发」而不是猜一个
+// 行号去拨号。与 agent_backend_svc.localPairedDeviceID 同一取法，chat_svc 侧独立声
+// 明以保持 consumer-side 窄依赖。
+func localPairedDeviceID(ctx context.Context, deviceID string) (int64, bool) {
+	if deviceID == "" {
+		return 0, false
+	}
+	if strings.HasPrefix(deviceID, "sha256:") {
+		view := localPairedDeviceView(ctx, deviceID)
+		if view == nil {
+			return 0, false
+		}
+		return view.ID, true
+	}
+	id, ok := (&agent_backend_entity.AgentBackend{DeviceID: deviceID}).DeviceIDInt()
+	if !ok {
+		return 0, false
+	}
+	return id, true
+}
+
 // evalRemoteDeviceAvailability 见 evalExecTargetAvailability 步骤 2。与 ListAgents 里
 // deviceViews 的取法一致：Get 出错（含未配对时的 not-found）一律当未配对处理，不当成
 // 真失败中断挑选 —— 未配对本就是这一档的正常状态之一（R2b），不是异常。
@@ -389,7 +417,15 @@ func (s *chatSvc) execTargetProjectPath(
 		}
 		return p.Path, true, nil
 	}
-	loc, err := project_location_repo.ProjectLocation().FindByProjectAndDevice(ctx, projectID, be.DeviceID)
+	// 具名指纹档按（project, daemon_fingerprint）自然键查行；数值行 ID 档按
+	// device_id 缓存列查（两列同存，决策 26）。
+	var loc *project_location_entity.ProjectLocation
+	var err error
+	if strings.HasPrefix(be.DeviceID, "sha256:") {
+		loc, err = project_location_repo.ProjectLocation().FindByProjectAndFingerprint(ctx, projectID, be.DeviceID)
+	} else {
+		loc, err = project_location_repo.ProjectLocation().FindByProjectAndDevice(ctx, projectID, be.DeviceID)
+	}
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return "", false, nil
