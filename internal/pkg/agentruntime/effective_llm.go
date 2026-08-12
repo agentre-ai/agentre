@@ -7,8 +7,9 @@ package agentruntime
 //   - ProviderKey 非空且 ModelKey 为空 → provider-default（每轮解析当前默认模型）；
 //   - 两个 key 都非空 → fixed-model（解析指定 Model 记录）。
 //
-// v1 阶段只有 native / provider-default 两种会从 chat_svc 产出（Backend 与 Session
-// 固定 ModelKey 由后续任务扩展），fixed-model 保留枚举与类型占位。
+// v1 阶段三种 mode 都会从 chat_svc 产出：native（无供应商）、provider-default
+// （ProviderKey 非空 + ModelKey 空）与 fixed-model（Backend 或 Session 钉了固定
+// ModelKey）。
 type EffectiveLLMConfigMode string
 
 const (
