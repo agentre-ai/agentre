@@ -73,8 +73,10 @@ func (s *chatSvc) peerFlushLoop(publication *peerSessionPublication) {
 
 // flushPeerPending hands each ready subscriber its queued frames in order,
 // outside the publication lock. A subscriber is ready once its pull cursor has
-// reached the attach high-water mark, so the pull path has already drained the
-// history-covered prefix and this queue only ever holds genuinely live frames.
+// reached the attach high-water mark; the pull path returns the history-covered
+// prefix in its response and signals this worker (a single wake) at catch-up, so
+// this queue only ever holds genuinely live frames and the worker is the only
+// goroutine that ever calls Notify for them.
 func (s *chatSvc) flushPeerPending(publication *peerSessionPublication) {
 	type job struct {
 		key    string
@@ -117,10 +119,10 @@ func (s *chatSvc) PullPeerSession(_ context.Context, params wire.SessionPullPara
 	publication := s.peerPublication(params.SessionID)
 	key := peerSubscriberKey(subscriber)
 	publication.mu.Lock()
-	defer publication.mu.Unlock()
 
 	subscription := publication.subscribers[key]
 	if subscription == nil {
+		publication.mu.Unlock()
 		return wire.SessionPullResult{}, ErrPeerSessionNotFound
 	}
 	limit := clampPeerPullLimit(params.Limit)
@@ -138,6 +140,7 @@ func (s *chatSvc) PullPeerSession(_ context.Context, params wire.SessionPullPara
 		}
 		paramsRaw, err := json.Marshal(frame)
 		if err != nil {
+			publication.mu.Unlock()
 			return wire.SessionPullResult{}, fmt.Errorf("marshal peer history frame: %w", err)
 		}
 		out.Notifications = append(out.Notifications, wire.JournaledNotification{
@@ -148,8 +151,18 @@ func (s *chatSvc) PullPeerSession(_ context.Context, params wire.SessionPullPara
 	if out.Cursor > subscription.cursor {
 		subscription.cursor = out.Cursor
 	}
-	if subscription.cursor >= subscription.highWater {
-		s.drainPeerSubscriptionLocked(publication, key, subscription)
+	caughtUp := subscription.cursor >= subscription.highWater
+	publication.mu.Unlock()
+
+	// 拉平后把 live 交付完全交给单个 flush worker：这里只发一个 wake 信号，绝不在
+	// publication 锁内调用 subscriber.Notify。因此慢对端只卡自己的扇出、不卡本地
+	// turn，也不会与 worker 的 out-of-lock 投递交错出乱序（worker 是唯一投递者）。
+	// 不拉平的订阅保持 cursor < highWater，worker 的 flush 会照旧跳过它。
+	if caughtUp {
+		select {
+		case publication.wake <- struct{}{}:
+		default:
+		}
 	}
 	return out, nil
 }
@@ -242,16 +255,6 @@ func (s *chatSvc) publishPeerEventRaw(sessionID int64, raw json.RawMessage) {
 	case publication.wake <- struct{}{}:
 	default:
 	}
-}
-
-func (s *chatSvc) drainPeerSubscriptionLocked(publication *peerSessionPublication, key string, subscription *peerSessionSubscription) {
-	for _, frame := range subscription.pending {
-		if err := subscription.subscriber.Notify(wire.NotifyEvent, frame); err != nil {
-			delete(publication.subscribers, key)
-			return
-		}
-	}
-	subscription.pending = nil
 }
 
 func peerSubscriberKey(subscriber PeerSessionSubscriber) string {

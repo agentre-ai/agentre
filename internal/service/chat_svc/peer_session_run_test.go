@@ -10,6 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/cago-frame/agents/provider"
+	"github.com/cago-frame/agents/provider/providertest"
+
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
@@ -23,8 +26,6 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/syncstate_repo"
 	"github.com/agentre-ai/agentre/internal/repository/syncstate_repo/mock_syncstate_repo"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
-	"github.com/cago-frame/agents/provider"
-	"github.com/cago-frame/agents/provider/providertest"
 )
 
 // peerRunAdapter 是从 web 把新对话派到这台桌面端上（R17）的入口形状：runtime.run

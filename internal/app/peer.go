@@ -51,6 +51,15 @@ func (a *App) startInboundPeer(ctx context.Context) {
 		if runErr := inbound.Run(peerCtx); runErr != nil {
 			logger.Default().Warn("app.startInboundPeer: inbound relay stopped", zap.Error(runErr))
 		}
+		// HubLink 永久退出（如重试时钟崩溃）后，清掉本登记的 cancel/done：否则
+		// peerCancel != nil 会让之后的 logged_in 事件永远无法重建入站登记。若登记
+		// 已被 stopInboundPeer 清空或被更新的登记替换，身份比对失败、不重复清理。
+		a.peerMu.Lock()
+		if a.peerDone == done {
+			a.peerCancel = nil
+			a.peerDone = nil
+		}
+		a.peerMu.Unlock()
 	}()
 }
 

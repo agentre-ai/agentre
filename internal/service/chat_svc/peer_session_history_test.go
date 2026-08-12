@@ -3,6 +3,7 @@ package chat_svc
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -125,6 +126,9 @@ func TestPeerSessionPull_GivenSnapshotAndEarlyLiveEvent_ThenKeepsOneOrderedSeqUn
 	assert.Equal(t, int64(3), second.Cursor)
 	assert.False(t, second.HasMore)
 	assertPeerNotificationSeqs(t, second.Notifications, 3)
+	require.Eventually(t, func() bool {
+		return len(subscriber.notifications()) == 1
+	}, time.Second, time.Millisecond, "live delivery moves to the out-of-lock flush worker once the pull catches up")
 	live := subscriber.notifications()
 	require.Len(t, live, 1)
 	assert.Equal(t, wire.NotifyEvent, live[0].method)
@@ -220,12 +224,156 @@ func TestPublishPeerEvent_GivenStalledSubscriber_ThenLocalPublishDoesNotBlockAnd
 	}
 }
 
+// Given a peer whose pull reaches the high-water mark while a live frame is
+// buffered and that frame's relay write stalls, when the local turn publishes
+// another live event during the stall, then publication must not block behind
+// the stalled peer: the pull path must not hold the publication lock across
+// Notify. All live delivery belongs to the out-of-lock flush worker, so a slow
+// peer stalls only its own fan-out, never the desktop's canonical event loop.
+func TestPullPeerSession_GivenBufferedLiveFrameAndStalledNotify_ThenPublicationLockNotHeldByPullDrain(t *testing.T) {
+	deps := setupPeerSessionTest(t)
+	ctx := context.Background()
+	messages := []*chat_entity.Message{
+		{SessionID: 41, Role: "user", Seq: 1, BlocksJSON: `[{"type":"text","data":{"text":"hello"}}]`},
+		{SessionID: 41, Role: "assistant", Seq: 2, BlocksJSON: `[{"type":"text","data":{"text":"world"}}]`},
+	}
+	deps.session.EXPECT().Find(ctx, int64(41)).Return(&chat_entity.Session{ID: 41, AgentID: 7, AgentStatus: "idle"}, nil)
+	deps.agent.EXPECT().Find(ctx, int64(7)).Return(agentForPeerSession(), nil)
+	deps.backend.EXPECT().Find(ctx, int64(11)).Return(nil, nil)
+	deps.message.EXPECT().List(ctx, int64(41)).Return(messages, nil)
+
+	released := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(released) }) }
+	defer release()
+	subscriber := &stallingSeqSubscriber{blockSeq: 4, entered: make(chan struct{}), released: released}
+	attached, err := deps.svc.AttachPeerSession(ctx, wire.SessionAttachParams{SessionID: 41}, subscriber)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), attached.LatestSeq)
+
+	// 拉平前先到一条实时帧（seq 4）：cursor < H，worker 不会投递，帧停在 pending。
+	deps.svc.publishPeerEvent(41, agentruntime.TextDelta{Text: "live-before-pull"})
+	assert.Empty(t, subscriber.seenSeqs(), "cursor below H must retain live buffering")
+
+	// pull 拉满历史并进入 catch-up：缓冲的实时帧在此刻交付。
+	pullDone := make(chan struct{})
+	go func() {
+		_, _ = deps.svc.PullPeerSession(ctx, wire.SessionPullParams{SessionID: 41, Cursor: 0, Limit: 5}, subscriber)
+		close(pullDone)
+	}()
+	select {
+	case <-subscriber.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("catch-up never attempted the buffered live frame")
+	}
+
+	// 交付卡在对端的网络写（锁内、RED）时，本地 turn 再发布一条事件。
+	published := make(chan struct{})
+	go func() {
+		deps.svc.publishPeerEvent(41, agentruntime.TextDelta{Text: "live-during-stall"})
+		close(published)
+	}()
+	select {
+	case <-published:
+	case <-time.After(time.Second):
+		t.Fatal("publish blocked behind the pull drain's Notify; a slow peer stalls the local turn")
+	}
+
+	release()
+	select {
+	case <-pullDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pull did not return after the stall was released")
+	}
+	require.Eventually(t, func() bool { return len(subscriber.seenSeqs()) == 2 }, time.Second, time.Millisecond)
+	assert.Equal(t, []int64{4, 5}, subscriber.seenSeqs(), "buffered and post-stall live frames must deliver in seq order")
+}
+
+// Given a peer already caught up (ready) with the flush worker stalled
+// delivering an earlier live frame, when the peer pulls again, then the pull
+// must not deliver a later buffered frame out of order: the pull path hands
+// live delivery to the single flush worker so frames reach the subscriber in
+// monotonic seq order.
+func TestPeerSessionLive_GivenWorkerStalledOnEarlierFrame_ThenPullDoesNotDeliverLaterFrameOutOfOrder(t *testing.T) {
+	deps := setupPeerSessionTest(t)
+	ctx := context.Background()
+	deps.session.EXPECT().Find(ctx, int64(41)).Return(&chat_entity.Session{ID: 41, AgentID: 7, AgentStatus: "idle"}, nil)
+	deps.agent.EXPECT().Find(ctx, int64(7)).Return(agentForPeerSession(), nil)
+	deps.backend.EXPECT().Find(ctx, int64(11)).Return(nil, nil)
+	deps.message.EXPECT().List(ctx, int64(41)).Return(nil, nil)
+
+	released := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(released) }) }
+	defer release()
+	subscriber := &stallingSeqSubscriber{blockSeq: 1, entered: make(chan struct{}), released: released}
+	attached, err := deps.svc.AttachPeerSession(ctx, wire.SessionAttachParams{SessionID: 41}, subscriber)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), attached.LatestSeq)
+	_, err = deps.svc.PullPeerSession(ctx, wire.SessionPullParams{SessionID: 41}, subscriber)
+	require.NoError(t, err)
+
+	// 第一条实时帧（seq 1）：flush worker 进入投递并卡在对端写上。
+	deps.svc.publishPeerEvent(41, agentruntime.TextDelta{Text: "first"})
+	select {
+	case <-subscriber.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("flush worker never attempted the first live frame")
+	}
+
+	// 第二条实时帧（seq 2）到达后 peer 再 pull 一次：不得抢在 seq 1 之前交付。
+	deps.svc.publishPeerEvent(41, agentruntime.TextDelta{Text: "second"})
+	_, err = deps.svc.PullPeerSession(ctx, wire.SessionPullParams{SessionID: 41, Cursor: 0}, subscriber)
+	require.NoError(t, err)
+	assert.Empty(t, subscriber.seenSeqs(), "a later live frame must not be delivered ahead of an earlier stalled one")
+
+	release()
+	require.Eventually(t, func() bool { return len(subscriber.seenSeqs()) == 2 }, time.Second, time.Millisecond)
+	assert.Equal(t, []int64{1, 2}, subscriber.seenSeqs(), "live frames must deliver in monotonic seq order")
+}
+
 // blockingPeerSubscriber 的 Notify 阻塞到 released 关闭，用于证明本地发布不会被
 // 卡住对端的网络写拖死。
 type blockingPeerSubscriber struct {
 	released chan struct{}
 	notified chan struct{}
 }
+
+// stallingSeqSubscriber 记录收到的帧 seq；对 blockSeq 这一帧的 Notify 阻塞到
+// released 关闭，用于证明「拉平交付」与「实时 worker 投递」互不串扰：不管实时
+// 帧由哪条路径投递，都不允许在 publication 锁内阻塞，也不允许抢在更早的帧之前。
+type stallingSeqSubscriber struct {
+	mu       sync.Mutex
+	seqs     []int64
+	blockSeq int64
+	entered  chan struct{}
+	released chan struct{}
+}
+
+func (s *stallingSeqSubscriber) Notify(_ string, params any) error {
+	frame, ok := params.(wire.EventFrame)
+	if !ok {
+		return nil
+	}
+	// 先阻塞再记录：seenSeqs 反映「投递完成」的时序，而不是投递开始的时序。
+	// 这样才能暴露「后一帧先写完、更早帧还卡在写」的乱序窗口。
+	if frame.Seq == s.blockSeq {
+		close(s.entered)
+		<-s.released
+	}
+	s.mu.Lock()
+	s.seqs = append(s.seqs, frame.Seq)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *stallingSeqSubscriber) seenSeqs() []int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int64(nil), s.seqs...)
+}
+
+func (s *stallingSeqSubscriber) Done() <-chan struct{} { return make(chan struct{}) }
 
 func (s *blockingPeerSubscriber) Notify(string, any) error {
 	<-s.released
@@ -244,6 +392,7 @@ type peerNotification struct {
 }
 
 type peerRecordingSubscriber struct {
+	mu      sync.Mutex
 	done    chan struct{}
 	records []peerNotification
 }
@@ -253,12 +402,16 @@ func newRecordingPeerSubscriber() *peerRecordingSubscriber {
 }
 
 func (s *peerRecordingSubscriber) Notify(method string, params any) error {
+	s.mu.Lock()
 	s.records = append(s.records, peerNotification{method: method, params: params})
+	s.mu.Unlock()
 	return nil
 }
 
 func (s *peerRecordingSubscriber) Done() <-chan struct{} { return s.done }
 func (s *peerRecordingSubscriber) notifications() []peerNotification {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return append([]peerNotification(nil), s.records...)
 }
 

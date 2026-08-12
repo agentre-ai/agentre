@@ -9,6 +9,8 @@ import (
 
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 
+	"github.com/cago-frame/cago/pkg/utils/httputils"
+
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
@@ -19,7 +21,6 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/project_repo"
 	"github.com/agentre-ai/agentre/internal/repository/syncstate_repo"
 	chatblocks "github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
-	"github.com/cago-frame/cago/pkg/utils/httputils"
 )
 
 // ErrPeerExecutionUnavailable is deliberately narrower than a generic remote
@@ -52,7 +53,7 @@ type PeerSessionSource struct {
 }
 
 func (s PeerSessionSource) messageSource() peerMessageSource {
-	return peerMessageSource{Device: s.Device, Name: s.Name}
+	return peerMessageSource(s)
 }
 
 // PeerSessionControlResult is returned by inbound decision handlers. A second
