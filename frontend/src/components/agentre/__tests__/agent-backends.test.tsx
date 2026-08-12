@@ -1078,6 +1078,56 @@ describe("AgentBackendsPanel", () => {
     ).toHaveLength(1);
   });
 
+  it("Given a saved remote backend DTO, When the edit dialog opens, Then its deviceId stays selected and remote Provider sync remains available", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      ListAgentBackends: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 12,
+              type: "claudecode",
+              name: "saved remote claude",
+              deviceId: "7",
+              llmProviderKey: "key-1",
+              llmModelKey: "",
+              llmProviderName: "Anthropic",
+              llmProviderType: "anthropic",
+              llmProviderModel: "claude-sonnet-4-6",
+              llmProviderActive: true,
+              cliPath: "claude",
+              modelRoutes: {},
+              envJson: "{}",
+              agentCount: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+      RemoteDeviceList: vi.fn(() =>
+        Promise.resolve([{ id: 7, name: "linux-srv", online: true }]),
+      ),
+      RemoteDeviceListProviders: vi.fn(() => Promise.resolve([])),
+    });
+    render(<AgentBackendsPanel />);
+
+    const row = (await screen.findByText("saved remote claude")).closest(
+      '[role="listitem"]',
+    ) as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /Edit/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() => {
+      expect(
+        within(dialog).getByRole("combobox", { name: "Runtime Device" }),
+      ).toHaveTextContent("linux-srv");
+      expect(
+        within(dialog).getByText("Remote Provider Sync"),
+      ).toBeInTheDocument();
+    });
+  });
+
   it("保存远端 claudecode 且 provider 已在远端时直接保存，不弹同步提示", async () => {
     const user = userEvent.setup();
     const mocks = installAppMock({

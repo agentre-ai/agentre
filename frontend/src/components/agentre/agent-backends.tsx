@@ -994,9 +994,7 @@ function BackendEditor({
   const [openClawProbe, setOpenClawProbe] =
     React.useState<agent_backend_svc.TestBackendResponse | null>(null);
   const [deviceId, setDeviceId] = React.useState<string>(
-    // BackendItem.deviceID may not yet appear in the Wails-generated TS type;
-    // use unknown cast to read it safely. Empty string = local.
-    (editing as unknown as { deviceID?: string } | null)?.deviceID ?? "",
+    editing?.deviceId ?? "",
   );
   const [devices, setDevices] = React.useState<DeviceView[]>([]);
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
