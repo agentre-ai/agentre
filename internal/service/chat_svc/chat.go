@@ -4054,7 +4054,37 @@ func (s *chatSvc) runTurn(
 		segmentStart  = startedAt
 		dispEmit      = &dispatcherEmitter{svc: s}
 		turnCtx       = s.newTurnContext(assistantMsg, sess, stream, be.Type)
+		// pendingSteers 已被 backend 消费、但分段还没落地的 steer。见 flushPendingSteers。
+		pendingSteers []agentruntime.ConsumedSteer
 	)
+	// flushPendingSteers 把 pendingSteers 落成「收口当前 assistant + 插 user 行 +
+	// 开新 assistant」,并整体切换 assistantMsg/acc/segmentStart/turnCtx 四个 local。
+	flushPendingSteers := func() {
+		if len(pendingSteers) == 0 {
+			return
+		}
+		steers := pendingSteers
+		pendingSteers = nil
+		nextAssistant, payload, perr := s.persistConsumedSteers(
+			ctx, sess, be, assistantMsg, acc, segmentStart,
+			assistantMsg.Model, steers,
+		)
+		if perr != nil {
+			logger.Ctx(ctx).Warn("chat_svc: streamStopErr set by persistConsumedSteers",
+				zap.Int64("sessionId", sess.ID),
+				zap.Int64("assistantMsgId", assistantMsg.ID),
+				zap.Error(perr))
+			streamStopErr = perr
+			return
+		}
+		if nextAssistant != nil && payload != nil {
+			assistantMsg = nextAssistant
+			acc = turn.New()
+			segmentStart = time.Now()
+			turnCtx = s.newTurnContext(assistantMsg, sess, stream, be.Type)
+			s.emitter.Emit(ctx, stream, *payload)
+		}
+	}
 	for ev := range events {
 		if streamStopErr != nil {
 			if eventShowsProgressAfterError(ev) {
@@ -4079,25 +4109,16 @@ func (s *chatSvc) runTurn(
 		//     且缺 Message 字段。
 		switch e := ev.(type) {
 		case agentruntime.SteerConsumed:
-			nextAssistant, payload, perr := s.persistConsumedSteers(
-				ctx, sess, be, assistantMsg, acc, segmentStart,
-				assistantMsg.Model, e.Steers,
-			)
-			if perr != nil {
-				logger.Ctx(ctx).Warn("chat_svc: streamStopErr set by persistConsumedSteers",
-					zap.Int64("sessionId", sess.ID),
-					zap.Int64("assistantMsgId", assistantMsg.ID),
-					zap.Error(perr))
-				streamStopErr = perr
+			pendingSteers = append(pendingSteers, e.Steers...)
+			// 工具在途时先不分段:claudecode 的 PostToolUse hook 在 CLI 写出
+			// tool_result 帧**之前**就 drain 走排队消息,SteerConsumed 因此会先于
+			// 同一个工具的 ToolResult 到达。此刻收口 assistant 会把 tool_use 冻在
+			// 旧消息里,随后的 tool_result 在新 accumulator 里查不到 tool_use,被
+			// ToolResultHandler 当孤儿丢弃 —— 工具卡永远停在 running。
+			if acc.HasOpenToolUse() {
 				continue
 			}
-			if nextAssistant != nil && payload != nil {
-				assistantMsg = nextAssistant
-				acc = turn.New()
-				segmentStart = time.Now()
-				turnCtx = s.newTurnContext(assistantMsg, sess, stream, be.Type)
-				s.emitter.Emit(ctx, stream, *payload)
-			}
+			flushPendingSteers()
 			continue
 		case agentruntime.ErrorEvent:
 			if e.Err != nil {
@@ -4113,15 +4134,29 @@ func (s *chatSvc) runTurn(
 			}
 			continue
 		}
+		// 推迟中的分段:这一帧不是 tool_result,说明在途 tool_use 的结果根本不走流
+		// (AskUserQuestion 这类),不再等 —— 且必须赶在 Apply 之前落地,否则这一帧的
+		// 内容会被记进本该收口的旧 assistant。推迟至多一个事件。
+		if len(pendingSteers) > 0 {
+			if _, isToolResult := ev.(agentruntime.ToolResult); !isToolResult {
+				flushPendingSteers()
+			}
+		}
 		if err := s.dispatcher.Apply(ctx, ev, acc, dispEmit, nil, turnCtx); err != nil {
 			logger.Ctx(ctx).Warn("chat dispatcher Apply failed",
 				zap.String("eventType", fmt.Sprintf("%T", ev)),
 				zap.Error(err))
 		}
+		// 在途工具都配上结果了:分段落地,tool_use 与 tool_result 一起留在旧 assistant。
+		if len(pendingSteers) > 0 && !acc.HasOpenToolUse() {
+			flushPendingSteers()
+		}
 		if shouldCheckpointAssistantAfterEvent(ev) {
 			s.checkpointAssistantNew(ctx, assistantMsg, acc)
 		}
 	}
+	// 流结束时仍在推迟的分段必须落地:steer 已经从 inbox drain 走了,不落就丢。
+	flushPendingSteers()
 	turnCtx.ClearWaits()
 
 	if req.CollaborationMode == permissionModePlan && !compact && acc.Empty() {
