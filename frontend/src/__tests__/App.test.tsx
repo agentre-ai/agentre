@@ -1219,12 +1219,15 @@ describe("App", () => {
     const dialog = await screen.findByRole("dialog", {
       name: "New LLM Provider",
     });
-    await user.type(within(dialog).getByLabelText("Name"), "Draft Anthropic");
-    await user.type(within(dialog).getByLabelText(/^API Key$/), "sk-draft");
-    await user.type(
-      within(dialog).getByLabelText(/^Base URL/),
-      "https://api.example.com",
-    );
+    fireEvent.change(within(dialog).getByLabelText("Name"), {
+      target: { value: "Draft Anthropic" },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/^API Key$/), {
+      target: { value: "sk-draft" },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/^Base URL/), {
+      target: { value: "https://api.example.com" },
+    });
 
     // 手工添加一个模型并选择为默认
     await user.click(within(dialog).getByRole("button", { name: "Add model" }));
