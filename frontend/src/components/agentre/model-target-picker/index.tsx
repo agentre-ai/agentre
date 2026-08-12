@@ -160,8 +160,9 @@ export function ModelTargetPicker({
     for (const r of all) {
       const p = compatible.find((x) => x.providerKey === r.providerKey);
       if (!p) continue; // 当前 backend 不兼容 → 隐藏
-      const isDefault =
-        r.modelKey === "" || r.modelKey === p.defaultModel?.modelKey;
+      // 失效判定：仅当 recent 的固定模型已不存在/停用，或 provider 停用时才禁用。
+      // 固定模型是不是 Provider 当前默认模型不影响其可选择性 —— 非默认的 fixed-model
+      // recent 必须仍可一键重选（recent 存在的意义），不能因为不是默认就被禁用。
       const modelOk =
         r.modelKey === "" ||
         p.models.some((m) => m.modelKey === r.modelKey && m.enabled);
@@ -183,7 +184,7 @@ export function ModelTargetPicker({
           ? p.name
           : t("modelTargetPicker.defaultLabel"),
         target,
-        disabled: !p.enabled || !modelOk || !isDefault,
+        disabled: !p.enabled || !modelOk,
       });
     }
     return out.slice(0, 5);

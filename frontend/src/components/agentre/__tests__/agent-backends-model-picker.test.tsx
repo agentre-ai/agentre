@@ -286,6 +286,41 @@ describe("ModelTargetPicker", () => {
     );
     expect(within(list).queryByText(/gpt-5/)).not.toBeInTheDocument();
   });
+
+  it("recent 里非默认但启用的固定模型仍可选（只有失效模型才禁用）", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    recordRecentTarget("backend", "", {
+      providerKey: "k-anthropic",
+      modelKey: "mk-opus", // 非默认（默认 mk-1）但启用
+    });
+    render(
+      <ModelTargetPicker
+        scenario="backend"
+        aria-label="LLM Provider"
+        backendType="claudecode"
+        selected={null}
+        onChange={onChange}
+        catalog={catalog()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "LLM Provider" }));
+    const list = await screen.findByRole("listbox", { name: "LLM Provider" });
+    const options = within(list).getAllByRole("option");
+    // recent 项在特殊项之后、目录项之前，第一个命中 opus 的就是 recent。
+    const recentOpus = options.find((o) =>
+      o.textContent?.includes("claude-opus-4-8"),
+    );
+    expect(recentOpus).toBeDefined();
+    expect(recentOpus).not.toBeDisabled();
+
+    await user.click(recentOpus as HTMLElement);
+    expect(onChange).toHaveBeenCalledWith({
+      providerKey: "k-anthropic",
+      modelKey: "mk-opus",
+    });
+  });
 });
 
 describe("ModelTargetPicker remote gating (task 6)", () => {

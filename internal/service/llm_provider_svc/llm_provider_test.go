@@ -3,6 +3,7 @@ package llm_provider_svc
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"testing"
@@ -312,13 +313,15 @@ func TestImportModels(t *testing.T) {
 			mockRepo.EXPECT().ListModels(gomock.Any(), int64(1)).Return([]*llm_provider_model_entity.LLMProviderModel{
 				{ID: 1, ProviderID: 1, ModelKey: "mk1", ModelID: "claude-sonnet-4-6", Name: "user-name", ContextWindow: 200000, Enabled: llm_provider_model_entity.EnabledOn, Status: 1},
 			}, nil)
-			mockRepo.EXPECT().BatchImportModels(gomock.Any(), gomock.Any()).
-				DoAndReturn(func(_ context.Context, models []*llm_provider_model_entity.LLMProviderModel) error {
-					assert.Len(t, models, 1)
-					assert.Equal(t, "claude-opus-4-7", models[0].ModelID)
-					_, parseErr := uuid.Parse(models[0].ModelKey)
+			mockRepo.EXPECT().ImportModels(gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, updates, inserts []*llm_provider_model_entity.LLMProviderModel) error {
+					// 已存在行的 name 非空 → 无补齐；只有 1 条新模型进 inserts
+					assert.Len(t, updates, 0)
+					assert.Len(t, inserts, 1)
+					assert.Equal(t, "claude-opus-4-7", inserts[0].ModelID)
+					_, parseErr := uuid.Parse(inserts[0].ModelKey)
 					assert.NoError(t, parseErr)
-					assert.Equal(t, llm_provider_model_entity.EnabledOn, models[0].Enabled)
+					assert.Equal(t, llm_provider_model_entity.EnabledOn, inserts[0].Enabled)
 					return nil
 				})
 
@@ -339,18 +342,21 @@ func TestImportModels(t *testing.T) {
 			assert.Equal(t, "user-name", resp.Items[0].Name)
 		})
 
-		convey.Convey("本地字段为空时用提交值补齐 → UpdateModel", func() {
+		convey.Convey("本地字段为空时用提交值补齐，与新增同走一次原子调用", func() {
 			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
 				ID: 1, ProviderKey: "pk", DefaultModelKey: "mk1", Status: 1,
 			}, nil)
 			mockRepo.EXPECT().ListModels(gomock.Any(), int64(1)).Return([]*llm_provider_model_entity.LLMProviderModel{
 				{ID: 1, ProviderID: 1, ModelKey: "mk1", ModelID: "claude-sonnet-4-6", Enabled: llm_provider_model_entity.EnabledOn, Status: 1},
 			}, nil)
-			mockRepo.EXPECT().UpdateModel(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_model_entity.LLMProviderModel{})).
-				DoAndReturn(func(_ context.Context, m *llm_provider_model_entity.LLMProviderModel) error {
-					assert.Equal(t, "mk1", m.ModelKey)
-					assert.Equal(t, "Sonnet", m.Name)
-					assert.Equal(t, 128000, m.ContextWindow)
+			mockRepo.EXPECT().ImportModels(gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, updates, inserts []*llm_provider_model_entity.LLMProviderModel) error {
+					assert.Len(t, updates, 1)
+					assert.Len(t, inserts, 0)
+					// 稳定 key 保留，仅补齐空字段
+					assert.Equal(t, "mk1", updates[0].ModelKey)
+					assert.Equal(t, "Sonnet", updates[0].Name)
+					assert.Equal(t, 128000, updates[0].ContextWindow)
 					return nil
 				})
 
@@ -363,6 +369,34 @@ func TestImportModels(t *testing.T) {
 			assert.NoError(t, err)
 			assert.Equal(t, 0, resp.Imported)
 			assert.Equal(t, 1, resp.Updated)
+		})
+
+		convey.Convey("批量插入失败时已存在行补齐不残留：补齐+新增同一次原子调用整体回滚", func() {
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
+				ID: 1, ProviderKey: "pk", DefaultModelKey: "mk1", Status: 1,
+			}, nil)
+			mockRepo.EXPECT().ListModels(gomock.Any(), int64(1)).Return([]*llm_provider_model_entity.LLMProviderModel{
+				// 空 name/context_window → 需要补齐
+				{ID: 1, ProviderID: 1, ModelKey: "mk1", ModelID: "claude-sonnet-4-6", Enabled: llm_provider_model_entity.EnabledOn, Status: 1},
+			}, nil)
+			// 回归：只允许一次 ImportModels 原子调用；若实现仍分别 UpdateModel + BatchImportModels，
+			// 该 expectation 之外的任何调用都会使 mock 失败 → RED。
+			mockRepo.EXPECT().ImportModels(gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, updates, inserts []*llm_provider_model_entity.LLMProviderModel) error {
+					assert.Len(t, updates, 1)
+					assert.Len(t, inserts, 1)
+					return errors.New("dup model_id")
+				})
+
+			resp, err := svc.ImportModels(ctx, &ImportModelsRequest{
+				ProviderID: 1,
+				Models: []*ModelInput{
+					{ModelID: "claude-sonnet-4-6", Name: "Sonnet"},
+					{ModelID: "claude-opus-4-7", Name: "Opus"},
+				},
+			})
+			assert.Nil(t, resp)
+			assert.EqualError(t, err, "dup model_id")
 		})
 	})
 }

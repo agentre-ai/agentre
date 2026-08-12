@@ -323,9 +323,10 @@ func (s *llmProviderSvc) ListModels(ctx context.Context, req *ListModelsRequest)
 	return &ListModelsResponse{Items: items}, nil
 }
 
-// ImportModels 原子批量导入某 Provider 的一组模型。
+// ImportModels 原子导入某 Provider 的一组模型。
 // 已存在的同名 ModelID 保留原 ModelKey，且不覆盖用户维护的非空元数据；仅本地字段为空时
-// 用提交值补齐（UpdateModel）。新模型 mint 稳定 ModelKey，批量事务落库。
+// 用提交值补齐；新模型 mint 稳定 ModelKey。补齐与新增同一次 ImportModels 事务落库，
+// 任一步失败整体回滚，不留半批。
 func (s *llmProviderSvc) ImportModels(ctx context.Context, req *ImportModelsRequest) (*ImportModelsResponse, error) {
 	p, err := llm_provider_repo.LLMProvider().Find(ctx, req.ProviderID)
 	if err != nil {
@@ -345,15 +346,13 @@ func (s *llmProviderSvc) ImportModels(ctx context.Context, req *ImportModelsRequ
 	}
 
 	now := s.now()
-	var toImport []*llm_provider_model_entity.LLMProviderModel
+	var updates, toImport []*llm_provider_model_entity.LLMProviderModel
 	updated := 0
 	for _, mi := range req.Models {
 		modelID := strings.TrimSpace(mi.ModelID)
 		if cur, ok := existingByModelID[modelID]; ok {
 			if fillModelGaps(ctx, cur, mi, now) {
-				if err := llm_provider_repo.LLMProvider().UpdateModel(ctx, cur); err != nil {
-					return nil, err
-				}
+				updates = append(updates, cur)
 				updated++
 			}
 			continue
@@ -375,8 +374,9 @@ func (s *llmProviderSvc) ImportModels(ctx context.Context, req *ImportModelsRequ
 		}
 		toImport = append(toImport, m)
 	}
-	if len(toImport) > 0 {
-		if err := llm_provider_repo.LLMProvider().BatchImportModels(ctx, toImport); err != nil {
+	// 补齐与新增同一次原子调用：任一步失败整体回滚，已存在行的补齐不会残留半批。
+	if len(updates) > 0 || len(toImport) > 0 {
+		if err := llm_provider_repo.LLMProvider().ImportModels(ctx, updates, toImport); err != nil {
 			return nil, err
 		}
 	}

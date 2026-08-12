@@ -55,10 +55,9 @@ type LLMProviderRepo interface {
 	// ── Provider + Models 原子操作（成功或失败，不留半批） ──
 	// CreateWithModels 在同一事务内写 Provider、其全部 Models 并落 default_model_key。
 	CreateWithModels(ctx context.Context, p *llm_provider_entity.LLMProvider, models []*llm_provider_model_entity.LLMProviderModel, defaultModelKey string) error
-	// BatchImportModels 原子批量导入同一 Provider 的一组 Models（发现结果人工确认后落地）。
-	BatchImportModels(ctx context.Context, models []*llm_provider_model_entity.LLMProviderModel) error
-	// SetDefaultModel 原子切换 Provider 的 default_model_key。
-	SetDefaultModel(ctx context.Context, providerID int64, defaultModelKey string) error
+	// ImportModels 原子落地一组导入结果：updates 为已存在行的 only-fill-empty 补齐（保留
+	// 稳定 model_key），inserts 为新模型行；在同一事务内执行，任一步失败整体回滚，不留半批。
+	ImportModels(ctx context.Context, updates, inserts []*llm_provider_model_entity.LLMProviderModel) error
 
 	// ── Model CRUD ──
 	CreateModel(ctx context.Context, m *llm_provider_model_entity.LLMProviderModel) error
@@ -180,26 +179,26 @@ func (r *llmProviderRepo) CreateWithModels(ctx context.Context, p *llm_provider_
 	})
 }
 
-// BatchImportModels 原子批量导入；任一条失败整体回滚，不留半批状态。
-func (r *llmProviderRepo) BatchImportModels(ctx context.Context, models []*llm_provider_model_entity.LLMProviderModel) error {
-	if len(models) == 0 {
+// ImportModels 原子导入：updates（已存在行补齐，Omit model_key 保留稳定 key）+ inserts
+// （新行）在同一事务内落地，任一步失败整体回滚，不留半批状态。
+func (r *llmProviderRepo) ImportModels(ctx context.Context, updates, inserts []*llm_provider_model_entity.LLMProviderModel) error {
+	if len(updates) == 0 && len(inserts) == 0 {
 		return nil
 	}
 	return db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
 		ctx = db.WithContextDB(ctx, tx)
-		for _, m := range models {
+		for _, m := range updates {
+			if err := db.Ctx(ctx).Omit("model_key").Save(m).Error; err != nil {
+				return err
+			}
+		}
+		for _, m := range inserts {
 			if err := db.Ctx(ctx).Create(m).Error; err != nil {
 				return err
 			}
 		}
 		return nil
 	})
-}
-
-func (r *llmProviderRepo) SetDefaultModel(ctx context.Context, providerID int64, defaultModelKey string) error {
-	return db.Ctx(ctx).Model(&llm_provider_entity.LLMProvider{}).
-		Where("id = ?", providerID).
-		Update("default_model_key", defaultModelKey).Error
 }
 
 func (r *llmProviderRepo) CreateModel(ctx context.Context, m *llm_provider_model_entity.LLMProviderModel) error {

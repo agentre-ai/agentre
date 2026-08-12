@@ -588,76 +588,65 @@ func TestLLMProviderRepo_CreateWithModels(t *testing.T) {
 	})
 }
 
-func TestLLMProviderRepo_BatchImportModels(t *testing.T) {
-	convey.Convey("BatchImportModels", t, func() {
+func TestLLMProviderRepo_ImportModels(t *testing.T) {
+	convey.Convey("ImportModels", t, func() {
 		ctx, mock, repo := setupLLMProviderRepoTest(t)
 
-		convey.Convey("批量导入在同一事务提交，不留半批", func() {
-			models := []*llm_provider_model_entity.LLMProviderModel{
-				{ProviderID: 3, ModelKey: "mk-a", ModelID: "a", Status: consts.ACTIVE},
-				{ProviderID: 3, ModelKey: "mk-b", ModelID: "b", Status: consts.ACTIVE},
+		convey.Convey("已存在行补齐 + 新行插入在同一事务提交，不留半批", func() {
+			updates := []*llm_provider_model_entity.LLMProviderModel{
+				{ID: 4, ProviderID: 3, ModelKey: "mk-up", ModelID: "a", Name: "A", Status: consts.ACTIVE},
+			}
+			inserts := []*llm_provider_model_entity.LLMProviderModel{
+				{ProviderID: 3, ModelKey: "mk-new", ModelID: "b", Status: consts.ACTIVE},
 			}
 
 			mock.ExpectBegin()
-			mock.ExpectExec("INSERT INTO `llm_provider_models`").
-				WillReturnResult(sqlmock.NewResult(1, 1))
+			mock.ExpectExec("UPDATE `llm_provider_models` SET ").
+				WillReturnResult(sqlmock.NewResult(0, 1))
 			mock.ExpectExec("INSERT INTO `llm_provider_models`").
 				WillReturnResult(sqlmock.NewResult(2, 1))
 			mock.ExpectCommit()
 
-			assert.NoError(t, repo.BatchImportModels(ctx, models))
+			assert.NoError(t, repo.ImportModels(ctx, updates, inserts))
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 
-		convey.Convey("空列表直接返回，不产生 SQL", func() {
-			assert.NoError(t, repo.BatchImportModels(ctx, nil))
-			assert.NoError(t, mock.ExpectationsWereMet())
-		})
-
-		convey.Convey("中途失败整体回滚", func() {
-			models := []*llm_provider_model_entity.LLMProviderModel{
-				{ProviderID: 3, ModelKey: "mk-a", ModelID: "a", Status: consts.ACTIVE},
-				{ProviderID: 3, ModelKey: "mk-b", ModelID: "b", Status: consts.ACTIVE},
+		convey.Convey("只新增不补齐：事务内仅 INSERT", func() {
+			inserts := []*llm_provider_model_entity.LLMProviderModel{
+				{ProviderID: 3, ModelKey: "mk-new", ModelID: "b", Status: consts.ACTIVE},
 			}
 
 			mock.ExpectBegin()
 			mock.ExpectExec("INSERT INTO `llm_provider_models`").
 				WillReturnResult(sqlmock.NewResult(1, 1))
+			mock.ExpectCommit()
+
+			assert.NoError(t, repo.ImportModels(ctx, nil, inserts))
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+
+		convey.Convey("空列表直接返回，不产生 SQL", func() {
+			assert.NoError(t, repo.ImportModels(ctx, nil, nil))
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+
+		convey.Convey("插入失败整体回滚，已存在行补齐也不残留", func() {
+			updates := []*llm_provider_model_entity.LLMProviderModel{
+				{ID: 4, ProviderID: 3, ModelKey: "mk-up", ModelID: "a", Status: consts.ACTIVE},
+			}
+			inserts := []*llm_provider_model_entity.LLMProviderModel{
+				{ProviderID: 3, ModelKey: "mk-new", ModelID: "b", Status: consts.ACTIVE},
+			}
+
+			mock.ExpectBegin()
+			mock.ExpectExec("UPDATE `llm_provider_models` SET ").
+				WillReturnResult(sqlmock.NewResult(0, 1))
 			mock.ExpectExec("INSERT INTO `llm_provider_models`").
 				WillReturnError(errors.New("dup model_id"))
 			mock.ExpectRollback()
 
-			err := repo.BatchImportModels(ctx, models)
+			err := repo.ImportModels(ctx, updates, inserts)
 			assert.EqualError(t, err, "dup model_id")
-			assert.NoError(t, mock.ExpectationsWereMet())
-		})
-	})
-}
-
-func TestLLMProviderRepo_SetDefaultModel(t *testing.T) {
-	convey.Convey("SetDefaultModel", t, func() {
-		ctx, mock, repo := setupLLMProviderRepoTest(t)
-
-		convey.Convey("原子更新 default_model_key", func() {
-			mock.ExpectBegin()
-			mock.ExpectExec("UPDATE `llm_providers` SET `default_model_key`=\\?(,`updatetime`=\\?)? WHERE id = \\?").
-				WithArgs("mk-2", int64(3)).
-				WillReturnResult(sqlmock.NewResult(0, 1))
-			mock.ExpectCommit()
-
-			assert.NoError(t, repo.SetDefaultModel(ctx, 3, "mk-2"))
-			assert.NoError(t, mock.ExpectationsWereMet())
-		})
-
-		convey.Convey("驱动报错时透传并回滚", func() {
-			mock.ExpectBegin()
-			mock.ExpectExec("UPDATE `llm_providers` SET `default_model_key`=\\? WHERE id = \\?").
-				WithArgs("mk-2", int64(3)).
-				WillReturnError(errors.New("db down"))
-			mock.ExpectRollback()
-
-			err := repo.SetDefaultModel(ctx, 3, "mk-2")
-			assert.EqualError(t, err, "db down")
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 	})
