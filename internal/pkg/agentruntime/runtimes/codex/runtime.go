@@ -122,8 +122,9 @@ func NewWithPool(pool *agentruntime.CLISessionPool) *Runtime {
 	}
 }
 
-// spawnKeyChanged 报告该会话已 spawn 的启动期参数(model + providerKey)是否与新一轮
-// 不同。新会话(未记录过)视为未变化,正常创建。
+// spawnKeyChanged 报告该会话已 spawn 的完整启动身份
+// (resolved ModelID + ModelKey + ProviderKey)是否与新一轮不同。
+// 新会话(未记录过)视为未变化,正常创建。
 func (r *Runtime) spawnKeyChanged(key string, want launchedSpawnKey) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -497,9 +498,8 @@ func (r *Runtime) acquireSession(req agentruntime.RunRequest, env map[string]str
 	if req.SessionID > 0 {
 		key := sessionKey(req.SessionID)
 		if v, ok := r.pool.Get(key); ok {
-			// 模型 / effectiveProviderKey 都是启动期参数:任一变化 → evict + 重 spawn
-			// (镜像 claudecode launchedEffort 先例;决策 4)。两者都未变则复用池内
-			// app-server。
+			// resolved ModelID / ModelKey / effectiveProviderKey 都属于启动身份:
+			// 任一变化 → evict + 重 spawn；三者都未变才复用池内 app-server。
 			want := launchedSpawnKey{model: codexEffectiveModel(req), modelKey: codexEffectiveModelKey(req), providerKey: req.EffectiveProviderKey()}
 			if r.spawnKeyChanged(key, want) {
 				r.pool.Remove(key)
