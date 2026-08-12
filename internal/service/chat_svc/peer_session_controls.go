@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 
@@ -13,7 +14,10 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/syncwire"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
+	"github.com/agentre-ai/agentre/internal/repository/project_repo"
+	"github.com/agentre-ai/agentre/internal/repository/syncstate_repo"
 	chatblocks "github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
 	"github.com/cago-frame/cago/pkg/utils/httputils"
 )
@@ -23,6 +27,14 @@ import (
 // still be read, but the agentred pinned to this session cannot execute a new
 // turn.
 var ErrPeerExecutionUnavailable = errors.New("desktop history remains available, but the session execution target is unavailable")
+
+// ErrPeerAgentNotFound 是 R17 建会话时对端点的 agentSyncId 在本机找不到（同步还没
+// 落地 / 该 Agent 已删除）——不静默落到别的 Agent 上，也不建一条幽灵会话。
+var ErrPeerAgentNotFound = errors.New("desktop peer agent not found")
+
+// ErrPeerProjectNotFound 是 R17 建会话时对端点的 cwd 在本机找不到对应项目（项目刚被
+// 删/改路径，与上报时不一致）——拒绝而不是静默把会话跑进一个错误的目录。
+var ErrPeerProjectNotFound = errors.New("desktop peer project not found")
 
 // peerMessageSource is source metadata carried by an account peer. It is
 // persisted inside the existing text StoredBlock so it survives transcript
@@ -61,6 +73,10 @@ type PeerSessionRunResult struct {
 // desktop's session-level Send path. Backend, queue, permission, and MCP
 // selection remain entirely owned by Send; only the authenticated source is
 // added to the persisted user row.
+//
+// 对端点到的会话在本机不存在时，这是 R17 的「浏览器把新对话派到这台桌面端上」：
+// 会话行/标题/转录都在这台机器上新建并跑首轮（见 runFreshPeerSession）。会话存在时
+// 原样续轮，行为不变。
 func (s *chatSvc) RunPeerSession(ctx context.Context, params wire.RunParams, source PeerSessionSource) (*SendResponse, error) {
 	if params.SessionID <= 0 || source.Device == "" {
 		return nil, fmt.Errorf("invalid peer session run")
@@ -70,7 +86,7 @@ func (s *chatSvc) RunPeerSession(ctx context.Context, params wire.RunParams, sou
 		return nil, err
 	}
 	if session == nil {
-		return nil, ErrPeerSessionNotFound
+		return s.runFreshPeerSession(ctx, params, source)
 	}
 	_, backend, _, err := s.resolveAgentBackend(ctx, session, session.AgentID, session.ProjectID)
 	if err != nil {
@@ -88,6 +104,55 @@ func (s *chatSvc) RunPeerSession(ctx context.Context, params wire.RunParams, sou
 		EmitTurnStartedBypass: true,
 		peerSource:            source.messageSource(),
 	}, sendOptions{})
+}
+
+// runFreshPeerSession 在桌面端上为远端对端新建一条会话并跑首轮（R17）。对端只携带
+// 账号级 agentSyncId 与该项目在本机的 cwd，本机据此解析本地 agent / project 行，然后
+// 走与桌面端自己发消息完全相同的 Send 路径（排队、权限模式、转录落库都发生）——
+// 会话行、标题与转录因此都住在这台机器上，返回的也是本机的真实会话 id。
+func (s *chatSvc) runFreshPeerSession(ctx context.Context, params wire.RunParams, source PeerSessionSource) (*SendResponse, error) {
+	if strings.TrimSpace(params.AgentSyncID) == "" {
+		return nil, fmt.Errorf("invalid fresh peer session run: agentSyncId is required")
+	}
+	agentID, err := syncstate_repo.SyncState().FindLocalID(ctx, syncwire.KindAgent, params.AgentSyncID)
+	if err != nil {
+		return nil, err
+	}
+	if agentID <= 0 {
+		return nil, fmt.Errorf("%w: agent sync id %q", ErrPeerAgentNotFound, params.AgentSyncID)
+	}
+	projectID, err := resolvePeerProjectID(ctx, strings.TrimSpace(params.Cwd))
+	if err != nil {
+		return nil, err
+	}
+	return s.send(ctx, &SendRequest{
+		AgentID:               agentID,
+		ProjectID:             projectID,
+		Text:                  params.UserText,
+		PermissionMode:        params.PermissionMode,
+		EmitTurnStartedBypass: true,
+		peerSource:            source.messageSource(),
+	}, sendOptions{})
+}
+
+// resolvePeerProjectID 把对端报告的 cwd（该桌面端自己上报过的本机项目路径）翻回本地
+// project 行：会话要钉到用户挑的那个项目上，转录与后续轮次才带正确的项目上下文。
+// cwd 为空（未挑项目的自由会话）返回 0；路径对不上本机任何已配置项目（项目刚被
+// 删/改路径，与上报时不一致）时拒绝——把会话静默跑进一个错误的目录比报错更糟。
+func resolvePeerProjectID(ctx context.Context, cwd string) (int64, error) {
+	if cwd == "" {
+		return 0, nil
+	}
+	rows, err := project_repo.Project().List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, p := range rows {
+		if p != nil && p.IsActive() && !p.LocalPathMissing && strings.TrimSpace(p.Path) == cwd {
+			return p.ID, nil
+		}
+	}
+	return 0, fmt.Errorf("%w: project cwd %q", ErrPeerProjectNotFound, cwd)
 }
 
 func (s *chatSvc) preflightPeerRemoteExecution(ctx context.Context, backend *agent_backend_entity.AgentBackend, sessionID int64) error {
