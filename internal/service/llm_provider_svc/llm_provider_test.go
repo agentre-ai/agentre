@@ -97,7 +97,7 @@ func TestCreateProvider(t *testing.T) {
 					return nil
 				})
 
-			resp, err := svc.Create(ctx, &CreateProviderRequest{ //nolint:gosec // credential-shaped API key is a test fixture.
+			resp, err := svc.Create(ctx, &CreateProviderRequest{
 				Type:   "anthropic",
 				Name:   "production",
 				APIKey: "test-ant-key-1234",
@@ -142,7 +142,7 @@ func TestCreateProvider(t *testing.T) {
 
 		convey.Convey("名称重复返回错误", func() {
 			mockRepo.EXPECT().FindByName(gomock.Any(), "dup").Return(&llm_provider_entity.LLMProvider{ID: 1, Name: "dup"}, nil)
-			_, err := svc.Create(ctx, &CreateProviderRequest{Type: "openai-chat", Name: "dup", APIKey: "k"}) //nolint:gosec // credential-shaped API key is a test fixture.
+			_, err := svc.Create(ctx, &CreateProviderRequest{Type: "openai-chat", Name: "dup", APIKey: "k"})
 			assertCode(t, err, code.LLMProviderNameDuplicated)
 		})
 

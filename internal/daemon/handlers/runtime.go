@@ -1419,12 +1419,13 @@ func (h *RuntimeHandlers) resolveTarget(
 	if effectiveKey == "" && be != nil {
 		effectiveKey = be.LLMProviderKey
 	}
-	// 会话钉了 provider 时用会话 model key（空 = provider-default）；未钉（inherit-agent）
-	// 或会话 provider 缺失已回退时跟随 backend 固定模型。
+	// wire 的 model key 是桌面端按 sessionModelKeyFor 解析好的结果：会话钉了 provider 时
+	// 用会话 ModelKey（空 = provider-default），未钉（inherit-agent）时桌面端已回落
+	// backend 固定模型透传过来。会话是否钉住只有桌面端知道，daemon 不得再自行派生
+	// be.LLMModelKey —— 否则会话钉 provider-default（同 backend 绑定同家）会被 backend
+	// 固定模型带偏成 fixed-model，与本地路径 sessionModelKeyFor 的语义分叉（spec 决策 1）。
+	// 会话 provider 缺失回退 agent 绑定的情形在下方分支显式用 be.LLMModelKey。
 	modelKey := strings.TrimSpace(wireModelKey)
-	if modelKey == "" && be != nil && effectiveKey == be.LLMProviderKey {
-		modelKey = be.LLMModelKey
-	}
 	if effectiveKey == "" || h.deps.Lookup == nil {
 		return nil, nil, "", nil
 	}

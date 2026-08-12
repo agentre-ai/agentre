@@ -79,7 +79,7 @@ func TestBuildLaunchCommand_ClaudeCodePlaceholderToken(t *testing.T) {
 			Name:           "cc",
 			LLMProviderKey: "key-1",
 		},
-		Effective: &EffectiveLLMConfig{ProviderKey: "key-1"},
+		Effective:  &EffectiveLLMConfig{ProviderKey: "key-1"},
 		AgentID:    12,
 		GatewayURL: "http://127.0.0.1:60080",
 	})
@@ -327,7 +327,7 @@ func TestBuildLaunchCommand_ShellEscapes(t *testing.T) {
 			LLMProviderKey: "key-1", // 让 ANTHROPIC_* 入 env，覆盖单引号转义
 			EnvJSON:        `{"WEIRD":"a'b c"}`,
 		},
-		Effective: &EffectiveLLMConfig{ProviderKey: "key-1"},
+		Effective:  &EffectiveLLMConfig{ProviderKey: "key-1"},
 		AgentID:    11,
 		GatewayURL: "http://127.0.0.1:60080",
 		Token:      "tok",

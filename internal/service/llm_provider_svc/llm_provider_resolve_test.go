@@ -22,7 +22,7 @@ func TestResolveTarget(t *testing.T) {
 		ctx, mockRepo, _, svc := setupSvcTest(t)
 
 		convey.Convey("空 ModelKey 解析当前启用的默认模型，返回执行配置", func() {
-			mockRepo.EXPECT().FindByKey(gomock.Any(), "pk").Return(&llm_provider_entity.LLMProvider{ //nolint:gosec // credential-shaped API key is a test fixture.
+			mockRepo.EXPECT().FindByKey(gomock.Any(), "pk").Return(&llm_provider_entity.LLMProvider{
 				ProviderKey: "pk", Type: "anthropic", APIKey: "sk-clear", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk1", Status: 1,
 			}, nil)
 			mockRepo.EXPECT().FindModelByKey(gomock.Any(), "mk1").Return(&llm_provider_model_entity.LLMProviderModel{
@@ -43,7 +43,7 @@ func TestResolveTarget(t *testing.T) {
 		})
 
 		convey.Convey("具体 ModelKey 只解析该启用且归属的模型", func() {
-			mockRepo.EXPECT().FindByKey(gomock.Any(), "pk").Return(&llm_provider_entity.LLMProvider{ //nolint:gosec // credential-shaped API key is a test fixture.
+			mockRepo.EXPECT().FindByKey(gomock.Any(), "pk").Return(&llm_provider_entity.LLMProvider{
 				ID: 1, ProviderKey: "pk", Type: "openai-chat", APIKey: "sk", Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk1", Status: 1,
 			}, nil)
 			mockRepo.EXPECT().FindModelByKey(gomock.Any(), "mk2").Return(&llm_provider_model_entity.LLMProviderModel{
@@ -137,7 +137,7 @@ func TestTestConnection(t *testing.T) {
 		ctx, mockRepo, doer, svc := setupSvcTest(t)
 
 		convey.Convey("已保存 Provider、空 ModelKey → 测试当前默认模型", func() {
-			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{ //nolint:gosec // credential-shaped API key is a test fixture.
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
 				ID: 1, Type: "anthropic", APIKey: "test-ant-key", DefaultModelKey: "mk1", Status: 1,
 			}, nil)
 			mockRepo.EXPECT().FindModelByKey(gomock.Any(), "mk1").Return(&llm_provider_model_entity.LLMProviderModel{
@@ -157,7 +157,7 @@ func TestTestConnection(t *testing.T) {
 		})
 
 		convey.Convey("已保存 Provider、具体 ModelKey → 测试该子模型", func() {
-			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{ //nolint:gosec // credential-shaped API key is a test fixture.
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
 				ID: 1, Type: "openai-chat", APIKey: "test-openai-key", BaseURL: "http://localhost:11434/v1", DefaultModelKey: "mk1", Status: 1,
 			}, nil)
 			mockRepo.EXPECT().FindModelByKey(gomock.Any(), "mk2").Return(&llm_provider_model_entity.LLMProviderModel{
@@ -176,7 +176,7 @@ func TestTestConnection(t *testing.T) {
 		})
 
 		convey.Convey("已保存 Provider 未配置默认模型 → OK=false", func() {
-			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{ //nolint:gosec // credential-shaped API key is a test fixture.
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
 				ID: 1, Type: "openai-chat", APIKey: "test-key", Status: 1,
 			}, nil)
 			resp, err := svc.TestConnection(ctx, &TestConnectionRequest{ID: 1})
@@ -190,7 +190,7 @@ func TestTestConnection(t *testing.T) {
 			resp, err := svc.TestConnection(ctx, &TestConnectionRequest{
 				UseDraft: true,
 				Type:     "openai-chat",
-				APIKey:   "test-draft-key", //nolint:gosec // credential-shaped API key is a test fixture.
+				APIKey:   "test-draft-key",
 				BaseURL:  "http://localhost:11434/v1",
 				ModelID:  "llama3.2",
 			})
@@ -204,7 +204,7 @@ func TestTestConnection(t *testing.T) {
 		})
 
 		convey.Convey("草稿配置未指定 ModelID → OK=false", func() {
-			resp, err := svc.TestConnection(ctx, &TestConnectionRequest{UseDraft: true, Type: "openai-chat", APIKey: "k"}) //nolint:gosec // credential-shaped API key is a test fixture.
+			resp, err := svc.TestConnection(ctx, &TestConnectionRequest{UseDraft: true, Type: "openai-chat", APIKey: "k"})
 			assert.NoError(t, err)
 			assert.False(t, resp.OK)
 		})
@@ -214,7 +214,7 @@ func TestTestConnection(t *testing.T) {
 			resp, err := svc.TestConnection(ctx, &TestConnectionRequest{
 				UseDraft: true,
 				Type:     "openai-response",
-				APIKey:   "test-response-key", //nolint:gosec // credential-shaped API key is a test fixture.
+				APIKey:   "test-response-key",
 				BaseURL:  "https://api.openai.com/v1",
 				ModelID:  "gpt-5-codex",
 			})
@@ -224,7 +224,7 @@ func TestTestConnection(t *testing.T) {
 		})
 
 		convey.Convey("上游失败 → OK=false 并携带原因", func() {
-			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{ //nolint:gosec // credential-shaped API key is a test fixture.
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
 				ID: 1, Type: "openai-chat", APIKey: "bad", DefaultModelKey: "mk1", Status: 1,
 			}, nil)
 			mockRepo.EXPECT().FindModelByKey(gomock.Any(), "mk1").Return(&llm_provider_model_entity.LLMProviderModel{
@@ -270,7 +270,7 @@ func TestPreviewModelsAnthropic(t *testing.T) {
 		ctx, mockRepo, doer, svc := setupSvcTest(t)
 
 		convey.Convey("命中 cago 目录回填元数据，未命中只带 id + vendor", func() {
-			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{ //nolint:gosec // credential-shaped API key is a test fixture.
+			mockRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(&llm_provider_entity.LLMProvider{
 				ID: 1, Type: "anthropic", APIKey: "test-ant-key", Status: 1,
 			}, nil)
 			doer.respond(200, `{"data":[{"id":"claude-opus-4-7"},{"id":"unknown-model"}]}`)
@@ -291,7 +291,7 @@ func TestPreviewModelsAnthropic(t *testing.T) {
 func TestPreviewModelsDraftEditKeepsSavedAPIKey(t *testing.T) {
 	t.Run("Given an edited provider and an empty draft key, when models are fetched, then the draft URL and saved key are used", func(t *testing.T) {
 		ctx, mockRepo, doer, svc := setupSvcTest(t)
-		mockRepo.EXPECT().Find(gomock.Any(), int64(23)).Return(&llm_provider_entity.LLMProvider{ //nolint:gosec // credential-shaped API key is a test fixture.
+		mockRepo.EXPECT().Find(gomock.Any(), int64(23)).Return(&llm_provider_entity.LLMProvider{
 			ID:      23,
 			Type:    "anthropic",
 			APIKey:  "test-saved-key",
@@ -338,7 +338,7 @@ func TestAnthropicCustomBaseURLKeepsSingleV1Prefix(t *testing.T) {
 
 func TestPreviewModelsUpstreamError(t *testing.T) {
 	ctx, mockRepo, doer, svc := setupSvcTest(t)
-	mockRepo.EXPECT().Find(gomock.Any(), int64(2)).Return(&llm_provider_entity.LLMProvider{ //nolint:gosec // credential-shaped API key is a test fixture.
+	mockRepo.EXPECT().Find(gomock.Any(), int64(2)).Return(&llm_provider_entity.LLMProvider{
 		ID: 2, Type: "openai-chat", APIKey: "bad", Status: 1,
 	}, nil)
 	doer.respond(401, `{"error":"invalid api key"}`)

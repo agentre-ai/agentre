@@ -1922,6 +1922,23 @@ func TestBuildRunParams_ForwardsLLMModelKey(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "", params.LLMModelKey, "provider-default 的 model key 为空")
 	})
+
+	t.Run("pinned provider-default beats backend fixed model", func(t *testing.T) {
+		// spec 决策 1：会话钉了 Provider 且选 provider-default（ModelKey 空）时，即使
+		// backend 主绑定同家并固定了模型，wire 也必须保持空 model key（provider-default），
+		// 不能被 backend 的固定模型带偏 —— 远端与本地同一解析语义（sessionModelKeyFor）。
+		params, err := buildRunParams(agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{LLMProviderKey: "pk", LLMModelKey: "backend-model"},
+			SessionID: 9,
+			Effective: &agentruntime.EffectiveLLMConfig{
+				Mode:        agentruntime.EffectiveModeProviderDefault,
+				ProviderKey: "pk",
+				ModelKey:    "",
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "", params.LLMModelKey, "会话钉 provider-default 必须保持空 model key，不能被 backend 固定模型带偏")
+	})
 }
 
 // TestGoalParams_ForwardsLLMTargetKeys 钉死决策 11 的 Goal 侧 wire 契约:GoalParams

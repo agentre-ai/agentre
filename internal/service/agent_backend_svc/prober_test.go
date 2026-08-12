@@ -214,14 +214,14 @@ func TestBuiltinProber_PassesProviderModelToAgent(t *testing.T) {
 		repoMock := mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl)
 		llm_provider_repo.RegisterLLMProvider(repoMock)
 		entity := &llm_provider_entity.LLMProvider{
-			ProviderKey: "key-11",
-			Type:        string(llm_provider_entity.TypeAnthropic),
-			Name:        "production",
-			Enabled:     llm_provider_entity.EnabledOn,
+			ProviderKey:     "key-11",
+			Type:            string(llm_provider_entity.TypeAnthropic),
+			Name:            "production",
+			Enabled:         llm_provider_entity.EnabledOn,
 			DefaultModelKey: "mk-11",
-			APIKey:      "sk-test",
-			BaseURL:     "http://127.0.0.1:0",
-			Status:      consts.ACTIVE,
+			APIKey:          "sk-test",
+			BaseURL:         "http://127.0.0.1:0",
+			Status:          consts.ACTIVE,
 		}
 		repoMock.EXPECT().FindByKey(gomock.Any(), "key-11").Return(entity, nil).AnyTimes()
 		repoMock.EXPECT().FindModelByKey(gomock.Any(), "mk-11").Return(
@@ -258,14 +258,14 @@ func TestBuildPiAgentProviderProbe(t *testing.T) {
 		t.Setenv("AGENTRE_DATA_DIR", t.TempDir())
 
 		p := &llm_provider_entity.LLMProvider{
-			ProviderKey: "key-pi",
-			Type:        string(llm_provider_entity.TypeOpenAIChat),
-			Name:        "PiProvider",
-			Enabled:     llm_provider_entity.EnabledOn,
+			ProviderKey:     "key-pi",
+			Type:            string(llm_provider_entity.TypeOpenAIChat),
+			Name:            "PiProvider",
+			Enabled:         llm_provider_entity.EnabledOn,
 			DefaultModelKey: "mk-pi",
-			APIKey:      "sk-pi-1",
-			BaseURL:     "https://pi.example",
-			Status:      consts.ACTIVE,
+			APIKey:          "sk-pi-1",
+			BaseURL:         "https://pi.example",
+			Status:          consts.ACTIVE,
 		}
 		repoMock.EXPECT().FindByKey(gomock.Any(), "key-pi").Return(p, nil).AnyTimes()
 		repoMock.EXPECT().FindModelByKey(gomock.Any(), "mk-pi").Return(
@@ -293,6 +293,43 @@ func TestBuildPiAgentProviderProbe(t *testing.T) {
 			raw, readErr := os.ReadFile(ext) //nolint:gosec // test-owned temp path
 			So(readErr, ShouldBeNil)
 			So(strings.Contains(string(raw), "sk-pi-1"), ShouldBeFalse)
+		})
+	})
+
+	Convey("Given a piagent backend pinned to a fixed model", t, func() {
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+		repoMock := mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl)
+		llm_provider_repo.RegisterLLMProvider(repoMock)
+		t.Setenv("AGENTRE_DATA_DIR", t.TempDir())
+
+		p := &llm_provider_entity.LLMProvider{
+			ProviderKey:     "key-pi",
+			Type:            string(llm_provider_entity.TypeOpenAIChat),
+			Name:            "PiProvider",
+			Enabled:         llm_provider_entity.EnabledOn,
+			DefaultModelKey: "mk-default",
+			APIKey:          "sk-pi-1",
+			BaseURL:         "https://pi.example",
+			Status:          consts.ACTIVE,
+		}
+		repoMock.EXPECT().FindByKey(gomock.Any(), "key-pi").Return(p, nil).AnyTimes()
+		// 固定模型解析走 mk-fixed，而不是 provider 默认 mk-default。
+		repoMock.EXPECT().FindModelByKey(gomock.Any(), "mk-fixed").Return(
+			&llm_provider_model_entity.LLMProviderModel{ModelKey: "mk-fixed", ModelID: "deepseek-r2", Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+			nil).AnyTimes()
+		repoMock.EXPECT().FindModelByKey(gomock.Any(), "mk-default").Return(
+			&llm_provider_model_entity.LLMProviderModel{ModelKey: "mk-default", ModelID: "deepseek-v3", Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE},
+			nil).AnyTimes()
+
+		Convey("When assembling the probe params Then the fixed model (not the provider default) is resolved and probed", func() {
+			_, _, modelOut, err := buildPiAgentProviderProbe(context.Background(), &agent_backend_entity.AgentBackend{
+				Type:           string(agent_backend_entity.TypePiAgent),
+				LLMProviderKey: "key-pi",
+				LLMModelKey:    "mk-fixed",
+			}, map[string]string{"BASE": "1"}, "")
+			So(err, ShouldBeNil)
+			So(modelOut, ShouldEqual, "agentre-key-pi/deepseek-r2")
 		})
 	})
 

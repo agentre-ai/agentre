@@ -3397,9 +3397,9 @@ func TestRuntime_Run_FixedModel_ResolvesSpecificModel(t *testing.T) {
 	assert.Equal(t, "pk", req.Effective.ProviderKey)
 }
 
-// TestRuntime_Run_FixedModel_BackendPinned 钉死 backend 固定模型在远端生效：
-// wire 不带会话级 model key（inherit-agent），但 backend 主绑定固定了模型 → daemon
-// 按 be.LLMModelKey 精确解析。
+// TestRuntime_Run_FixedModel_BackendPinned 钉死 backend 固定模型在远端生效：inherit-agent
+// 会话（未钉 provider）时，桌面端把 backend 固定模型作为执行侧 ModelKey 透传过来
+// （remoteKeysOnlyEffective → be.LLMModelKey），daemon 按 wire 的 model key 精确解析。
 func TestRuntime_Run_FixedModel_BackendPinned(t *testing.T) {
 	rt := &fullRT{}
 	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
@@ -3420,10 +3420,12 @@ func TestRuntime_Run_FixedModel_BackendPinned(t *testing.T) {
 		handlers.EffectiveModel{ModelKey: "model-fixed", ModelID: "claude-opus-4-5"}, nil)
 	gw.EXPECT().URL().Return("").AnyTimes()
 
+	// 未钉会话：桌面端透传 backend 固定模型作为 wire model key。
 	_, err := h.Run(ctx, wire.RunParams{
 		Backend:        backendJSON(t, be),
 		SessionID:      42,
 		LLMProviderKey: "pk",
+		LLMModelKey:    "model-fixed",
 	})
 	require.NoError(t, err)
 	require.Len(t, rt.runReqs, 1)
@@ -3522,6 +3524,47 @@ func TestRuntime_Goal_FixedModel_Resolves(t *testing.T) {
 	assert.Equal(t, agentruntime.EffectiveModeFixedModel, req.Effective.Mode)
 	assert.Equal(t, "model-fixed", req.Effective.ModelKey)
 	assert.Equal(t, "gpt-5-codex", req.Effective.ModelID)
+}
+
+// TestRuntime_Run_PinnedProviderDefault_NotDraggedByBackendFixedModel 钉死 spec 决策 1
+// 的远端半边：会话钉了 Provider 且选 provider-default（wire model key 为空）时，即使
+// backend 主绑定同家并固定了模型（be.LLMModelKey 非空），daemon 也必须解析 Provider
+// 当前默认模型（provider-default），绝不能被 backend 固定模型带偏成 fixed-model。
+// 会话是否钉住只有桌面端知道，wire 的 model key 已是解析结果，daemon 不得再自行派生。
+func TestRuntime_Run_PinnedProviderDefault_NotDraggedByBackendFixedModel(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event)
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	ctx, _, gw, lookup, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{
+		Type:           string(agent_backend_entity.TypeClaudeCode),
+		LLMProviderKey: "pk",
+		LLMModelKey:    "model-fixed",
+	}
+	lookup.EXPECT().FindByKey(ctx, "pk").Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: "pk", Type: string(llm_provider_entity.TypeAnthropic),
+		DefaultModelKey: "model-default", Status: consts.ACTIVE,
+	}, nil)
+	// 必须按 provider-default（空 model key）解析，而不是 be.LLMModelKey="model-fixed"。
+	lookup.EXPECT().ResolveModel(ctx, "pk", "").Return(
+		handlers.EffectiveModel{ModelKey: "model-default", ModelID: "claude-sonnet-4-6"}, nil)
+	gw.EXPECT().URL().Return("").AnyTimes()
+
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend:        backendJSON(t, be),
+		SessionID:      42,
+		LLMProviderKey: "pk",
+	})
+	require.NoError(t, err)
+	require.Len(t, rt.runReqs, 1)
+	req := rt.runReqs[0].req
+	require.NotNil(t, req.Effective)
+	assert.Equal(t, agentruntime.EffectiveModeProviderDefault, req.Effective.Mode)
+	assert.Equal(t, "model-default", req.Effective.ModelKey)
+	assert.Equal(t, "claude-sonnet-4-6", req.Effective.ModelID)
 }
 
 // TestRuntime_Run_ProviderDefault_ResolvesDefaultModel 钉死 provider-default 在 daemon

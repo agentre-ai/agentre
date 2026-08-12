@@ -57,9 +57,13 @@ func (builtinProber) Run(ctx context.Context, b *agent_backend_entity.AgentBacke
 	if p == nil || !p.IsActive() {
 		return "", errors.New("llm provider missing or inactive")
 	}
-	// 执行侧模型解析（EffectiveLLMConfig v1 seam）：provider-default 解析当前默认模型，
-	// Test 与 chat run 同一口径，不再读 Provider 旧单模型字段。
-	resolved, err := llm_provider_svc.LLMProvider().ResolveTarget(ctx, llm_provider_svc.ModelTarget{ProviderKey: p.ProviderKey})
+	// 执行侧模型解析（EffectiveLLMConfig v1 seam）：与 chat run 同一口径（sessionModelKeyFor）——
+	// backend 钉了固定模型（b.LLMModelKey）时测固定模型，否则 provider-default 解析当前默认模型；
+	// 不再读 Provider 旧单模型字段。测试连接必须测这条 backend 真正会跑的那个模型。
+	resolved, err := llm_provider_svc.LLMProvider().ResolveTarget(ctx, llm_provider_svc.ModelTarget{
+		ProviderKey: p.ProviderKey,
+		ModelKey:    strings.TrimSpace(b.LLMModelKey),
+	})
 	if err != nil {
 		return "", err
 	}
@@ -175,9 +179,13 @@ func buildPiAgentProviderProbe(ctx context.Context, b *agent_backend_entity.Agen
 	if strings.TrimSpace(p.APIKey) == "" {
 		return nil, env, model, fmt.Errorf("llm provider %q has empty APIKey", p.ProviderKey)
 	}
-	// 执行侧模型解析（EffectiveLLMConfig v1 seam）：provider-default 解析当前默认模型，
-	// Test 与 chat run 同一口径。
-	resolved, err := llm_provider_svc.LLMProvider().ResolveTarget(ctx, llm_provider_svc.ModelTarget{ProviderKey: p.ProviderKey})
+	// 执行侧模型解析（EffectiveLLMConfig v1 seam）：与 chat run 同一口径（sessionModelKeyFor）——
+	// backend 钉了固定模型（b.LLMModelKey）时测固定模型，否则 provider-default 解析当前默认模型；
+	// 测试连接必须测这条 backend 真正会跑的那个模型。
+	resolved, err := llm_provider_svc.LLMProvider().ResolveTarget(ctx, llm_provider_svc.ModelTarget{
+		ProviderKey: p.ProviderKey,
+		ModelKey:    strings.TrimSpace(b.LLMModelKey),
+	})
 	if err != nil {
 		return nil, env, model, err
 	}
