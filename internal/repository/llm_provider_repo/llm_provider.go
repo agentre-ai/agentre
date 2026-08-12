@@ -48,7 +48,9 @@ type LLMProviderRepo interface {
 	BatchFindByKey(ctx context.Context, keys []string) (map[string]*llm_provider_entity.LLMProvider, error)
 	FindByName(ctx context.Context, name string) (*llm_provider_entity.LLMProvider, error)
 	List(ctx context.Context) ([]*llm_provider_entity.LLMProvider, error)
-	Delete(ctx context.Context, id int64) error
+	// DeleteWithModels 在同一事务内软删除一个 Provider 及其全部 Models（spec 决策 17：
+	// 无引用 Provider 的删除事务同时移除其 Models，任一步失败整体回滚，不留半批）。
+	DeleteWithModels(ctx context.Context, id int64) error
 
 	// ── Provider + Models 原子操作（成功或失败，不留半批） ──
 	// CreateWithModels 在同一事务内写 Provider、其全部 Models 并落 default_model_key。
@@ -57,8 +59,6 @@ type LLMProviderRepo interface {
 	BatchImportModels(ctx context.Context, models []*llm_provider_model_entity.LLMProviderModel) error
 	// SetDefaultModel 原子切换 Provider 的 default_model_key。
 	SetDefaultModel(ctx context.Context, providerID int64, defaultModelKey string) error
-	// DeleteProviderModels 软删除一个 Provider 的全部 Models（无引用 Provider 删除时随行清掉）。
-	DeleteProviderModels(ctx context.Context, providerID int64) error
 
 	// ── Model CRUD ──
 	CreateModel(ctx context.Context, m *llm_provider_model_entity.LLMProviderModel) error
@@ -146,10 +146,19 @@ func (r *llmProviderRepo) List(ctx context.Context) ([]*llm_provider_entity.LLMP
 	return rows, nil
 }
 
-func (r *llmProviderRepo) Delete(ctx context.Context, id int64) error {
-	return db.Ctx(ctx).Model(&llm_provider_entity.LLMProvider{}).
-		Where("id = ?", id).
-		Update("status", consts.DELETE).Error
+// DeleteWithModels 在同一事务内软删除 Provider 及其全部 Models（spec 决策 17）。
+func (r *llmProviderRepo) DeleteWithModels(ctx context.Context, id int64) error {
+	return db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
+		ctx = db.WithContextDB(ctx, tx)
+		if err := db.Ctx(ctx).Model(&llm_provider_entity.LLMProvider{}).
+			Where("id = ?", id).
+			Update("status", consts.DELETE).Error; err != nil {
+			return err
+		}
+		return db.Ctx(ctx).Model(&llm_provider_model_entity.LLMProviderModel{}).
+			Where("provider_id = ?", id).
+			Update("status", consts.DELETE).Error
+	})
 }
 
 // CreateWithModels 事务内原子写入 Provider + Models + 默认模型。
@@ -191,12 +200,6 @@ func (r *llmProviderRepo) SetDefaultModel(ctx context.Context, providerID int64,
 	return db.Ctx(ctx).Model(&llm_provider_entity.LLMProvider{}).
 		Where("id = ?", providerID).
 		Update("default_model_key", defaultModelKey).Error
-}
-
-func (r *llmProviderRepo) DeleteProviderModels(ctx context.Context, providerID int64) error {
-	return db.Ctx(ctx).Model(&llm_provider_model_entity.LLMProviderModel{}).
-		Where("provider_id = ?", providerID).
-		Update("status", consts.DELETE).Error
 }
 
 func (r *llmProviderRepo) CreateModel(ctx context.Context, m *llm_provider_model_entity.LLMProviderModel) error {

@@ -284,10 +284,8 @@ func (s *llmProviderSvc) Delete(ctx context.Context, req *DeleteProviderRequest)
 		return nil, i18n.NewError(ctx, code.LLMProviderReferenced)
 	}
 
-	if err := llm_provider_repo.LLMProvider().Delete(ctx, p.ID); err != nil {
-		return nil, err
-	}
-	if err := llm_provider_repo.LLMProvider().DeleteProviderModels(ctx, p.ID); err != nil {
+	// 无引用：Provider 与其 Models 在同一事务内一并软删除（spec 决策 17：不留半批）。
+	if err := llm_provider_repo.LLMProvider().DeleteWithModels(ctx, p.ID); err != nil {
 		return nil, err
 	}
 	logger.Ctx(ctx).Info("llmProviderSvc.Delete: provider deleted",

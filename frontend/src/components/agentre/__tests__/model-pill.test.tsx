@@ -30,6 +30,7 @@ import {
   ProviderPill,
   useProviderPill,
 } from "../model-pill";
+import { recentStorageKey } from "../model-target-picker/recents";
 import type { UseProviderPillOptions } from "../model-pill";
 
 beforeEach(() => {
@@ -505,6 +506,69 @@ describe("ProviderPill · 已有会话（决策 1/9/10：选择立即持久化 +
     );
     await user.click(screen.getByTestId("provider-pill"));
     expect(screen.getByText("nope")).toBeInTheDocument();
+  });
+
+  it("切换成功后按执行位置指纹记录最近使用（本机/远端隔离，决策 19）", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({ items: ALL_PROVIDERS });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [
+        model("mk-sonnet", "claude-sonnet-4-5"),
+        model("mk-opus", "claude-opus-4-5"),
+      ],
+    });
+    appMocks.SetChatSessionModelTarget.mockResolvedValue({
+      providerKey: "acme-anthropic",
+      modelKey: "mk-opus",
+      agentProviderKey: "",
+      agentModelKey: "",
+    });
+    // 远端 daemon 目录含该 provider + 两个模型（启用）→ 固定模型可选。
+    appMocks.RemoteDeviceList.mockResolvedValue([device({ id: 7 })]);
+    appMocks.RemoteDeviceListProviders.mockResolvedValue([
+      remoteProvider({
+        models: [
+          remoteModel("mk-sonnet", "claude-sonnet-4-5"),
+          remoteModel("mk-opus", "claude-opus-4-5"),
+        ],
+      }),
+    ]);
+    const onSwitched = vi.fn();
+    render(
+      <Harness
+        backendType="claudecode"
+        sessionId={42}
+        executionLocation="7"
+        persistedProviderKey=""
+        onSwitched={onSwitched}
+      />,
+    );
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+
+    const user = userEvent.setup();
+    await user.click(pill);
+    await user.click(
+      within(screen.getByRole("listbox")).getByRole("option", {
+        name: /claude-opus-4-5/,
+      }),
+    );
+
+    await waitFor(() => expect(onSwitched).toHaveBeenCalledTimes(1));
+
+    // 最近使用只在 target 成功持久化后记录，并按执行设备指纹隔离：远端会话的选择
+    // 落在 daemon:7 指纹下，绝不落进本机 local 指纹（spec「UI, accessibility and
+    // recent targets」决策 19）。
+    const daemonRecent = JSON.parse(
+      window.localStorage.getItem(recentStorageKey("chat", "7")) ?? "[]",
+    );
+    expect(daemonRecent).toEqual([
+      { providerKey: "acme-anthropic", modelKey: "mk-opus" },
+    ]);
+    const localRecent = JSON.parse(
+      window.localStorage.getItem(recentStorageKey("chat", "")) ?? "[]",
+    );
+    expect(localRecent).toEqual([]);
   });
 });
 

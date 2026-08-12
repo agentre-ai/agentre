@@ -273,8 +273,9 @@ export function useProviderPill({
       })
         .then(() => {
           // 只有 target 成功持久化后才记录最近使用（spec「UI, accessibility and
-          // recent targets」决策 19）。会话一律按本机执行位置记。
-          recordRecentTarget("chat", "", {
+          // recent targets」决策 19）。按执行位置指纹隔离：本机会话落 local，远端
+          // 会话落 daemon:<deviceID>，远端选择绝不进入本机最近。
+          recordRecentTarget("chat", executionLocation, {
             providerKey: nextProvider,
             modelKey: nextModel,
           });
@@ -288,7 +289,7 @@ export function useProviderPill({
           setError(msg);
         });
     },
-    [providerKey, modelKey, sessionId, onSwitched],
+    [providerKey, modelKey, sessionId, executionLocation, onSwitched],
   );
 
   // disabledReason 优先级：后端不可选 > 加载中（无专属原因，沿用既有行为）>

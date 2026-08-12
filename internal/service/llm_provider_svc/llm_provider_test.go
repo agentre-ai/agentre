@@ -247,8 +247,7 @@ func TestDeleteProvider(t *testing.T) {
 				ID: 1, ProviderKey: "pk", Status: 1,
 			}, nil)
 			mockRepo.EXPECT().CountProviderReferences(gomock.Any(), "pk").Return(llm_provider_repo.ProviderRefCounts{}, nil)
-			mockRepo.EXPECT().Delete(gomock.Any(), int64(1)).Return(nil)
-			mockRepo.EXPECT().DeleteProviderModels(gomock.Any(), int64(1)).Return(nil)
+			mockRepo.EXPECT().DeleteWithModels(gomock.Any(), int64(1)).Return(nil)
 			_, err := svc.Delete(ctx, &DeleteProviderRequest{ID: 1})
 			assert.NoError(t, err)
 		})

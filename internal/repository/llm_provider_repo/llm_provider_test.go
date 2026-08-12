@@ -192,30 +192,48 @@ func TestLLMProviderRepo_List(t *testing.T) {
 	})
 }
 
-func TestLLMProviderRepo_Delete(t *testing.T) {
-	convey.Convey("Delete", t, func() {
+func TestLLMProviderRepo_DeleteWithModels(t *testing.T) {
+	convey.Convey("DeleteWithModels", t, func() {
 		ctx, mock, repo := setupLLMProviderRepoTest(t)
 
-		convey.Convey("软删除：UPDATE status=DELETE WHERE id=?", func() {
+		convey.Convey("Provider 与其 Models 在同一事务内原子软删除（spec：无引用 Provider 的删除事务同时移除其 Models）", func() {
 			mock.ExpectBegin()
 			mock.ExpectExec("UPDATE `llm_providers` SET `status`=\\?(,`updatetime`=\\?)? WHERE id = \\?").
 				WithArgs(consts.DELETE, int64(3)).
 				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec("UPDATE `llm_provider_models` SET `status`=\\?(,`updatetime`=\\?)? WHERE provider_id = \\?").
+				WithArgs(consts.DELETE, int64(3)).
+				WillReturnResult(sqlmock.NewResult(0, 1))
 			mock.ExpectCommit()
 
-			assert.NoError(t, repo.Delete(ctx, 3))
+			assert.NoError(t, repo.DeleteWithModels(ctx, 3))
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 
-		convey.Convey("驱动报错时透传并回滚", func() {
+		convey.Convey("Provider 软删除失败 → 整体回滚，Models 不单独删除（不留半批）", func() {
 			mock.ExpectBegin()
-			mock.ExpectExec("UPDATE `llm_providers` SET `status`=\\? WHERE id = \\?").
+			mock.ExpectExec("UPDATE `llm_providers` SET `status`=\\?(,`updatetime`=\\?)? WHERE id = \\?").
 				WithArgs(consts.DELETE, int64(3)).
 				WillReturnError(errors.New("write failed"))
 			mock.ExpectRollback()
 
-			err := repo.Delete(ctx, 3)
+			err := repo.DeleteWithModels(ctx, 3)
 			assert.EqualError(t, err, "write failed")
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+
+		convey.Convey("Models 软删除失败 → 整体回滚，Provider 已做的软删除一并撤销", func() {
+			mock.ExpectBegin()
+			mock.ExpectExec("UPDATE `llm_providers` SET `status`=\\?(,`updatetime`=\\?)? WHERE id = \\?").
+				WithArgs(consts.DELETE, int64(3)).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec("UPDATE `llm_provider_models` SET `status`=\\?(,`updatetime`=\\?)? WHERE provider_id = \\?").
+				WithArgs(consts.DELETE, int64(3)).
+				WillReturnError(errors.New("models write failed"))
+			mock.ExpectRollback()
+
+			err := repo.DeleteWithModels(ctx, 3)
+			assert.EqualError(t, err, "models write failed")
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 	})
