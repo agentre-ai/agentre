@@ -160,7 +160,13 @@ func launchdTerminalFailure(output []byte) bool {
 	}
 	for _, line := range strings.Split(detail, "\n") {
 		value, ok := strings.CutPrefix(strings.TrimSpace(line), "last exit code =")
-		if ok && strings.TrimSpace(value) != "0" {
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(value) {
+		case "0", "(never exited)":
+			continue
+		default:
 			return true
 		}
 	}

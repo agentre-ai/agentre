@@ -227,6 +227,40 @@ func TestGivenLaunchAgentStillRunningAfterBootoutWhenStoppingThenItWaitsUntilUnl
 	assert.Len(t, runner.calls, 3)
 }
 
+func TestGivenLaunchAgentInXPCProxyWhenStartingThenItKeepsWaitingUntilRunning(t *testing.T) {
+	home := t.TempDir()
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", "ai.agentre.agentred.plist")
+	require.NoError(t, os.MkdirAll(filepath.Dir(plistPath), 0o755))
+	require.NoError(t, os.WriteFile(plistPath, []byte("plist"), 0o644))
+	runner := &fakeServiceCommandRunner{results: []fakeServiceCommandResult{
+		{output: "Could not find service", err: &exec.ExitError{}},
+		{},
+		{output: `gui/501/ai.agentre.agentred = {
+	active count = 1
+	state = xpcproxy
+	runs = 1
+	pid = 40108
+	last exit code = (never exited)
+	properties = keepalive | runatload | inferred program
+}
+`},
+		{output: `gui/501/ai.agentre.agentred = {
+	active count = 1
+	state = running
+	runs = 1
+	pid = 40108
+	last exit code = (never exited)
+}
+`},
+	}}
+	manager := newLaunchdServiceManager(serviceManagerConfig{HomeDir: home, UID: 501, Runner: runner})
+
+	status, err := manager.Start(context.Background())
+	require.NoError(t, err)
+	assert.True(t, status.Running)
+	assert.Len(t, runner.calls, 4, "an active xpcproxy job must be polled until launchd reports it running")
+}
+
 func TestGivenLaunchAgentPreviouslyExitedCleanlyWhenStartingThenItKeepsWaitingUntilRunning(t *testing.T) {
 	home := t.TempDir()
 	plistPath := filepath.Join(home, "Library", "LaunchAgents", "ai.agentre.agentred.plist")
@@ -282,6 +316,27 @@ func TestGivenLaunchAgentNeverRunsWhenStartingThenContextDeadlineReturnsActionab
 	_, err := manager.Start(ctx)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Contains(t, err.Error(), "wait for launchd target gui/501/ai.agentre.agentred to run")
+	assert.Contains(t, err.Error(), "Run manually: launchctl print gui/501/ai.agentre.agentred")
+}
+
+func TestGivenLaunchAgentNeverRunsWhenStartingThenContextCancellationReturnsActionableFailure(t *testing.T) {
+	home := t.TempDir()
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", "ai.agentre.agentred.plist")
+	require.NoError(t, os.MkdirAll(filepath.Dir(plistPath), 0o755))
+	require.NoError(t, os.WriteFile(plistPath, []byte("plist"), 0o644))
+	runner := &fakeServiceCommandRunner{results: []fakeServiceCommandResult{
+		{output: "state = waiting\n"},
+		{},
+		{output: "state = waiting\n"},
+	}}
+	manager := newLaunchdServiceManager(serviceManagerConfig{HomeDir: home, UID: 501, Runner: runner})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := manager.Start(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
 	assert.Contains(t, err.Error(), "wait for launchd target gui/501/ai.agentre.agentred to run")
 	assert.Contains(t, err.Error(), "Run manually: launchctl print gui/501/ai.agentre.agentred")
 }
