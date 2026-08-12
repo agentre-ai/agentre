@@ -1092,7 +1092,7 @@ describe("ChatTranscript virtualization", () => {
     ).toEqual(visibleBeforeHide);
   });
 
-  it("Given a tool card is expanded, When its row unmounts and returns, Then the expanded state is preserved", async () => {
+  it("Given a tool row is expanded, When its row unmounts and returns, Then the expanded state is preserved", async () => {
     const scrollElement = sizedScrollElement();
     const messages = Array.from({ length: 160 }, (_, idx) => {
       const id = idx + 1;
@@ -1107,7 +1107,9 @@ describe("ChatTranscript virtualization", () => {
               type: "tool_use",
             } as ChatBlockData,
             {
-              text: "persistent-state",
+              // 多行结果:折叠的活动行对多行结果只报规模,所以「结果正文可见」
+              // 确实证明这一行被展开过,而不是行尾那段单行预览。
+              text: "persistent-state\npersistent-state-tail",
               toolUseId: "toolu-persist",
               type: "tool_result",
             } as ChatBlockData,
@@ -1131,9 +1133,9 @@ describe("ChatTranscript virtualization", () => {
       />,
     );
 
-    const card = await screen.findByTestId("raw-tool-card");
-    fireEvent.click(within(card).getByRole("button", { expanded: false }));
-    expect(screen.getByText("persistent-state")).toBeInTheDocument();
+    const row = await screen.findByTestId("activity-row");
+    fireEvent.click(row);
+    expect(screen.getByText(/persistent-state-tail/)).toBeInTheDocument();
 
     rerender(
       <ChatTranscript
@@ -1144,7 +1146,7 @@ describe("ChatTranscript virtualization", () => {
         virtualize
       />,
     );
-    expect(screen.queryByTestId("raw-tool-card")).toBeNull();
+    expect(screen.queryByTestId("activity-row")).toBeNull();
 
     rerender(
       <ChatTranscript
@@ -1155,21 +1157,19 @@ describe("ChatTranscript virtualization", () => {
         virtualize
       />,
     );
-    const remountedCard = await screen.findByTestId("raw-tool-card");
+    const remountedRow = await screen.findByTestId("activity-row");
 
-    expect(
-      within(remountedCard).getByRole("button", { expanded: true }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("persistent-state")).toBeInTheDocument();
+    expect(remountedRow).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/persistent-state-tail/)).toBeInTheDocument();
   });
 
-  it("Given a visible row contains many tool cards, When the tab is hidden, Then tool card DOM unmounts", async () => {
+  it("Given a visible row contains many tool rows, When the tab is hidden, Then tool row DOM unmounts", async () => {
     const scrollElement = sizedScrollElement();
     const toolBlocks = Array.from({ length: 40 }, (_, idx) => {
       const toolUseId = `toolu-heavy-${idx + 1}`;
       return [
-        // 每次调用前先说一句 —— 正文打断活动块聚合,于是这 40 次调用仍是 40 张
-        // 独立的工具卡(单条不成组),测的还是「一条消息内按行窗口挂载」。
+        // 每次调用前先说一句 —— 正文打断活动块聚合,于是这 40 次调用仍是 40 行
+        // 独立的活动行(单条不成组),测的还是「一条消息内按行窗口挂载」。
         {
           text: `narration-${idx + 1}`,
           type: "text",
@@ -1205,10 +1205,10 @@ describe("ChatTranscript virtualization", () => {
       />,
     );
 
-    // 行级虚拟化后,可见态只挂视口窗口内的卡(40 卡全挂正是被修掉的 bug);
+    // 行级虚拟化后,可见态只挂视口窗口内的行(40 行全挂正是被修掉的 bug);
     // 本测试关注的是「隐藏后全部卸载」,可见态只断言窗口语义。
     await waitFor(() => {
-      const mounted = screen.getAllByTestId("raw-tool-card").length;
+      const mounted = screen.getAllByTestId("activity-row").length;
       expect(mounted).toBeGreaterThan(0);
       expect(mounted).toBeLessThan(40);
     });
@@ -1225,7 +1225,7 @@ describe("ChatTranscript virtualization", () => {
       />,
     );
 
-    expect(screen.queryByTestId("raw-tool-card")).toBeNull();
+    expect(screen.queryByTestId("activity-row")).toBeNull();
     expect(document.querySelectorAll("[data-message-id]")).toHaveLength(0);
   });
 });
@@ -1234,9 +1234,12 @@ describe("ChatTranscript virtualization", () => {
 // 这是「切 tab 卡顿(单 message 数百 tool 卡击穿 per-message 虚拟化)」的修复本体。
 describe("ChatTranscript block-level virtualization", () => {
   // 一条消息 = count 次「说一句 + 调一次工具」。正文打断活动块聚合(Hard
-  // invariant 4 / 决策 5),所以每次调用仍是独立的一行工具卡 —— 这正是行级
+  // invariant 4 / 决策 5),所以每次调用仍是独立的一行活动行 —— 这正是行级
   // 虚拟化要窗口化的形态。连续调用会折成一个活动块,那种形态由下面单独一条
-  // 用例钉住(折叠态只出一行、一张卡都不 mount)。
+  // 用例钉住(折叠态只出一行、一步都不 mount)。
+  //
+  // 结果刻意多行:折叠的活动行对多行结果只报规模(「N 行」),所以下面「点开
+  // 才看得到结果正文」的断言测的是展开,不是行尾那段单行预览。
   function manyToolMessage(id: number, count: number): chat_svc.ChatMessage {
     const blocks = Array.from({ length: count }, (_, idx) => {
       const toolUseId = `toolu-big-${idx + 1}`;
@@ -1252,7 +1255,7 @@ describe("ChatTranscript block-level virtualization", () => {
           type: "tool_use",
         } as ChatBlockData,
         {
-          text: `big-result-${idx + 1}`,
+          text: `filler\nbig-result-${idx + 1}`,
           toolUseId,
           type: "tool_result",
         } as ChatBlockData,
@@ -1325,13 +1328,13 @@ describe("ChatTranscript block-level virtualization", () => {
       />,
     );
 
-    await screen.findAllByTestId("raw-tool-card");
-    const mounted = screen.getAllByTestId("raw-tool-card").length;
+    await screen.findAllByTestId("activity-row");
+    const mounted = screen.getAllByTestId("activity-row").length;
     expect(mounted).toBeGreaterThan(0);
     expect(mounted).toBeLessThan(60);
   });
 
-  it("Given the 300-tool message, When a visible card is expanded, Then it shows its paired tool result", async () => {
+  it("Given the 300-tool message, When a visible row is expanded, Then it shows its paired tool result", async () => {
     const scrollElement = sizedScrollElement();
 
     render(
@@ -1345,12 +1348,13 @@ describe("ChatTranscript block-level virtualization", () => {
       />,
     );
 
-    const cards = await screen.findAllByTestId("raw-tool-card");
-    fireEvent.click(within(cards[0]).getByRole("button", { expanded: false }));
-    expect(screen.getByText("big-result-1")).toBeInTheDocument();
+    const rows = await screen.findAllByTestId("activity-row");
+    expect(screen.queryByText(/big-result-1$/)).toBeNull();
+    fireEvent.click(rows[0]);
+    expect(screen.getByText(/big-result-1$/)).toBeInTheDocument();
   });
 
-  it("Given a card expanded inside a long message, When scrolled away and back, Then the row unmounts and returns expanded", async () => {
+  it("Given a row expanded inside a long message, When scrolled away and back, Then the row unmounts and returns expanded", async () => {
     const scrollElement = sizedScrollElement();
 
     render(
@@ -1364,29 +1368,58 @@ describe("ChatTranscript block-level virtualization", () => {
       />,
     );
 
-    const cards = await screen.findAllByTestId("raw-tool-card");
-    fireEvent.click(within(cards[0]).getByRole("button", { expanded: false }));
-    expect(screen.getByText("big-result-1")).toBeInTheDocument();
+    const rows = await screen.findAllByTestId("activity-row");
+    fireEvent.click(rows[0]);
+    expect(screen.getByText(/big-result-1$/)).toBeInTheDocument();
 
-    // 滚到消息深处:同一条消息内的首卡行应被虚拟卸载 —— 这正是 message 级
+    // 滚到消息深处:同一条消息内的首行应被虚拟卸载 —— 这正是 message 级
     // 虚拟化做不到的(整条消息一行,行内永不细分)。
     act(() => {
       scrollElement.scrollTop = 8_000;
       fireEvent.scroll(scrollElement);
     });
     await waitFor(() => {
-      expect(screen.queryByText("big-result-1")).toBeNull();
+      expect(screen.queryByText(/big-result-1$/)).toBeNull();
     });
 
     act(() => {
       scrollElement.scrollTop = 0;
       fireEvent.scroll(scrollElement);
     });
-    const first = await screen.findAllByTestId("raw-tool-card");
-    expect(
-      within(first[0]).getByRole("button", { expanded: true }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("big-result-1")).toBeInTheDocument();
+    const first = await screen.findAllByTestId("activity-row");
+    expect(first[0]).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/big-result-1$/)).toBeInTheDocument();
+  });
+
+  // 单条不成组:被正文夹住的一次调用不套「1 步」的壳,也不退回成一张等重的
+  // 工具卡 —— 一条 assistant 消息只由「正文 / 活动块 / 出组卡片 / 脚注」组成。
+  it("Given a lone tool call between two paragraphs, When rendered, Then it is a bare activity row rather than a tool card", async () => {
+    const scrollElement = sizedScrollElement();
+
+    render(
+      <ChatTranscript
+        active
+        agentColor="agent-1"
+        agentName="A"
+        messages={[
+          {
+            ...textMessage(1, "assistant", ""),
+            blocks: [
+              { text: "先看一眼", type: "text" } as ChatBlockData,
+              ...toolPairBlocks(1),
+              { text: "看完了", type: "text" } as ChatBlockData,
+            ],
+          } as chat_svc.ChatMessage,
+        ]}
+        scrollElement={scrollElement}
+        virtualize
+      />,
+    );
+
+    const row = await screen.findByTestId("activity-row");
+    expect(screen.queryByTestId("activity-header")).toBeNull();
+    expect(screen.queryByTestId("raw-tool-card")).toBeNull();
+    expect(within(row).getByTestId("activity-name")).toHaveTextContent("Bash");
   });
 
   it("Given a streaming message whose last block is a tool, When rendered, Then the typing indicator mounts with that message", async () => {
@@ -1411,7 +1444,7 @@ describe("ChatTranscript block-level virtualization", () => {
     ).toBe("2");
   });
 
-  it("perf probe: a 356-tool message mounts only the window, never the full card list", async () => {
+  it("perf probe: a 356-tool message mounts only the window, never the full step list", async () => {
     // 常驻性能验收:硬断言挂载数(窗口语义),耗时只打日志不做墙钟断言(CI 抖动)。
     // 重构前同场景为 356 卡全挂、同步渲染 ~136ms。
     const scrollElement = sizedScrollElement();
@@ -1427,17 +1460,17 @@ describe("ChatTranscript block-level virtualization", () => {
         virtualize
       />,
     );
-    await screen.findAllByTestId("raw-tool-card");
+    await screen.findAllByTestId("activity-row");
 
     const elapsed = performance.now() - t0;
-    const mountedCards = screen.getAllByTestId("raw-tool-card").length;
+    const mountedSteps = screen.getAllByTestId("activity-row").length;
     const mountedRows = document.querySelectorAll("[data-row-key]").length;
-    // 防「卡没挂但行壳全挂」的假优化:行 wrapper 数与卡数同界。
-    expect(mountedCards).toBeGreaterThan(0);
-    expect(mountedCards).toBeLessThan(40);
+    // 防「步骤没挂但行壳全挂」的假优化:行 wrapper 数与步骤数同界。
+    expect(mountedSteps).toBeGreaterThan(0);
+    expect(mountedSteps).toBeLessThan(40);
     expect(mountedRows).toBeLessThan(40);
     console.info(
-      `[perf-probe] 356-tool message: ${mountedCards} cards / ${mountedRows} rows mounted in ${elapsed.toFixed(1)}ms`,
+      `[perf-probe] 356-tool message: ${mountedSteps} steps / ${mountedRows} rows mounted in ${elapsed.toFixed(1)}ms`,
     );
   });
 
@@ -1482,7 +1515,7 @@ describe("ChatTranscript block-level virtualization", () => {
         virtualize
       />,
     );
-    await screen.findAllByTestId("raw-tool-card");
+    await screen.findAllByTestId("activity-row");
     scrollTo.mockClear();
 
     rerender(
@@ -1518,15 +1551,15 @@ describe("ChatTranscript block-level virtualization", () => {
         virtualize
       />,
     );
-    await screen.findAllByTestId("raw-tool-card");
+    await screen.findAllByTestId("activity-row");
 
-    // 行级锚点:钉到消息深处第 200 个 tool 行,而不是消息首行。
+    // 行级锚点:钉到消息深处第 200 次调用那一行,而不是消息首行。
     let okDeep: boolean | undefined;
     act(() => {
       okDeep = ref.current?.scrollToAnchor(
         1,
         0,
-        "message:1:tool:tool:toolu-big-200",
+        "message:1:activity:tool:toolu-big-200",
       );
     });
     expect(okDeep).toBe(true);
@@ -1567,7 +1600,7 @@ describe("ChatTranscript block-level virtualization", () => {
         virtualize
       />,
     );
-    await screen.findAllByTestId("raw-tool-card");
+    await screen.findAllByTestId("activity-row");
     scrollTo.mockClear();
 
     rerender(
@@ -2386,7 +2419,9 @@ describe("ChatTranscript thinking blocks", () => {
     } as chat_svc.ChatMessage;
   }
 
-  it("renders persisted thinking block as done-collapsed (header only)", () => {
+  it("renders a persisted thinking block as a collapsed thought row, not a card", () => {
+    // 已落定的思考是活动块的组内成员;这里它落单,于是「单条不成组」直接就是
+    // 那一行活动行(不再是一张与工具等重的整卡)。
     const reasoning = "Plan: check A then B.";
     render(
       <ChatTranscript
@@ -2401,11 +2436,16 @@ describe("ChatTranscript thinking blocks", () => {
       />,
     );
 
-    expect(screen.getByText("Thought complete")).toBeInTheDocument();
-    expect(screen.getByText(`· ${reasoning.length} chars`)).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Toggle completed thought" }),
-    ).toHaveAttribute("aria-expanded", "false");
+    const row = screen.getByTestId("activity-row");
+    expect(within(row).getByTestId("activity-name")).toHaveTextContent(
+      "Thought",
+    );
+    expect(within(row).getByText(`${reasoning.length} chars`)).toBeVisible();
+    expect(row).toHaveAttribute("aria-expanded", "false");
+    // 折叠是收起,不是藏:正文点开就在。
+    expect(screen.queryByText(reasoning)).toBeNull();
+    fireEvent.click(row);
+    expect(screen.getByText(reasoning)).toBeInTheDocument();
   });
 
   it("renders liveThinking as a streaming thinking card on the live target", () => {
@@ -2454,15 +2494,15 @@ describe("ChatTranscript thinking blocks", () => {
       />,
     );
 
-    // liveTail 空 → 当前轮思考仍在进行,文案是「Thinking…」;它排在工具卡之后。
+    // liveTail 空 → 当前轮思考仍在进行,文案是「Thinking…」;它排在那次调用之后。
     const thinking = screen.getByText("Thinking…");
-    const tool = screen.getByTestId("raw-tool-card");
+    const tool = screen.getByTestId("activity-row");
     expect(
       tool.compareDocumentPosition(thinking) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
 
-  it("liveThinking collapses to done when text deltas start (liveDelta non-empty)", () => {
+  it("liveThinking joins the activity as a done thought row when text deltas start (liveDelta non-empty)", () => {
     render(
       <ChatTranscript
         liveByMessageId={
@@ -2475,9 +2515,12 @@ describe("ChatTranscript thinking blocks", () => {
       />,
     );
 
-    // Thinking header collapsed to 'Thought complete', not 'Thinking…'
-    expect(screen.getByText("Thought complete")).toBeInTheDocument();
+    // 流式的思考才是整卡;它一结束就并入活动,成为一条普通的思考行。
     expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+    expect(screen.queryByText("Thought complete")).toBeNull();
+    expect(
+      within(screen.getByTestId("activity-row")).getByTestId("activity-name"),
+    ).toHaveTextContent("Thought");
     // Live text appears
     expect(screen.getByText("结果是")).toBeInTheDocument();
   });
@@ -2984,7 +3027,7 @@ describe("ChatTranscript plan.update rendering", () => {
     expect(screen.getByText("Refine Plan")).toBeInTheDocument();
   });
 
-  it("renders plan.update tool_use as an ordinary raw tool card", () => {
+  it("renders plan.update tool_use as an ordinary activity step", () => {
     render(
       <ChatTranscript
         agentColor="agent-1"
@@ -3016,11 +3059,14 @@ describe("ChatTranscript plan.update rendering", () => {
       />,
     );
 
-    expect(screen.getByTestId("raw-tool-card")).toBeInTheDocument();
+    const row = screen.getByTestId("activity-row");
     expect(screen.queryByTestId("plan-card")).toBeNull();
-    expect(screen.getByText("update_plan")).toBeInTheDocument();
+    expect(within(row).getByTestId("activity-name")).toHaveTextContent(
+      "update_plan",
+    );
     expect(screen.queryByText("plan.update")).toBeNull();
-    expect(screen.getByText("DONE")).toBeInTheDocument();
+    // 成功态没有状态标记 ——「没有标记 = 成功」(spec 决策 10)。
+    expect(screen.queryByText("DONE")).toBeNull();
   });
 });
 

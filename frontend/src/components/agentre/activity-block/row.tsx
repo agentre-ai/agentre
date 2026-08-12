@@ -19,6 +19,7 @@ import {
   toolInputEntries,
 } from "../collapsible-code";
 import { FileBlock } from "../canonical-tool/file-edit/hunk-renderer";
+import { FileWriteContent } from "../canonical-tool/file-write/content-renderer";
 import { summarizeRawTool } from "../canonical-tool/raw/summary";
 import { displayName, toolCategory } from "../canonical-tool/tier";
 import { shouldIgnoreClickForSelection } from "../copyable-text";
@@ -246,18 +247,11 @@ function ActivityRowBody({
     const write = canonical.fileWrite;
     return (
       <Section label={t("activity.row.sections.content")}>
-        {write?.content ? (
-          <CollapsibleCode
-            testId="activity-file-write"
-            value={write.content}
-            surface="muted"
-            bodyClassName="rounded-sm px-2 py-1.5"
-          />
-        ) : (
-          <div className="text-muted-foreground">
-            {t("canonical.fileWrite.empty")}
-          </div>
-        )}
+        {/* 复用 FileWriteCard 今天的正文渲染器(行号 / 横向滚动 / 截断条),
+            换成一段裸代码块就丢掉了「这段内容被截断过」和「复制完整内容」。 */}
+        <div data-testid="activity-file-write" className="min-w-0">
+          <FileWriteContent write={write} />
+        </div>
       </Section>
     );
   }

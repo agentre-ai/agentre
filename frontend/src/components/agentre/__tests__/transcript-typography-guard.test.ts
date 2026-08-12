@@ -54,6 +54,9 @@ export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [
   { file: "canonical-tool/file-edit/card.tsx" },
   { file: "canonical-tool/file-edit/hunk-renderer.tsx" },
   { file: "canonical-tool/file-write/card.tsx" },
+  // 写入正文(行号 / 横向滚动 / 截断条)从 card.tsx 抽出来给活动行复用后,
+  // 那些字面量搬到了这里 —— 守卫范围跟着搬,别把已覆盖的行漏出去。
+  { file: "canonical-tool/file-write/content-renderer.tsx" },
   { file: "canonical-tool/agent-spawn/card.tsx" },
   { file: "canonical-tool/plan/card.tsx" },
   { file: "tool-approval/card.tsx" },

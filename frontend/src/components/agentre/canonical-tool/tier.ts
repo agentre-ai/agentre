@@ -22,7 +22,20 @@ const WRITE_KINDS = new Set<CanonicalKind>(["file.write", "file.edit"]);
 
 const COMMAND_KEYS = ["command", "cmd"];
 const WRITE_SHAPE_KEYS = ["content", "edits", "old_string"];
-const READ_SHAPE_KEYS = ["path", "pattern", "query", "url"];
+// 定位语义字段与 raw/summary.ts 的 PATH_KEYS / PATTERN_KEYS 同源(判据②要求
+// 「与 summary.ts 的探测同源」)。只认 path 会漏掉 claudecode 的 Read
+// ({file_path, offset, limit}) —— 最常见的只读探查会被当成认不出来的工具落进
+// 中性层,组头把它算进「其它」而不是「查阅」。写入语义字段先判,所以 Write 的
+// {file_path, content} 仍是写层。
+const READ_SHAPE_KEYS = [
+  "path",
+  "file_path",
+  "file",
+  "filename",
+  "pattern",
+  "query",
+  "url",
+];
 
 export function tier(block: ChatBlockData): Tier {
   // block.canonical 的生成类型(wailsjs view.CanonicalDTO)把 kind 宽化成 string;

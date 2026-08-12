@@ -109,6 +109,28 @@ describe("tier", () => {
     expect(tier(block({ toolInput: { path: "/tmp/a.ts" } }))).toBe("read");
   });
 
+  // 定位语义字段与 summary.ts 的 PATH_KEYS 同源 —— claudecode 的 Read 用
+  // file_path,只认 path 会把最常见的只读探查误判成中性层。
+  it("input.file_path present (no canonical) → read", () => {
+    expect(
+      tier(
+        block({ toolInput: { file_path: "/tmp/a.ts", limit: 20, offset: 0 } }),
+      ),
+    ).toBe("read");
+  });
+
+  it("input.file / input.filename present (no canonical) → read", () => {
+    expect(tier(block({ toolInput: { file: "/tmp/a.ts" } }))).toBe("read");
+    expect(tier(block({ toolInput: { filename: "a.ts" } }))).toBe("read");
+  });
+
+  // 写入语义字段先于定位字段命中:Write 的 {file_path, content} 仍是写层。
+  it("write-shaped input wins over a co-present locator field", () => {
+    expect(
+      tier(block({ toolInput: { content: "x", file_path: "/tmp/a.ts" } })),
+    ).toBe("write");
+  });
+
   it("input.pattern present (no canonical) → read", () => {
     expect(tier(block({ toolInput: { pattern: "*.ts" } }))).toBe("read");
   });

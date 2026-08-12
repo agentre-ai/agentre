@@ -64,6 +64,14 @@ export function ActivityBlock({
     setExpanded((v) => !v);
   };
 
+  // 单条不成组:一段活动只有一步时不套「1 步」的壳,直接渲染那一行活动行。
+  // 组头是折叠态唯一的信息出口 —— 只有一步时它没有任何信息可出(汇总就是那一
+  // 行自己),多一层壳只是多一次点击。运行态同理:这一行本来就看得见,「正在跑
+  // 的活动块自动展开」在这里已经天然成立,不需要额外的自动展开。
+  if (steps.length === 1) {
+    return <ActivityRow step={steps[0]} cwd={cwd} />;
+  }
+
   const durationLabel =
     !running && durationMs !== undefined && durationMs > 0
       ? t("activity.header.duration", {

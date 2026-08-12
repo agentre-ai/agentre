@@ -139,6 +139,35 @@ describe("ActivityBlock 组头(折叠态)", () => {
     expect(screen.queryByText(/13 passed/)).toBeNull();
   });
 
+  // 单条不成组:一段活动只有一步时不套「1 步」的壳,直接渲染那一行活动行。
+  it("Given 一段活动只有一步, Then 不出组头,直接就是那一行活动行", () => {
+    renderBlock({ steps: [readStep], summary: summaryOf({ steps: 1 }) });
+
+    expect(screen.queryByTestId("activity-header")).toBeNull();
+    const rows = screen.getAllByTestId("activity-row");
+    expect(rows).toHaveLength(1);
+    expect(within(rows[0]).getByTestId("activity-name")).toHaveTextContent(
+      "Read",
+    );
+    // 那一行仍是就地可展开的:折叠不等于信息丢失。
+    expect(rows[0]).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(rows[0]);
+    const body = screen.getByTestId("activity-row-body");
+    expect(within(body).getByText("path")).toBeInTheDocument();
+    expect(within(body).getByText(/func A/)).toBeInTheDocument();
+  });
+
+  it("Given 单步且这一组正在跑, Then 仍是那一行活动行(没有壳可展开)", () => {
+    renderBlock({
+      running: true,
+      steps: [readStep],
+      summary: summaryOf({ steps: 1 }),
+    });
+
+    expect(screen.queryByTestId("activity-header")).toBeNull();
+    expect(screen.getAllByTestId("activity-row")).toHaveLength(1);
+  });
+
   it("Given 组头, When 点开再点收, Then aria-expanded 跟随并展开/收起时间轴", () => {
     renderBlock({ steps: [readStep, commandStep] });
     const header = screen.getByTestId("activity-header");
@@ -251,10 +280,47 @@ describe("ActivityBlock 活动行(展开态)", () => {
     fireEvent.click(screen.getByTestId("activity-header"));
     fireEvent.click(screen.getAllByTestId("activity-row")[0]);
 
-    const body = screen.getByTestId("activity-row-body");
-    expect(within(body).getByTestId("activity-file-write")).toHaveTextContent(
-      "line two",
+    const writeBody = within(
+      screen.getByTestId("activity-row-body"),
+    ).getByTestId("activity-file-write");
+    // 「既有的文件内容渲染」= FileWriteCard 今天的带行号内容区,不是一段裸代码块。
+    const content = within(writeBody).getByTestId("file-write-content-scroll");
+    expect(content).toHaveTextContent("line two");
+    expect(within(content).getByText("2")).toBeInTheDocument();
+  });
+
+  it("Given 一步 file.write 内容被截断, When 点开, Then 截断条与「复制完整内容」都在", () => {
+    const write = toolStep(
+      "message:1:tool:tool:write-2",
+      {
+        canonical: {
+          fileWrite: {
+            bytes: 999_999,
+            content: "kept one\nkept two",
+            lines: 4200,
+            path: "/repo/big.ts",
+            truncated: true,
+          },
+          kind: "file.write",
+        } as unknown as ChatBlockData["canonical"],
+        toolInput: { content: "kept one\nkept two", file_path: "/repo/big.ts" },
+        toolName: "Write",
+      },
+      { text: "ok" },
     );
+    renderBlock({ steps: [write, readStep] });
+    fireEvent.click(screen.getByTestId("activity-header"));
+    fireEvent.click(screen.getAllByTestId("activity-row")[0]);
+
+    // 折叠前看得到的东西展开后必须一样看得到:少了截断条,用户不知道自己
+    // 读到的是被砍过的内容,也拿不到完整原文。
+    const writeBody = within(
+      screen.getByTestId("activity-row-body"),
+    ).getByTestId("activity-file-write");
+    expect(within(writeBody).getByText(/4200/)).toBeInTheDocument();
+    expect(
+      within(writeBody).getByRole("button", { name: /Copy full content/i }),
+    ).toBeInTheDocument();
   });
 
   it("Given 一步失败, Then 该行红色并带 exit N, 但默认不展开", () => {

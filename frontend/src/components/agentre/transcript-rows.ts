@@ -421,7 +421,12 @@ function isFoldableStep(
 
 // groupActivityItems 线性扫一遍可见项:连续可折叠项攒成一段,遇到别的项就先结束
 // 当前段再原样输出那一项 —— 顺序与输入完全一致,任何情况下都不跨越出组项合并。
-// 单条不成组:一段只有一步时输出原来那一项,不套「1 步」的壳。
+//
+// 一步的段也发活动项,不退回原来那张整卡:一条 assistant 消息只由「正文 / 活动块
+// / 出组卡片 / 脚注」四种东西组成,落单的一次调用同样是活动行。「单条不成组」
+// (不套「1 步」的壳)是渲染层的事 —— ActivityBlock 见到一步就只出那一行。行模型
+// 保持单一形态还顺带保住了 key 稳定性:流式里一段从 1 步长到 N 步时行 key 不变,
+// 不会整行 remount。
 function groupActivityItems(
   messageId: number,
   items: (RenderItem & { uiStateKey: string })[],
@@ -432,9 +437,7 @@ function groupActivityItems(
 
   const flush = () => {
     if (run.length === 0) return;
-    out.push(
-      run.length === 1 ? run[0] : makeActivityItem(messageId, run, runStartIdx),
-    );
+    out.push(makeActivityItem(messageId, run, runStartIdx));
     run = [];
   };
 
