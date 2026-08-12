@@ -367,6 +367,46 @@ func TestRun_ProviderChangeEvictsAndRespawns(t *testing.T) {
 	})
 }
 
+// TestRun_ModelKeyChangeEvictsAndResumes locks the approved launch identity:
+// ProviderKey + ModelKey + resolved ModelID. Stable ProviderKey/ModelID do not
+// permit reuse when the persisted fixed-model identity changed; the rebuilt
+// app-server must receive the existing native thread ID for context continuity.
+func TestRun_ModelKeyChangeEvictsAndResumes(t *testing.T) {
+	Convey("Given the same Codex ProviderKey and ModelID with a different ModelKey", t, func() {
+		var (
+			spawnCount int32
+			resumeIDs  []string
+		)
+		restore := SetSessionFactoryForTest(func(req agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+			atomic.AddInt32(&spawnCount, 1)
+			resumeIDs = append(resumeIDs, req.ProviderSessionID)
+			return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "native-codex-thread", model: "same-model"}, nil
+		})
+		defer restore()
+
+		r := New()
+		run := func(modelKey, providerSessionID string) {
+			events, _, err := r.Run(context.Background(), agentruntime.RunRequest{
+				Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeCodex), EnvJSON: "{}"},
+				Effective:         &agentruntime.EffectiveLLMConfig{ProviderKey: "provider-a", ModelKey: modelKey, ModelID: "same-model"},
+				SessionID:         79,
+				ProviderSessionID: providerSessionID,
+				Cwd:               t.TempDir(),
+				UserText:          "hi",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+		}
+
+		run("model-a", "")
+		run("model-b", "native-codex-thread")
+
+		So(atomic.LoadInt32(&spawnCount), ShouldEqual, 2)
+		So(resumeIDs, ShouldResemble, []string{"", "native-codex-thread"})
+	})
+}
+
 func TestSetGoal_CreatesProviderThreadBeforeFirstTurn(t *testing.T) {
 	Convey("Given a Codex chat session has no provider thread yet, when setting a goal, then runtime starts a session and returns the created thread id", t, func() {
 		fake := &fakeRuntimeSession{}

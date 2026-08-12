@@ -93,10 +93,12 @@ type Runtime struct {
 	launchedModelOrder []string
 }
 
-// launchedSpawnKey 是 spawn 时下发给 codex CLI 的启动期参数快照,决定 evict 比对
-// (spec 2026-08-10 决策 4)。两个字段任一变化都要求 evict + 重 spawn。
+// launchedSpawnKey 是 spawn 时下发给 codex CLI 的启动期参数快照,决定 evict 比对。
+// ProviderKey + ModelKey + resolved ModelID are the approved identity; any
+// change requires evict + respawn, even when two ModelKeys resolve to the same ID.
 type launchedSpawnKey struct {
 	model       string
+	modelKey    string
 	providerKey string
 }
 
@@ -498,7 +500,7 @@ func (r *Runtime) acquireSession(req agentruntime.RunRequest, env map[string]str
 			// 模型 / effectiveProviderKey 都是启动期参数:任一变化 → evict + 重 spawn
 			// (镜像 claudecode launchedEffort 先例;决策 4)。两者都未变则复用池内
 			// app-server。
-			want := launchedSpawnKey{model: codexEffectiveModel(req), providerKey: req.EffectiveProviderKey()}
+			want := launchedSpawnKey{model: codexEffectiveModel(req), modelKey: codexEffectiveModelKey(req), providerKey: req.EffectiveProviderKey()}
 			if r.spawnKeyChanged(key, want) {
 				r.pool.Remove(key)
 				r.forgetLaunchedModel(key)
@@ -516,7 +518,7 @@ func (r *Runtime) acquireSession(req agentruntime.RunRequest, env map[string]str
 		key := sessionKey(req.SessionID)
 		r.pool.Put(key, sess)
 		r.pool.MarkActive(key)
-		r.recordLaunchedModel(key, launchedSpawnKey{model: codexEffectiveModel(req), providerKey: req.EffectiveProviderKey()})
+		r.recordLaunchedModel(key, launchedSpawnKey{model: codexEffectiveModel(req), modelKey: codexEffectiveModelKey(req), providerKey: req.EffectiveProviderKey()})
 	}
 	return sess, nil
 }

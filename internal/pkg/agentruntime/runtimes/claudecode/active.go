@@ -52,6 +52,10 @@ type claudeActive struct {
 	// DefaultModel)变化时,acquireSession 镜像 launchedEffort 先例强制 evict 重
 	// spawn,否则 LRU 复用的 CLI 子进程一直跑旧模型(镜像 codex 的 modelChanged)。
 	launchedModel string
+	// launchedModelKey records the stable fixed-model identity used to launch the
+	// process. It remains part of the identity even when two Model rows resolve
+	// to the same upstream ModelID.
+	launchedModelKey string
 	// launchedProviderKey 记录 spawn 时下发给 claude CLI 的 effectiveProviderKey
 	// (RunRequest.EffectiveProviderKey())。ANTHROPIC_BASE_URL/AUTH_TOKEN 同是启动期
 	// env,运行时改不掉;两个不同供应商可以配同一个 model id,只比 launchedModel 会漏掉

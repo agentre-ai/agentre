@@ -132,6 +132,52 @@ func TestRun_ProviderChangeEvictsAndRespawns(t *testing.T) {
 	})
 }
 
+// TestRun_ModelKeyChangeEvictsAndResumes locks the approved launch identity:
+// ProviderKey + ModelKey + resolved ModelID. Stable ProviderKey/ModelID do not
+// permit reuse when the persisted fixed-model identity changed; the rebuilt
+// process must receive the existing native session ID for context continuity.
+func TestRun_ModelKeyChangeEvictsAndResumes(t *testing.T) {
+	Convey("Given the same Claude ProviderKey and ModelID with a different ModelKey", t, func() {
+		var (
+			spawnCount int32
+			resumeIDs  []string
+		)
+		restore := SetSessionFactoryForTest(func(spec ccLaunchSpec) (ccSessionHandle, error) {
+			atomic.AddInt32(&spawnCount, 1)
+			resumeIDs = append(resumeIDs, spec.Req.ProviderSessionID)
+			return &fakeCCHandle{
+				id: "native-claude-session",
+				stream: &eventCCStream{events: []claudecode.Event{
+					{Kind: claudecode.EventUsage, Usage: provider.Usage{PromptTokens: 1}},
+					{Kind: claudecode.EventDone},
+				}},
+			}, nil
+		})
+		defer restore()
+
+		r := New()
+		run := func(modelKey, providerSessionID string) {
+			events, _, err := r.Run(context.Background(), agentruntime.RunRequest{
+				Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+				Effective:         &agentruntime.EffectiveLLMConfig{ProviderKey: "provider-a", ModelKey: modelKey, ProviderType: "anthropic", ModelID: "same-model"},
+				SessionID:         89,
+				ProviderSessionID: providerSessionID,
+				Cwd:               t.TempDir(),
+				UserText:          "hi",
+			})
+			So(err, ShouldBeNil)
+			for range events { //nolint:revive // drain
+			}
+		}
+
+		run("model-a", "")
+		run("model-b", "native-claude-session")
+
+		So(atomic.LoadInt32(&spawnCount), ShouldEqual, 2)
+		So(resumeIDs, ShouldResemble, []string{"", "native-claude-session"})
+	})
+}
+
 // TestClaudeCodeCapabilities 钉死 claudecode runtime 的能力矩阵 + permission
 // mode 元数据。这些值与 chat_svc / 前端 UI gating 的硬编码 switch 一一对应,
 // 任何一项偏移都意味着 Plan B 切 dispatcher 后会有 UI/dispatch 错乱。

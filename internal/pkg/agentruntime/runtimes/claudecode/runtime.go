@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -566,6 +567,13 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 		cur = nil
 	}
 
+	// ModelKey is part of the approved launch identity even when two stable
+	// Model rows currently resolve to the same upstream ModelID.
+	if cur != nil && cur.launchedModelKey != effectiveModelKey(req) {
+		r.cache.Remove(key)
+		cur = nil
+	}
+
 	// effectiveProviderKey 同是启动期参数(ANTHROPIC_BASE_URL/AUTH_TOKEN 只在 spawn
 	// 时下发一次):两个不同供应商可以配同一个 model id,只比 launchedModel 会漏掉换
 	// 供应商 —— 会话切换后网关路由虽已改,但复用的旧子进程手里没有指向新供应商的
@@ -659,6 +667,7 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 		poolKey:             key,
 		launchedEffort:      req.Backend.ReasoningEffort,
 		launchedModel:       claudeEffectiveModel(req),
+		launchedModelKey:    effectiveModelKey(req),
 		launchedProviderKey: req.EffectiveProviderKey(),
 		permissionMode:      runtimeMode,
 		tasks:               newTaskAggregator(),
@@ -669,6 +678,13 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 	}
 	cur.inTurn.Store(true)
 	return cur, resolvedLaunchMode, nil
+}
+
+func effectiveModelKey(req agentruntime.RunRequest) string {
+	if req.Effective == nil {
+		return ""
+	}
+	return strings.TrimSpace(req.Effective.ModelKey)
 }
 
 // drainStream 把 claudecode.Event 翻成 sealed agentruntime.Event;同步累 usage

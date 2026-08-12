@@ -362,6 +362,13 @@ func codexEffectiveModel(req agentruntime.RunRequest) string {
 	return ""
 }
 
+func codexEffectiveModelKey(req agentruntime.RunRequest) string {
+	if req.Effective == nil {
+		return ""
+	}
+	return strings.TrimSpace(req.Effective.ModelKey)
+}
+
 func buildLaunchSpec(req agentruntime.RunRequest, env map[string]string, cwd string) codexLaunchSpec {
 	binary := strings.TrimSpace(req.Backend.CLIPath)
 	if binary == "" {
