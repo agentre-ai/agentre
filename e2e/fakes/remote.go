@@ -14,7 +14,6 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
-	"github.com/agentre-ai/agentre/internal/bootstrap"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/paired_agentred_entity"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
@@ -61,21 +60,18 @@ func nowMs() int64 { return time.Now().UnixMilli() }
 // 幂等:`wails dev` 会把同一个二进制跑两遍(先生成前端绑定、再正式跑),Install 因此
 // 每次 run 执行两次;三样东西都先查后建。
 //
+// 它不再重跑 bootstrap.InitRemoteDevice:登录夹具(installE2ELoggedInAccount)在 seed
+// 本机 backend 之前已经按新 keychain 与重绑的 server_svc 重建过 remote_device_svc ——
+// ConnPool 手里已是带访问令牌的新 server_svc(中继拨号不再 ErrNotLoggedIn),再跑一次
+// 只是拿同一把 keychain 重装、self identity 不变。这里播种不得再触碰 remote_device_svc,
+// 否则就把 self identity 又换了一次。
+//
 // 失败只记日志不 panic —— e2e 环境异常应该让 Playwright 用例红在它自己的断言上,
 // 而不是让 app 崩在启动里(那样连日志都不好读)。
 func installE2ERemoteAgentred(ctx context.Context) {
 	fingerprint := strings.TrimSpace(os.Getenv(e2eAgentredFingerprintEnv))
 	url := strings.TrimSpace(os.Getenv(e2eAgentredURLEnv))
 	if fingerprint == "" || url == "" {
-		return
-	}
-
-	// ConnPool 是在 bootstrap.InitRemoteDevice 里**捕获**当时那个 server_svc 实例建的,
-	// 而 installE2ELoggedInAccount 为了换掉 baseURL 是整个 SetDefault 一个新实例
-	// (真实登录走的是同一个实例的 setClient,不换实例)。不重装一次的话,池子手里
-	// 还是那个 baseURL 为空、没有访问令牌的旧实例:中继拨号一律 ErrNotLoggedIn。
-	if err := bootstrap.InitRemoteDevice(ctx); err != nil {
-		logger.Ctx(ctx).Error("e2efakes.remote: rewire remote device failed", zap.Error(err))
 		return
 	}
 
