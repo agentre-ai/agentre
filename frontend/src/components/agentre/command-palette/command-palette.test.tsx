@@ -780,6 +780,9 @@ describe("CommandPalette — 命令模式分组顺序：新建对话先于操作
     ).toBeTruthy();
 
     const firstAgent = screen.getByText("CEO 助手");
+    expect(
+      firstAgent.closest("[cmdk-item]")?.getAttribute("aria-selected"),
+    ).toBe("true");
     const newAgentItem = screen.getByText("New agent");
     expect(
       firstAgent.compareDocumentPosition(newAgentItem) &
@@ -807,6 +810,9 @@ describe("CommandPalette — 命令模式分组顺序：新建对话先于操作
     ).toBeTruthy();
 
     const projectChatItem = screen.getByText("New project chat with");
+    expect(
+      projectChatItem.closest("[cmdk-item]")?.getAttribute("aria-selected"),
+    ).toBe("true");
     const newAgentItem = screen.getByText("New agent");
     expect(
       projectChatItem.compareDocumentPosition(newAgentItem) &
