@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +21,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/cago-frame/cago/configs"
+
+	"github.com/agentre-ai/agentre/internal/buildinfo"
 	"github.com/agentre-ai/agentre/internal/daemon/client"
 	"github.com/agentre-ai/agentre/internal/daemon/handlers"
 	"github.com/agentre-ai/agentre/internal/daemon/notifier"
@@ -29,6 +31,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 	"github.com/agentre-ai/agentre/internal/daemon/state"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentredipc"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
 	piagentrt "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
@@ -1003,8 +1006,32 @@ func TestDaemon_TwoConnectionsKeepTerminalHandlersIsolated(t *testing.T) {
 	require.ErrorIs(t, err, rpc.ErrMethodNotFound, "bindConn must not mutate the bootstrap registry")
 }
 
-func TestDaemon_IPCStatus(t *testing.T) {
-	dir := t.TempDir()
+func localIPCClient(dataDir string) *http.Client {
+	return &http.Client{Transport: &http.Transport{DialContext: agentredipc.DialContext(dataDir)}}
+}
+
+func waitForLocalIPC(t *testing.T, client *http.Client) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		response, err := client.Get("http://daemon/local/status")
+		if err != nil {
+			return false
+		}
+		_ = response.Body.Close()
+		return true
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
+func TestGivenRunningDaemonWhenReadingIPCStatusThenReportsIdentityAndPairing(t *testing.T) {
+	previousVersion, previousCommit := configs.Version, buildinfo.CommitID
+	configs.Version, buildinfo.CommitID = "v1.2.3", "abcdef1234567890"
+	t.Cleanup(func() {
+		configs.Version, buildinfo.CommitID = previousVersion, previousCommit
+	})
+
+	dir, err := os.MkdirTemp("", "agentred-ipc")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	d, err := New(Options{
 		DataDir: dir,
 		LANHost: "127.0.0.1",
@@ -1015,15 +1042,8 @@ func TestDaemon_IPCStatus(t *testing.T) {
 	defer cancel()
 	errCh := make(chan error, 1)
 	go func() { errCh <- d.Run(ctx) }()
-	require.Eventually(t, func() bool {
-		_, err := os.Stat(d.SocketPath())
-		return err == nil
-	}, 2*time.Second, 10*time.Millisecond)
-
-	tr := &http.Transport{DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-		return net.Dial("unix", d.SocketPath())
-	}}
-	c := &http.Client{Transport: tr}
+	c := localIPCClient(dir)
+	waitForLocalIPC(t, c)
 
 	resp, err := c.Get("http://daemon/local/status")
 	require.NoError(t, err)
@@ -1032,6 +1052,7 @@ func TestDaemon_IPCStatus(t *testing.T) {
 	var v map[string]any
 	require.NoError(t, json.Unmarshal(body, &v))
 	assert.NotEmpty(t, v["daemonUUID"])
+	assert.Equal(t, "v1.2.3 (abcdef1)", v["version"])
 	assert.NotContains(t, v, "keyStorage")
 
 	resp2, err := c.Get("http://daemon/local/pair")
@@ -1061,15 +1082,8 @@ func TestDaemon_IPCStatus_ReportsDatabasePathAndSize(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = d.Run(ctx) }()
-	require.Eventually(t, func() bool {
-		_, statErr := os.Stat(d.SocketPath())
-		return statErr == nil
-	}, 2*time.Second, 10*time.Millisecond)
-
-	tr := &http.Transport{DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-		return net.Dial("unix", d.SocketPath())
-	}}
-	client := &http.Client{Transport: tr}
+	client := localIPCClient(dir)
+	waitForLocalIPC(t, client)
 	status := func() map[string]any {
 		t.Helper()
 		resp, getErr := client.Get("http://daemon/local/status")
@@ -1116,15 +1130,8 @@ func TestDaemon_IPCStatus_CountsSessionsRunningRightNow(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = d.Run(ctx) }()
-	require.Eventually(t, func() bool {
-		_, statErr := os.Stat(d.SocketPath())
-		return statErr == nil
-	}, 2*time.Second, 10*time.Millisecond)
-
-	tr := &http.Transport{DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-		return net.Dial("unix", d.SocketPath())
-	}}
-	client := &http.Client{Transport: tr}
+	client := localIPCClient(dir)
+	waitForLocalIPC(t, client)
 	activeSessions := func() float64 {
 		t.Helper()
 		resp, getErr := client.Get("http://daemon/local/status")

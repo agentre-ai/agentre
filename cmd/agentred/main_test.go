@@ -10,6 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/cago-frame/cago/configs"
+
+	"github.com/agentre-ai/agentre/internal/buildinfo"
 	"github.com/agentre-ai/agentre/internal/daemon/state"
 	"github.com/agentre-ai/agentre/internal/pkg/paths"
 )
@@ -17,6 +20,15 @@ import (
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func setAgentredBuildIdentityForTest(t *testing.T, version, commit string) {
+	t.Helper()
+	previousVersion, previousCommit := configs.Version, buildinfo.CommitID
+	configs.Version, buildinfo.CommitID = version, commit
+	t.Cleanup(func() {
+		configs.Version, buildinfo.CommitID = previousVersion, previousCommit
+	})
+}
 
 // TestRootSubcommands locks in the public CLI surface: any accidental rename
 // or removal of a subcommand here breaks the test, which is much louder than
@@ -27,7 +39,7 @@ func TestRootSubcommands(t *testing.T) {
 	for _, c := range root.Commands() {
 		got[c.Name()] = true
 	}
-	for _, want := range []string{"run", "status", "pair", "login", "unclaim", "llm", "claudecode"} {
+	for _, want := range []string{"run", "status", "pair", "login", "unclaim", "llm", "claudecode", "service"} {
 		assert.True(t, got[want], "missing subcommand %q", want)
 	}
 
@@ -169,6 +181,17 @@ func TestRunFlagDefaults(t *testing.T) {
 	assert.Equal(t, "0.0.0.0", host)
 
 	assert.Nil(t, runCmd.Flags().Lookup("key-storage"))
+}
+
+func TestGivenInjectedBuildIdentityWhenRequestingVersionThenReportsStableFormat(t *testing.T) {
+	setAgentredBuildIdentityForTest(t, "v1.2.3", "abcdef1234567890")
+
+	root := newRootCmd()
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetArgs([]string{"--version"})
+	require.NoError(t, root.Execute())
+	assert.Equal(t, "agentred v1.2.3 (abcdef1)\n", buf.String())
 }
 
 func TestRootHelpMentionsBinary(t *testing.T) {

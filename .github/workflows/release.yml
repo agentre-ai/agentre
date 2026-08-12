@@ -94,14 +94,14 @@ jobs:
         if: matrix.goos != 'windows'
         run: |
           if [ -n "${{ matrix.extra_tags }}" ]; then
-            wails build -platform ${{ matrix.goos }}/${{ matrix.goarch }} -ldflags="-s -w -X github.com/cago-frame/cago/configs.Version=${{ env.VERSION }} -X agentre/internal/buildinfo.CommitID=${{ env.COMMIT_ID }}" -tags "${{ matrix.extra_tags }}"
+            wails build -platform ${{ matrix.goos }}/${{ matrix.goarch }} -ldflags="-s -w -X github.com/cago-frame/cago/configs.Version=${{ env.VERSION }} -X github.com/agentre-ai/agentre/internal/buildinfo.CommitID=${{ env.COMMIT_ID }}" -tags "${{ matrix.extra_tags }}"
           else
-            wails build -platform ${{ matrix.goos }}/${{ matrix.goarch }} -ldflags="-s -w -X github.com/cago-frame/cago/configs.Version=${{ env.VERSION }} -X agentre/internal/buildinfo.CommitID=${{ env.COMMIT_ID }}"
+            wails build -platform ${{ matrix.goos }}/${{ matrix.goarch }} -ldflags="-s -w -X github.com/cago-frame/cago/configs.Version=${{ env.VERSION }} -X github.com/agentre-ai/agentre/internal/buildinfo.CommitID=${{ env.COMMIT_ID }}"
           fi
 
       - name: Build desktop app (Windows)
         if: matrix.goos == 'windows'
-        run: wails build -nsis -platform ${{ matrix.goos }}/${{ matrix.goarch }} -ldflags="-s -w -X github.com/cago-frame/cago/configs.Version=${{ env.VERSION }} -X agentre/internal/buildinfo.CommitID=${{ env.COMMIT_ID }}"
+        run: wails build -nsis -platform ${{ matrix.goos }}/${{ matrix.goarch }} -ldflags="-s -w -X github.com/cago-frame/cago/configs.Version=${{ env.VERSION }} -X github.com/agentre-ai/agentre/internal/buildinfo.CommitID=${{ env.COMMIT_ID }}"
 
       - name: Import Apple certificate
         if: matrix.goos == 'darwin'
@@ -203,9 +203,54 @@ jobs:
           name: release-agentre-${{ matrix.platform }}
           path: agentre-${{ env.VERSION }}-${{ matrix.platform }}*
 
+  build-agentred:
+    name: agentred (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: amd64
+            platform: darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            platform: darwin-arm64
+          - goos: linux
+            goarch: amd64
+            platform: linux-amd64
+          - goos: linux
+            goarch: arm64
+            platform: linux-arm64
+          - goos: windows
+            goarch: amd64
+            platform: windows-amd64
+          - goos: windows
+            goarch: arm64
+            platform: windows-arm64
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build and package agentred
+        run: |
+          make agentred-package \
+            VERSION="${VERSION}" \
+            COMMIT_ID="${COMMIT_ID}" \
+            AGENTRED_GOOS=${{ matrix.goos }} \
+            AGENTRED_GOARCH=${{ matrix.goarch }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-agentred-${{ matrix.platform }}
+          path: build/agentred-dist/*
+
   release:
     name: Create Release
-    needs: [build-desktop]
+    needs: [build-desktop, build-agentred]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -218,8 +263,13 @@ jobs:
           pattern: release-*
           merge-multiple: true
 
-      - name: Generate checksums
-        run: cd artifacts && sha256sum * > SHA256SUMS.txt
+      - name: Add installers and generate compatibility checksums
+        run: |
+          cp scripts/install.sh scripts/install.ps1 artifacts/
+          cd artifacts
+          sha256sum * > SHA256SUMS
+          cp SHA256SUMS SHA256SUMS.txt
+          cmp SHA256SUMS SHA256SUMS.txt
 
       - name: Determine prerelease
         id: prerelease

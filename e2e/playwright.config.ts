@@ -8,6 +8,7 @@ import { join } from "node:path";
 // per process — the db-oracle worker would then read a file the app (launched by the main
 // process) never wrote.
 const dataDir = join(tmpdir(), "agentre-e2e-data");
+const keychainDir = join(tmpdir(), "agentre-e2e-keychain");
 
 // Keep-alive (fast inner loop) mode: AGENTRE_E2E_REUSE=1 — reuse a hand-started
 // `wails dev -tags e2e` on :34216 and keep the temp data dir that app owns (no wipe, no rebuild,
@@ -23,6 +24,8 @@ const reuseExisting = process.env.AGENTRE_E2E_REUSE === "1";
 if (process.env.TEST_WORKER_INDEX === undefined && !reuseExisting) {
   rmSync(dataDir, { recursive: true, force: true });
   mkdirSync(dataDir, { recursive: true });
+  rmSync(keychainDir, { recursive: true, force: true });
+  mkdirSync(keychainDir, { recursive: true, mode: 0o700 });
 }
 // `wails dev` needs frontend/dist to exist for the //go:embed (mirrors `make dev`). Done here
 // in Node — not via shell `mkdir -p`/`touch` — so the webServer command stays shell-agnostic
@@ -33,6 +36,7 @@ writeFileSync(join(distDir, ".keep"), "");
 
 process.env.AGENTRE_DATA_DIR = dataDir;
 process.env.AGENTRE_ENV = "test";
+process.env.AGENTRE_E2E_KEYCHAIN_DIR = keychainDir;
 
 // Dedicated wails dev server port for e2e (avoids the default 34115 → no collision/false-green
 // against a real `make dev`).
@@ -79,6 +83,7 @@ export default defineConfig({
     env: {
       AGENTRE_DATA_DIR: dataDir,
       AGENTRE_ENV: "test",
+      AGENTRE_E2E_KEYCHAIN_DIR: keychainDir,
       // Bind the local HTTP gateway to an OS-chosen free port (0) instead of the fixed default
       // 52401. A running real Agentre already holds 52401, so without this the e2e gateway fails
       // to bind → BaseURL() empty → group_send (and any gateway round-trip) silently dies. Keeps

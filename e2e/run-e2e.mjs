@@ -18,6 +18,7 @@ const here = dirname(fileURLToPath(import.meta.url)); // e2e/
 const repoRoot = join(here, "..");
 // These must match the paths in playwright.config.ts.
 const dataDir = join(tmpdir(), "agentre-e2e-data");
+const keychainDir = join(tmpdir(), "agentre-e2e-keychain");
 const webserverLog = join(tmpdir(), "agentre-e2e-webserver.log");
 const DEVSERVER_PORT = 34216;
 
@@ -60,8 +61,8 @@ async function main() {
             ? `nothing is listening on :${DEVSERVER_PORT}.`
             : `:${DEVSERVER_PORT} is up but '${dbPath}' is missing — the running server is not using the e2e data dir.`) +
           "\nStart it once with the same overrides the harness injects, then iterate:\n" +
-          `  mkdir -p "${dataDir}"\n` +
-          `  AGENTRE_DATA_DIR="${dataDir}" AGENTRE_ENV=test AGENTRE_PROXY_PORT=0 \\` +
+          `  mkdir -p "${dataDir}" "${keychainDir}" && chmod 700 "${keychainDir}"\n` +
+          `  AGENTRE_DATA_DIR="${dataDir}" AGENTRE_ENV=test AGENTRE_E2E_KEYCHAIN_DIR="${keychainDir}" AGENTRE_PROXY_PORT=0 \\` +
           `    wails dev -tags e2e -devserver localhost:${DEVSERVER_PORT} > "${webserverLog}" 2>&1 &\n` +
           "Runs without AGENTRE_E2E_REUSE keep starting (and tearing down) their own fresh server.",
       );
@@ -91,6 +92,7 @@ function cleanup(passed) {
   reapOrphanVite();
   if (passed) {
     rmSync(dataDir, { recursive: true, force: true });
+    rmSync(keychainDir, { recursive: true, force: true });
     rmSync(webserverLog, { force: true });
   }
 }

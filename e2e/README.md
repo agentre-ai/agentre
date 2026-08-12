@@ -48,6 +48,7 @@ Playwright drives its **own** chromium against `:34216`. The native webview wind
 | Env | Effect |
 |---|---|
 | `AGENTRE_DATA_DIR=<tmp>/agentre-e2e-data` | DB / config / logs under a throwaway dir — the highest-precedence data-root override (`internal/pkg/paths/paths.go`), so it never collides with your real DB or the `make dev` root |
+| `AGENTRE_E2E_KEYCHAIN_DIR=<tmp>/agentre-e2e-keychain` | device tokens, fingerprint, and e2e login secrets use an isolated 0700 file-keychain directory instead of the production system keychain; bootstrap rejects a missing or unsafe directory |
 | `AGENTRE_ENV=test` | quiet logger level (`internal/bootstrap/cago.go` `appEnv()`) |
 | `AGENTRE_PROXY_PORT=0` | bind the local HTTP gateway to an OS-chosen **free** port instead of the fixed default 52401 (`internal/bootstrap/cago.go` `loadProxyAddr` → `proxyPortFromEnv`). The fixed port is **not** data-dir-scoped, so a running real Agentre already holds 52401; without this override the e2e gateway fails to bind → `BaseURL()` is empty → every gateway round-trip (MCP tool calls, hooks, LLM forward) silently dies. `BaseURL()` reports the real bound port via the listener, so nothing hardcodes 52401 |
 
@@ -85,6 +86,10 @@ A run is fully hermetic, and in particular **a running Agentre does not interfer
 - **Data** — DB / config / logs live under `<tmp>/agentre-e2e-data` (`agentre.db`), removed by
   `run-e2e.mjs` after a **passing** run (kept on failure for debugging — see §7). Your real
   `~/Library/Application Support/agentre` is never touched.
+- **Keychain** — device tokens, fingerprint, and seeded login credentials live under the 0700
+  `<tmp>/agentre-e2e-keychain` file backend. The runner removes it after a passing run and keeps
+  it with other evidence on failure; the e2e process never reads, writes, or deletes production
+  system-keychain entries.
 - **Single-instance lock** — set only when `!isWailsDevMode()` (`main.go`); e2e runs via
   `wails dev` (sets the `devserver` env → dev mode), so the lock is **already skipped**, and its
   id is data-dir-scoped (`singleInstanceUniqueID(dataDir)`) regardless. So an e2e run launches
@@ -133,8 +138,10 @@ Do not hand-start a reusable Wails server against the fixed e2e data directory *
 # 1. start the app once, leave it running (any terminal) — the env overrides are mandatory: they
 #    point the app at the e2e temp data dir (the same ones playwright.config.ts injects), so the
 #    server never touches your real ~/Library/Application Support/agentre:
-mkdir -p "$TMPDIR/agentre-e2e-data"
-AGENTRE_DATA_DIR="$TMPDIR/agentre-e2e-data" AGENTRE_ENV=test AGENTRE_PROXY_PORT=0 \
+mkdir -p "$TMPDIR/agentre-e2e-data" "$TMPDIR/agentre-e2e-keychain"
+chmod 700 "$TMPDIR/agentre-e2e-keychain"
+AGENTRE_DATA_DIR="$TMPDIR/agentre-e2e-data" AGENTRE_ENV=test \
+  AGENTRE_E2E_KEYCHAIN_DIR="$TMPDIR/agentre-e2e-keychain" AGENTRE_PROXY_PORT=0 \
   wails dev -tags e2e -devserver localhost:34216 > "$TMPDIR/agentre-e2e-webserver.log" 2>&1
 # 2. iterate: each run reuses the running app — no rebuild, no data-dir wipe, ~5 s
 cd e2e && AGENTRE_E2E_REUSE=1 pnpm run test:scratch "scratch/<task>/"
