@@ -5,13 +5,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
 
 type serviceManagerFactory func() (ServiceManager, error)
 type serviceAction func(context.Context, ServiceManager) (ServiceStatus, error)
-type serviceStatusLoader func() (map[string]any, error)
+type serviceStatusLoader func(context.Context) (map[string]any, error)
+
+const (
+	serviceReadyTimeout      = 15 * time.Second
+	serviceReadyPollInterval = 100 * time.Millisecond
+)
 
 type serviceCommandDeps struct {
 	managerFactory serviceManagerFactory
@@ -47,7 +55,7 @@ func newServiceCmdWithDeps(deps serviceCommandDeps) *cobra.Command {
 			return ServiceStatus{}, err
 		}
 		if startAfterInstall {
-			started, err := manager.Start(ctx)
+			started, err := startService(ctx, manager, deps.localStatus)
 			if err != nil {
 				return ServiceStatus{}, err
 			}
@@ -60,7 +68,7 @@ func newServiceCmdWithDeps(deps serviceCommandDeps) *cobra.Command {
 	cmd.AddCommand(
 		install,
 		newServiceActionCmd("start", deps.managerFactory, func(ctx context.Context, manager ServiceManager) (ServiceStatus, error) {
-			return manager.Start(ctx)
+			return startService(ctx, manager, deps.localStatus)
 		}, printServiceStatus),
 		newServiceActionCmd("status", deps.managerFactory, func(ctx context.Context, manager ServiceManager) (ServiceStatus, error) {
 			return manager.Status(ctx)
@@ -68,7 +76,11 @@ func newServiceCmdWithDeps(deps serviceCommandDeps) *cobra.Command {
 			printServiceInspection(w, status, deps.localStatus)
 		}),
 		newServiceActionCmd("restart", deps.managerFactory, func(ctx context.Context, manager ServiceManager) (ServiceStatus, error) {
-			return manager.Restart(ctx)
+			status, err := manager.Restart(ctx)
+			if err != nil {
+				return ServiceStatus{}, err
+			}
+			return waitForLocalDaemon(ctx, manager, status, deps.localStatus)
 		}, printServiceStatus),
 		newServiceActionCmd("stop", deps.managerFactory, func(ctx context.Context, manager ServiceManager) (ServiceStatus, error) {
 			return manager.Stop(ctx)
@@ -120,21 +132,71 @@ func serviceActionDescription(action string) string {
 	}
 }
 
-func loadLocalDaemonStatus() (map[string]any, error) {
-	body, err := localGET("/local/status")
+func startService(ctx context.Context, manager ServiceManager, load serviceStatusLoader) (ServiceStatus, error) {
+	status, err := manager.Start(ctx)
+	if err != nil {
+		return ServiceStatus{}, err
+	}
+	return waitForLocalDaemon(ctx, manager, status, load)
+}
+
+func waitForLocalDaemon(ctx context.Context, manager ServiceManager, status ServiceStatus,
+	load serviceStatusLoader) (ServiceStatus, error) {
+	if load == nil {
+		return status, nil
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, serviceReadyTimeout)
+	defer cancel()
+	var (
+		lastErr    error
+		lastStatus = status
+	)
+	for {
+		if _, err := load(waitCtx); err == nil {
+			return status, nil
+		} else {
+			lastErr = err
+		}
+		observed, err := manager.Status(waitCtx)
+		if err != nil {
+			return ServiceStatus{}, fmt.Errorf("inspect service while waiting for local daemon status: %w", err)
+		}
+		lastStatus = observed
+		if !observed.Running {
+			return ServiceStatus{}, fmt.Errorf("wait for local daemon status: service stopped before becoming ready (last error: %v; service: %s); Run manually: agentred service status", lastErr, strings.Join(observed.Details, ", "))
+		}
+		select {
+		case <-waitCtx.Done():
+			return ServiceStatus{}, fmt.Errorf("wait for local daemon status: %w (last error: %v; service: %s); Run manually: agentred service status", waitCtx.Err(), lastErr, strings.Join(lastStatus.Details, ", "))
+		case <-time.After(serviceReadyPollInterval):
+		}
+	}
+}
+
+func loadLocalDaemonStatus(ctx context.Context) (map[string]any, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://daemon/local/status", nil)
 	if err != nil {
 		return nil, err
 	}
+	resp, err := localClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
 	var status map[string]any
-	if err := json.Unmarshal(body, &status); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
 		return nil, err
 	}
 	return status, nil
 }
 
 func printServiceInspection(w io.Writer, status ServiceStatus, load serviceStatusLoader) {
+	printServiceInspectionContext(context.Background(), w, status, load)
+}
+
+func printServiceInspectionContext(ctx context.Context, w io.Writer, status ServiceStatus, load serviceStatusLoader) {
 	if status.Running && load != nil {
-		localStatus, err := load()
+		localStatus, err := load(ctx)
 		if err == nil {
 			printServiceDaemonStatus(w, localStatus)
 			printServiceDetails(w, status.Details)

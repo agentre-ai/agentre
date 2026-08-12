@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const systemdServiceName = "agentred.service"
@@ -51,7 +52,7 @@ func (m *systemdServiceManager) Start(ctx context.Context) (ServiceStatus, error
 	if err := m.run(ctx, "systemctl", "--user", "start", systemdServiceName); err != nil {
 		return ServiceStatus{}, err
 	}
-	return m.Status(ctx)
+	return m.waitForState(ctx, true)
 }
 
 func (m *systemdServiceManager) Stop(ctx context.Context) (ServiceStatus, error) {
@@ -61,7 +62,7 @@ func (m *systemdServiceManager) Stop(ctx context.Context) (ServiceStatus, error)
 	if err := m.run(ctx, "systemctl", "--user", "stop", systemdServiceName); err != nil {
 		return ServiceStatus{}, err
 	}
-	return m.Status(ctx)
+	return m.waitForState(ctx, false)
 }
 
 func (m *systemdServiceManager) Restart(ctx context.Context) (ServiceStatus, error) {
@@ -71,7 +72,7 @@ func (m *systemdServiceManager) Restart(ctx context.Context) (ServiceStatus, err
 	if err := m.run(ctx, "systemctl", "--user", "restart", systemdServiceName); err != nil {
 		return ServiceStatus{}, err
 	}
-	return m.Status(ctx)
+	return m.waitForState(ctx, true)
 }
 
 func (m *systemdServiceManager) Uninstall(ctx context.Context) (ServiceStatus, error) {
@@ -113,6 +114,36 @@ func (m *systemdServiceManager) Status(ctx context.Context) (ServiceStatus, erro
 		Running:   state == "active",
 		Details:   []string{"Manager: systemd --user", "Unit: " + m.unitPath, "State: " + state},
 	}, nil
+}
+
+func (m *systemdServiceManager) waitForState(ctx context.Context, running bool) (ServiceStatus, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, serviceReadyTimeout)
+	defer cancel()
+	for {
+		status, err := m.Status(waitCtx)
+		if err != nil {
+			return ServiceStatus{}, err
+		}
+		state := ""
+		if len(status.Details) != 0 {
+			state = strings.TrimPrefix(status.Details[len(status.Details)-1], "State: ")
+		}
+		if running && state == "failed" {
+			return ServiceStatus{}, fmt.Errorf("wait for systemd unit %s to become active: state failed; Run manually: systemctl --user status %s", systemdServiceName, systemdServiceName)
+		}
+		if status.Running == running && state != "activating" && state != "deactivating" {
+			return status, nil
+		}
+		select {
+		case <-waitCtx.Done():
+			want := "inactive"
+			if running {
+				want = "active"
+			}
+			return ServiceStatus{}, fmt.Errorf("wait for systemd unit %s to become %s: %w (last state: %s); Run manually: systemctl --user status %s", systemdServiceName, want, waitCtx.Err(), state, systemdServiceName)
+		case <-time.After(serviceReadyPollInterval):
+		}
+	}
 }
 
 func isSystemdInactiveState(state string) bool {

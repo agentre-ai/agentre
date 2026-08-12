@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -79,6 +80,118 @@ func TestGivenInstallWithStartWhenExecutedThenManagerInstallsBeforeStarting(t *t
 	assert.Equal(t, "Daemon running", strings.Split(strings.TrimSpace(out), "\n")[0])
 }
 
+func TestGivenRunningManagerButUnreadableLocalDaemonWhenStartingThenCommandFailsWithoutPrintingSuccess(t *testing.T) {
+	manager := &fakeServiceManager{status: ServiceStatus{Installed: true, Running: true}}
+	cmd := newServiceCmdWithDeps(serviceCommandDeps{
+		managerFactory: func() (ServiceManager, error) { return manager, nil },
+		localStatus: func(context.Context) (map[string]any, error) {
+			return nil, errors.New("dial local socket: connection refused")
+		},
+	})
+	cmd.SilenceUsage = true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"start"})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+	cmd.SetContext(ctx)
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Empty(t, out.String())
+	assert.Contains(t, err.Error(), "wait for local daemon status")
+	assert.Contains(t, err.Error(), "dial local socket: connection refused")
+}
+
+func TestGivenLocalDaemonNeverBecomesReadyWhenStartingThenCancellationStopsObservation(t *testing.T) {
+	manager := &fakeServiceManager{status: ServiceStatus{
+		Installed: true,
+		Running:   true,
+		Details:   []string{"State: active"},
+	}}
+	cmd := newServiceCmdWithDeps(serviceCommandDeps{
+		managerFactory: func() (ServiceManager, error) { return manager, nil },
+		localStatus: func(context.Context) (map[string]any, error) {
+			return nil, errors.New("socket missing")
+		},
+	})
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"start"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cmd.SetContext(ctx)
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Contains(t, err.Error(), "socket missing")
+	assert.Contains(t, err.Error(), "State: active")
+}
+
+func TestGivenLocalDaemonFailureStopsServiceWhenStartingThenItReturnsEarlyWithServiceEvidence(t *testing.T) {
+	manager := &fakeServiceManager{statusByCall: map[string]ServiceStatus{
+		"start":  {Installed: true, Running: true},
+		"status": {Installed: true, Details: []string{"State: failed"}},
+	}}
+	cmd := newServiceCmdWithDeps(serviceCommandDeps{
+		managerFactory: func() (ServiceManager, error) { return manager, nil },
+		localStatus: func(context.Context) (map[string]any, error) {
+			return nil, errors.New("connection reset")
+		},
+	})
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"start"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "service stopped before becoming ready")
+	assert.Contains(t, err.Error(), "State: failed")
+	assert.Contains(t, err.Error(), "connection reset")
+}
+
+func TestGivenLifecycleStartActionsWhenLocalDaemonBecomesReadableThenTheyPrintRunning(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		wantCalls []string
+	}{
+		{name: "install --start", args: []string{"install", "--start"}, wantCalls: []string{"install", "start", "status"}},
+		{name: "start", args: []string{"start"}, wantCalls: []string{"start", "status"}},
+		{name: "restart", args: []string{"restart"}, wantCalls: []string{"restart", "status"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := &fakeServiceManager{status: ServiceStatus{Installed: true, Running: true}}
+			attempts := 0
+			cmd := newServiceCmdWithDeps(serviceCommandDeps{
+				managerFactory: func() (ServiceManager, error) { return manager, nil },
+				localStatus: func(context.Context) (map[string]any, error) {
+					attempts++
+					if attempts == 1 {
+						return nil, errors.New("socket not ready")
+					}
+					return map[string]any{"pid": float64(42)}, nil
+				},
+			})
+			cmd.SilenceUsage = true
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(tt.args)
+
+			require.NoError(t, cmd.Execute())
+			assert.Equal(t, tt.wantCalls, manager.calls)
+			assert.Equal(t, 2, attempts)
+			assert.Equal(t, "Daemon running", strings.Split(strings.TrimSpace(out.String()), "\n")[0])
+		})
+	}
+}
+
 func TestGivenInstallWithStartAndLingerWarningWhenExecutedThenRepairDetailIsPreserved(t *testing.T) {
 	manager := &fakeServiceManager{statusByCall: map[string]ServiceStatus{
 		"install": {Installed: true, Details: []string{"Run: loginctl enable-linger alice"}},
@@ -119,7 +232,7 @@ func TestGivenRunningServiceWhenStatusIsRequestedThenStableHeaderPrecedesLocalDa
 	manager := &fakeServiceManager{status: ServiceStatus{Installed: true, Running: true}}
 	cmd := newServiceCmdWithDeps(serviceCommandDeps{
 		managerFactory: func() (ServiceManager, error) { return manager, nil },
-		localStatus: func() (map[string]any, error) {
+		localStatus: func(context.Context) (map[string]any, error) {
 			return map[string]any{
 				"pid":              float64(42),
 				"version":          "v1.2.3 (abcdef1)",

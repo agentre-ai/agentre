@@ -146,6 +146,52 @@ func TestGivenInstalledSystemdUnitWhenStartingAndUninstallingThenLifecycleComman
 	}, runner.calls)
 }
 
+func TestGivenSystemdLifecycleTransitionsWhenManagingThenActionsWaitForTerminalStates(t *testing.T) {
+	home := t.TempDir()
+	unitPath := filepath.Join(home, ".config", "systemd", "user", "agentred.service")
+	require.NoError(t, os.MkdirAll(filepath.Dir(unitPath), 0o755))
+	require.NoError(t, os.WriteFile(unitPath, []byte("unit"), 0o644))
+	runner := &fakeServiceCommandRunner{results: []fakeServiceCommandResult{
+		{}, {output: "activating\n", err: &exec.ExitError{}}, {output: "active\n"},
+		{}, {output: "deactivating\n", err: &exec.ExitError{}}, {output: "inactive\n", err: &exec.ExitError{}},
+	}}
+	manager := newSystemdServiceManager(serviceManagerConfig{HomeDir: home, Runner: runner})
+
+	started, err := manager.Start(context.Background())
+	require.NoError(t, err)
+	assert.True(t, started.Running)
+	stopped, err := manager.Stop(context.Background())
+	require.NoError(t, err)
+	assert.False(t, stopped.Running)
+	assert.Equal(t, []serviceCommandCall{
+		{name: "systemctl", args: []string{"--user", "start", "agentred.service"}},
+		{name: "systemctl", args: []string{"--user", "is-active", "agentred.service"}},
+		{name: "systemctl", args: []string{"--user", "is-active", "agentred.service"}},
+		{name: "systemctl", args: []string{"--user", "stop", "agentred.service"}},
+		{name: "systemctl", args: []string{"--user", "is-active", "agentred.service"}},
+		{name: "systemctl", args: []string{"--user", "is-active", "agentred.service"}},
+	}, runner.calls)
+}
+
+func TestGivenSystemdNeverActivatesWhenStartingThenCancellationIsActionable(t *testing.T) {
+	home := t.TempDir()
+	unitPath := filepath.Join(home, ".config", "systemd", "user", "agentred.service")
+	require.NoError(t, os.MkdirAll(filepath.Dir(unitPath), 0o755))
+	require.NoError(t, os.WriteFile(unitPath, []byte("unit"), 0o644))
+	runner := &fakeServiceCommandRunner{results: []fakeServiceCommandResult{
+		{}, {output: "activating\n", err: &exec.ExitError{}},
+	}}
+	manager := newSystemdServiceManager(serviceManagerConfig{HomeDir: home, Runner: runner})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := manager.Start(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Contains(t, err.Error(), "wait for systemd unit agentred.service to become active")
+	assert.Contains(t, err.Error(), "Run manually: systemctl --user status agentred.service")
+}
+
 func TestGivenSystemdCommandFailureWhenStartingThenErrorIncludesRecoveryCommand(t *testing.T) {
 	home := t.TempDir()
 	unitPath := filepath.Join(home, ".config", "systemd", "user", "agentred.service")

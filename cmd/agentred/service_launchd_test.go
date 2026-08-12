@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -74,7 +75,7 @@ func TestGivenLaunchAgentWhenInspectingAndManagingThenLoadedRunningStateIsReport
 		{name: "launchctl", args: []string{"print", "gui/501/ai.agentre.agentred"}},
 		{name: "launchctl", args: []string{"bootout", "gui/501/ai.agentre.agentred"}},
 		{name: "launchctl", args: []string{"print", "gui/501/ai.agentre.agentred"}},
-		{name: "launchctl", args: []string{"bootout", "gui/501/ai.agentre.agentred"}},
+		{name: "launchctl", args: []string{"print", "gui/501/ai.agentre.agentred"}},
 		{name: "launchctl", args: []string{"bootstrap", "gui/501", plistPath}},
 		{name: "launchctl", args: []string{"print", "gui/501/ai.agentre.agentred"}},
 	}, runner.calls)
@@ -87,7 +88,7 @@ func TestGivenInstalledLaunchAgentWhenStartingAndUninstallingThenLifecycleComman
 	require.NoError(t, os.WriteFile(plistPath, []byte("plist"), 0o644))
 	runner := &fakeServiceCommandRunner{results: []fakeServiceCommandResult{
 		{output: "Could not find service", err: &exec.ExitError{}}, {}, {output: "state = running\n"},
-		{},
+		{}, {output: "Could not find service", err: &exec.ExitError{}},
 	}}
 	manager := newLaunchdServiceManager(serviceManagerConfig{HomeDir: home, UID: 501, Runner: runner})
 
@@ -100,10 +101,11 @@ func TestGivenInstalledLaunchAgentWhenStartingAndUninstallingThenLifecycleComman
 	_, err = os.Stat(plistPath)
 	assert.ErrorIs(t, err, os.ErrNotExist)
 	assert.Equal(t, []serviceCommandCall{
-		{name: "launchctl", args: []string{"bootout", "gui/501/ai.agentre.agentred"}},
+		{name: "launchctl", args: []string{"print", "gui/501/ai.agentre.agentred"}},
 		{name: "launchctl", args: []string{"bootstrap", "gui/501", plistPath}},
 		{name: "launchctl", args: []string{"print", "gui/501/ai.agentre.agentred"}},
 		{name: "launchctl", args: []string{"bootout", "gui/501/ai.agentre.agentred"}},
+		{name: "launchctl", args: []string{"print", "gui/501/ai.agentre.agentred"}},
 	}, runner.calls)
 }
 
@@ -157,6 +159,111 @@ func TestGivenLaunchdStatusPermissionFailureWhenInspectingThenItIsNotReportedAsS
 	_, err := manager.Status(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Operation not permitted")
+	assert.Contains(t, err.Error(), "Run manually: launchctl print gui/501/ai.agentre.agentred")
+}
+
+func TestGivenLoadedLaunchAgentWhenRestartingThenKickstartReplacesBootoutBootstrap(t *testing.T) {
+	home := t.TempDir()
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", "ai.agentre.agentred.plist")
+	require.NoError(t, os.MkdirAll(filepath.Dir(plistPath), 0o755))
+	require.NoError(t, os.WriteFile(plistPath, []byte("plist"), 0o644))
+	runner := &fakeServiceCommandRunner{results: []fakeServiceCommandResult{
+		{output: "state = running\n"},
+		{},
+		{output: "state = running\n"},
+	}}
+	manager := newLaunchdServiceManager(serviceManagerConfig{HomeDir: home, UID: 501, Runner: runner})
+
+	status, err := manager.Restart(context.Background())
+	require.NoError(t, err)
+	assert.True(t, status.Running)
+	assert.Equal(t, []serviceCommandCall{
+		{name: "launchctl", args: []string{"print", "gui/501/ai.agentre.agentred"}},
+		{name: "launchctl", args: []string{"kickstart", "-k", "gui/501/ai.agentre.agentred"}},
+		{name: "launchctl", args: []string{"print", "gui/501/ai.agentre.agentred"}},
+	}, runner.calls)
+}
+
+func TestGivenUnloadedLaunchAgentWhenStartingThenBootstrapWaitsUntilRunning(t *testing.T) {
+	home := t.TempDir()
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", "ai.agentre.agentred.plist")
+	require.NoError(t, os.MkdirAll(filepath.Dir(plistPath), 0o755))
+	require.NoError(t, os.WriteFile(plistPath, []byte("plist"), 0o644))
+	runner := &fakeServiceCommandRunner{results: []fakeServiceCommandResult{
+		{output: "Could not find service", err: &exec.ExitError{}},
+		{},
+		{output: "state = waiting\n"},
+		{output: "state = running\n"},
+	}}
+	manager := newLaunchdServiceManager(serviceManagerConfig{HomeDir: home, UID: 501, Runner: runner})
+
+	status, err := manager.Start(context.Background())
+	require.NoError(t, err)
+	assert.True(t, status.Running)
+	assert.Equal(t, []serviceCommandCall{
+		{name: "launchctl", args: []string{"print", "gui/501/ai.agentre.agentred"}},
+		{name: "launchctl", args: []string{"bootstrap", "gui/501", plistPath}},
+		{name: "launchctl", args: []string{"print", "gui/501/ai.agentre.agentred"}},
+		{name: "launchctl", args: []string{"print", "gui/501/ai.agentre.agentred"}},
+	}, runner.calls)
+}
+
+func TestGivenLaunchAgentStillRunningAfterBootoutWhenStoppingThenItWaitsUntilUnloaded(t *testing.T) {
+	home := t.TempDir()
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", "ai.agentre.agentred.plist")
+	require.NoError(t, os.MkdirAll(filepath.Dir(plistPath), 0o755))
+	require.NoError(t, os.WriteFile(plistPath, []byte("plist"), 0o644))
+	runner := &fakeServiceCommandRunner{results: []fakeServiceCommandResult{
+		{},
+		{output: "state = running\n"},
+		{output: "Could not find service", err: &exec.ExitError{}},
+	}}
+	manager := newLaunchdServiceManager(serviceManagerConfig{HomeDir: home, UID: 501, Runner: runner})
+
+	status, err := manager.Stop(context.Background())
+	require.NoError(t, err)
+	assert.True(t, status.Installed)
+	assert.False(t, status.Running)
+	assert.Len(t, runner.calls, 3)
+}
+
+func TestGivenLaunchAgentExitsWhileStartingThenItReturnsFailureWithoutWaitingForTimeout(t *testing.T) {
+	home := t.TempDir()
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", "ai.agentre.agentred.plist")
+	require.NoError(t, os.MkdirAll(filepath.Dir(plistPath), 0o755))
+	require.NoError(t, os.WriteFile(plistPath, []byte("plist"), 0o644))
+	runner := &fakeServiceCommandRunner{results: []fakeServiceCommandResult{
+		{output: "Could not find service", err: &exec.ExitError{}},
+		{},
+		{output: "state = waiting\nlast exit code = 1\n"},
+	}}
+	manager := newLaunchdServiceManager(serviceManagerConfig{HomeDir: home, UID: 501, Runner: runner})
+
+	_, err := manager.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "terminal failure")
+	assert.Contains(t, err.Error(), "last exit code = 1")
+	assert.Contains(t, err.Error(), "Run manually: launchctl print gui/501/ai.agentre.agentred")
+	assert.Len(t, runner.calls, 3, "terminal daemon failure must not be retried until timeout")
+}
+
+func TestGivenLaunchAgentNeverRunsWhenStartingThenContextDeadlineReturnsActionableFailure(t *testing.T) {
+	home := t.TempDir()
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", "ai.agentre.agentred.plist")
+	require.NoError(t, os.MkdirAll(filepath.Dir(plistPath), 0o755))
+	require.NoError(t, os.WriteFile(plistPath, []byte("plist"), 0o644))
+	runner := &fakeServiceCommandRunner{results: []fakeServiceCommandResult{
+		{output: "state = waiting\n"},
+		{},
+	}}
+	manager := newLaunchdServiceManager(serviceManagerConfig{HomeDir: home, UID: 501, Runner: runner})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+
+	_, err := manager.Start(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Contains(t, err.Error(), "wait for launchd target gui/501/ai.agentre.agentred to run")
 	assert.Contains(t, err.Error(), "Run manually: launchctl print gui/501/ai.agentre.agentred")
 }
 
