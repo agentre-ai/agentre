@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const sonnerMocks = vi.hoisted(() => ({
   toast: {
@@ -8,7 +8,17 @@ const sonnerMocks = vi.hoisted(() => ({
   },
 }));
 
+const appMocks = vi.hoisted(() => ({
+  WorkspaceFsReadFile: vi.fn(),
+  OpenPath: vi.fn(),
+}));
+
 vi.mock("sonner", () => sonnerMocks);
+
+vi.mock("@/../wailsjs/go/app/App", () => ({
+  WorkspaceFsReadFile: appMocks.WorkspaceFsReadFile,
+  OpenPath: appMocks.OpenPath,
+}));
 
 import {
   MarkdownText,
@@ -32,6 +42,11 @@ afterEach(() => {
     configurable: true,
     value: originalClipboard,
   });
+});
+
+beforeEach(() => {
+  appMocks.WorkspaceFsReadFile.mockReset();
+  appMocks.OpenPath.mockReset();
 });
 
 describe("MarkdownText", () => {
@@ -158,6 +173,50 @@ describe("MarkdownText URL whitelist", () => {
     );
     const a = container.querySelector("a");
     // After url whitelist strips href, RichLink renders plain anchor with no href.
+    expect(a?.getAttribute("href")).toBeFalsy();
+  });
+});
+
+describe("MarkdownText image src whitelist + local rendering", () => {
+  it("passes a relative image src through and renders a data URL when sessionId is present", async () => {
+    appMocks.WorkspaceFsReadFile.mockResolvedValue({
+      content: "aGVsbG8=",
+      contentType: "image/png",
+    });
+    const { container } = render(
+      <MarkdownText text="![pic](foo.png)" cwd="/proj" sessionId={7} />,
+    );
+
+    await waitFor(() =>
+      expect(appMocks.WorkspaceFsReadFile).toHaveBeenCalledWith(7, "foo.png"),
+    );
+    const img = container.querySelector("img");
+    expect(img?.getAttribute("src")).toBe("data:image/png;base64,aGVsbG8=");
+    expect(img?.getAttribute("alt")).toBe("pic");
+  });
+
+  it("strips a data: image src (img renders without src)", () => {
+    const { container } = render(
+      <MarkdownText text="![d](data:image/png;base64,xx)" />,
+    );
+    const img = container.querySelector("img");
+    expect(img?.getAttribute("src")).toBeNull();
+  });
+
+  it("strips a relative image src when sessionId is absent", () => {
+    const { container } = render(
+      <MarkdownText text="![pic](foo.png)" cwd="/proj" />,
+    );
+    const img = container.querySelector("img");
+    expect(img?.getAttribute("src")).toBeNull();
+    expect(appMocks.WorkspaceFsReadFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps the href whitelist unchanged: a relative link is still stripped", () => {
+    const { container } = render(
+      <MarkdownText text="[rel](relative/path)" cwd="/proj" />,
+    );
+    const a = container.querySelector("a");
     expect(a?.getAttribute("href")).toBeFalsy();
   });
 });
