@@ -1,27 +1,17 @@
 package main
 
 import (
-	"context"
 	"io"
-	"net"
 	"net/http"
-	"path/filepath"
 
 	"github.com/agentre-ai/agentre/internal/pkg/paths"
 )
 
-// localClient dials the daemon's unix socket so CLI subcommands can talk to a
-// locally running agentred without re-implementing the JSON-RPC transport.
+// localClient dials the daemon's platform-local endpoint so CLI subcommands
+// can use the same HTTP routes on Unix sockets and Windows named pipes.
 func localClient() *http.Client {
 	dir, _ := paths.AgentredDataDir()
-	sock := filepath.Join(dir, "agentred.sock")
-	return &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", sock)
-			},
-		},
-	}
+	return &http.Client{Transport: &http.Transport{DialContext: localDialContext(dir)}}
 }
 
 func localGET(path string) ([]byte, error) {

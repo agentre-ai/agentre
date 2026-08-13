@@ -212,6 +212,7 @@ func (openClawKind) AllowsCLIPath() bool         { return false }
 
 func (openClawKind) ValidateExtra(ctx context.Context, b *AgentBackend) error {
 	if strings.TrimSpace(b.LLMProviderKey) != "" ||
+		strings.TrimSpace(b.LLMModelKey) != "" ||
 		strings.TrimSpace(b.CLIPath) != "" ||
 		!isEmptyJSONObject(b.ModelRoutes) ||
 		strings.TrimSpace(b.Sandbox) != "" ||
@@ -257,28 +258,64 @@ func isEmptyJSONObject(s string) bool {
 	return t == "" || t == "{}"
 }
 
-// ParseModelRoutes 把 model_routes 字段解析成 map[alias]providerKey。
-// JSON 格式：{"OPUS":"<uuid>","SONNET":"<uuid>"} — value 必须是非空字符串（UUID 形态由 service 层做 cross-check）。
-// alias 键统一转 ToUpper；解析失败或 value 为空串均返回 error（统一交 service 报）。
+// ModelRouteTarget 是 Claude Tier 路由的结构化目标（spec 决策 14）。
+// 同一 TEXT 列存 JSON `{"OPUS":{"providerKey":"..","modelKey":".."}}`；
+// alias 缺失表示 inherit-main（不写进 JSON）。ModelKey 空 = provider-default。
+// 生产 parser 只接受这个对象形状（旧字符串已由任务 1 的 patch migration 转换）。
+type ModelRouteTarget struct {
+	ProviderKey string `json:"providerKey"`
+	ModelKey    string `json:"modelKey"`
+}
+
+// ParseModelRoutes 把 model_routes 字段解析成 map[alias]ModelRouteTarget。
+// JSON 格式：`{"OPUS":{"providerKey":"<uuid>","modelKey":"<uuid>"}}`。
+// alias 键统一转 ToUpper；解析失败或 providerKey 为空串均返回 error（统一交 service 报）。
 // 调用方负责再用 BackendKind.KnownAliases() 把 alias 集合限定到本类型。
-func ParseModelRoutes(s string) (map[string]string, error) {
+func ParseModelRoutes(s string) (map[string]ModelRouteTarget, error) {
 	s = strings.TrimSpace(s)
 	if s == "" || s == "{}" {
-		return map[string]string{}, nil
+		return map[string]ModelRouteTarget{}, nil
 	}
-	var raw map[string]string
+	var raw map[string]ModelRouteTarget
 	if err := json.Unmarshal([]byte(s), &raw); err != nil {
 		return nil, fmt.Errorf("parse model_routes: %w", err)
 	}
-	out := make(map[string]string, len(raw))
+	out := make(map[string]ModelRouteTarget, len(raw))
 	for k, v := range raw {
-		v = strings.TrimSpace(v)
-		if v == "" {
-			return nil, fmt.Errorf("model_routes alias %q has empty value", k)
+		v.ProviderKey = strings.TrimSpace(v.ProviderKey)
+		v.ModelKey = strings.TrimSpace(v.ModelKey)
+		if v.ProviderKey == "" {
+			return nil, fmt.Errorf("model_routes alias %q has empty providerKey", k)
 		}
 		out[strings.ToUpper(strings.TrimSpace(k))] = v
 	}
 	return out, nil
+}
+
+// MarshalModelRoutes 把结构化 route 序列化回持久化字符串。空 map → "{}"。
+// alias 统一 ToUpper；空 providerKey 的条目被跳过（与 Check 的拒绝语义一致）。
+func MarshalModelRoutes(routes map[string]ModelRouteTarget) (string, error) {
+	if len(routes) == 0 {
+		return "{}", nil
+	}
+	out := make(map[string]ModelRouteTarget, len(routes))
+	for k, v := range routes {
+		alias := strings.ToUpper(strings.TrimSpace(k))
+		v.ProviderKey = strings.TrimSpace(v.ProviderKey)
+		v.ModelKey = strings.TrimSpace(v.ModelKey)
+		if alias == "" || v.ProviderKey == "" {
+			continue
+		}
+		out[alias] = v
+	}
+	if len(out) == 0 {
+		return "{}", nil
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 // ParseEnvJSON 把 env_json 字段解析成 map[string]string。空 / "{}" 视作空 map。

@@ -12,14 +12,19 @@ the app over a browser-accessible IPC bridge, so Playwright (Chromium) can open 
 page and drive the **real React frontend → real Wails IPC → real Go service/repository → real
 SQLite**. The external agent boundary does **not** run for real: a real turn spawns claude-code / codex subprocesses and discovers skills from those CLIs (slow, nondeterministic, needs external auth), so e2e replaces the `agentruntime.Runtime` with a deterministic fake and registers deterministic Claude/Codex skill discoverers. Every downstream app path (services, dispatcher, handlers, DB, IPC, migrations) runs for real.
 
-## 1. Two modes — pick the right one
+## 1. Three modes — pick the right one
 
-| | **Committed core-flow suite** | **Ad-hoc functional verification** |
-|---|---|---|
-| Lives in | `e2e/tests/*.spec.ts` (committed) | `e2e/scratch/**/*.spec.ts` — flat quick looks or nested scenarios (**gitignored**) |
-| Run with | `make e2e` | `make e2e-scratch TASK="scratch/<name>/"` |
-| Lifetime | permanent regression guard | throwaway — write, run, observe, delete |
-| What goes here | **only core / critical flows** | "I just built X — does it work in the real app?" |
+| | **Driven app** | **Committed core-flow suite** | **Scratch spec** |
+|---|---|---|---|
+| You author | **nothing** | `e2e/tests/*.spec.ts` (committed) | `e2e/scratch/**/*.spec.ts` (**gitignored**) |
+| Run with | `make verify-up`, then `node e2e/drive.mjs <action>` (§4a) | `make e2e` | `make e2e-scratch TASK="scratch/<name>/"` |
+| Lifetime | the app stays up until `make verify-down` | permanent regression guard | throwaway — write, run, observe, delete |
+| What goes here | "I just built X — does it work in the real app?", one-off looks, bug reproduction, spec acceptance | **only core / critical flows** | replay, timing or concurrency **as the contract** |
+
+**Reach for the driven app first.** Starting an app and clicking through it costs one command;
+a spec that only navigates and screenshots is a spec you will delete, written slowly. Author a
+scratch spec when the *sequence itself* must be replayed or when timing/concurrency is what you
+are asserting — otherwise drive it.
 
 **The bar for a committed spec is high.** A committed GUI e2e spec is slow (builds + runs the
 real app, ~30 s per run even with the fake) and a maintenance liability. Only add one for a
@@ -32,27 +37,31 @@ verified ad-hoc and thrown away — **what that ad-hoc run must produce is
 ```
 make e2e  →  cd e2e && pnpm test  →  node run-e2e.mjs   (spawns playwright, reaps residue after)
   └─ playwright (workers:1, testDir ./tests)
-       ├─ webServer:  wails dev -tags e2e -devserver localhost:34216 > "$LOG" 2>&1
+       ├─ webServer:  wails dev -tags e2e -devserver localhost:<this checkout's port> > "$LOG" 2>&1
        │                 ├─ vite (frontend HMR)
-       │                 └─ agentre app (-tags e2e) → real services → <tmp>/agentre-e2e-data/agentre.db
+       │                 └─ agentre app (-tags e2e) → real services → <instance>/fake/data/agentre.db
        │                       └─ agentruntime.RuntimeFor(claudecode) overridden by the FAKE (echo)
-       └─ chromium → http://localhost:34216   (Wails IPC websocket bridge → real Go backend)
+       └─ chromium → http://localhost:<port>  (Wails IPC websocket bridge → real Go backend)
                          └─ specs assert on the UI …
                               … and on the DB via a direct read-only node:sqlite query (oracle)
 ```
 
-Playwright drives its **own** chromium against `:34216`. The native webview window that
+Playwright drives its **own** chromium against that port. The native webview window that
 `wails dev` opens is incidental and ignored. The app is launched with these env overrides
 (injected by `e2e/playwright.config.ts`):
 
 | Env | Effect |
 |---|---|
-| `AGENTRE_DATA_DIR=<tmp>/agentre-e2e-data` | DB / config / logs under a throwaway dir — the highest-precedence data-root override (`internal/pkg/paths/paths.go`), so it never collides with your real DB or the `make dev` root |
+| `AGENTRE_DATA_DIR=<instance>/<flavor>/data` | DB / config / logs under a throwaway dir — the highest-precedence data-root override (`internal/pkg/paths/paths.go`), so it never collides with your real DB or the `make dev` root |
+| `AGENTRE_KEYCHAIN_DIR=<instance>/<flavor>/keychain` | device tokens, fingerprint, and e2e login secrets use an isolated 0700 file-keychain directory instead of the production system keychain; bootstrap rejects a missing or unsafe directory. **Not gated on the `e2e` build tag** (`internal/bootstrap/keychain.go`), so a real-runtime launch (§4a `FLAVOR=real`) is isolated the same way |
 | `AGENTRE_ENV=test` | quiet logger level (`internal/bootstrap/cago.go` `appEnv()`) |
 | `AGENTRE_PROXY_PORT=0` | bind the local HTTP gateway to an OS-chosen **free** port instead of the fixed default 52401 (`internal/bootstrap/cago.go` `loadProxyAddr` → `proxyPortFromEnv`). The fixed port is **not** data-dir-scoped, so a running real Agentre already holds 52401; without this override the e2e gateway fails to bind → `BaseURL()` is empty → every gateway round-trip (MCP tool calls, hooks, LLM forward) silently dies. `BaseURL()` reports the real bound port via the listener, so nothing hardcodes 52401 |
 
-The bridge runs on a **dedicated port 34216** (not Wails' default 34115) so it never reuses — or
-collides with — a `make dev` dev server you already have open.
+`<instance>` is `$TMPDIR/agentre-verify/<id>`, where `<id>` is a hash of **this checkout's
+absolute path** — so a worktree gets its own dirs, its own ports and its own session file, and two
+checkouts can verify at the same time. The bridge port comes from the same derivation (never
+Wails' default 34115), so a run never reuses — or collides with — a `make dev` server you already
+have open. `make verify-status` prints the id and the resolved paths.
 
 ### The build-tag seam (why the fake never ships)
 
@@ -82,23 +91,50 @@ unit test asserting the emitted sequence (red→green before it's wired into the
 
 A run is fully hermetic, and in particular **a running Agentre does not interfere**:
 
-- **Data** — DB / config / logs live under `<tmp>/agentre-e2e-data` (`agentre.db`), removed by
+- **Data** — DB / config / logs live under `<instance>/fake/data` (`agentre.db`), removed by
   `run-e2e.mjs` after a **passing** run (kept on failure for debugging — see §7). Your real
   `~/Library/Application Support/agentre` is never touched.
+- **Keychain** — device tokens, fingerprint, and seeded login credentials live under the 0700
+  `<instance>/fake/keychain` file backend. The runner removes it after a passing run and keeps
+  it with other evidence on failure; the e2e process never reads, writes, or deletes production
+  system-keychain entries.
 - **Single-instance lock** — set only when `!isWailsDevMode()` (`main.go`); e2e runs via
   `wails dev` (sets the `devserver` env → dev mode), so the lock is **already skipped**, and its
   id is data-dir-scoped (`singleInstanceUniqueID(dataDir)`) regardless. So an e2e run launches
   even with a real Agentre open. **No backend Go change was needed** for hermeticity — contrast
   the opskat harness, which had to add an explicit `OPSKAT_E2E` lock-skip + `ResolvedDataDir`.
-- **Bridge port** — 34216, dedicated; never collides with a `make dev` on 34115.
+- **Bridge port** — derived per checkout (a 4-port block in 34300–35500: bridge + CDP for each
+  flavor), so it never collides with `make dev` on 34115, with the sibling dual-end runner's
+  34217 (§11), or with another worktree's run.
 - **Gateway port** — the local HTTP gateway's default 52401 is **not** data-dir-scoped, so a
   running real Agentre holds it; e2e sets `AGENTRE_PROXY_PORT=0` to bind a free port instead (see
   §2's env table). Without this the gateway degrades and every gateway round-trip (MCP tool calls,
   hooks) silently fails — committed specs that exercise injected tools would go red against a
   perfectly-good backend.
 
-Run one e2e invocation at a time locally (the temp data-dir path is fixed). CI runners are
-isolated, so each job's run is independent.
+Run one e2e invocation at a time **per checkout** — inside one checkout the data dir, the ports
+and `build/bin` are shared. Across worktrees they are not: every path and port is derived from the
+checkout's own absolute path, so a second worktree can run its own verification simultaneously.
+CI runners are isolated, so each job's run is independent.
+
+**These are not conventions — they are checked.** [`lib/target.mjs`](lib/target.mjs) is the only
+place a data dir, keychain dir or port is named, and it refuses everything else:
+`assertIsolatedDataDir` rejects the installed app's root and your own `make dev` root
+(`<config>/agentre-dev`) by name, `assertSanctionedURL` rejects any origin but the target's own
+bridge, and `drive.mjs sql` accepts only read-only statements. The guards are unit-tested
+(`pnpm run test:guards`, also run by `run-e2e.mjs` **before** any app is launched), and
+`e2e/keychain_harness_test.go` pins the keychain override in `make test-backend`.
+
+Two more rules fall out of what a checkout shares:
+
+- **Reaping the stray `vite`** matches by repo path and cannot tell one launch's dev server from
+  another's, so teardown skips the reap while any other session in this checkout is live
+  (`shouldReapVite`). Killing it instead leaves a live app listening and serving 502 with nothing
+  logged.
+- **One flavor at a time per checkout** (`blocksSecondFlavor`): `wails dev` compiles into this
+  checkout's `build/bin`, so starting the second flavor here overwrites the binary the first is
+  running and kills it mid-run — the log shows only `no such file or directory`. Run the second
+  flavor from another worktree.
 
 ## 4. Running the committed suite
 
@@ -109,7 +145,7 @@ make e2e                   # or, equivalently: cd e2e && pnpm test
 
 Prereqs: `wails` CLI on PATH, `pnpm`, and Node 24+ with stable built-in `node:sqlite` (the E2E CI job pins Node 24). `pnpm run setup` installs the e2e deps and Chromium **once**; `make e2e` only
 runs the suite — no per-run install. The first run builds Go + Vite (~30 s) and **opens a native
-Agentre window** — expected; the test drives the `:34216` browser instance, not that window. The
+Agentre window** — expected; the test drives its own browser instance, not that window. The
 window closes when the suite ends.
 
 **Platforms.** Runs on macOS, Linux, and (best-effort) native Windows. `make e2e` is a thin alias
@@ -125,24 +161,87 @@ cd e2e && pnpm test --debug     # Playwright inspector
 cd e2e && pnpm test --headed    # watch the browser
 ```
 
-Do not hand-start a reusable Wails server against the fixed e2e data directory **without the keep-alive flag** (below): a plain run prepares that directory for a fresh start, so a separately running app and the DB oracle can diverge.
+Never hand-start a Wails server against the fixed e2e data directory: a plain suite run prepares
+that directory for a fresh start, so a separately running app and the DB oracle diverge. Use the
+launcher below — it owns the directory, and the runner rejects a server that is not on it.
 
-**Fast inner loop (keep-alive).** Every normal run pays the full start-up tax (Go compile + vite + app boot + re-seed, ~30 s even with the fake). When iterating on a scratch spec — tweak, re-run, observe — reuse one already-running app instead:
+**Fast inner loop (reuse).** Every normal run pays the full start-up tax (Go compile + vite + app boot + re-seed, ~30 s even with the fake). When iterating on a scratch spec — tweak, re-run, observe — reuse the app `make verify-up` (§4a) already has running:
 
 ```bash
-# 1. start the app once, leave it running (any terminal) — the env overrides are mandatory: they
-#    point the app at the e2e temp data dir (the same ones playwright.config.ts injects), so the
-#    server never touches your real ~/Library/Application Support/agentre:
-mkdir -p "$TMPDIR/agentre-e2e-data"
-AGENTRE_DATA_DIR="$TMPDIR/agentre-e2e-data" AGENTRE_ENV=test AGENTRE_PROXY_PORT=0 \
-  wails dev -tags e2e -devserver localhost:34216 > "$TMPDIR/agentre-e2e-webserver.log" 2>&1
-# 2. iterate: each run reuses the running app — no rebuild, no data-dir wipe, ~5 s
+make verify-up                                              # once
 cd e2e && AGENTRE_E2E_REUSE=1 pnpm run test:scratch "scratch/<task>/"
-# or via make (AGENTRE_E2E_REUSE propagates through):
-AGENTRE_E2E_REUSE=1 make e2e-scratch TASK="scratch/<task>/"
+AGENTRE_E2E_REUSE=1 make e2e-scratch TASK="scratch/<task>/"  # or via make
 ```
 
-`AGENTRE_E2E_REUSE=1` switches `playwright.config.ts` and `run-e2e.mjs` into **reuse mode**: the temp data dir is **not** wiped (the running app owns it), `reuseExistingServer` is forced on, and the runner performs **no teardown** (no orphan-vite reap, no temp-dir removal) so the app survives for the next iteration. It is an explicit "I started the server" contract: the runner fails fast unless **both** `:34216` is listening **and** `$TMPDIR/agentre-e2e-data/agentre.db` exists (a server up on the real data dir — e.g. started without `AGENTRE_DATA_DIR` — would silently seed your real DB, so it is rejected with the command above). Kill the dev server yourself when done. The default (flag unset) is unchanged and fully hermetic: a fresh data dir each run, with Playwright managing and tearing down its own server.
+`AGENTRE_E2E_REUSE=1` switches `playwright.config.ts` and `run-e2e.mjs` into **reuse mode**: the temp data dir is **not** wiped (the running app owns it), `reuseExistingServer` is forced on, and the runner performs **no teardown** (no orphan-vite reap, no temp-dir removal) so the app survives for the next iteration. It is an explicit "the launcher started the server" contract: the runner fails fast unless **both** this checkout's bridge port is listening **and** its `agentre.db` exists (a server up on the real data dir — e.g. started without `AGENTRE_DATA_DIR` — would silently seed your real DB, so it is rejected). Stop it with `make verify-down`. The default (flag unset) is unchanged and fully hermetic: a fresh data dir each run, with Playwright managing and tearing down its own server.
+
+## 4a. The driven app — `make verify-up` + `drive.mjs`
+
+The mode you reach for first (§1). One launcher brings up an isolated app plus a browser attached
+to it; from then on each `drive.mjs` call performs **one** action against that live app and
+appends what it did to the scenario's ledger. No spec, no rebuild between steps.
+
+```bash
+make verify-up                     # fake runtime, -tags e2e
+make verify-up FLAVOR=real         # real runtimes, no build tag (real claude/codex CLIs)
+make verify-up VERIFY_FLAGS=--headed        # or --no-browser / --keep (keep the previous state)
+make verify-status                 # exits non-zero when nothing is up
+make verify-down                   # VERIFY_FLAGS=--wipe also removes the isolated state
+```
+
+| Target | Runtime | Data dir | Use it for |
+|---|---|---|---|
+| `fake` (default) | deterministic fake (`-tags e2e`), echoes `e2e-fake-reply: <prompt>` | `<instance>/fake/data` | anything downstream of the agent boundary: UI, IPC, services, DB, migrations |
+| `real` | the real claudecode / codex runtimes, real CLI subprocesses | `<instance>/real/data` | behaviour that *is* the CLI: frame handling, auth, model selection, skills |
+
+Ports and dirs are derived per checkout (§3), so `make verify-status` is how you read them —
+nothing hardcodes a number.
+
+**Nothing is visible by default.** The browser runs headless, and because the frontend calls
+`WindowShow()` on mount — from the driving browser as much as from the native webview — the
+launcher hides the native window again right after boot, and `drive.mjs goto` re-hides it after
+each navigation. `VERIFY_FLAGS=--headed` is there for when you want to watch.
+
+The launcher writes a session handshake (`<instance>/<flavor>.json`) that the driver reads, so no
+command repeats a port or a path. It is idempotent — a second `verify-up` reports
+"already up" — and it **adopts** an app someone already started on the sanctioned data dir rather
+than restarting or wiping underneath it. A server on that port that is *not* on the sanctioned
+dir is refused outright.
+
+Driving, one action per call:
+
+```bash
+export AGENTRE_VERIFY_SCENARIO=<slug>       # → e2e/scratch/<slug>/{logs,screenshots}
+
+node e2e/drive.mjs snapshot [selector] [--limit N]   # visible elements + how to address them
+node e2e/drive.mjs goto /                            # same-origin paths only
+node e2e/drive.mjs click "testid=new-chat-button"    # testid= / role=button[name="Save"] / text= / label= / CSS
+node e2e/drive.mjs fill ".ProseMirror" "hello"
+node e2e/drive.mjs press Enter                       # or: press "testid=x" Enter
+node e2e/drive.mjs wait "testid=x" --state visible
+node e2e/drive.mjs text "main"                       # visible text of a region
+node e2e/drive.mjs shot 01-after-send [selector] [--full]
+node e2e/drive.mjs eval "document.title"
+node e2e/drive.mjs sql "select count(*) from chat_sessions where status='running'"
+node e2e/drive.mjs logs 40
+```
+
+- **`snapshot` first.** Locators come from what it prints (`testid=…` wherever the component has
+  one) — never from visible text, which is i18n'd and moves.
+- **`sql` is the independent oracle**, read-only by construction: it reads the isolated
+  `agentre.db` directly, so it catches "UI says OK but the DB never got written". Together with
+  `logs` it keeps working after the app is gone, while you write the report.
+- **Every call is recorded** to `e2e/scratch/<slug>/logs/drive.log` — command, timestamp, and
+  `ok:`/`FAILED:` with the outcome. That ledger *is* the run's record; the report cites it.
+- **A dead app names itself.** The driver checks the bridge before acting, because a stopped app
+  and a blank page look identical through CDP (both snapshot as "0 elements").
+
+Missing a stable hook? Add a **minimal** `data-testid` to the component — additive, in scope for
+the task at hand, no renaming sweep (§5).
+
+`wails dev` rebuilds on Go/TS edits, so a long-lived driven app restarts under you when the
+working tree changes; if its `vite` is killed the app keeps listening but serves 502. Both show
+up as the driver's "not serving any more" error — `make verify-down && make verify-up` is the fix.
 
 The HTML report lands at `e2e/playwright-report/` (gitignored) **in CI only** — a local run uses the list reporter and keeps traces/screenshots on failure (`CI=1` forces a local HTML report). webServer output → `$TMPDIR/agentre-e2e-webserver.log`. e2e is **not** part of `make test` / `make check` — it runs only on demand.
 
@@ -177,15 +276,21 @@ Only when the flow is genuinely core (§1). Principles, learned from the smoke s
 
 ## 6. Ad-hoc functional verification
 
-Writing a throwaway spec follows §5's conventions (`data-testid` locators, auto-wait, the DB
-oracle); the difference is only that it lives under `e2e/scratch/` and is never committed.
+**Most verification authors nothing**: the driven app (§4a) and the `agrctl` / `agentred`
+binaries reach every surface with no file written. Author a scratch spec only when the sequence
+must be *replayed* or when timing/concurrency is the contract; it then follows §5's conventions
+(`data-testid` locators, auto-wait, the DB oracle), and the difference is only that it lives
+under `e2e/scratch/` and is never committed.
 
 **The workflow itself — when driving the real app is warranted, where the evidence goes, the
 `report.md` a run owes, and how to report a bug reproduction honestly — is owned by
 [docs/verification.md](../docs/verification.md).** It is not repeated here.
 
-Two harness facts it relies on:
+Three harness facts it relies on:
 
+- The scenario directory is shared: `drive.mjs --scenario <slug>` writes into
+  `e2e/scratch/<slug>/{logs,screenshots}`, the same directory a scratch spec and its `report.md`
+  live in, so a run that starts driven and ends up needing a spec keeps one pile of evidence.
 - `playwright.scratch.config.ts` reuses the exact webServer / env / isolation / teardown as the
   committed suite — only `testDir` points at `./scratch`, and Playwright scans it **recursively**,
   so `scratch/<task-name>/verify.spec.ts` is picked up.
@@ -217,11 +322,11 @@ in mind when changing it.
 - **DB oracle reads a dir the app never wrote.** *Cause:* Playwright re-evaluates
   `playwright.config.ts` in **every worker**, so a module-top-level random `mkdtemp` yields a
   different dir per process. *Fix:* a **deterministic** fixed dir (`join(tmpdir(),
-  "agentre-e2e-data")`), cleaned/created **only in the main runner**
+  derived from the checkout path — `lib/target.mjs`), cleaned/created **only in the main runner**
   (`if (process.env.TEST_WORKER_INDEX === undefined)`) before the webServer launches; workers
   reuse the same path.
 - **False-green against the wrong app.** *Cause:* a dev server on Wails' default 34115 +
-  `reuseExistingServer` reusing it. *Fix:* dedicated port **34216** + `reuseExistingServer:!CI`.
+  `reuseExistingServer` reusing it. *Fix:* a dedicated per-checkout port + `reuseExistingServer:!CI`.
 - **Kept-on-failure for debugging.** On a failing run `run-e2e.mjs` deliberately **keeps** the
   temp data dir (`agentre.db` + logs) and the webServer log so you / CI can inspect them; the next
   run wipes the dir at start anyway. On success it removes both.
@@ -244,15 +349,20 @@ in mind when changing it.
 
 | Path | Role | Committed? |
 |---|---|---|
+| `e2e/lib/target.mjs` | **the only place** a flavor, port, data dir or keychain dir is named; the isolation guards (`assertIsolatedDataDir`, `assertSanctionedURL`, `shouldReapVite`) and the session handshake | yes |
+| `e2e/lib/target.test.mjs` | `node --test` guards for the above (`pnpm run test:guards`; `run-e2e.mjs` runs them before launching anything) | yes |
+| `e2e/lib/procs.mjs` | the orphan-`vite` reap, shared by the runner and the launcher | yes |
+| `e2e/verify.mjs` | the launcher: `up` / `down` / `status` for a flavor, incl. the attached CDP browser (§4a) | yes |
+| `e2e/drive.mjs` | the driver: one action per invocation against the live app, recorded into the scenario (§4a) | yes |
 | `e2e/run-e2e.mjs` | cross-platform runner: spawns `playwright test`, then reaps orphan `vite` + removes temp dir after it exits (kept on failure) | yes |
-| `e2e/playwright.config.ts` | base harness: temp dir + env + `frontend/dist` prep, webServer (`wails dev -tags e2e -devserver 34216`) | yes |
+| `e2e/playwright.config.ts` | base harness: resolves the `fake` target from `lib/target.mjs`, preps dirs + `frontend/dist`, webServer (`wails dev -tags e2e -devserver <derived port>`) | yes |
 | `e2e/playwright.scratch.config.ts` | extends base, `testDir: ./scratch` for throwaway specs | yes |
 | `e2e/fixtures/db.ts` | read-only `node:sqlite` DB oracle (`runningSessionCount`, …) | yes |
 | `e2e/tests/*.spec.ts` | committed **core-flow** specs (chat smoke/reload, git-preview tabs, plus approved org/subagent tool flows) | yes |
-| `e2e/scratch/**/*.spec.ts` | throwaway specs, either flat quick looks or `<task-name>/verify.spec.ts` scenarios | **no (gitignored)** |
+| `e2e/scratch/<slug>/` | one scenario's evidence: `logs/drive.log`, `screenshots/`, `report.md`, and a `verify.spec.ts` when one was warranted | **no (gitignored)** |
 | `e2e/scratch/README.md` | scratch convention + starter template | yes |
-| `e2e/package.json` → `setup` / `test` / `test:scratch` / `test:sync` | one-time install+Chromium / run suite / run scratch / run the sync suite (§10) | yes |
-| `Makefile` → `e2e` / `e2e-scratch` / `e2e-sync` | thin aliases for `cd e2e && pnpm test` / `pnpm run test:scratch` (requires `TASK=scratch/…`) / `pnpm run test:sync` | yes |
+| `e2e/package.json` → `setup` / `test` / `test:guards` / `test:scratch` / `test:sync` / `verify` / `drive` | one-time install+Chromium / run suite / run the isolation guards / run scratch / run the sync suite (§10) / launcher / driver | yes |
+| `Makefile` → `e2e` / `e2e-scratch` / `e2e-sync` / `verify-up` / `verify-status` / `verify-down` | thin aliases for `cd e2e && pnpm test` / `pnpm run test:scratch` (requires `TASK=scratch/…`) / `pnpm run test:sync` / `node verify.mjs …` (`FLAVOR=`, `VERIFY_FLAGS=`) | yes |
 | `e2e/fakes/install.go` (`//go:build e2e`) / `install_noop.go` (`//go:build !e2e`) | register the fake + seed / no-op | yes |
 | `e2e/fakes/login.go` (`//go:build e2e`) | seed a logged-in desktop from env, for §10 / §11 only (no-op without it) | yes |
 | `e2e/fakes/remote.go` (`//go:build e2e`) | seed a paired agentred + an agent bound to it, for §11 only (no-op without it) | yes |

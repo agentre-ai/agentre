@@ -20,17 +20,18 @@ func (s *service) toView(p *paired_agentred_entity.PairedAgentred) *DeviceView {
 		return nil
 	}
 	return &DeviceView{
-		ID:                p.ID,
-		Name:              p.Name,
-		URL:               p.URL,
-		DaemonFingerprint: p.DaemonFingerprint,
-		InstanceUUID:      p.InstanceUUID,
-		TLSMode:           p.TLSMode,
-		TLSCertPEM:        p.TLSCertPEM,
-		PairedAt:          p.PairedAt,
-		LastSeenAt:        p.LastSeenAt,
-		LastError:         p.LastError,
-		Online:            p.IsOnline(time.Now().UnixMilli()),
-		DaemonOutdated:    s.daemonOutdated(p.ID),
+		ID:                     p.ID,
+		Name:                   p.Name,
+		URL:                    p.URL,
+		DaemonFingerprint:      p.DaemonFingerprint,
+		InstanceUUID:           p.InstanceUUID,
+		TLSMode:                p.TLSMode,
+		TLSCertPEM:             p.TLSCertPEM,
+		PairedAt:               p.PairedAt,
+		LastSeenAt:             p.LastSeenAt,
+		LastError:              p.LastError,
+		Online:                 p.IsOnline(time.Now().UnixMilli()),
+		DaemonOutdated:         s.daemonOutdated(p.ID),
+		SupportsLLMModelTarget: s.SupportsLLMModelTarget(p.ID),
 	}
 }

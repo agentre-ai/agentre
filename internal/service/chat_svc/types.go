@@ -295,6 +295,12 @@ type ChatBlock struct {
 	// 渲染时优先用它,空则回退到 ProviderKey —— transcript 要读得懂"改用了哪个供应商"
 	// 而不是一串 UUID。
 	ProviderName string `json:"providerName,omitempty"`
+	// ModelKey 是切换 notice 里切换后的会话级 ModelKey（2026-08-11 决策 1）：固定模型
+	// 切换时非空，provider-default / 跟随 agent 绑定恒为空。
+	ModelKey string `json:"modelKey,omitempty"`
+	// ModelName 是 ModelKey 对应模型的展示名（后端产出 notice 时已解析到的实体），查不
+	// 到时留空；前端渲染时优先用它，空则回退到 ModelKey。
+	ModelName string `json:"modelName,omitempty"`
 	// NoticeKind 区分 notice 的来源:""=供应商回退提示(含全部旧数据),"switch"=用户
 	// 切换了会话供应商。前端据它选 t() 文案 —— 切回「跟随 agent 绑定」时 ProviderKey
 	// 为空,只有这个字段能把它与「无结构化负载的旧 notice」区分开。
@@ -512,8 +518,15 @@ type ChatSessionDetail struct {
 	// 绑定供应商名；皆无 → 「选择供应商」占位）。
 	ProviderKey      string `json:"providerKey"`
 	AgentProviderKey string `json:"agentProviderKey"`
-	Title            string `json:"title"`
-	AgentStatus      string `json:"agentStatus"`
+	// ModelKey 是这条会话自己选的 ModelKey（spec 2026-08-11 决策 1）：与 ProviderKey 组合
+	// 成会话 ModelTarget（双空 = inherit-agent；providerKey 非空 + 空 = provider-default；
+	// 双非空 = fixed-model）。AgentModelKey 是该会话所用那一档 backend 绑定的固定模型
+	// key（未绑固定模型时为空）。前端 composer 的供应商 pill 用这四个值水合当前选择并
+	// 渲染「跟随绑定」标签。
+	ModelKey      string `json:"modelKey"`
+	AgentModelKey string `json:"agentModelKey"`
+	Title         string `json:"title"`
+	AgentStatus   string `json:"agentStatus"`
 	// ActiveStream 仅在 LoadSession 时填:该会话有正在跑的 turn 时,给出其 per-turn
 	// wails 事件名("chat:event:<sessionID>:<assistantMessageID>"),让中途打开本会话的
 	// 前端 openStream 重挂到实时流。子 agent 调用轮 / 自主轮等"非前端发起"的 turn 没有 Send
@@ -756,11 +769,17 @@ type SendRequest struct {
 	// 否则整个 Send 失败（不静默回落自动挑选）——拒绝指定一个不可用的档。已有会话
 	// （SessionID>0）忽略这个字段：会话早已按 R15b 钉在它落到的那一档上，不可能再改。
 	ExecTargetOverride int64 `json:"execTargetOverride,omitempty"`
-	// ProviderKey 仅新建会话（SessionID=0）生效：所选 LLM 供应商 key，随首条消息与
-	// Session 一同 Create 落库（spec 决策 2）。空串 = 跟随 agent 绑定。已有会话在这里
-	// 忽略——改供应商走 SetChatSessionProvider（2026-08-10 决策 1）。非空时校验：
-	// 供应商必须存在、IsActive 且与后端 kind 兼容（ProviderTypeMatch），否则 Send 报错。
+	// ProviderKey 仅新建会话（SessionID=0）生效：所选 LLM ModelTarget 的 ProviderKey，
+	// 随首条消息与 Session 一同 Create 落库（spec 决策 2）。空串 = 跟随 agent 绑定
+	// （inherit-agent）。已有会话在这里忽略——改 target 走 SetChatSessionModelTarget
+	// （2026-08-10 决策 1 / 2026-08-11 决策 1）。非空时校验：供应商必须存在、IsActive 且
+	// 与后端 kind 兼容（ProviderTypeMatch），否则 Send 报错。
 	ProviderKey string `json:"providerKey,omitempty"`
+	// ModelKey 仅新建会话（SessionID=0）生效：所选 ModelTarget 的 ModelKey。
+	//   - 空 = provider-default（providerKey 非空时）或 inherit-agent（providerKey 空）；
+	//   - 非空 = fixed-model（必须存在、启用且归属所选 Provider）。
+	// 与 ProviderKey 一并随 Session 落库；已有会话忽略。
+	ModelKey string `json:"modelKey,omitempty"`
 	// EmitTurnStartedBypass 表示本轮由"非查看者"发起(子 agent 调用经 subagent_svc
 	// 阻塞起轮),需经会话级旁路 chat:autonomous:<sessionId> 把 per-turn 流名推给该会话
 	// 已打开(可能在后台)的 ChatPanel, 让它翻 running + openStream —— 否则只有发起者
@@ -980,19 +999,28 @@ type SetPermissionModeResponse struct {
 	Mode    string `json:"mode"`
 }
 
-// SetSessionProviderRequest 切换已有会话的 LLM 供应商（spec 2026-08-10 决策 1）。
-// ProviderKey 空串 = 改回「跟随 agent 绑定」（CLI 后端即回到自身登录态，决策 7）。
-type SetSessionProviderRequest struct {
+// SetChatSessionModelTargetRequest 切换已有会话的 LLM ModelTarget（spec 2026-08-11
+// 决策 1）。ProviderKey 空 = 改回「跟随 agent 绑定」（inherit-agent，CLI 后端即回到自身
+// 登录态）；ProviderKey 非空 + ModelKey 空 = provider-default（每轮解析该 Provider 当前
+// 默认）；两者都非空 = fixed-model。
+type SetChatSessionModelTargetRequest struct {
 	SessionID   int64  `json:"sessionId"`
 	ProviderKey string `json:"providerKey"`
+	ModelKey    string `json:"modelKey"`
 }
 
-// SetSessionProviderResponse 回传落库后的会话级 key 与该会话所用那一档 backend 的
-// 绑定 key，前端据此立刻更新 pill 标签，不必再拉一次 LoadSession。
-// 新供应商自下一轮生效：正在进行的轮不受影响（决策 8）。
-type SetSessionProviderResponse struct {
+// SetChatSessionModelTargetResponse 回传落库后的会话级 target 与该会话所用那一档 backend
+// 的绑定 target，前端据此立刻更新 pill 标签，不必再拉一次 LoadSession（乐观 UI 对账）。
+// 新 target 自下一轮生效：正在进行的轮不受影响（决策 8）。
+//
+// persisted（ProviderKey / ModelKey）是刚写入 chat_sessions 的两列；agent 绑定
+// （AgentProviderKey / AgentModelKey）供「跟随 agent 绑定」回落标签渲染。effective 目标
+// = persisted 非空取 persisted，否则取 agent 绑定。
+type SetChatSessionModelTargetResponse struct {
 	ProviderKey      string `json:"providerKey"`
+	ModelKey         string `json:"modelKey"`
 	AgentProviderKey string `json:"agentProviderKey"`
+	AgentModelKey    string `json:"agentModelKey"`
 }
 
 // LaunchCommandRequest / Response 用于「复制启动命令」菜单：

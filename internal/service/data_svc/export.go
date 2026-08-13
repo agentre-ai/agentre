@@ -54,7 +54,11 @@ func (s *dataSvc) Export(ctx context.Context, req *ExportRequest) (*ExportResult
 		}
 		bundle.Items.LLMProviders = make([]BundleLLMProvider, 0, len(rows))
 		for _, r := range rows {
-			bundle.Items.LLMProviders = append(bundle.Items.LLMProviders, toBundleProvider(r, req.IncludeSecrets))
+			item, err := toBundleProvider(ctx, r, req.IncludeSecrets)
+			if err != nil {
+				return nil, err
+			}
+			bundle.Items.LLMProviders = append(bundle.Items.LLMProviders, item)
 		}
 		summary[string(ScopeLLMProviders)] = len(bundle.Items.LLMProviders)
 	}
@@ -100,7 +104,11 @@ func (s *dataSvc) Export(ctx context.Context, req *ExportRequest) (*ExportResult
 		if needBackends {
 			bundle.Items.AgentBackends = make([]BundleAgentBackend, 0, len(backends))
 			for _, b := range backends {
-				bundle.Items.AgentBackends = append(bundle.Items.AgentBackends, toBundleBackend(b, backendKey[b.ID], deviceUUIDByID))
+				item, err := toBundleBackend(b, backendKey[b.ID], deviceUUIDByID)
+				if err != nil {
+					return nil, err
+				}
+				bundle.Items.AgentBackends = append(bundle.Items.AgentBackends, item)
 			}
 			summary[string(ScopeAgentBackends)] = len(bundle.Items.AgentBackends)
 		}
@@ -155,17 +163,40 @@ func (s *dataSvc) Export(ctx context.Context, req *ExportRequest) (*ExportResult
 	return &ExportResult{JSON: raw, Summary: summary}, nil
 }
 
-func toBundleProvider(p *llm_provider_entity.LLMProvider, secrets bool) BundleLLMProvider {
+// toBundleProvider 把 Provider 行 + 其全部子模型合成为新 1→N bundle 形状。
+// 单模型投影(provider.Model/MaxOutput/ContextWindow)已移除:连接配置留在
+// Provider 层,稳定 ModelKey/ModelID 与 token 元数据逐条落到 Models,defaultModelKey
+// 指回默认启用模型。APIKey 只在 includeSecrets 时带出。
+func toBundleProvider(ctx context.Context, p *llm_provider_entity.LLMProvider, secrets bool) (BundleLLMProvider, error) {
 	apiKey := ""
 	if secrets {
 		apiKey = p.APIKey
 	}
-	return BundleLLMProvider{
-		ProviderKey: p.ProviderKey, Type: p.Type, Name: p.Name,
-		BaseURL: p.BaseURL, Model: p.Model,
-		MaxOutput: p.MaxOutput, ContextWindow: p.ContextWindow,
-		APIKey: apiKey,
+	models, err := llm_provider_repo.LLMProvider().ListModels(ctx, p.ID)
+	if err != nil {
+		return BundleLLMProvider{}, err
 	}
+	out := BundleLLMProvider{
+		ProviderKey:     p.ProviderKey,
+		Type:            p.Type,
+		Name:            p.Name,
+		BaseURL:         p.BaseURL,
+		Enabled:         p.IsEnabled(),
+		DefaultModelKey: p.DefaultModelKey,
+		APIKey:          apiKey,
+		Models:          make([]BundleLLMProviderModel, 0, len(models)),
+	}
+	for _, m := range models {
+		out.Models = append(out.Models, BundleLLMProviderModel{
+			ModelKey:      m.ModelKey,
+			ModelID:       m.ModelID,
+			Name:          m.Name,
+			ContextWindow: m.ContextWindow,
+			MaxOutput:     m.MaxOutput,
+			Enabled:       m.IsEnabled(),
+		})
+	}
+	return out, nil
 }
 
 func toBundleDevice(d *paired_agentred_entity.PairedAgentred, secrets bool) BundleRemoteDevice {
@@ -200,19 +231,40 @@ func deviceUUIDByRowID(devices []*paired_agentred_entity.PairedAgentred) map[str
 	return out
 }
 
-func toBundleBackend(b *agent_backend_entity.AgentBackend, exportKey string, deviceUUIDByID map[string]string) BundleAgentBackend {
+func toBundleBackend(b *agent_backend_entity.AgentBackend, exportKey string, deviceUUIDByID map[string]string) (BundleAgentBackend, error) {
 	deviceID := b.DeviceID
 	if uuid, ok := deviceUUIDByID[b.DeviceID]; ok {
 		deviceID = uuid
 	}
+	routes, err := agent_backend_entity.ParseModelRoutes(b.ModelRoutes)
+	if err != nil {
+		// 已入库的 backend 在 Check 阶段就校验过 model_routes，理论到不了这里；
+		// 真到了就亮失败而不是静默丢路由（结构化 Route 是 bundle 契约的一部分）。
+		return BundleAgentBackend{}, err
+	}
 	return BundleAgentBackend{
 		ExportKey: exportKey,
 		Type:      b.Type, Name: b.Name,
-		LLMProviderKey: b.LLMProviderKey, DeviceID: deviceID, CLIPath: b.CLIPath,
-		ModelRoutes: b.ModelRoutes, Sandbox: b.Sandbox, Approval: b.Approval,
+		LLMProviderKey: b.LLMProviderKey, LLMModelKey: b.LLMModelKey,
+		DeviceID: deviceID, CLIPath: b.CLIPath,
+		ModelRoutes: bundleRoutesFromEntity(routes),
+		Sandbox:     b.Sandbox, Approval: b.Approval,
 		EnvJSON: b.EnvJSON, ReasoningEffort: b.ReasoningEffort,
 		DefaultPermissionMode: b.DefaultPermissionMode,
+	}, nil
+}
+
+// bundleRoutesFromEntity 把实体的 map[alias]ModelRouteTarget 转成 bundle 的
+// map[alias]BundleRouteTarget（两者同形，逐字段拷贝）。
+func bundleRoutesFromEntity(routes map[string]agent_backend_entity.ModelRouteTarget) map[string]BundleRouteTarget {
+	if len(routes) == 0 {
+		return map[string]BundleRouteTarget{}
 	}
+	out := make(map[string]BundleRouteTarget, len(routes))
+	for alias, r := range routes {
+		out[alias] = BundleRouteTarget{ProviderKey: r.ProviderKey, ModelKey: r.ModelKey}
+	}
+	return out
 }
 
 func toBundleDept(d *department_entity.Department, deptKey, agentKey map[int64]string) BundleDepartment {

@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
+import { ActivityBlock } from "./activity-block/block";
 import { AutoTriggerBanner } from "./auto-trigger-banner";
 import { PlanApproveCard } from "./canonical-tool/plan-approve-request/card";
 import type { PlanActionStream } from "./canonical-tool/props";
@@ -600,9 +601,15 @@ function MessageBody({
 function RenderItemView({
   item,
   messageId,
+  live,
+  durationMs,
 }: {
   item: TranscriptRowItem;
   messageId: number;
+  /** 本行是仍在流式的那条消息的末行 —— 尾部的活动块此刻正在跑。 */
+  live: boolean;
+  /** 消息级耗时(块级无来源),活动块组头的耗时槽用;运行中不显示。 */
+  durationMs?: number;
 }) {
   const { t } = useTranslation();
   const ctx = React.useContext(TranscriptRenderContext);
@@ -635,6 +642,24 @@ function RenderItemView({
           uiStateKey={item.uiStateKey}
         />
       );
+    case "activity":
+      // 活动块:连续的思考 / 只读探查 / 中性 / 写 / 命令 / 失败折成一行组头。
+      // 一个块仍然只占一个虚拟行 —— 折叠态不 mount 组内步骤(Hard invariant 9)。
+      // running 认「仍在流式的消息的末行」:此刻没有别的东西排在它后面,说明
+      // agent 正在这一组里干活。轮次落定 → live 变假 → 自动收起。
+      // item.growing 是唯一的例外:后面那行是一段**还在流的思考**,它一落定就并
+      // 回这个块 —— 这一组并没有结束,不能因为暂时不是末行就收起来(行模型的
+      // markGrowingActivity 负责标)。
+      return (
+        <ActivityBlock
+          steps={item.steps}
+          summary={item.summary}
+          uiStateKey={item.uiStateKey}
+          cwd={ctx?.cwd}
+          durationMs={durationMs}
+          running={live || item.growing === true}
+        />
+      );
     case "image":
       return <ImageBlockView block={item.block} />;
     case "tool":
@@ -644,7 +669,7 @@ function RenderItemView({
       //   - tool_use 形态的 plan.update 刻意不注册,这里仍显示普通工具卡。
       //     type="plan" 且带 actions 的 plan.update 已在上方复用 PlanCard。
       //   - 否则 fallback 到 RawToolCard(Bash/Read/MCP 等通用工具)。
-      // item.permissionBlock 由 RawToolCard 自行从 toolBlock.toolPermission 读。
+      // 审批信息不单独透传:RawToolCard 自己从 toolBlock.toolPermission 读。
       return (
         <CanonicalToolRouter
           cwd={ctx?.cwd}
@@ -710,15 +735,24 @@ function RenderItemView({
       // 因为切换回「跟随 agent 绑定」时 providerKey 本就是空串。
       // providerName 非空就优先显示它（2026-08-10 显示缺陷修复决策 1/2）,为空
       // （供应商已删,后端查不到实体）则回退到裸 providerKey,文案本身不变。
+      // fixed-model 切换时负载还带 modelKey/modelName（spec 2026-08-11 决策 1），
+      // transcript 要能读出「固定到哪个模型」而不是只剩供应商名。
       const providerKey = item.block.providerKey;
       const providerLabel = item.block.providerName || providerKey;
+      const modelKey = item.block.modelKey;
+      const modelLabel = item.block.modelName || modelKey;
       const noticeKind = item.block.noticeKind;
       const content =
         noticeKind === "switch"
           ? providerKey
-            ? t("chat.notice.providerSwitch.sentence", {
-                provider: providerLabel,
-              })
+            ? modelKey
+              ? t("chat.notice.providerSwitch.fixedModel", {
+                  provider: providerLabel,
+                  model: modelLabel,
+                })
+              : t("chat.notice.providerSwitch.sentence", {
+                  provider: providerLabel,
+                })
             : t("chat.notice.providerSwitch.followAgentBinding")
           : providerKey
             ? t("chat.notice.providerFallback.sentence", {
@@ -804,6 +838,10 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
     isAssistant && row.isLastOfMessage
       ? extractAssistantOutputText(m.blocks ?? [], liveBlocks ?? [], liveTail)
       : "";
+  // live 行 = 仍在流式的那条消息的末行(chat.tsx 只给这一行喂 live* 内容)。
+  // 尾部的活动块据此判「此刻正在跑」:自动展开 + 实时尾巴,落定后自动收起。
+  const isLiveTailRow =
+    row.isLastOfMessage && (liveBlocks !== undefined || liveTail.length > 0);
 
   const tailAttachments = row.isLastOfMessage ? (
     <>
@@ -857,7 +895,12 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
           source={isAssistant ? undefined : row.sourceDevice}
           meta={meta}
         >
-          <RenderItemView item={row.item} messageId={row.messageId} />
+          <RenderItemView
+            item={row.item}
+            messageId={row.messageId}
+            live={isLiveTailRow}
+            durationMs={m.durationMs}
+          />
           {tailAttachments}
         </ChatMessage>
       </>
@@ -871,7 +914,12 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
       <div aria-hidden className="w-7 shrink-0" />
       <div className="flex min-w-0 max-w-measure flex-1 flex-col gap-1">
         <div data-selectable-text="true" className="flex flex-col gap-2">
-          <RenderItemView item={row.item} messageId={row.messageId} />
+          <RenderItemView
+            item={row.item}
+            messageId={row.messageId}
+            live={isLiveTailRow}
+            durationMs={m.durationMs}
+          />
           {tailAttachments}
         </div>
         {meta ? (

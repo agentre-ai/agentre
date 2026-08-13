@@ -50,7 +50,7 @@ export default defineConfig({
       AGENTRE_DATA_DIR: dataDir,
       AGENTRE_ENV: "test",
       AGENTRE_PROXY_PORT: "0",
-      AGENTRE_E2E_KEYCHAIN_DIR: process.env.AGENTRE_E2E_KEYCHAIN_DIR as string,
+      AGENTRE_KEYCHAIN_DIR: process.env.AGENTRE_KEYCHAIN_DIR as string,
       // The seeded login: the app comes up already connected to the throwaway
       // account, bypassing the GitHub-OAuth end of the device flow.
       AGENTRE_E2E_SERVER_URL: process.env.AGENTRE_E2E_SERVER_URL as string,

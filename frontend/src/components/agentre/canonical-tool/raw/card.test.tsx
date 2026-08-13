@@ -170,6 +170,52 @@ describe("RawToolCard expansion", () => {
   });
 });
 
+describe("RawToolCard long content", () => {
+  it("Given a long param value, When the card is open, Then it scrolls without an expand control", () => {
+    render(
+      <RawToolCard
+        toolBlock={bashUse({
+          toolInput: {
+            command: "echo hi",
+            note: "line1\nline2\nline3\nline4\nline5\nline6",
+          },
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button")); // expand card
+    expect(screen.queryByRole("button", { name: "Expand all" })).toBeNull();
+    expect(screen.getByText(/line6/)).toHaveClass("max-h-64", "overflow-auto");
+  });
+
+  it("pretty-prints object param values as indented JSON", () => {
+    render(
+      <RawToolCard
+        toolBlock={bashUse({
+          toolInput: { command: "echo hi", extra: { a: 1, b: [1, 2] } },
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button"));
+    expect(screen.getByText(/"a": 1/)).toBeDefined();
+    expect(screen.getByText(/"b": \[/)).toBeDefined();
+  });
+
+  it("Given a long result body, When the card is open, Then it scrolls without an expand control", () => {
+    const longResult = Array.from({ length: 20 }, (_, i) => `line${i}`).join(
+      "\n",
+    );
+    render(
+      <RawToolCard
+        toolBlock={bashUse({ toolInput: { command: "echo hi" } })}
+        resultBlock={result({ text: longResult })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button"));
+    expect(screen.queryByRole("button", { name: "Expand all" })).toBeNull();
+    expect(screen.getByText(/line19/)).toHaveClass("max-h-64", "overflow-auto");
+  });
+});
+
 describe("RawToolCard background running pill", () => {
   const bashBlock = (extra: Record<string, unknown>) =>
     ({

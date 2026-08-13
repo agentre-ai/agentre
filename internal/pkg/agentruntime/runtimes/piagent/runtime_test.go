@@ -301,8 +301,8 @@ func TestPiModelFallback(t *testing.T) {
 }
 
 // TestPiResultModelPlaceholder 锁住 result.Model 在 pi 真实 usage 帧上报前的占位:
-// effectiveModel = firstNonEmpty(provider.Model, backendDefault)。#26 override 已移除,
-// 占位只随 provider.Model。
+// effectiveModel = firstNonEmpty(解析出的 ModelID, backendDefault)。#26 override 已移除,
+// 占位只随解析出的 ModelID。
 func TestPiResultModelPlaceholder(t *testing.T) {
 	Convey("Given pi-agent runtime 且 pi 不报模型(无 usage 帧)", t, func() {
 		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
@@ -310,10 +310,10 @@ func TestPiResultModelPlaceholder(t *testing.T) {
 		})
 		defer restore()
 
-		Convey("When 绑 provider Then 占位 = provider.Model", func() {
+		Convey("When 绑 provider Then 占位 = 解析出的 ModelID", func() {
 			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
 				Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
-				Provider:  &llm_provider_entity.LLMProvider{Model: "gpt-5.4", Type: string(llm_provider_entity.TypeOpenAIChat), ProviderKey: "provabc", APIKey: "tok-super-secret"},
+				Effective: &agentruntime.EffectiveLLMConfig{ModelID: "gpt-5.4", ProviderType: string(llm_provider_entity.TypeOpenAIChat), ProviderKey: "provabc", APIKey: "tok-super-secret"},
 				SessionID: 1,
 				Cwd:       t.TempDir(),
 				UserText:  "hello",
@@ -329,7 +329,7 @@ func TestPiResultModelPlaceholder(t *testing.T) {
 func TestPiUserModelID_StripsProviderPrefix(t *testing.T) {
 	Convey("Given pi-agent 绑 provider 且用户设了会话级模型选择", t, func() {
 		bound := agentruntime.RunRequest{
-			Provider: &llm_provider_entity.LLMProvider{ProviderKey: "provabc", Model: "deepseek-v3"},
+			Effective: &agentruntime.EffectiveLLMConfig{ProviderKey: "provabc", ModelID: "deepseek-v3"},
 		}
 
 		Convey("When pi 上报的模型带 agentre-<key>/ 前缀 Then 归一为原始模型 id", func() {
@@ -889,9 +889,9 @@ func observedPiLogText(logs *observer.ObservedLogs) string {
 
 func TestRun_ProviderInjectsAPIKeyEnvAndBareModel(t *testing.T) {
 	Convey("Given a turn bound to a custom LLM provider", t, func() {
-		prov := &llm_provider_entity.LLMProvider{
-			ProviderKey: "provabc", APIKey: "tok-super-secret", Model: "deepseek-v3",
-			Type: string(llm_provider_entity.TypeAnthropic),
+		prov := &agentruntime.EffectiveLLMConfig{
+			ProviderKey: "provabc", APIKey: "tok-super-secret", ModelID: "deepseek-v3",
+			ProviderType: string(llm_provider_entity.TypeAnthropic),
 		}
 		var gotEnv map[string]string
 		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, env map[string]string, _ string) (sessionHandle, error) {
@@ -903,7 +903,7 @@ func TestRun_ProviderInjectsAPIKeyEnvAndBareModel(t *testing.T) {
 		Convey("When running Then the APIKey reaches the factory env and result.Model stays bare", func() {
 			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
 				Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
-				Provider:  prov,
+				Effective: prov,
 				SessionID: 1,
 				Cwd:       t.TempDir(),
 				UserText:  "hello",
@@ -913,7 +913,7 @@ func TestRun_ProviderInjectsAPIKeyEnvAndBareModel(t *testing.T) {
 			}
 			So(gotEnv, ShouldNotBeNil)
 			So(gotEnv[agentruntime.PiAgentProviderEnvKey(prov.ProviderKey)], ShouldEqual, "tok-super-secret")
-			// result.Model 保持裸 req.Provider.Model，不加 agentre-<key>/ 前缀。
+			// result.Model 保持裸解析出的 ModelID，不加 agentre-<key>/ 前缀。
 			So(result.Model, ShouldEqual, "deepseek-v3")
 		})
 	})
@@ -931,7 +931,7 @@ func TestRun_ProviderAPIKeyEmpty_ReturnsConfigErrorWithoutSpawning(t *testing.T)
 		Convey("When running Then Run returns a config error naming the provider and never spawns", func() {
 			_, _, err := New().Run(context.Background(), agentruntime.RunRequest{
 				Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
-				Provider:  &llm_provider_entity.LLMProvider{ProviderKey: "provx", APIKey: "", Model: "m1"},
+				Effective: &agentruntime.EffectiveLLMConfig{ProviderKey: "provx", APIKey: "", ModelID: "m1"},
 				SessionID: 1,
 				Cwd:       t.TempDir(),
 				UserText:  "hello",
@@ -939,6 +939,36 @@ func TestRun_ProviderAPIKeyEmpty_ReturnsConfigErrorWithoutSpawning(t *testing.T)
 			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, "provx")
 			So(spawned, ShouldBeFalse)
+		})
+	})
+}
+
+func TestRun_NativeEffectiveConfig_UsesCLILoginWithoutProviderAPIKey(t *testing.T) {
+	Convey("Given 跟随 Agent 绑定解析为 native effective config", t, func() {
+		var gotEnv map[string]string
+		spawned := false
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, env map[string]string, _ string) (sessionHandle, error) {
+			spawned = true
+			gotEnv = env
+			return &fakeSession{stream: &emptyStream{}, sid: "pi-session"}, nil
+		})
+		defer restore()
+
+		Convey("When running Then Pi uses CLI login without requiring or injecting a provider API key", func() {
+			events, _, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+				Effective: &agentruntime.EffectiveLLMConfig{Mode: agentruntime.EffectiveModeNative},
+				SessionID: 1,
+				Cwd:       t.TempDir(),
+				UserText:  "hello",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+			So(spawned, ShouldBeTrue)
+			for k := range gotEnv {
+				So(strings.HasPrefix(k, "AGENTRE_PI_API_KEY_"), ShouldBeFalse)
+			}
 		})
 	})
 }
@@ -979,8 +1009,8 @@ func TestProviderRunConfig(t *testing.T) {
 		defer restore()
 
 		Convey("When assembling the session config Then model is agentre-<key>/<model> and extension path is returned", func() {
-			model, extPath, err := providerRunConfig(&llm_provider_entity.LLMProvider{
-				ProviderKey: "provabc", Model: "deepseek-v3", Type: string(llm_provider_entity.TypeOpenAIChat),
+			model, extPath, err := providerRunConfig(&agentruntime.EffectiveLLMConfig{
+				ProviderKey: "provabc", ModelID: "deepseek-v3", ProviderType: string(llm_provider_entity.TypeOpenAIChat),
 			})
 			So(err, ShouldBeNil)
 			So(model, ShouldEqual, "agentre-provabc/deepseek-v3")
@@ -990,7 +1020,7 @@ func TestProviderRunConfig(t *testing.T) {
 
 	// 注入 pi 的 provider 扩展只 registerProvider 一个 models 条目(见
 	// agentruntime.PiAgentProviderExtension)。--model 与扩展的 models 列表必须来自
-	// **同一个** effectiveModel(provider.Model):扩展按内容哈希落盘,不同模型天然是
+	// **同一个** effectiveModel(解析出的 ModelID):扩展按内容哈希落盘,不同模型天然是
 	// 不同文件。
 	Convey("Given a bound provider whose extension source is captured", t, func() {
 		var source string
@@ -1000,14 +1030,14 @@ func TestProviderRunConfig(t *testing.T) {
 		})
 		defer restore()
 
-		prov := func() *llm_provider_entity.LLMProvider {
-			return &llm_provider_entity.LLMProvider{
-				ProviderKey: "provabc", Model: "deepseek-v3",
-				Type: string(llm_provider_entity.TypeOpenAIChat), ContextWindow: 128000,
+		prov := func() *agentruntime.EffectiveLLMConfig {
+			return &agentruntime.EffectiveLLMConfig{
+				ProviderKey: "provabc", ModelID: "deepseek-v3",
+				ProviderType: string(llm_provider_entity.TypeOpenAIChat), ContextWindow: 128000,
 			}
 		}
 
-		Convey("Then the extension registers provider.Model, matching --model", func() {
+		Convey("Then the extension registers 解析出的 ModelID, matching --model", func() {
 			model, _, err := providerRunConfig(prov())
 			So(err, ShouldBeNil)
 			So(model, ShouldEqual, "agentre-provabc/deepseek-v3")
@@ -1031,8 +1061,8 @@ func TestProviderRunConfig(t *testing.T) {
 		})
 
 		Convey("When the provider model is empty Then no model or extension is produced", func() {
-			model, extPath, err := providerRunConfig(&llm_provider_entity.LLMProvider{
-				ProviderKey: "provabc", Type: string(llm_provider_entity.TypeOpenAIChat),
+			model, extPath, err := providerRunConfig(&agentruntime.EffectiveLLMConfig{
+				ProviderKey: "provabc", ProviderType: string(llm_provider_entity.TypeOpenAIChat),
 			})
 			So(err, ShouldBeNil)
 			So(model, ShouldEqual, "")
@@ -1040,8 +1070,8 @@ func TestProviderRunConfig(t *testing.T) {
 		})
 
 		Convey("When the provider type is unsupported Then an error is returned instead of silently running unbound", func() {
-			_, _, err := providerRunConfig(&llm_provider_entity.LLMProvider{
-				ProviderKey: "provabc", Model: "deepseek-v3", Type: "deepseek",
+			_, _, err := providerRunConfig(&agentruntime.EffectiveLLMConfig{
+				ProviderKey: "provabc", ModelID: "deepseek-v3", ProviderType: "deepseek",
 			})
 			So(err, ShouldNotBeNil)
 		})
@@ -1054,8 +1084,8 @@ func TestProviderRunConfig(t *testing.T) {
 		defer restore()
 
 		Convey("When materializing Then the error propagates", func() {
-			_, _, err := providerRunConfig(&llm_provider_entity.LLMProvider{
-				ProviderKey: "provabc", Model: "deepseek-v3", Type: string(llm_provider_entity.TypeOpenAIChat),
+			_, _, err := providerRunConfig(&agentruntime.EffectiveLLMConfig{
+				ProviderKey: "provabc", ModelID: "deepseek-v3", ProviderType: string(llm_provider_entity.TypeOpenAIChat),
 			})
 			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, "disk full")

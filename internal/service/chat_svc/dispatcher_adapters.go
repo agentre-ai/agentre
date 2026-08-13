@@ -210,6 +210,39 @@ func (a sessionTransitionerAdapter) MarkRunning(ctx context.Context, sess any, s
 	a.svc.markSessionRunning(ctx, s, stream)
 }
 
+// subagentFlipperAdapter 实现 turn.SubagentFlipper:把一个「不属于本轮」的后台任务
+// 终态落到它派遣卡真正所在的那条更早的消息上。
+//
+// 三步一致地收尾一次后台完成,与自主续轮那条路(driveAutonomousTurn 收尾处)同款:
+// 定向重写持久化态 → 会话级流镜像让已打开的界面即时翻转 → 退出 bgRunning 集合让
+// 后台任务胶囊收敛。落库失败则整步放弃,不镜像也不清集合 —— 界面显示 completed 而
+// 库里还是 running,重开会话又变回去,比一直显示 running 更难排查。
+type subagentFlipperAdapter struct {
+	svc    *chatSvc
+	sess   *chat_entity.Session
+	stream string
+}
+
+func (a subagentFlipperAdapter) FlipSubagentStatus(ctx context.Context, toolUseID, status string) error {
+	if a.svc == nil || a.sess == nil || a.sess.ID <= 0 || toolUseID == "" {
+		return nil
+	}
+	// summary 留空:CLI 的完成摘要目前没走到 SubagentInfo,FlipSubagentStatus 对空
+	// summary 保持原值不动。
+	if err := chat_repo.Message().FlipSubagentStatus(ctx, a.sess.ID, toolUseID, status, ""); err != nil {
+		return err
+	}
+	// 镜像到**会话级**流:派遣卡随更早那条消息早已落库,不在任何 liveBlocks 里,
+	// per-turn 流那一路合并必然落空(同 subagentActivityEmitter 的理由)。
+	(&dispatcherEmitter{svc: a.svc}).Emit(ctx, AutonomousStreamName(a.sess.ID), map[string]any{
+		"kind":      string(StreamSubagentDone),
+		"toolUseId": toolUseID,
+		"info":      agentruntime.SubagentInfo{Status: status},
+	})
+	a.svc.reconcileBgRunningOnComplete(ctx, a.sess, toolUseID, a.stream)
+	return nil
+}
+
 // newTurnContext 构造每轮 turn 的 TurnContext。stream 由调用方填(每轮 chat
 // session 不同)。
 func (s *chatSvc) newTurnContext(
@@ -232,5 +265,6 @@ func (s *chatSvc) newTurnContext(
 		SessionUpdater:       sessionUpdaterAdapter{},
 		SessionTransitioner:  sessionTransitionerAdapter{svc: s},
 		Waits:                turn.NewWaitTracker(),
+		SubagentFlipper:      subagentFlipperAdapter{svc: s, sess: sess, stream: stream},
 	}
 }

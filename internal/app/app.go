@@ -50,7 +50,14 @@ type App struct {
 	terminalSvc      *terminal_svc.Service
 
 	// quitConfirmed 标记本次退出已被用户确认(或自动更新重启),OnBeforeClose 见到即放行。
-	quitConfirmed atomic.Bool
+	quitConfirmed   atomic.Bool
+	finalQuit       func(context.Context)
+	finalQuitOnce   sync.Once
+	forceExit       func(int)
+	forcedExitDelay time.Duration
+
+	shutdownCleanup func(context.Context)
+	shutdownOnce    sync.Once
 
 	lastImportPath   string
 	lastImportPathMu sync.Mutex
@@ -66,7 +73,15 @@ type AppInfo struct {
 
 // NewApp creates a new App application struct.
 func NewApp() *App {
-	return &App{}
+	a := &App{
+		finalQuit: func(ctx context.Context) {
+			wailsruntime.Quit(ctx)
+		},
+		forceExit:       os.Exit,
+		forcedExitDelay: 250 * time.Millisecond,
+	}
+	a.shutdownCleanup = a.cleanupResources
+	return a
 }
 
 var resetStaleActiveSessions = bootstrap.ResetStaleActiveSessions
@@ -167,6 +182,20 @@ func (a *App) resetStaleSessionsOnStartup(ctx context.Context) {
 
 // Shutdown is wired to wails OnShutdown.
 func (a *App) Shutdown(ctx context.Context) {
+	if !a.quitConfirmed.Load() {
+		a.shutdownCleanup(ctx)
+		return
+	}
+	a.shutdownOnce.Do(func() {
+		go a.shutdownCleanup(context.WithoutCancel(ctx))
+	})
+}
+
+// cleanupResources starts best-effort resource cleanup after Wails has accepted
+// the quit. Shutdown deliberately does not wait for this method: once the user
+// confirms quitting, a stuck external process or connection must not keep the
+// desktop process alive.
+func (a *App) cleanupResources(ctx context.Context) {
 	a.stopInboundPeer(ctx)
 	// 关闭全部出站对端中继连接（R19：本端退出即结束接入，对端会话不受影响）。
 	if err := a.PeerClose(); err != nil {
@@ -255,7 +284,15 @@ func shouldPreventQuit(ctx context.Context, confirmed bool,
 // which re-enters OnBeforeClose and is allowed through.
 func (a *App) ConfirmQuit() {
 	a.quitConfirmed.Store(true)
-	wailsruntime.Quit(a.ctx)
+	a.finalQuitOnce.Do(func() {
+		go func() {
+			time.Sleep(a.forcedExitDelay)
+			a.forceExit(0)
+		}()
+		go func() {
+			a.finalQuit(a.ctx)
+		}()
+	})
 }
 
 // registerChatService wires the chat service singleton with a real wails-runtime

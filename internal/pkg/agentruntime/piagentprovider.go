@@ -43,19 +43,22 @@ func PiAgentProviderEnvKey(providerKey string) string {
 
 // PiAgentProviderModelName 返回绑定供应商时的模型选择值 "agentre-<key>/<model>"。
 // provider 注册名与 --model 值都用原始 ProviderKey（UUID 形态）；Type 不可识别
-// 或 Model 为空返回 error（绑定保存时已拦截，此处兜底）。
-func PiAgentProviderModelName(p *llm_provider_entity.LLMProvider) (string, error) {
-	if p == nil {
-		return "", fmt.Errorf("agentruntime: provider is nil")
+// 或 ModelID 为空返回 error（绑定保存时已拦截，此处兜底）。
+//
+// cfg 是执行侧解析结果（EffectiveLLMConfig v1 seam）：模型 id 取解析出的 ModelID，
+// 不再从 Provider 旧单模型字段读取。
+func PiAgentProviderModelName(cfg *EffectiveLLMConfig) (string, error) {
+	if cfg == nil {
+		return "", fmt.Errorf("agentruntime: effective config is nil")
 	}
-	if _, ok := piProviderAPIByType(p.Type); !ok {
-		return "", fmt.Errorf("agentruntime: unsupported provider type %q", p.Type)
+	if _, ok := piProviderAPIByType(cfg.ProviderType); !ok {
+		return "", fmt.Errorf("agentruntime: unsupported provider type %q", cfg.ProviderType)
 	}
-	model := strings.TrimSpace(p.Model)
+	model := strings.TrimSpace(cfg.ModelID)
 	if model == "" {
 		return "", fmt.Errorf("agentruntime: provider model is empty")
 	}
-	return "agentre-" + p.ProviderKey + "/" + model, nil
+	return "agentre-" + cfg.ProviderKey + "/" + model, nil
 }
 
 // PiAgentProviderExtension 渲染注入 Pi 的 provider 扩展源码（纯文本 JS）：
@@ -63,49 +66,52 @@ func PiAgentProviderModelName(p *llm_provider_entity.LLMProvider) (string, error
 // 密钥本身绝不落入扩展源。contextWindow / maxTokens 为 0 时省略字段；
 // 每个 model 固定带 cost（全 0），避免绑定模型 id 与用户 ~/.pi/agent 撞名时
 // pi 0.83.0 模型合并崩溃（provider-composer.js applyModelOverride 读 model.cost.tiers）。
-func PiAgentProviderExtension(p *llm_provider_entity.LLMProvider) (string, error) {
-	if p == nil {
-		return "", fmt.Errorf("agentruntime: provider is nil")
+//
+// cfg 是执行侧解析结果（EffectiveLLMConfig v1 seam）：模型 id / 窗口 / 最大输出
+// 取解析值，Provider 名称 / BaseURL / Type 取连接信息。
+func PiAgentProviderExtension(cfg *EffectiveLLMConfig) (string, error) {
+	if cfg == nil {
+		return "", fmt.Errorf("agentruntime: effective config is nil")
 	}
-	api, ok := piProviderAPIByType(p.Type)
+	api, ok := piProviderAPIByType(cfg.ProviderType)
 	if !ok {
-		return "", fmt.Errorf("agentruntime: unsupported provider type %q", p.Type)
+		return "", fmt.Errorf("agentruntime: unsupported provider type %q", cfg.ProviderType)
 	}
-	model := strings.TrimSpace(p.Model)
+	model := strings.TrimSpace(cfg.ModelID)
 	if model == "" {
 		return "", fmt.Errorf("agentruntime: provider model is empty")
 	}
 
 	modelObj := fmt.Sprintf("{ id: %s, name: %s, reasoning: true, input: [\"text\",\"image\"]",
 		strconv.Quote(model), strconv.Quote(model))
-	if p.ContextWindow > 0 {
-		modelObj += fmt.Sprintf(", contextWindow: %d", p.ContextWindow)
+	if cfg.ContextWindow > 0 {
+		modelObj += fmt.Sprintf(", contextWindow: %d", cfg.ContextWindow)
 	}
-	if p.MaxOutput > 0 {
-		modelObj += fmt.Sprintf(", maxTokens: %d", p.MaxOutput)
+	if cfg.MaxOutput > 0 {
+		modelObj += fmt.Sprintf(", maxTokens: %d", cfg.MaxOutput)
 	}
 	modelObj += ", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }"
 
 	return fmt.Sprintf(
 		"export default function (pi) { pi.registerProvider(%s, { name: %s, baseUrl: %s, api: %s, apiKey: %s, models: [%s] }) }",
-		strconv.Quote("agentre-"+p.ProviderKey),
-		strconv.Quote(p.Name),
-		strconv.Quote(p.BaseURL),
+		strconv.Quote("agentre-"+cfg.ProviderKey),
+		strconv.Quote(cfg.ProviderName),
+		strconv.Quote(cfg.BaseURL),
 		strconv.Quote(api),
-		strconv.Quote("$"+PiAgentProviderEnvKey(p.ProviderKey)),
+		strconv.Quote("$"+PiAgentProviderEnvKey(cfg.ProviderKey)),
 		modelObj,
 	), nil
 }
 
 // BuildPiAgentProviderEnv 返回 base 的副本，并注入 provider 的 env 键 → APIKey，
 // 供子进程使用；不改入参 map。
-func BuildPiAgentProviderEnv(base map[string]string, p *llm_provider_entity.LLMProvider) map[string]string {
+func BuildPiAgentProviderEnv(base map[string]string, cfg *EffectiveLLMConfig) map[string]string {
 	out := make(map[string]string, len(base)+1)
 	for k, v := range base {
 		out[k] = v
 	}
-	if p != nil && p.ProviderKey != "" {
-		out[PiAgentProviderEnvKey(p.ProviderKey)] = p.APIKey
+	if cfg != nil && cfg.ProviderKey != "" {
+		out[PiAgentProviderEnvKey(cfg.ProviderKey)] = cfg.APIKey
 	}
 	return out
 }

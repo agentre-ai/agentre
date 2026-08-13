@@ -353,43 +353,14 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	//   - APIKey 由 daemon 本机 state 读取,不让 desktop 每个 turn 越线漂移;
 	//   - GatewayURL 是 daemon 本机 127.0.0.1:<port>,对 daemon spawn 的 CLI 子
 	//     进程可达;desktop 本机 URL 在 daemon 上拨不到。
-	var provider *llm_provider_entity.LLMProvider
-	// 会话级供应商选择(决策 9):wire 带 effectiveProviderKey(会话 provider_key 优先),
-	// daemon 按它自解,而不是只认 agent 绑定。缺省时回落 agent 绑定。
 	//
-	// 回退语义:会话 provider_key 在 daemon 缺失/非 active → 回退 agent 绑定(或
-	// CLI 登录态)执行,并回传 providerFallbackKey 信号,桌面端据此追加一条持久
-	// notice(与本地 Q3 一致);provider_key 不清除。effective key 就是 agent 绑定
-	// 时保持旧行为:缺失直接报 ErrProviderMissing(桌面端 remoteProviderKnownMissing
-	// 会先拦已知缺失的 agent 绑定)。
-	providerFallbackKey := ""
-	effectiveKey := strings.TrimSpace(p.LLMProviderKey)
-	if effectiveKey == "" {
-		effectiveKey = be.LLMProviderKey
-	}
-	if effectiveKey != "" && h.deps.Lookup != nil {
-		pv, err := h.deps.Lookup.FindByKey(ctx, effectiveKey)
-		if err == nil && pv != nil && pv.IsActive() {
-			provider = pv
-		} else if effectiveKey != be.LLMProviderKey {
-			// 会话 provider_key 缺失/非 active → 回退 agent 绑定(或 CLI 登录态)。
-			providerFallbackKey = effectiveKey
-			if be.LLMProviderKey != "" {
-				bpv, berr := h.deps.Lookup.FindByKey(ctx, be.LLMProviderKey)
-				if berr != nil {
-					return wire.RunAck{}, &rpc.Error{
-						Code:    rpc.ErrProviderMissing.Code,
-						Message: fmt.Sprintf("LLM provider %q not configured on remote daemon: %v", be.LLMProviderKey, berr),
-					}
-				}
-				provider = bpv
-			}
-		} else {
-			return wire.RunAck{}, &rpc.Error{
-				Code:    rpc.ErrProviderMissing.Code,
-				Message: fmt.Sprintf("LLM provider %q not configured on remote daemon: %v", effectiveKey, err),
-			}
-		}
+	// 会话级目标(决策 9/11):wire 带 effectiveProviderKey + LLMModelKey(会话
+	// provider_key/model_key 优先),daemon 按它们从自家目录自解。provider-default
+	// 的 Provider 缺失保留 #39 回退 agent 绑定;fixed-model 缺失/停用/Provider 缺失
+	// 一律严格阻止,绝不静默降级为默认模型(决策 7)。
+	provider, effective, providerFallbackKey, err := h.resolveTarget(ctx, p.LLMProviderKey, p.LLMModelKey, &be)
+	if err != nil {
+		return wire.RunAck{}, err
 	}
 
 	var gatewayURL, gatewayToken string
@@ -400,7 +371,7 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		// 没用上的也只是随 daemon 退出释放(有界)。
 		// 按解析出来的 provider 路由,而不是 be.LLMProviderKey:桌面端中途换了供应商时,
 		// 下一轮 wire 带的是新的 effective key,这条常驻 token 的上游要跟着变(决策 3/12)。
-		gatewayURL, gatewayToken, terr = h.ensureSessionToken(ctx, em.rid, &be, provider.ProviderKey)
+		gatewayURL, gatewayToken, terr = h.ensureSessionToken(ctx, em.rid, &be, provider.ProviderKey, effective.ModelKey)
 		if terr != nil {
 			return wire.RunAck{}, terr
 		}
@@ -418,6 +389,7 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	req := agentruntime.RunRequest{
 		Backend:           &be,
 		Provider:          provider,
+		Effective:         effective,
 		AgentID:           p.AgentID,
 		SessionID:         em.rid,
 		Cwd:               p.Cwd,
@@ -1402,7 +1374,7 @@ func (h *RuntimeHandlers) resolveGoalController(ctx context.Context, p wire.Goal
 	}
 	req.SessionID = runtimeSessionID(peer, req.SessionID)
 	if req.Backend != nil {
-		release, err := h.hydrateGoalProvider(ctx, &req)
+		release, err := h.hydrateGoalTarget(ctx, &req, p.LLMProviderKey, p.LLMModelKey)
 		if err != nil {
 			return nil, agentruntime.GoalRequest{}, func() {}, err
 		}
@@ -1425,21 +1397,23 @@ func (h *RuntimeHandlers) resolveGoalController(ctx context.Context, p wire.Goal
 	return g, req, func() {}, nil
 }
 
-func (h *RuntimeHandlers) hydrateGoalProvider(ctx context.Context, req *agentruntime.GoalRequest) (func(), error) {
+// hydrateGoalTarget 按 wire 的 effective target（决策 11：GoalParams 携带
+// ProviderKey+ModelKey，与 Run 同形）从 daemon 自家目录解析 provider + 执行侧配置，
+// 并签 gateway token。与 Run 走同一 resolveTarget：goal 与 turn 共用同一个 CLI
+// 会话池，两边解析不一致会让启动期比对键反复翻转。
+func (h *RuntimeHandlers) hydrateGoalTarget(
+	ctx context.Context, req *agentruntime.GoalRequest, wireProviderKey, wireModelKey string,
+) (func(), error) {
 	release := func() {}
-	if req.Backend == nil || req.Backend.LLMProviderKey == "" {
+	if req.Backend == nil {
 		return release, nil
 	}
-	if h.deps.Lookup != nil {
-		pv, err := h.deps.Lookup.FindByKey(ctx, req.Backend.LLMProviderKey)
-		if err != nil {
-			return release, &rpc.Error{
-				Code:    rpc.ErrProviderMissing.Code,
-				Message: fmt.Sprintf("LLM provider %q not configured on remote daemon: %v", req.Backend.LLMProviderKey, err),
-			}
-		}
-		req.Provider = pv
+	provider, effective, _, err := h.resolveTarget(ctx, wireProviderKey, wireModelKey, req.Backend)
+	if err != nil {
+		return release, err
 	}
+	req.Provider = provider
+	req.Effective = effective
 	if req.Provider != nil && h.deps.Gateway != nil {
 		req.GatewayURL = h.deps.Gateway.URL()
 		if req.GatewayURL != "" {
@@ -1514,6 +1488,104 @@ func (h *RuntimeHandlers) resolveSession(sid int64) (agentruntime.Runtime, error
 	return rt, nil
 }
 
+// resolveTarget 解析本轮执行目标（provider + 执行侧配置），决策 9/11。
+//
+// wireProviderKey / wireModelKey 是桌面端透传的 effective target（会话
+// provider_key/model_key 优先，未钉时回落 backend 绑定）。daemon 按它们从自家
+// 目录自解：
+//   - provider-default（modelKey 空）：Provider 缺失/非 active → 回退 agent 绑定
+//     （或 CLI 登录态）执行并回传 providerFallbackKey 信号；
+//   - fixed-model（modelKey 非空）：Provider 或 Model 缺失/停用/不支持 → 严格阻止，
+//     绝不静默降级为默认模型（决策 7/11）。
+//
+// 返回的 EffectiveLLMConfig 只在 provider 解析成功时非 nil；native（CLI 登录态）时
+// 为 nil，runtime 回落 CLI 自身模型。
+func (h *RuntimeHandlers) resolveTarget(
+	ctx context.Context, wireProviderKey, wireModelKey string, be *agent_backend_entity.AgentBackend,
+) (*llm_provider_entity.LLMProvider, *agentruntime.EffectiveLLMConfig, string, error) {
+	effectiveKey := strings.TrimSpace(wireProviderKey)
+	if effectiveKey == "" && be != nil {
+		effectiveKey = be.LLMProviderKey
+	}
+	// wire 的 model key 是桌面端按 sessionModelKeyFor 解析好的结果：会话钉了 provider 时
+	// 用会话 ModelKey（空 = provider-default），未钉（inherit-agent）时桌面端已回落
+	// backend 固定模型透传过来。会话是否钉住只有桌面端知道，daemon 不得再自行派生
+	// be.LLMModelKey —— 否则会话钉 provider-default（同 backend 绑定同家）会被 backend
+	// 固定模型带偏成 fixed-model，与本地路径 sessionModelKeyFor 的语义分叉（spec 决策 1）。
+	// 会话 provider 缺失回退 agent 绑定的情形在下方分支显式用 be.LLMModelKey。
+	modelKey := strings.TrimSpace(wireModelKey)
+	if effectiveKey == "" || h.deps.Lookup == nil {
+		return nil, nil, "", nil
+	}
+	pv, err := h.deps.Lookup.FindByKey(ctx, effectiveKey)
+	if err == nil && pv != nil && pv.IsActive() {
+		eff, merr := h.resolveEffectiveModel(ctx, pv, modelKey)
+		if merr != nil {
+			return nil, nil, "", merr
+		}
+		return pv, eff, "", nil
+	}
+	if modelKey != "" {
+		// fixed-model：Provider 缺失/非 active → 严格阻止，不降级、不回退。
+		return nil, nil, "", &rpc.Error{
+			Code:    rpc.ErrProviderMissing.Code,
+			Message: fmt.Sprintf("LLM provider %q not configured on remote daemon: %v", effectiveKey, err),
+		}
+	}
+	// provider-default：会话 key 缺失/非 active → 回退 agent 绑定（或 CLI 登录态）。
+	providerFallbackKey := effectiveKey
+	if be != nil && be.LLMProviderKey != "" && effectiveKey != be.LLMProviderKey {
+		bpv, berr := h.deps.Lookup.FindByKey(ctx, be.LLMProviderKey)
+		if berr != nil {
+			return nil, nil, "", &rpc.Error{
+				Code:    rpc.ErrProviderMissing.Code,
+				Message: fmt.Sprintf("LLM provider %q not configured on remote daemon: %v", be.LLMProviderKey, berr),
+			}
+		}
+		eff, merr := h.resolveEffectiveModel(ctx, bpv, be.LLMModelKey)
+		if merr != nil {
+			return nil, nil, "", merr
+		}
+		return bpv, eff, providerFallbackKey, nil
+	}
+	// effective key 就是 agent 绑定（或未绑定 CLI 登录态）：缺失直接报 ErrProviderMissing
+	//（桌面端 remoteProviderKnownMissing 会先拦已知缺失的 agent 绑定）；未绑定则回落 CLI 登录态。
+	if be == nil || be.LLMProviderKey == "" {
+		return nil, nil, providerFallbackKey, nil
+	}
+	return nil, nil, "", &rpc.Error{
+		Code:    rpc.ErrProviderMissing.Code,
+		Message: fmt.Sprintf("LLM provider %q not configured on remote daemon: %v", effectiveKey, err),
+	}
+}
+
+// resolveEffectiveModel 在已解析的 provider 之上解析执行侧配置（EffectiveLLMConfig
+// v1 seam）：provider-default 取当前默认模型，fixed-model 取指定模型。模型缺失/停用
+// 由 Lookup.ResolveModel 报错，这里原样透出（调用方据此严格阻止本轮）。
+func (h *RuntimeHandlers) resolveEffectiveModel(
+	ctx context.Context, provider *llm_provider_entity.LLMProvider, modelKey string,
+) (*agentruntime.EffectiveLLMConfig, error) {
+	mode := agentruntime.EffectiveModeProviderDefault
+	if strings.TrimSpace(modelKey) != "" {
+		mode = agentruntime.EffectiveModeFixedModel
+	}
+	eff, err := h.deps.Lookup.ResolveModel(ctx, provider.ProviderKey, modelKey)
+	if err != nil {
+		return nil, fmt.Errorf("resolve model for provider %q: %w", provider.ProviderKey, err)
+	}
+	return &agentruntime.EffectiveLLMConfig{
+		Mode:         mode,
+		ProviderKey:  provider.ProviderKey,
+		ModelKey:     eff.ModelKey,
+		ProviderType: provider.Type,
+		ProviderName: provider.Name,
+		ModelID:      eff.ModelID,
+		BaseURL:      provider.BaseURL,
+		APIKey:       provider.APIKey,
+		HasAPIKey:    provider.APIKey != "",
+	}, nil
+}
+
 // ensureSessionToken 返回某 session 的 gateway URL + 常驻 token:首轮签一个永久
 // (ttl=0)token 并缓存,后续轮复用同一个。该 token 在 spawn 时烤进 claude 子进程
 // env,子进程跨轮复用时 env 不重建,所以必须整段会话稳定且永不过期 —— 否则下一轮
@@ -1524,7 +1596,7 @@ func (h *RuntimeHandlers) resolveSession(sid int64) (agentruntime.Runtime, error
 // 首轮按它签发,之后每轮把既有 token 的路由目标对齐到它 —— 桌面端换供应商后,同一个
 // token 字符串继续有效,只是上游变了(决策 3/12)。
 func (h *RuntimeHandlers) ensureSessionToken(
-	ctx context.Context, sid int64, be *agent_backend_entity.AgentBackend, providerKey string,
+	ctx context.Context, sid int64, be *agent_backend_entity.AgentBackend, providerKey, modelKey string,
 ) (string, string, error) {
 	if h.deps.Gateway == nil {
 		return "", "", nil
@@ -1536,11 +1608,11 @@ func (h *RuntimeHandlers) ensureSessionToken(
 	if sid > 0 {
 		if v, ok := h.sessionTokens.Load(sid); ok {
 			tok := v.(string)
-			h.routeSessionToken(ctx, sid, tok, providerKey)
+			h.routeSessionToken(ctx, sid, tok, providerKey, modelKey)
 			return url, tok, nil
 		}
 	}
-	tok, err := h.deps.Gateway.IssueTokenFor(ctx, be, providerKey, 0)
+	tok, err := h.deps.Gateway.IssueTokenFor(ctx, be, providerKey, modelKey, 0)
 	if err != nil {
 		return "", "", fmt.Errorf("gateway token: %w", err)
 	}
@@ -1554,11 +1626,11 @@ func (h *RuntimeHandlers) ensureSessionToken(
 	return url, tok, nil
 }
 
-// routeSessionToken 把会话常驻 token 的路由目标对齐到本轮的供应商;token 字符串不变,
-// 已烤进子进程 env 的那份继续可用。真的换了才记一条日志;找不到 entry = gateway 重启过
+// routeSessionToken 把会话常驻 token 的路由目标对齐到本轮的 ModelTarget;token 字符串
+// 不变,已烤进子进程 env 的那份继续可用。真的换了才记一条日志;找不到 entry = gateway 重启过
 // (token 表只在内存里),子进程手里那个也已失效,记 warn 供排查。
-func (h *RuntimeHandlers) routeSessionToken(ctx context.Context, sid int64, token, providerKey string) {
-	previous, ok := h.deps.Gateway.SetTokenProvider(token, providerKey)
+func (h *RuntimeHandlers) routeSessionToken(ctx context.Context, sid int64, token, providerKey, modelKey string) {
+	previous, ok := h.deps.Gateway.SetTokenTarget(token, providerKey, modelKey)
 	if !ok {
 		logger.Ctx(ctx).Warn("handlers.routeSessionToken: session token missing from gateway",
 			zap.Int64("sessionId", sid),

@@ -5,15 +5,15 @@ import (
 	"gorm.io/gorm"
 )
 
-// migration202608110001 落地 R14 的本端执行目标顺序覆盖：agent_exec_target_overrides。
+// migration202608130001 落地 R14 的本端执行目标顺序覆盖：agent_exec_target_overrides。
 //
 // 这是一张**纯本地**表：每台桌面端各自持一份，一个 Agent 至多一行，存该 Agent 执行
 // 目标档 backend 的顺序（order_json，JSON 数组）。它不同步、不进同步队列、不上行 ——
 // 顺序是机器相关的偏好，账号级只同步 agent_exec_targets 那份默认顺序。本迁移只建表，
 // 不回填：没有覆盖 = 用账号默认，是新装与升级两端的同一初始态。
-func migration202608110001() *gormigrate.Migration {
+func migration202608130001() *gormigrate.Migration {
 	return &gormigrate.Migration{
-		ID: "202608110001",
+		ID: "202608130001",
 		Migrate: func(tx *gorm.DB) error {
 			if err := tx.Exec(`CREATE TABLE IF NOT EXISTS agent_exec_target_overrides (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,

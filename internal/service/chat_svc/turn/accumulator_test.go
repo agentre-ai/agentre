@@ -112,6 +112,45 @@ func TestAccumulator_HasToolUse(t *testing.T) {
 	})
 }
 
+func TestAccumulator_HasOpenToolUse(t *testing.T) {
+	Convey("没有任何 tool_use 时不算有在途工具", t, func() {
+		acc := New()
+		acc.AddText("hi")
+		So(acc.HasOpenToolUse(), ShouldBeFalse)
+	})
+
+	Convey("tool_use 还没等到 tool_result 时算在途", t, func() {
+		acc := New()
+		acc.AddToolUse(&cagoblocks.ToolUseBlock{ID: "tu-1", Name: "Bash"}, "tool_use:tu-1")
+		So(acc.HasOpenToolUse(), ShouldBeTrue)
+	})
+
+	Convey("配对上 tool_result 后不再算在途", t, func() {
+		acc := New()
+		acc.AddToolUse(&cagoblocks.ToolUseBlock{ID: "tu-1", Name: "Bash"}, "tool_use:tu-1")
+		acc.AddToolResult(&cagoblocks.ToolResultBlock{ToolUseID: "tu-1"})
+		So(acc.HasOpenToolUse(), ShouldBeFalse)
+	})
+
+	Convey("并行工具:只要还有一个没配对就算在途", t, func() {
+		acc := New()
+		acc.AddToolUse(&cagoblocks.ToolUseBlock{ID: "tu-1", Name: "Bash"}, "tool_use:tu-1")
+		acc.AddToolUse(&cagoblocks.ToolUseBlock{ID: "tu-2", Name: "Bash"}, "tool_use:tu-2")
+		acc.AddToolResult(&cagoblocks.ToolResultBlock{ToolUseID: "tu-1"})
+		So(acc.HasOpenToolUse(), ShouldBeTrue)
+		acc.AddToolResult(&cagoblocks.ToolResultBlock{ToolUseID: "tu-2"})
+		So(acc.HasOpenToolUse(), ShouldBeFalse)
+	})
+
+	Convey("subagent 内层 tool_use 不算外层在途(它的结果不走外层配对)", t, func() {
+		acc := New()
+		acc.AddToolUse(&blocks.NestedToolUseBlock{
+			ID: "n-1", Name: "Bash", ParentToolCallID: "tu-parent",
+		}, "tool_use:n-1")
+		So(acc.HasOpenToolUse(), ShouldBeFalse)
+	})
+}
+
 func TestAccumulator_AddToolResult_NoTextFlush(t *testing.T) {
 	Convey("AddToolResult 不 flush textBuf(tool_use→tool_result 之间无文字)", t, func() {
 		acc := New()

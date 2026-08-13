@@ -41,8 +41,12 @@ const appMocks = vi.hoisted(() => ({
   GetChatLaunchCommand: vi.fn(),
   GetChatGoal: vi.fn(),
   ListLLMProviders: vi.fn().mockResolvedValue({ items: [] }),
+  ListLLMModels: vi.fn().mockResolvedValue({ items: [] }),
   LoadChatSession: vi.fn(),
+  RemoteDeviceList: vi.fn().mockResolvedValue([]),
+  RemoteDeviceListProviders: vi.fn().mockResolvedValue([]),
   SetChatSessionProvider: vi.fn(),
+  SetChatSessionModelTarget: vi.fn(),
   MarkChatSessionRead: vi.fn().mockResolvedValue({}),
   RegenerateChatMessage: vi.fn(),
   RenameChatSession: vi.fn(),
@@ -388,6 +392,10 @@ function resetStore() {
   appMocks.ResolveLocalCommandScope.mockImplementation(
     () => new Promise(() => undefined),
   );
+  appMocks.RemoteDeviceList.mockReset();
+  appMocks.RemoteDeviceList.mockResolvedValue([]);
+  appMocks.RemoteDeviceListProviders.mockReset();
+  appMocks.RemoteDeviceListProviders.mockResolvedValue([]);
   appMocks.TerminalClose.mockReset();
   appMocks.TerminalRunCommand.mockReset();
   localCommandRuntimeStore.resetForTesting();
@@ -907,7 +915,7 @@ describe("ChatPanel · 跳转控件按转录行计数 (R14 修复轮)", () => {
     }
   }
 
-  it("Given a two-minute outage while one long reply streamed, When the catch-up replays 1206 notifications that land in three new transcript rows, Then the control says three", () => {
+  it("Given a two-minute outage while one long reply streamed, When the catch-up replays 1212 notifications that land in two new transcript rows, Then the control says two", () => {
     resetStore();
     streamingSession([]);
     const view = render(
@@ -921,13 +929,15 @@ describe("ChatPanel · 跳转控件按转录行计数 (R14 修复轮)", () => {
     act(() => {
       replayDeltas(1_200);
       replayToolRoundTrips(["t1", "t2", "t3"]);
+      replayDeltas(6);
     });
     act(() => {
-      recordCatchUp(42, 1_206, 0); // 补齐落定那一发
+      recordCatchUp(42, 1_212, 0); // 补齐落定那一发
     });
 
-    // 转录区多出的是「一段文字 + 三张工具卡」,占位行被文字行顶掉 —— 净增三行。
-    expect(digitsIn(screen.getByTestId("jump-to-latest-button"))).toBe("3");
+    // 转录区多出的是「一段文字 + 一个活动块(三次连续调用聚合成一行) + 一段
+    // 文字」,占位行被第一段文字顶掉 —— 净增两行。1212 条通知不是那个数字。
+    expect(digitsIn(screen.getByTestId("jump-to-latest-button"))).toBe("2");
   });
 
   // 补齐可以只是把内容追加进**已经存在**的那一行(还在流的助手消息吃掉全部 delta)。
@@ -2858,6 +2868,8 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
           providerKey: "acme-anthropic",
           name: "Acme Claude",
           type: "anthropic",
+          enabled: true,
+          defaultModelKey: "",
           model: "claude-sonnet-4-5",
         },
       ],
@@ -2883,7 +2895,9 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
     const user = userEvent.setup();
     await user.click(pill);
     await user.click(
-      within(screen.getByRole("listbox")).getByText("Acme Claude"),
+      within(screen.getByRole("listbox")).getByRole("option", {
+        name: /Acme Claude/,
+      }),
     );
 
     const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
@@ -2913,6 +2927,8 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
           providerKey: "acme-anthropic",
           name: "Acme Claude",
           type: "anthropic",
+          enabled: true,
+          defaultModelKey: "",
           model: "claude-sonnet-4-5",
         },
       ],
@@ -2973,6 +2989,8 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
           providerKey: "acme-anthropic",
           name: "Acme",
           type: "anthropic",
+          enabled: true,
+          defaultModelKey: "",
           model: "claude-sonnet-4-5",
         },
       ],
@@ -3007,7 +3025,7 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
     );
   });
 
-  it("已有会话选中供应商：调用 SetChatSessionProvider(sessionId, providerKey) 并 reload 会话以取新的切换 notice", async () => {
+  it("已有会话选中供应商：调用 SetChatSessionModelTarget(sessionId, providerKey, modelKey) 并 reload 会话以取新的切换 notice", async () => {
     resetStore();
     appMocks.ListLLMProviders.mockClear();
     appMocks.ListLLMProviders.mockResolvedValue({
@@ -3017,13 +3035,17 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
           providerKey: "acme-anthropic",
           name: "Acme",
           type: "anthropic",
+          enabled: true,
+          defaultModelKey: "",
           model: "claude-sonnet-4-5",
         },
       ],
     });
-    appMocks.SetChatSessionProvider.mockResolvedValue({
+    appMocks.SetChatSessionModelTarget.mockResolvedValue({
       providerKey: "acme-anthropic",
+      modelKey: "",
       agentProviderKey: "",
+      agentModelKey: "",
     });
     reloadSpy.mockClear();
     mockSessionStore.session = makeSession({
@@ -3038,12 +3060,15 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
 
     const user = userEvent.setup();
     await user.click(pill);
-    await user.click(within(screen.getByRole("listbox")).getByText("Acme"));
+    await user.click(
+      within(screen.getByRole("listbox")).getByRole("option", { name: /Acme/ }),
+    );
 
     await waitFor(() => {
-      expect(appMocks.SetChatSessionProvider).toHaveBeenCalledWith({
+      expect(appMocks.SetChatSessionModelTarget).toHaveBeenCalledWith({
         sessionId: 42,
         providerKey: "acme-anthropic",
+        modelKey: "",
       });
     });
     await waitFor(() => expect(reloadSpy).toHaveBeenCalled());
@@ -4790,6 +4815,45 @@ describe("ChatPanel · 新会话 tab 输入守卫（非可对话 Agent）", () =
     expect(screen.queryByTestId("new-session-guard")).toBeNull();
     const composer = componentMocks.chatComposerProps.at(-1);
     expect(composer?.disabled).toBeFalsy();
+  });
+});
+
+describe("ChatPanel · 远端 ModelTarget Picker 门控（gap 1：ProviderPill 接收 daemon 目录/能力）", () => {
+  it("Given 会话绑定了远端设备, When 渲染 composer, Then ProviderPill 按该设备拉取 daemon 目录/能力做远端门控", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({
+      id: 42,
+      deviceID: "7",
+      backendType: "claudecode",
+    });
+    appMocks.RemoteDeviceList.mockResolvedValue([
+      { id: 7, name: "Build box", online: true, supportsLLMModelTarget: false },
+    ]);
+    appMocks.RemoteDeviceListProviders.mockResolvedValue([]);
+
+    render(<ChatPanel sessionId={42} />);
+
+    await waitFor(() => {
+      expect(appMocks.RemoteDeviceList).toHaveBeenCalled();
+      expect(appMocks.RemoteDeviceListProviders).toHaveBeenCalledWith(7);
+    });
+  });
+
+  it("Given 本机会话（无设备）, When 渲染 composer, Then ProviderPill 不拉远端目录（无远端门控）", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({
+      id: 42,
+      deviceID: "",
+      backendType: "claudecode",
+    });
+
+    render(<ChatPanel sessionId={42} />);
+
+    await waitFor(() => {
+      expect(componentMocks.chatComposerProps.length).toBeGreaterThan(0);
+    });
+    expect(appMocks.RemoteDeviceList).not.toHaveBeenCalled();
+    expect(appMocks.RemoteDeviceListProviders).not.toHaveBeenCalled();
   });
 });
 

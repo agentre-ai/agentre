@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -558,10 +559,17 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 		cur = nil
 	}
 
-	// 模型是启动期 flag:effectiveModel(provider.Model / backend.DefaultModel)变化 →
+	// 模型是启动期 flag:effectiveModel(解析出的 ModelID / backend.DefaultModel)变化 →
 	// evict + 重 spawn(镜像上面 launchedEffort 先例)。模型未变则走下方复用分支,LRU
 	// 缓存保留。#26 会话级 override 已移除,effectiveModel 不再含 override。
 	if cur != nil && cur.launchedModel != claudeEffectiveModel(req) {
+		r.cache.Remove(key)
+		cur = nil
+	}
+
+	// ModelKey is part of the approved launch identity even when two stable
+	// Model rows currently resolve to the same upstream ModelID.
+	if cur != nil && cur.launchedModelKey != effectiveModelKey(req) {
 		r.cache.Remove(key)
 		cur = nil
 	}
@@ -659,6 +667,7 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 		poolKey:             key,
 		launchedEffort:      req.Backend.ReasoningEffort,
 		launchedModel:       claudeEffectiveModel(req),
+		launchedModelKey:    effectiveModelKey(req),
 		launchedProviderKey: req.EffectiveProviderKey(),
 		permissionMode:      runtimeMode,
 		tasks:               newTaskAggregator(),
@@ -669,6 +678,13 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 	}
 	cur.inTurn.Store(true)
 	return cur, resolvedLaunchMode, nil
+}
+
+func effectiveModelKey(req agentruntime.RunRequest) string {
+	if req.Effective == nil {
+		return ""
+	}
+	return strings.TrimSpace(req.Effective.ModelKey)
 }
 
 // drainStream 把 claudecode.Event 翻成 sealed agentruntime.Event;同步累 usage

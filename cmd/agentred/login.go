@@ -79,7 +79,7 @@ func newLoginCmd() *cobra.Command {
 			return nil
 		},
 		platform: runtime.GOOS,
-		version:  "dev",
+		version:  agentredBuildIdentity(),
 	})
 }
 
@@ -204,6 +204,9 @@ func login(cmd *cobra.Command, deps loginDeps, st *state.State, serverURL string
 		AccessTokenExpiresAt:  now.Add(time.Duration(token.ExpiresIn) * time.Second).Unix(),
 		RefreshToken:          token.RefreshToken,
 		RefreshTokenExpiresAt: now.Add(time.Duration(token.RefreshExpiresIn) * time.Second).Unix(),
+	})
+	st.Mutate(func(current *state.State) {
+		current.HubServerURL = serverURL
 	})
 	if err := st.Save(); err != nil {
 		return fmt.Errorf("save account claim: %w", err)

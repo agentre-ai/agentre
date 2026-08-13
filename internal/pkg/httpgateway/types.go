@@ -45,19 +45,19 @@ type TokenIssuer interface {
 	Status() GatewayStatus
 }
 
-// TokenRouter 是 chat flow 用的网关口：在 TokenIssuer 之上多出「按会话有效供应商路由」
-// 的两件能力（决策 3）——
-//   - IssueTokenFor：按本轮的 effective provider（会话 provider_key > agent 绑定）签发；
-//   - SetTokenProvider：**不换 token 字符串**地改既有 token 的路由目标。
+// TokenRouter 是 chat flow 用的网关口：在 TokenIssuer 之上多出「按会话有效 ModelTarget 路由」
+// 的两件能力（决策 3/9）——
+//   - IssueTokenFor：按本轮的 effective ProviderKey+ModelKey（会话 > agent 绑定）签发；
+//   - SetTokenTarget：**不换 token 字符串**地改既有 token 的路由目标。
 //
 // 之所以是会话切换的唯一手段：token 是会话级常驻、首轮就烤进 CLI 子进程 env 的，重签会
 // 让在跑的子进程立刻 401（被修过的事故）。*Gateway 自然满足本接口。
 type TokenRouter interface {
 	TokenIssuer
 	IssueTokenFor(
-		ctx context.Context, backend *agent_backend_entity.AgentBackend, providerKey string, ttl time.Duration,
+		ctx context.Context, backend *agent_backend_entity.AgentBackend, providerKey, modelKey string, ttl time.Duration,
 	) (token string, err error)
-	SetTokenProvider(token, providerKey string) (previous string, ok bool)
+	SetTokenTarget(token, providerKey, modelKey string) (previous string, ok bool)
 }
 
 // Lifecycle 给 app_settings_svc 用：查状态、重启、注册 MCP handler。

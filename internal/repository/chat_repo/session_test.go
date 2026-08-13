@@ -281,9 +281,9 @@ func TestSessionRepo_Create(t *testing.T) {
 	mock.ExpectExec("INSERT INTO `chat_sessions`").
 		WithArgs(
 			int64(7), "draft", "idle", int64(0), int64(0), "", // agent_id, title, agent_status, last_message_at, last_read_at, provider_session_id
-			int64(0),      // project_id
-			"",            // purpose
-			0, "", "", "", // context_window, permission_mode, permission_mode_at_launch, provider_key
+			int64(0),          // project_id
+			"",                // purpose
+			0, "", "", "", "", // context_window, permission_mode, permission_mode_at_launch, provider_key, model_key
 			int64(0), "", int64(0), // exec_device_id, exec_daemon_fingerprint, event_cursor —— 新建会话默认本机执行、无游标
 			int64(0),                                          // exec_agent_backend_id —— 新建会话默认未钉住任何一档
 			consts.ACTIVE, sqlmock.AnyArg(), sqlmock.AnyArg(), // status, createtime, updatetime
@@ -653,63 +653,84 @@ func TestSessionRepo_UpdateKeepsExecAgentBackendID(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestSessionRepo_UpdateProviderKey 钉死会话级供应商切换的写入 SQL(2026-08-10 决策 1):
-// 只动 provider_key(+ updatetime),不能顺带把并发轮次正在写的状态列一起盖掉 ——
-// 切换允许在轮中发生,整行 Save 在这里是错的。
-func TestSessionRepo_UpdateProviderKey(t *testing.T) {
+// TestSessionRepo_UpdateModelTarget 钉死会话级 ModelTarget 切换的写入 SQL(spec
+// 2026-08-11 决策 1):provider_key 与 model_key 两条在**同一条** UPDATE 语句里原子写入,
+// 只动这两列(+ updatetime),不能顺带把并发轮次正在写的状态列一起盖掉 —— 切换允许在轮
+// 中发生,整行 Save 在这里是错的。
+func TestSessionRepo_UpdateModelTarget(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 	repo := chat_repo.NewSession()
 
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE `chat_sessions` SET `provider_key`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
-		WithArgs("anthropic-main", sqlmock.AnyArg(), int64(42), consts.ACTIVE).
+	mock.ExpectExec("UPDATE `chat_sessions` SET `model_key`=\\?,`provider_key`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
+		WithArgs("mk-haiku", "anthropic-main", sqlmock.AnyArg(), int64(42), consts.ACTIVE).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	require.NoError(t, repo.UpdateProviderKey(ctx, 42, "anthropic-main"))
+	require.NoError(t, repo.UpdateModelTarget(ctx, 42, "anthropic-main", "mk-haiku"))
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestSessionRepo_UpdateProviderKeyClears 空串 = 改回「跟随 agent 绑定」,同一条语句
-// 照常写入(不是 no-op,也不走 gorm 的零值跳过)。
-func TestSessionRepo_UpdateProviderKeyClears(t *testing.T) {
+// TestSessionRepo_UpdateModelTargetDefault 空 providerKey = 改回「跟随 agent 绑定」
+// (inherit-agent),modelKey 一并清空,同一条语句照常写入(不是 no-op,也不走 gorm 的
+// 零值跳过)。
+func TestSessionRepo_UpdateModelTargetDefault(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 	repo := chat_repo.NewSession()
 
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE `chat_sessions` SET `provider_key`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
-		WithArgs("", sqlmock.AnyArg(), int64(42), consts.ACTIVE).
+	mock.ExpectExec("UPDATE `chat_sessions` SET `model_key`=\\?,`provider_key`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
+		WithArgs("", "", sqlmock.AnyArg(), int64(42), consts.ACTIVE).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	require.NoError(t, repo.UpdateProviderKey(ctx, 42, ""))
+	require.NoError(t, repo.UpdateModelTarget(ctx, 42, "", ""))
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestSessionRepo_UpdateKeepsProviderKey 回归(2026-08-10 决策 1/8):供应商切换允许
-// 发生在轮中,而轮次收尾的整行 Save 用的是**轮次开始时**读出的那份实体 —— 那会儿
-// provider_key 还是旧值。provider_key 若不在 Update 的 Omit 清单里,收尾就会把用户
-// 刚切好的供应商悄悄冲回去,下一轮又打回旧供应商(症状与 R12 的执行位置被抹平同形)。
+// TestSessionRepo_UpdateModelTargetProviderDefault 非空 providerKey + 空 modelKey =
+// provider-default(每轮解析该 Provider 当前默认模型)。model_key 仍显式写空串,不能靠
+// gorm 零值跳过(那会让它保留旧值,把用户刚切回 provider-default 的会话留在固定模型上)。
+func TestSessionRepo_UpdateModelTargetProviderDefault(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	repo := chat_repo.NewSession()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions` SET `model_key`=\\?,`provider_key`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
+		WithArgs("", "anthropic-main", sqlmock.AnyArg(), int64(42), consts.ACTIVE).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.UpdateModelTarget(ctx, 42, "anthropic-main", ""))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSessionRepo_UpdateKeepsModelTarget 回归(spec 2026-08-11 决策 1/2):ModelTarget
+// 切换允许发生在轮中,而轮次收尾的整行 Save 用的是**轮次开始时**读出的那份实体 —— 那
+// 会儿 provider_key / model_key 还是旧值。这两列若不在 Update 的 Omit 清单里,收尾就
+// 会把用户刚切好的 target 悄悄冲回去,下一轮又打回旧目标(症状与 R12 的执行位置被抹平
+// 同形)。
 //
 // 断言落在「这一行最后是什么」,而不是某条语句长什么样:缺陷出在两次写之间的相互作用。
-func TestSessionRepo_UpdateKeepsProviderKey(t *testing.T) {
+func TestSessionRepo_UpdateKeepsModelTarget(t *testing.T) {
 	ctx, gdb, mock := testutils.Database(t)
 	repo := chat_repo.NewSession()
 
 	row := map[string]any{
 		"agent_status": "running",
 		"provider_key": "old-provider",
+		"model_key":    "old-model",
 	}
 	captureUpdatedRow(t, gdb, row)
 
-	// 轮次开始时读出来的实体:带的是切换前的供应商。
-	sess := &chat_entity.Session{ID: 42, AgentStatus: "running", Status: consts.ACTIVE, ProviderKey: "old-provider"}
+	// 轮次开始时读出来的实体:带的是切换前的 target。
+	sess := &chat_entity.Session{ID: 42, AgentStatus: "running", Status: consts.ACTIVE, ProviderKey: "old-provider", ModelKey: "old-model"}
 
-	// 写 1:轮中用户切到另一个供应商(chat_svc.SetChatSessionProvider)。
+	// 写 1:轮中用户切到另一个 target(chat_svc.SetChatSessionModelTarget)。
 	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE `chat_sessions`").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
-	require.NoError(t, repo.UpdateProviderKey(ctx, 42, "new-provider"))
+	require.NoError(t, repo.UpdateModelTarget(ctx, 42, "new-provider", "new-model"))
 
 	// 写 2:running → idle 收尾,用的是上面那份**没跟着变**的内存实体。
 	sess.AgentStatus = "idle"
@@ -719,6 +740,7 @@ func TestSessionRepo_UpdateKeepsProviderKey(t *testing.T) {
 	require.NoError(t, repo.Update(ctx, sess))
 
 	assert.Equal(t, "new-provider", row["provider_key"], "收尾不得把轮中切好的会话供应商冲回旧值")
+	assert.Equal(t, "new-model", row["model_key"], "收尾不得把轮中切好的会话模型冲回旧值")
 	assert.Equal(t, "idle", row["agent_status"], "收尾本来要写的状态照常落库")
 	require.NoError(t, mock.ExpectationsWereMet())
 }

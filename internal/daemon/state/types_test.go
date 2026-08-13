@@ -13,6 +13,7 @@ func TestState_JSONRoundTrip(t *testing.T) {
 	in := &State{
 		SchemaVersion:      1,
 		DaemonInstanceUUID: "8f3a9c2b",
+		HubServerURL:       "https://hub.example",
 		Listen: ListenPrefs{
 			LanHost:     "0.0.0.0",
 			LanPort:     7456,
@@ -93,12 +94,46 @@ func TestState_AccountClaimRoundTripStoresOnlyOpaqueAccountData(t *testing.T) {
 	assert.Equal(t, in.Credential, out.Credential)
 }
 
+// TestState_LLMModelCatalogRoundTrip 钉死 task 6 多模型目录的持久化：Provider 名下
+// 保存 DefaultModelKey + Models（稳定 key + 实际 model id + 启用态），APIKey 仍只存
+// Provider 级、不进模型行。
+func TestState_LLMModelCatalogRoundTrip(t *testing.T) {
+	in := &State{
+		SchemaVersion:      1,
+		DaemonInstanceUUID: "daemon-uuid",
+		LLMProviders: map[string]LLMProviderMeta{
+			"prov-1": { //nolint:gosec // credential-shaped API key is a test fixture.
+				Name:            "Anthropic Prod",
+				Type:            "anthropic",
+				APIKey:          "sk-ant-secret",
+				Model:           "claude-sonnet-4-6",
+				DefaultModelKey: "model-1",
+				Models: []LLMModelMeta{
+					{ModelKey: "model-1", ModelID: "claude-sonnet-4-6", Name: "Sonnet", Enabled: true},
+					{ModelKey: "model-2", ModelID: "claude-opus-4-5", Enabled: true},
+					{ModelKey: "model-3", ModelID: "claude-haiku-gone", Enabled: false},
+				},
+				UpdatedAt: 1716000500,
+			},
+		},
+	}
+	b, err := json.Marshal(in)
+	require.NoError(t, err)
+
+	var out State
+	require.NoError(t, json.Unmarshal(b, &out))
+	require.Equal(t, in, &out)
+	assert.Len(t, out.LLMProviders["prov-1"].Models, 3)
+	assert.Equal(t, "model-1", out.LLMProviders["prov-1"].DefaultModelKey)
+}
+
 func TestState_DefaultsAreSane(t *testing.T) {
 	s := NewDefault("uuid-x")
 	assert.Equal(t, 1, s.SchemaVersion)
 	assert.Equal(t, "uuid-x", s.DaemonInstanceUUID)
 	assert.Equal(t, "0.0.0.0", s.Listen.LanHost)
 	assert.Equal(t, 7456, s.Listen.LanPort)
+	assert.Empty(t, s.HubServerURL)
 	assert.Equal(t, "info", s.Preferences.LogLevel)
 	assert.Equal(t, 300, s.Preferences.PairingCodeTTLSeconds)
 	assert.Equal(t, 3, s.Preferences.PairingRateLimit.MaxAttemptsPerIP)

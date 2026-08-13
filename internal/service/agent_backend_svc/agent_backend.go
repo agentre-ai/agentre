@@ -18,6 +18,7 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
 	"github.com/agentre-ai/agentre/internal/pkg/keychain"
@@ -169,13 +170,18 @@ func (s *agentBackendSvc) create(ctx context.Context, req *CreateBackendRequest,
 	if req == nil {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
+	routes, err := marshalRouteTargets(req.ModelRoutes)
+	if err != nil {
+		return nil, i18n.NewError(ctx, code.AgentBackendUnknownAlias)
+	}
 	now := s.now()
 	b := &agent_backend_entity.AgentBackend{
 		Type:                  strings.TrimSpace(req.Type),
 		Name:                  strings.TrimSpace(req.Name),
 		LLMProviderKey:        strings.TrimSpace(req.LLMProviderKey),
+		LLMModelKey:           strings.TrimSpace(req.LLMModelKey),
 		CLIPath:               strings.TrimSpace(req.CLIPath),
-		ModelRoutes:           strings.TrimSpace(req.ModelRoutes),
+		ModelRoutes:           routes,
 		Sandbox:               strings.TrimSpace(req.Sandbox),
 		Approval:              strings.TrimSpace(req.Approval),
 		EnvJSON:               strings.TrimSpace(req.EnvJSON),
@@ -289,8 +295,13 @@ func (s *agentBackendSvc) update(ctx context.Context, req *UpdateBackendRequest,
 
 	existing.Name = newName
 	existing.LLMProviderKey = strings.TrimSpace(req.LLMProviderKey)
+	existing.LLMModelKey = strings.TrimSpace(req.LLMModelKey)
 	existing.CLIPath = strings.TrimSpace(req.CLIPath)
-	existing.ModelRoutes = strings.TrimSpace(req.ModelRoutes)
+	routes, err := marshalRouteTargets(req.ModelRoutes)
+	if err != nil {
+		return nil, i18n.NewError(ctx, code.AgentBackendUnknownAlias)
+	}
+	existing.ModelRoutes = routes
 	existing.Sandbox = strings.TrimSpace(req.Sandbox)
 	existing.Approval = strings.TrimSpace(req.Approval)
 	existing.EnvJSON = strings.TrimSpace(req.EnvJSON)
@@ -457,7 +468,7 @@ func (s *agentBackendSvc) test(ctx context.Context, req *TestBackendRequest, tra
 		deps.Token = tok
 		deps.GatewayURL = s.gateway.URL()
 		if matchedProvider != nil {
-			deps.Model = matchedProvider.Model
+			deps.Model = providerDefaultModelID(ctx, matchedProvider)
 		}
 	}
 
@@ -802,8 +813,17 @@ func (s *agentBackendSvc) resolveBackendForTest(ctx context.Context, req *TestBa
 	if strings.TrimSpace(req.LLMProviderKey) != "" {
 		out.LLMProviderKey = strings.TrimSpace(req.LLMProviderKey)
 	}
+	if strings.TrimSpace(req.LLMModelKey) != "" {
+		out.LLMModelKey = strings.TrimSpace(req.LLMModelKey)
+	}
+	if req.ModelRoutes != nil {
+		r, err := marshalRouteTargets(req.ModelRoutes)
+		if err != nil {
+			return nil, err
+		}
+		out.ModelRoutes = r
+	}
 	out.CLIPath = strings.TrimSpace(req.CLIPath)
-	out.ModelRoutes = strings.TrimSpace(req.ModelRoutes)
 	out.Sandbox = strings.TrimSpace(req.Sandbox)
 	out.Approval = strings.TrimSpace(req.Approval)
 	out.EnvJSON = strings.TrimSpace(req.EnvJSON)
@@ -903,12 +923,60 @@ func (s *agentBackendSvc) requireMatchingProvider(ctx context.Context, b *agent_
 	if !kind.ProviderTypeMatch(llm_provider_entity.ProviderType(p.Type)) {
 		return nil, i18n.NewError(ctx, code.AgentBackendProviderTypeMismatch)
 	}
-	// piagent 绑定时必须能通过 --model agentre-<key>/<model> 命中该供应商下的模型，
-	// 因此要求 provider.Model 非空；其它 kind（builtin / claudecode / codex）不要求。
-	if kind.RequiresProviderModel() && strings.TrimSpace(p.Model) == "" {
+	// fixed-model（ModelKey 非空）：只接受该 Provider 名下启用且类型兼容的模型。
+	if strings.TrimSpace(b.LLMModelKey) != "" {
+		if _, err := s.requireOwnedEnabledModel(ctx, p, b.LLMModelKey); err != nil {
+			return nil, err
+		}
+	}
+	// piagent 绑定时必须能通过 --model agentre-<key>/<model> 命中该供应商下的模型：
+	// provider-default 要求当前能解析出非空的启用默认模型；fixed-model 已在上面校验。
+	if kind.RequiresProviderModel() &&
+		strings.TrimSpace(b.LLMModelKey) == "" &&
+		providerDefaultModelID(ctx, p) == "" {
 		return nil, i18n.NewError(ctx, code.AgentBackendProviderModelRequired)
 	}
 	return p, nil
+}
+
+// requireOwnedEnabledModel 校验固定模型目标：存在、启用且属于该 Provider。
+// ModelKey 为空返回 (nil, nil)。
+func (s *agentBackendSvc) requireOwnedEnabledModel(
+	ctx context.Context,
+	p *llm_provider_entity.LLMProvider,
+	modelKey string,
+) (*llm_provider_model_entity.LLMProviderModel, error) {
+	if strings.TrimSpace(modelKey) == "" {
+		return nil, nil
+	}
+	m, err := llm_provider_repo.LLMProvider().FindModelByKey(ctx, modelKey)
+	if err != nil {
+		return nil, err
+	}
+	if m == nil {
+		return nil, i18n.NewError(ctx, code.LLMProviderModelNotFound)
+	}
+	if m.ProviderID != p.ID {
+		return nil, i18n.NewError(ctx, code.LLMProviderModelNotOwned)
+	}
+	if !m.IsEnabled() {
+		return nil, i18n.NewError(ctx, code.LLMProviderModelDisabled)
+	}
+	return m, nil
+}
+
+// providerDefaultModelID 按 provider-default 语义返回 Provider 当前可执行的默认模型 ID。
+// 与 llm_provider_svc.ResolveTarget 的默认分支同一规则：Provider 未启用、未配置默认模型、
+// 或默认模型缺失 / 停用时返回空串。只取 ModelID，不透出 BaseURL / APIKey 等凭证。
+func providerDefaultModelID(ctx context.Context, p *llm_provider_entity.LLMProvider) string {
+	if p == nil || !p.IsEnabled() || !p.HasDefaultModel() {
+		return ""
+	}
+	m, err := llm_provider_repo.LLMProvider().FindModelByKey(ctx, p.DefaultModelKey)
+	if err != nil || m == nil || !m.IsEnabled() {
+		return ""
+	}
+	return m.ModelID
 }
 
 func (s *agentBackendSvc) validateRouteProviders(ctx context.Context, b *agent_backend_entity.AgentBackend) error {
@@ -923,13 +991,21 @@ func (s *agentBackendSvc) validateRouteProviders(ctx context.Context, b *agent_b
 	if kind == nil {
 		return i18n.NewError(ctx, code.AgentBackendInvalidType)
 	}
-	for _, providerKey := range routes {
-		p, err := llm_provider_repo.LLMProvider().FindByKey(ctx, providerKey)
+	for _, route := range routes {
+		if strings.TrimSpace(route.ProviderKey) == "" {
+			return i18n.NewError(ctx, code.AgentBackendAliasProviderInvalid)
+		}
+		p, err := llm_provider_repo.LLMProvider().FindByKey(ctx, route.ProviderKey)
 		if err != nil {
 			return err
 		}
 		if p == nil || !p.IsActive() || !kind.ProviderTypeMatch(llm_provider_entity.ProviderType(p.Type)) {
 			return i18n.NewError(ctx, code.AgentBackendAliasProviderInvalid)
+		}
+		if strings.TrimSpace(route.ModelKey) != "" {
+			if _, err := s.requireOwnedEnabledModel(ctx, p, route.ModelKey); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -943,8 +1019,9 @@ func (s *agentBackendSvc) toItem(ctx context.Context, b *agent_backend_entity.Ag
 		Type:                  b.Type,
 		Name:                  b.Name,
 		LLMProviderKey:        b.LLMProviderKey,
+		LLMModelKey:           b.LLMModelKey,
 		CLIPath:               b.CLIPath,
-		ModelRoutes:           b.ModelRoutes,
+		ModelRoutes:           routeTargetsFromEntity(b.ModelRoutes),
 		Sandbox:               b.Sandbox,
 		Approval:              b.Approval,
 		EnvJSON:               b.EnvJSON,
@@ -968,7 +1045,7 @@ func (s *agentBackendSvc) toItem(ctx context.Context, b *agent_backend_entity.Ag
 	if p != nil {
 		item.LLMProviderName = p.Name
 		item.LLMProviderType = p.Type
-		item.LLMProviderModel = p.Model
+		item.LLMProviderModel = s.effectiveModelID(ctx, b, p)
 		item.LLMProviderActive = p.IsActive()
 	}
 	if legacyID, ok := b.DeviceIDInt(); ok && remote_device_svc.Default() != nil {
@@ -981,6 +1058,52 @@ func (s *agentBackendSvc) toItem(ctx context.Context, b *agent_backend_entity.Ag
 		item.Online = dv.Online
 	}
 	return item
+}
+
+// marshalRouteTargets 把服务层 DTO 的 RouteTarget map 序列化回 entity 的持久化字符串。
+func marshalRouteTargets(routes map[string]RouteTarget) (string, error) {
+	if len(routes) == 0 {
+		return "{}", nil
+	}
+	entity := make(map[string]agent_backend_entity.ModelRouteTarget, len(routes))
+	for k, v := range routes {
+		entity[k] = agent_backend_entity.ModelRouteTarget{
+			ProviderKey: v.ProviderKey,
+			ModelKey:    v.ModelKey,
+		}
+	}
+	return agent_backend_entity.MarshalModelRoutes(entity)
+}
+
+// routeTargetsFromEntity 把 entity 的持久化字符串解析回服务层类型化 RouteTarget。
+// 解析失败返回空 map（展示侧容忍脏数据）。
+func routeTargetsFromEntity(s string) map[string]RouteTarget {
+	routes, err := agent_backend_entity.ParseModelRoutes(s)
+	if err != nil {
+		return map[string]RouteTarget{}
+	}
+	out := make(map[string]RouteTarget, len(routes))
+	for k, v := range routes {
+		out[k] = RouteTarget{ProviderKey: v.ProviderKey, ModelKey: v.ModelKey}
+	}
+	return out
+}
+
+// effectiveModelID 返回后端解析出的实际模型 ID（展示口径）：fixed-model 取指定模型，
+// 否则取 Provider 当前默认模型。只取 ModelID，不透出凭证。
+func (s *agentBackendSvc) effectiveModelID(ctx context.Context, b *agent_backend_entity.AgentBackend, p *llm_provider_entity.LLMProvider) string {
+	if b == nil || p == nil || !p.IsEnabled() {
+		return ""
+	}
+	key := strings.TrimSpace(b.LLMModelKey)
+	if key != "" {
+		m, err := llm_provider_repo.LLMProvider().FindModelByKey(ctx, key)
+		if err != nil || m == nil || !m.IsEnabled() || m.ProviderID != p.ID {
+			return ""
+		}
+		return m.ModelID
+	}
+	return providerDefaultModelID(ctx, p)
 }
 
 func (s *agentBackendSvc) secretStore() keychain.Keychain {

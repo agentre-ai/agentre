@@ -18,6 +18,8 @@ type NoticeBlock = {
   text?: string;
   providerKey?: string;
   providerName?: string;
+  modelKey?: string;
+  modelName?: string;
   noticeKind?: string;
 };
 
@@ -134,6 +136,38 @@ describe("transcript notice block", () => {
     expect(
       screen.getByText(i18n.t("chat.notice.providerSwitch.followAgentBinding")),
     ).toBeInTheDocument();
+  });
+
+  it("renders a provider-switch notice 固定模型（noticeKind=switch + modelKey/modelName）走 fixed-model 文案", () => {
+    // spec 2026-08-11 决策 1：切换 notice 扩展 modelKey/modelName 负载；fixed-model 切换
+    // 时 transcript 要读得出「固定到哪个模型」，而不是只剩供应商名。
+    renderRow(
+      noticeRow({
+        providerKey: "acme-anthropic",
+        providerName: "Acme",
+        modelKey: "mk-haiku",
+        modelName: "Claude Haiku",
+        noticeKind: "switch",
+      }),
+    );
+
+    expect(
+      screen.getByText(
+        i18n.t("chat.notice.providerSwitch.fixedModel", {
+          provider: "Acme",
+          model: "Claude Haiku",
+        }),
+      ),
+    ).toBeInTheDocument();
+    // 不能掉回只有供应商名的旧文案，也不能泄漏裸 key。
+    expect(
+      screen.queryByText(
+        i18n.t("chat.notice.providerSwitch.sentence", {
+          provider: "Acme",
+        }),
+      ),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/mk-haiku/)).not.toBeInTheDocument();
   });
 
   it("renders a provider-switch notice 优先显示供应商展示名而非裸 key（决策 1）", () => {

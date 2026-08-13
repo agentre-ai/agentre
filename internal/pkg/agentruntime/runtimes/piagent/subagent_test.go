@@ -485,6 +485,47 @@ func TestSubagentTracker_ResultBeforeCallAndFinalRecovery(t *testing.T) {
 	assert.Equal(t, "completed", info.Runs[0].Status)
 }
 
+func TestSubagentTracker_PartialErrorDoesNotFinishActiveRun(t *testing.T) {
+	inv, ok := classifySubagentInvocation([]byte(`{"task":"inspect","profile":"write"}`))
+	require.True(t, ok)
+	tracker := newSubagentTracker("outer", inv)
+
+	// Given an incremental snapshot that reports a broken model-response stream
+	// while the outer subagent tool is still active, when the tracker consumes it,
+	// then the diagnostic is retained without publishing a terminal run status.
+	_, changed := tracker.consumeUpdate([]byte(`{"details":{"messages":[
+		{"role":"assistant","content":[{"type":"toolCall","id":"first","name":"edit","arguments":{}}],"stopReason":"toolUse"}
+	],"errorMessage":"OpenAI Responses stream ended before a terminal response event"}}`))
+	require.True(t, changed)
+	info := tracker.info()
+	assert.Equal(t, "running", info.Status)
+	assert.Equal(t, "running", info.Runs[0].Status)
+	assert.Equal(t, "OpenAI Responses stream ended before a terminal response event", info.Runs[0].ErrorMessage)
+
+	// And when later incremental child activity arrives, then it remains attached
+	// to the running subagent rather than continuing beneath a failed card.
+	events, changed := tracker.consumeUpdate([]byte(`{"details":{"messages":[
+		{"role":"assistant","content":[{"type":"toolCall","id":"first","name":"edit","arguments":{}}],"stopReason":"toolUse"},
+		{"role":"toolResult","toolCallId":"first","content":[{"type":"text","text":"ok"}]},
+		{"role":"assistant","content":[{"type":"toolCall","id":"second","name":"bash","arguments":{}}],"stopReason":"toolUse"}
+	],"errorMessage":"OpenAI Responses stream ended before a terminal response event"}}`))
+	require.True(t, changed)
+	require.Len(t, events, 2)
+	assert.Equal(t, "running", tracker.info().Status)
+	assert.Equal(t, 2, tracker.info().ToolUses)
+
+	// When the same error reaches the real outer final boundary, then the run is
+	// settled as failed because the subagent invocation has actually completed.
+	_, changed = tracker.consumeFinal([]byte(`{"messages":[
+		{"role":"assistant","content":[{"type":"toolCall","id":"first","name":"edit","arguments":{}}],"stopReason":"toolUse"},
+		{"role":"toolResult","toolCallId":"first","content":[{"type":"text","text":"ok"}]},
+		{"role":"assistant","content":[{"type":"toolCall","id":"second","name":"bash","arguments":{}}],"stopReason":"toolUse"}
+	],"errorMessage":"OpenAI Responses stream ended before a terminal response event"}`), true, "OpenAI Responses stream ended before a terminal response event")
+	require.True(t, changed)
+	assert.Equal(t, "failed", tracker.info().Status)
+	assert.Equal(t, "failed", tracker.info().Runs[0].Status)
+}
+
 func TestSubagentTracker_UsageFeedsPerRunAndAggregateTotalTokens(t *testing.T) {
 	t.Run("flat single snapshots report usage in real time", func(t *testing.T) {
 		inv, ok := classifySubagentInvocation([]byte(`{"task":"inspect","profile":"read-only"}`))

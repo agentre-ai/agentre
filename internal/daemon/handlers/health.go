@@ -22,7 +22,10 @@ type HealthPingResult struct {
 	InstanceUUID string                 `json:"instanceUUID"`
 	ServerTimeMs int64                  `json:"serverTimeMs"`
 	Providers    []wire.ProviderSummary `json:"providers,omitempty"`
-	DBSizeBytes  int64                  `json:"dbSizeBytes,omitempty"`
+	// Capabilities 是这台 daemon 公布的能力位（决策 11）。
+	// 至少含 wire.CapLLMModelTargetV1：桌面端据它决定是否允许选择远端 fixed-model。
+	Capabilities []string `json:"capabilities,omitempty"`
+	DBSizeBytes  int64    `json:"dbSizeBytes,omitempty"`
 }
 
 // HealthHandlers groups health.* RPC methods.
@@ -39,16 +42,24 @@ func NewHealthHandlers(instanceUUID string, st *state.State, dbStat DBStatPort) 
 }
 
 // Ping 无副作用心跳；watcher 用它判活 + 推 last_seen_at。
-// 顺带返回 daemon 已配置的 LLM provider 列表（key + name + type），
-// 让 desktop watcher 渲染 "provider synced" 状态，无需单独 RPC。
+// 顺带返回 daemon 已配置的 LLM provider 目录（含每 Provider 的非敏感模型摘要与
+// llm-model-target-v1 能力位），让 desktop watcher 渲染远端可选项与同步状态，无需单独 RPC。
 func (h *HealthHandlers) Ping(_ context.Context) (HealthPingResult, error) {
 	snap := h.state.Snapshot()
 	providers := make([]wire.ProviderSummary, 0, len(snap.LLMProviders))
 	for k, v := range snap.LLMProviders {
+		var models []wire.ModelSummary //nolint:prealloc // 保持无模型时 nil，避免空目录序列化成 []
+		for _, m := range v.Models {
+			models = append(models, wire.ModelSummary{
+				Key: m.ModelKey, ModelID: m.ModelID, Name: m.Name, Enabled: m.Enabled,
+			})
+		}
 		providers = append(providers, wire.ProviderSummary{
-			Key:  k,
-			Name: v.Name,
-			Type: v.Type,
+			Key:             k,
+			Name:            v.Name,
+			Type:            v.Type,
+			DefaultModelKey: v.DefaultModelKey,
+			Models:          models,
 		})
 	}
 	sort.Slice(providers, func(i, j int) bool {
@@ -58,6 +69,7 @@ func (h *HealthHandlers) Ping(_ context.Context) (HealthPingResult, error) {
 		InstanceUUID: h.instanceUUID,
 		ServerTimeMs: time.Now().UnixMilli(),
 		Providers:    providers,
+		Capabilities: []string{wire.CapLLMModelTargetV1},
 	}
 	if h.dbStat != nil {
 		res.DBSizeBytes = h.dbStat.DBStat().SizeBytes

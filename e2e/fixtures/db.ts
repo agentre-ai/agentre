@@ -1,14 +1,16 @@
 import { DatabaseSync } from "node:sqlite";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// The e2e temp data dir. AGENTRE_DATA_DIR is set by playwright.config.ts (in every process,
-// incl. workers); fall back to the same deterministic path for safety. Exported so specs that
-// need to touch the filesystem directly (e.g. seeding a real git repo under
-// <dataDir>/agents/<agentID>/, mirroring internal/pkg/agentruntime/cwd.go's AgentCwd) share the
-// exact same root the Go backend resolves via internal/pkg/paths.AppDataDir().
+import { resolveTarget } from "../lib/target.mjs";
+
+// The isolated data dir of this checkout's `fake` target. AGENTRE_DATA_DIR is set by
+// playwright.config.ts (in every process, incl. workers); the fallback resolves the same target
+// rather than a hardcoded path, so the oracle can never end up reading a directory no app wrote.
+// Exported so specs that need to touch the filesystem directly (e.g. seeding a real git repo
+// under <dataDir>/agents/<agentID>/, mirroring internal/pkg/agentruntime/cwd.go's AgentCwd)
+// share the exact same root the Go backend resolves via internal/pkg/paths.AppDataDir().
 export const e2eDataDir = () =>
-  process.env.AGENTRE_DATA_DIR ?? join(tmpdir(), "agentre-e2e-data");
+  process.env.AGENTRE_DATA_DIR ?? resolveTarget("fake").dataDir;
 
 const dbPath = () => join(e2eDataDir(), "agentre.db");
 

@@ -347,9 +347,12 @@ func TestToChatMessage_NoticeBlockProjectionDecodesProviderSwitch(t *testing.T) 
 		text         string
 		providerKey  string
 		providerName string
+		modelKey     string
+		modelName    string
 	}{
-		{name: "切到某个供应商", text: encodeProviderSwitch("key-99", "中转 · GLM 5.2"), providerKey: "key-99", providerName: "中转 · GLM 5.2"},
-		{name: "切回跟随 agent 绑定", text: encodeProviderSwitch("", ""), providerKey: "", providerName: ""},
+		{name: "切到某个供应商(provider-default)", text: encodeProviderSwitch("key-99", "", "中转 · GLM 5.2", ""), providerKey: "key-99", providerName: "中转 · GLM 5.2"},
+		{name: "切到 fixed-model", text: encodeProviderSwitch("key-99", "mk-haiku", "中转 · GLM 5.2", "GLM 5.2"), providerKey: "key-99", providerName: "中转 · GLM 5.2", modelKey: "mk-haiku", modelName: "GLM 5.2"},
+		{name: "切回跟随 agent 绑定", text: encodeProviderSwitch("", "", "", ""), providerKey: "", providerName: ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -365,6 +368,8 @@ func TestToChatMessage_NoticeBlockProjectionDecodesProviderSwitch(t *testing.T) 
 			assert.Equal(t, "switch", cm.Blocks[0].NoticeKind, "前端据此选切换文案而非回退文案")
 			assert.Equal(t, tc.providerKey, cm.Blocks[0].ProviderKey)
 			assert.Equal(t, tc.providerName, cm.Blocks[0].ProviderName, "展示名随投影透传给前端")
+			assert.Equal(t, tc.modelKey, cm.Blocks[0].ModelKey, "固定模型 key 随投影透传给前端")
+			assert.Equal(t, tc.modelName, cm.Blocks[0].ModelName, "固定模型展示名随投影透传给前端")
 			assert.Empty(t, cm.Blocks[0].Text, "结构化负载不把原始 JSON 泄漏给前端")
 		})
 	}

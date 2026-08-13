@@ -17,6 +17,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"github.com/agentre-ai/agentre/internal/pkg/cliprober"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/service/llm_provider_svc"
 )
 
 // proberFor 按 backend 类型查 Prober；未注册返 nil。
@@ -56,6 +57,16 @@ func (builtinProber) Run(ctx context.Context, b *agent_backend_entity.AgentBacke
 	if p == nil || !p.IsActive() {
 		return "", errors.New("llm provider missing or inactive")
 	}
+	// 执行侧模型解析（EffectiveLLMConfig v1 seam）：与 chat run 同一口径（sessionModelKeyFor）——
+	// backend 钉了固定模型（b.LLMModelKey）时测固定模型，否则 provider-default 解析当前默认模型；
+	// 不再读 Provider 旧单模型字段。测试连接必须测这条 backend 真正会跑的那个模型。
+	resolved, err := llm_provider_svc.LLMProvider().ResolveTarget(ctx, llm_provider_svc.ModelTarget{
+		ProviderKey: p.ProviderKey,
+		ModelKey:    strings.TrimSpace(b.LLMModelKey),
+	})
+	if err != nil {
+		return "", err
+	}
 	prov, err := providerBuilder(p)
 	if err != nil {
 		return "", err
@@ -67,9 +78,9 @@ func (builtinProber) Run(ctx context.Context, b *agent_backend_entity.AgentBacke
 	}
 	defer func() { _ = os.RemoveAll(cwd) }()
 
-	// 必须把 LLMProvider.Model 透传到父 agent，否则 ChatStream req.Model 为空，
+	// 必须把解析出的 ModelID 透传到父 agent，否则 ChatStream req.Model 为空，
 	// anthropic / openai 收到空 model 直接 400，呈现"200ms 完成但没调用记录"的假象。
-	sys, err := coding.New(ctx, prov, cwd, coding.WithModel(p.Model))
+	sys, err := coding.New(ctx, prov, cwd, coding.WithModel(resolved.ModelID))
 	if err != nil {
 		return "", err
 	}
@@ -168,15 +179,38 @@ func buildPiAgentProviderProbe(ctx context.Context, b *agent_backend_entity.Agen
 	if strings.TrimSpace(p.APIKey) == "" {
 		return nil, env, model, fmt.Errorf("llm provider %q has empty APIKey", p.ProviderKey)
 	}
-	extPath, err := piagent.MaterializeProviderExtension(p)
+	// 执行侧模型解析（EffectiveLLMConfig v1 seam）：与 chat run 同一口径（sessionModelKeyFor）——
+	// backend 钉了固定模型（b.LLMModelKey）时测固定模型，否则 provider-default 解析当前默认模型；
+	// 测试连接必须测这条 backend 真正会跑的那个模型。
+	resolved, err := llm_provider_svc.LLMProvider().ResolveTarget(ctx, llm_provider_svc.ModelTarget{
+		ProviderKey: p.ProviderKey,
+		ModelKey:    strings.TrimSpace(b.LLMModelKey),
+	})
 	if err != nil {
 		return nil, env, model, err
 	}
-	providerModel, err := agentruntime.PiAgentProviderModelName(p)
+	cfg := &agentruntime.EffectiveLLMConfig{
+		Mode:          agentruntime.EffectiveModeProviderDefault,
+		ProviderKey:   resolved.ProviderKey,
+		ModelKey:      resolved.ModelKey,
+		ProviderType:  resolved.ProviderType,
+		ProviderName:  p.Name,
+		ModelID:       resolved.ModelID,
+		ContextWindow: resolved.ContextWindow,
+		MaxOutput:     resolved.MaxOutput,
+		BaseURL:       resolved.BaseURL,
+		APIKey:        resolved.APIKey,
+		HasAPIKey:     resolved.HasAPIKey,
+	}
+	extPath, err := piagent.MaterializeProviderExtension(cfg)
 	if err != nil {
 		return nil, env, model, err
 	}
-	return []string{extPath}, agentruntime.BuildPiAgentProviderEnv(env, p), providerModel, nil
+	providerModel, err := agentruntime.PiAgentProviderModelName(cfg)
+	if err != nil {
+		return nil, env, model, err
+	}
+	return []string{extPath}, agentruntime.BuildPiAgentProviderEnv(env, cfg), providerModel, nil
 }
 
 func buildPiAgentProbeModel(*agent_backend_entity.AgentBackend) string {

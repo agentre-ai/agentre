@@ -8,6 +8,7 @@ import "sync"
 type State struct {
 	SchemaVersion            int                        `json:"schemaVersion"`
 	DaemonInstanceUUID       string                     `json:"daemonInstanceUUID"`
+	HubServerURL             string                     `json:"hubServerURL,omitempty"`
 	Listen                   ListenPrefs                `json:"listen"`
 	PairedPeers              map[string]PairedPeer      `json:"pairedPeers"`
 	LLMProviders             map[string]LLMProviderMeta `json:"llmProviders"`
@@ -45,6 +46,16 @@ type PairedPeer struct {
 	LastSeenAt  int64  `json:"lastSeenAt"`
 }
 
+// LLMModelMeta 是 daemon 侧保存的 Provider 名下一条模型的非敏感元数据（task 6 多模型）。
+// ModelKey 稳定不可变（跨实体引用），ModelID 是执行时发给上游的实际模型 id。
+// Enabled=false 表示该模型不可用于执行。
+type LLMModelMeta struct {
+	ModelKey string `json:"modelKey"`
+	ModelID  string `json:"modelId"`
+	Name     string `json:"name,omitempty"`
+	Enabled  bool   `json:"enabled,omitempty"`
+}
+
 type LLMProviderMeta struct {
 	Name        string            `json:"name"`
 	Type        string            `json:"type"`
@@ -52,7 +63,12 @@ type LLMProviderMeta struct {
 	APIKey      string            `json:"apiKey"`
 	Model       string            `json:"model"`
 	ModelRoutes map[string]string `json:"modelRoutes"`
-	UpdatedAt   int64             `json:"updatedAt"`
+	// DefaultModelKey 是该 Provider 当前默认模型的稳定 key（task 6 多模型）。
+	// 空 = 无默认模型。provider-default 解析要求默认模型存在且启用，否则按配置损坏
+	// 严格阻止（见 ProviderLookup.ResolveModel），不回落旧单模型字段。
+	DefaultModelKey string         `json:"defaultModelKey,omitempty"`
+	Models          []LLMModelMeta `json:"models,omitempty"`
+	UpdatedAt       int64          `json:"updatedAt"`
 }
 
 // AccountCredential is the daemon's refreshable account credential. It

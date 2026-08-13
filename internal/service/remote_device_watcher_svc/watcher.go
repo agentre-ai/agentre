@@ -182,6 +182,8 @@ func (w *Watcher) heartbeat(ctx context.Context, c *client.Client, row *paired_a
 				InstanceUUID string            `json:"instanceUUID"`
 				ServerTimeMs int64             `json:"serverTimeMs"`
 				Providers    []ProviderSummary `json:"providers,omitempty"`
+				// Capabilities 是 daemon 公布的能力位（决策 11：llm-model-target-v1）。
+				Capabilities []string `json:"capabilities,omitempty"`
 			}
 			err := c.Call(cctx, "health.ping", nil, &res)
 			cancel()
@@ -196,6 +198,7 @@ func (w *Watcher) heartbeat(ctx context.Context, c *client.Client, row *paired_a
 			_ = w.repo.UpdateLastSeen(context.Background(), w.deviceID, w.clock.NowMs(), "")
 			if w.recorder != nil {
 				w.recorder.RecordDeviceProviders(w.deviceID, res.Providers)
+				w.recorder.RecordDeviceCapabilities(w.deviceID, res.Capabilities)
 			}
 			// online 状态持续:不再 emit,避免事件风暴
 		}

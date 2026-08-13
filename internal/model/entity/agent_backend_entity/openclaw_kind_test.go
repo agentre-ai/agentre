@@ -63,6 +63,7 @@ func TestOpenClawBackendKind(t *testing.T) {
 		apply func(*AgentBackend)
 	}{
 		{name: "llm provider", apply: func(b *AgentBackend) { b.LLMProviderKey = "provider" }},
+		{name: "llm model key", apply: func(b *AgentBackend) { b.LLMModelKey = "model-key" }},
 		{name: "cli path", apply: func(b *AgentBackend) { b.CLIPath = "/usr/bin/openclaw" }},
 		{name: "model routes", apply: func(b *AgentBackend) { b.ModelRoutes = `{"OPUS":"provider"}` }},
 		{name: "sandbox", apply: func(b *AgentBackend) { b.Sandbox = "workspace-write" }},

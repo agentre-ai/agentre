@@ -99,6 +99,36 @@ func TestLoginCompletesDeviceFlowAndPersistsOpaqueAccountClaim(t *testing.T) {
 	assert.Equal(t, "refresh-token", got.Credential.RefreshToken)
 	assert.NotZero(t, got.Credential.AccessTokenExpiresAt)
 	assert.NotZero(t, got.Credential.RefreshTokenExpiresAt)
+	assert.Equal(t, server.URL, got.HubServerURL, "successful login must persist the server used by service startup")
+}
+
+func TestGivenInjectedBuildIdentityWhenLoginAuthorizesThenRegistersSameIdentity(t *testing.T) {
+	setAgentredBuildIdentityForTest(t, "v1.2.3", "abcdef1234567890")
+
+	dir := t.TempDir()
+	t.Setenv("AGENTRED_DATA_DIR", dir)
+	var registeredVersion string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/oauth/device/authorize", r.URL.Path)
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		registeredVersion, _ = body["version"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer server.Close()
+
+	cmd := newLoginCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--server", server.URL})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid response")
+	assert.Equal(t, "v1.2.3 (abcdef1)", registeredVersion)
+	got, loadErr := state.Load(dir)
+	require.NoError(t, loadErr)
+	assert.Empty(t, got.HubServerURL, "failed login must not replace persisted runtime configuration")
 }
 
 func TestLoginRejectsAlreadyClaimedDaemonWithoutNetwork(t *testing.T) {

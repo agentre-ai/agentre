@@ -14,14 +14,18 @@ type OK struct {
 
 // LLMUpsertParams is the request payload for llm.upsert.
 type LLMUpsertParams struct {
-	ProviderKey string            `json:"providerKey"`
-	Name        string            `json:"name"`
-	Type        string            `json:"type"`
-	BaseURL     string            `json:"baseURL"`
-	Model       string            `json:"model"`
-	APIKey      string            `json:"apiKey"`
-	ModelRoutes map[string]string `json:"modelRoutes"`
-	UpdatedAt   int64             `json:"updatedAt"`
+	ProviderKey string `json:"providerKey"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	BaseURL     string `json:"baseURL"`
+	Model       string `json:"model"`
+	// DefaultModelKey / Models 是 task 6 多模型同步：Provider 默认模型稳定 key + 模型目录。
+	// APIKey 只在这次显式同步里随行（规格：向远端复制凭证必须用户显式确认）。
+	DefaultModelKey string               `json:"defaultModelKey,omitempty"`
+	Models          []state.LLMModelMeta `json:"models,omitempty"`
+	APIKey          string               `json:"apiKey"`
+	ModelRoutes     map[string]string    `json:"modelRoutes"`
+	UpdatedAt       int64                `json:"updatedAt"`
 }
 
 // LLMDeleteParams is the request payload for llm.delete.
@@ -36,14 +40,17 @@ type LLMListResult struct {
 
 // LLMProviderRow is one entry in LLMListResult. The raw API key never appears here.
 type LLMProviderRow struct {
-	ProviderKey string            `json:"providerKey"`
-	Name        string            `json:"name"`
-	Type        string            `json:"type"`
-	BaseURL     string            `json:"baseURL"`
-	Model       string            `json:"model"`
-	MaskedTail  string            `json:"maskedTail"`
-	UpdatedAt   int64             `json:"updatedAt"`
-	ModelRoutes map[string]string `json:"modelRoutes,omitempty"`
+	ProviderKey string `json:"providerKey"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	BaseURL     string `json:"baseURL"`
+	Model       string `json:"model"`
+	// 非敏感多模型目录，供 desktop 渲染远端可选项。
+	DefaultModelKey string               `json:"defaultModelKey,omitempty"`
+	Models          []state.LLMModelMeta `json:"models,omitempty"`
+	MaskedTail      string               `json:"maskedTail"`
+	UpdatedAt       int64                `json:"updatedAt"`
+	ModelRoutes     map[string]string    `json:"modelRoutes,omitempty"`
 }
 
 // LLMHandlers groups the llm.* RPC methods.
@@ -72,13 +79,15 @@ func (h *LLMHandlers) Upsert(ctx context.Context, p LLMUpsertParams) (OK, error)
 	}
 	h.st.Mutate(func(s *state.State) {
 		s.LLMProviders[p.ProviderKey] = state.LLMProviderMeta{
-			Name:        p.Name,
-			Type:        p.Type,
-			BaseURL:     p.BaseURL,
-			APIKey:      p.APIKey,
-			Model:       p.Model,
-			ModelRoutes: p.ModelRoutes,
-			UpdatedAt:   p.UpdatedAt,
+			Name:            p.Name,
+			Type:            p.Type,
+			BaseURL:         p.BaseURL,
+			APIKey:          p.APIKey,
+			Model:           p.Model,
+			DefaultModelKey: p.DefaultModelKey,
+			Models:          p.Models,
+			ModelRoutes:     p.ModelRoutes,
+			UpdatedAt:       p.UpdatedAt,
 		}
 	})
 	if err := h.st.Save(); err != nil {
@@ -99,14 +108,16 @@ func (h *LLMHandlers) List(_ context.Context) (LLMListResult, error) {
 	out := make([]LLMProviderRow, 0, len(snap.LLMProviders))
 	for key, m := range snap.LLMProviders {
 		out = append(out, LLMProviderRow{
-			ProviderKey: key,
-			Name:        m.Name,
-			Type:        m.Type,
-			BaseURL:     m.BaseURL,
-			Model:       m.Model,
-			MaskedTail:  maskedTail(m.APIKey),
-			UpdatedAt:   m.UpdatedAt,
-			ModelRoutes: m.ModelRoutes,
+			ProviderKey:     key,
+			Name:            m.Name,
+			Type:            m.Type,
+			BaseURL:         m.BaseURL,
+			Model:           m.Model,
+			DefaultModelKey: m.DefaultModelKey,
+			Models:          m.Models,
+			MaskedTail:      maskedTail(m.APIKey),
+			UpdatedAt:       m.UpdatedAt,
+			ModelRoutes:     m.ModelRoutes,
 		})
 	}
 	return LLMListResult{Providers: out}, nil

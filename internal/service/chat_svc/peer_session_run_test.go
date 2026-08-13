@@ -17,6 +17,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/project_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
@@ -79,8 +80,14 @@ func TestRunPeerSession_GivenUnknownSession_ThenCreatesFreshDesktopSessionAndRun
 		ID: 12, Type: "builtin", LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
-	}, nil)
+		ID: 21, ProviderKey: "key-21", Type: string(llm_provider_entity.TypeAnthropic),
+		Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", Status: consts.ACTIVE,
+	}, nil).AnyTimes()
+	m.provider.EXPECT().FindModelByKey(gomock.Any(), "mk-key-21").Return(
+		&llm_provider_model_entity.LLMProviderModel{
+			ProviderID: 21, ModelKey: "mk-key-21", ModelID: "claude-sonnet-4-6",
+			Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE,
+		}, nil).AnyTimes()
 
 	fp := providertest.New().
 		QueueStream(
@@ -221,8 +228,14 @@ func TestRunPeerSession_GivenExistingSession_ThenContinuesThatSession(t *testing
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil).AnyTimes()
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+		ID: 21, ProviderKey: "key-21", Type: string(llm_provider_entity.TypeAnthropic),
+		Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", Status: consts.ACTIVE,
 	}, nil).AnyTimes()
+	m.provider.EXPECT().FindModelByKey(gomock.Any(), "mk-key-21").Return(
+		&llm_provider_model_entity.LLMProviderModel{
+			ProviderID: 21, ModelKey: "mk-key-21", ModelID: "claude-sonnet-4-6",
+			Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE,
+		}, nil).AnyTimes()
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	m.dbMock.ExpectBegin()

@@ -60,9 +60,29 @@ Agentre gives that workflow one desktop home. Each **Agent** has a role, avatar,
 
 ## Remote Execution
 
-Agentre includes `agentred`, a companion daemon for running sessions on another Linux or macOS machine on your LAN.
+Agentre uses `agentred`, a companion daemon for running sessions on another macOS, Linux, or Windows machine on your LAN. Released builds are available for amd64 and arm64.
 
-1. Open **Settings → Remote devices** and pair an `agentred` daemon.
+Install the latest release on macOS or Linux:
+
+```bash
+curl -fsSL https://github.com/agentre-ai/agentre/releases/latest/download/install.sh | sh
+agentred --version
+agentred service install --start
+agentred service status
+```
+
+Install the latest release from PowerShell on Windows (no administrator shell required):
+
+```powershell
+irm https://github.com/agentre-ai/agentre/releases/latest/download/install.ps1 | iex
+agentred --version
+agentred service install --start
+agentred service status
+```
+
+Then connect it to the desktop app:
+
+1. Open **Settings → Remote devices** and pair the `agentred` daemon.
 2. Open **Settings → Agent backends** and create a backend whose run device is the paired machine.
 3. In **Project → Settings → Members**, add an agent that uses that backend and points to the working path on the remote machine.
 4. Start a chat from the command palette. The session runs remotely, and the desktop app still shows tool approvals, questions, status, and output.

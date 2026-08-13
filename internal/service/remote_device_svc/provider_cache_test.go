@@ -102,3 +102,53 @@ func TestProviderSummary_JSONContract(t *testing.T) {
 		So(string(raw), ShouldEqual, `{"key":"k-1","name":"Provider","type":"anthropic"}`)
 	})
 }
+
+// TestRemoteDeviceSvc_CapabilityCache 钉死决策 11 的能力位缓存：watcher 把 daemon
+// 公布的 llm-model-target-v1 能力位记进缓存，SupportsLLMModelTarget 据此放行
+// fixed-model；未探过 / 不公布 → false（保守禁用）。
+func TestRemoteDeviceSvc_CapabilityCache(t *testing.T) {
+	Convey("CapabilityCache", t, func() {
+		_, _, _, _, svc := setupSvc(t)
+
+		Convey("unprobed device reports false", func() {
+			So(svc.SupportsLLMModelTarget(7), ShouldBeFalse)
+		})
+
+		Convey("advertised llm-model-target-v1 reports true", func() {
+			svc.RecordDeviceCapabilities(7, []string{"llm-model-target-v1"})
+			So(svc.SupportsLLMModelTarget(7), ShouldBeTrue)
+		})
+
+		Convey("capability absent reports false", func() {
+			svc.RecordDeviceCapabilities(7, []string{"something-else"})
+			So(svc.SupportsLLMModelTarget(7), ShouldBeFalse)
+		})
+
+		Convey("per-device isolation", func() {
+			svc.RecordDeviceCapabilities(7, []string{"llm-model-target-v1"})
+			So(svc.SupportsLLMModelTarget(7), ShouldBeTrue)
+			So(svc.SupportsLLMModelTarget(8), ShouldBeFalse)
+		})
+	})
+}
+
+// TestRemoteDeviceSvc_ProviderSummary_Models 钉死非敏感目录含模型摘要：ProviderSummary
+// 的 lowerCamel JSON 形状带 defaultModelKey + models[]，且绝不包含 API key / baseURL。
+func TestRemoteDeviceSvc_ProviderSummary_Models(t *testing.T) {
+	Convey("ProviderSummary carries non-sensitive model summaries", t, func() {
+		raw, err := json.Marshal(remote_device_svc.ProviderSummary{
+			Key:             "k-1",
+			Name:            "Provider",
+			Type:            "anthropic",
+			DefaultModelKey: "m-1",
+			Models: []remote_device_svc.ModelSummary{
+				{Key: "m-1", ModelID: "claude-sonnet-4-6", Enabled: true},
+			},
+		})
+		So(err, ShouldBeNil)
+		So(string(raw), ShouldContainSubstring, `"defaultModelKey":"m-1"`)
+		So(string(raw), ShouldContainSubstring, `"modelId":"claude-sonnet-4-6"`)
+		So(string(raw), ShouldNotContainSubstring, "apiKey")
+		So(string(raw), ShouldNotContainSubstring, "baseURL")
+	})
+}

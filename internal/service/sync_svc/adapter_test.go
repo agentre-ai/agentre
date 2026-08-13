@@ -93,8 +93,9 @@ func TestProjectAdapter_ApplyLandsAsLocalPathMissing(t *testing.T) {
 }
 
 // TestAgentBackendAdapter_LoadUsesFingerprintAndProviderKeyOnly R2：backend 指向的
-// agentred 在载荷外层用**指纹**表达，provider 只有 provider_key 这个字符串键，
-// llm_providers 的任何正文（含 APIKey）都不出本机。
+// agentred 在载荷外层用**指纹**表达，provider 只有 provider_key / model_key 这两个
+// 字符串键，llm_providers 的任何正文（含 APIKey）都不出本机。model_key 是主绑定
+// ModelTarget 的稳定模型引用，与 provider_key 一样只是字符串引用，不携带模型正文。
 func TestAgentBackendAdapter_LoadUsesFingerprintAndProviderKeyOnly(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	state := mock_syncstate_repo.NewMockSyncStateRepo(ctrl)
@@ -103,7 +104,8 @@ func TestAgentBackendAdapter_LoadUsesFingerprintAndProviderKeyOnly(t *testing.T)
 			row := dest.(*agent_backend_entity.AgentBackend)
 			*row = agent_backend_entity.AgentBackend{
 				ID: 9, Type: "claudecode", Name: "构建机 Claude", LLMProviderKey: "anthropic-main",
-				DeviceID: "fp-builder", CLIPath: "/opt/claude", EnvJSON: `{"K":"V"}`,
+				LLMModelKey: "anthropic-opus-01",
+				DeviceID:    "fp-builder", CLIPath: "/opt/claude", EnvJSON: `{"K":"V"}`,
 				SyncMeta: syncmeta_entity.SyncMeta{SyncID: "be-1", SyncVersion: 2},
 			}
 			return true, nil
@@ -118,9 +120,36 @@ func TestAgentBackendAdapter_LoadUsesFingerprintAndProviderKeyOnly(t *testing.T)
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(out.Payload, &payload))
 	assert.Equal(t, "anthropic-main", payload["provider_key"])
+	assert.Equal(t, "anthropic-opus-01", payload["model_key"])
 	assert.NotContains(t, payload, "api_key")
 	assert.NotContains(t, payload, "device_id")
 	assert.NoError(t, syncwire.GuardPayload(out.Payload))
+}
+
+// TestAgentBackendAdapter_ApplyMapsModelKeyToLLMModelKey 下行方向：载荷里的
+// model_key 字符串引用必须落回 backend 的 LLMModelKey（ModelTarget 的另一半）。
+// 与 provider_key 一样只搬字符串，不补全任何本地 LLM 配置。
+func TestAgentBackendAdapter_ApplyMapsModelKeyToLLMModelKey(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	state := mock_syncstate_repo.NewMockSyncStateRepo(ctrl)
+	state.EXPECT().FindRow(gomock.Any(), syncwire.KindAgentBackend, "be-1", gomock.Any()).Return(false, nil)
+	syncstate_repo.RegisterSyncState(state)
+
+	backends := mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl)
+	var created *agent_backend_entity.AgentBackend
+	backends.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, b *agent_backend_entity.AgentBackend) error { created = b; return nil })
+	agent_backend_repo.RegisterAgentBackend(backends)
+
+	err := agentBackendAdapter{}.apply(context.Background(), &inbound{
+		Kind: syncwire.KindAgentBackend, SyncID: "be-1",
+		Payload: []byte(`{"type":"claudecode","name":"构建机 Claude",` +
+			`"provider_key":"anthropic-main","model_key":"anthropic-opus-01"}`),
+	}, map[string]int64{})
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	assert.Equal(t, "anthropic-main", created.LLMProviderKey)
+	assert.Equal(t, "anthropic-opus-01", created.LLMModelKey)
 }
 
 // TestAgentBackendAdapter_GivenLegacyNumericDeviceID_UploadsCanonicalFingerprint

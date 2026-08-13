@@ -150,7 +150,14 @@ func Init(ctx context.Context) (*Runtime, error) {
 	// 启动时按持久化的开关恢复 Debug 日志级别（取代旧 AGENTRE_DEBUG 环境变量）。
 	applyDebugLoggingOnBoot(ctx)
 
-	// Server 接入：注册 keychain + server_state_repo + server_svc 默认实现。
+	// 在装配 Server / Remote Device 之前确立 keychain 后端:设置 AGENTRE_KEYCHAIN_DIR
+	// 时在这里建立 file keychain,失败直接终止,绝不回退生产 system keychain
+	// (见 keychain.go)。
+	if err := initKeychain(ctx); err != nil {
+		return nil, fmt.Errorf("init keychain: %w", err)
+	}
+
+	// Server 接入：注册 server_state_repo + server_svc 默认实现。
 	// server_svc 此时的 emit 为 nil；app.go.startup 在 wails ctx 就绪后调 SetEmitter 绑定事件源。
 	if err := InitServer(ctx); err != nil {
 		return nil, fmt.Errorf("init server: %w", err)

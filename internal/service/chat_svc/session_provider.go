@@ -12,6 +12,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
@@ -85,30 +86,44 @@ func (s *chatSvc) resolveEffectiveProvider(
 	if sess == nil || strings.TrimSpace(sess.ProviderKey) == "" {
 		return base, nil
 	}
-	prov, _ := s.sessionProviderOverride(ctx, be, sess.ProviderKey, base)
+	prov, _, err := s.sessionProviderOverride(ctx, be, sess.ProviderKey, sess.ModelKey, base)
+	if err != nil {
+		// 展示路径容忍 fixed-model 目标失效：strict-block 只在真正跑轮时强制（决策 7），
+		// LoadSession / 复制启动命令不能因为目标失效就整块打挂 —— 前端 Picker 的
+		// invalid 标记（目录里解析不出 target）负责呈现「目标已失效」。这里回落到 agent
+		// 绑定供头部展示，next 轮仍会被 turn 入口严格阻止。
+		return base, nil //nolint:nilerr // 展示路径故意容忍目标失效，不把 LoadSession 整块打挂
+	}
 	return prov, nil
 }
 
-// SetChatSessionProvider 切换已有会话的 LLM 供应商（spec 决策 1）。
+// SetChatSessionModelTarget 切换已有会话的 LLM ModelTarget（spec 2026-08-11 决策 1）。
 //
-// 只写 chat_sessions.provider_key 一列：agent / backend / cli_path / reasoning_effort /
-// permission mode / cwd / 钉住的执行目标一律不动（硬不变量 2），也不写回 agent 绑定。
-// 允许在轮中调用：本轮已 spawn 的子进程不受影响，新供应商自下一轮生效（决策 8），
-// 所以这里不加 turn 锁、也不 evict 任何东西。
+// 只写 chat_sessions.provider_key + model_key 两列（同一原子语句）：agent / backend /
+// cli_path / reasoning_effort / permission mode / cwd / 钉住的执行目标一律不动（硬不变量
+// 2），也不写回 agent 绑定。允许在轮中调用：本轮已 spawn 的子进程不受影响，新 target 自
+// 下一轮生效（决策 8），所以这里不加 turn 锁、也不 evict 任何东西。
 //
-// 校验复用新建会话那一套（存在 / IsActive / ProviderTypeMatch，决策 11）：不通过一律
-// 拒绝写库并原样报错，会话保持原供应商 —— 不产生「写进去了但下一轮必然失败」的会话。
+// 校验与新建会话同一套口径（validateSessionModelTarget）：provider-default 校验 provider
+// 存在 / active / enabled / 与后端 kind 兼容；fixed-model 再校验 model 存在 / enabled /
+// 归属该 provider；inherit-agent（双空）不校验。不通过一律拒绝写库并原样报错，会话保持原
+// target —— 不产生「写进去了但下一轮必然失败」的会话。
+//
+// no-op：选中当前已生效的同一**完整组合**（ProviderKey + ModelKey 都相同）不写库、也不
+// 追加 notice —— 否则每点一次就往 transcript 里塞一条「已改用 X」。（spec 决策 1：组合
+// 比较，不能只比 providerKey。）
 //
 // 错误码：
 //   - SessionID <= 0 → InvalidParameter
 //   - 会话不存在 → ChatSessionNotFound
 //   - agent/backend 解析不出来 → AgentNotFound / ChatAgentNoBackend
-//   - 所选供应商缺失/停用/与后端 kind 不兼容 → ChatAgentNotChattable
-func (s *chatSvc) SetChatSessionProvider(ctx context.Context, req *SetSessionProviderRequest) (*SetSessionProviderResponse, error) {
+//   - 所选 provider/model 不可用 → ChatAgentNotChattable / LLMProviderModel* 系列
+func (s *chatSvc) SetChatSessionModelTarget(ctx context.Context, req *SetChatSessionModelTargetRequest) (*SetChatSessionModelTargetResponse, error) {
 	if req == nil || req.SessionID <= 0 {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
-	key := strings.TrimSpace(req.ProviderKey)
+	providerKey := strings.TrimSpace(req.ProviderKey)
+	modelKey := strings.TrimSpace(req.ModelKey)
 
 	sess, err := chat_repo.Session().Find(ctx, req.SessionID)
 	if err != nil {
@@ -121,29 +136,85 @@ func (s *chatSvc) SetChatSessionProvider(ctx context.Context, req *SetSessionPro
 	if err != nil {
 		return nil, err
 	}
-	// 选中的就是当前生效的那一项（弹层里点已选中的行）：什么都没变，不写库也不追加
-	// notice —— 否则每点一次就往 transcript 里塞一条「已改用 X」。
-	if key == sess.ProviderKey {
-		return &SetSessionProviderResponse{ProviderKey: key, AgentProviderKey: be.LLMProviderKey}, nil
+	// 选中的就是当前生效的同一完整组合（弹层里点已选中的行）：什么都不变，不写库也不
+	// 追加 notice。组合比较：同一 provider 的 provider-default 与 fixed-model 是两个不同
+	// 目标，不能因为 providerKey 相同就误判为 no-op。
+	if providerKey == sess.ProviderKey && modelKey == sess.ModelKey {
+		return &SetChatSessionModelTargetResponse{
+			ProviderKey: providerKey, ModelKey: modelKey,
+			AgentProviderKey: be.LLMProviderKey, AgentModelKey: be.LLMModelKey,
+		}, nil
 	}
-	// 决策 11：与 validateNewSessionProvider 同一口径（空串跳过校验 = 跟随 agent 绑定）。
-	// 校验顺带解析出的实体留着给 notice 当展示名(2026-08-10 显示缺陷修复决策 1):
-	// 校验已经查过一次,不再为取名字重复查询。
-	prov, err := s.validateNewSessionProvider(ctx, be, key)
+	// 校验顺带解析出的实体留着给 notice 当展示名（2026-08-10 显示缺陷修复决策 1）：
+	// 校验已经查过一次，不再为取名字重复查询。
+	prov, model, err := s.validateSessionModelTarget(ctx, be, providerKey, modelKey)
 	if err != nil {
 		return nil, err
 	}
-	if err := chat_repo.Session().UpdateProviderKey(ctx, sess.ID, key); err != nil {
+	if err := chat_repo.Session().UpdateModelTarget(ctx, sess.ID, providerKey, modelKey); err != nil {
 		return nil, operationFailedWithCause(ctx, err, zap.Int64("sessionId", sess.ID))
 	}
-	sess.ProviderKey = key
-	logger.Ctx(ctx).Info("chat_svc.SetChatSessionProvider: session provider switched",
+	sess.ProviderKey = providerKey
+	sess.ModelKey = modelKey
+	logger.Ctx(ctx).Info("chat_svc.SetChatSessionModelTarget: session model target switched",
 		zap.Int64("sessionId", sess.ID),
-		zap.String("providerKey", key),
+		zap.String("providerKey", providerKey),
+		zap.String("modelKey", modelKey),
 		zap.String("agentProviderKey", be.LLMProviderKey),
 		zap.String("backendType", be.Type))
-	s.appendProviderSwitchNotice(ctx, sess, be, key, providerDisplayName(prov))
-	return &SetSessionProviderResponse{ProviderKey: key, AgentProviderKey: be.LLMProviderKey}, nil
+	s.appendProviderSwitchNotice(ctx, sess, be, providerKey, modelKey, providerDisplayName(prov), modelDisplayName(model))
+	return &SetChatSessionModelTargetResponse{
+		ProviderKey: providerKey, ModelKey: modelKey,
+		AgentProviderKey: be.LLMProviderKey, AgentModelKey: be.LLMModelKey,
+	}, nil
+}
+
+// validateSessionModelTarget 校验一个将要持久化的会话 ModelTarget（新建随首条消息落库、
+// 已有会话经 SetChatSessionModelTarget），spec 2026-08-11 决策 2/3：
+//   - 双空（inherit-agent）→ 不校验，返回 (nil, nil, nil)；
+//   - providerKey 非空 → provider 必须存在、IsActive、IsEnabled 且与后端 kind 兼容；
+//   - 双非空（fixed-model）→ 再校验 model 存在、IsEnabled 且归属该 provider。
+//
+// 返回解析出的 provider 与 model（仅 fixed-model 时有值），供 notice 展示名使用 —— 校验
+// 已查过一次，不再为取名字重复查询。
+func (s *chatSvc) validateSessionModelTarget(ctx context.Context, be *agent_backend_entity.AgentBackend, providerKey, modelKey string) (*llm_provider_entity.LLMProvider, *llm_provider_model_entity.LLMProviderModel, error) {
+	key := strings.TrimSpace(providerKey)
+	mk := strings.TrimSpace(modelKey)
+	if key == "" {
+		// fixed-model 必须有 provider：modelKey 单独出现是畸形目标，拒绝写库，
+		// 否则会产生「没有 provider 的固定模型」这种下一轮必失败的会话。
+		if mk != "" {
+			return nil, nil, i18n.NewError(ctx, code.InvalidParameter)
+		}
+		return nil, nil, nil
+	}
+	prov, err := s.validateNewSessionProvider(ctx, be, key)
+	if err != nil {
+		return nil, nil, err
+	}
+	// provider-default / fixed-model 都要在下一轮经 ResolveTarget 解析：那里看的是
+	// IsEnabled（独立于 status 软删除），切换时就把停用的供应商拦下，避免写进去但下一轮
+	// 必然失败。
+	if !prov.IsEnabled() {
+		return nil, nil, i18n.NewError(ctx, code.ChatAgentNotChattable)
+	}
+	if mk == "" {
+		return prov, nil, nil
+	}
+	m, err := llm_provider_repo.LLMProvider().FindModelByKey(ctx, mk)
+	if err != nil {
+		return nil, nil, operationFailedWithCause(ctx, err)
+	}
+	if m == nil {
+		return nil, nil, i18n.NewError(ctx, code.LLMProviderModelNotFound)
+	}
+	if !m.IsEnabled() {
+		return nil, nil, i18n.NewError(ctx, code.LLMProviderModelDisabled)
+	}
+	if m.ProviderID != prov.ID {
+		return nil, nil, i18n.NewError(ctx, code.LLMProviderModelNotOwned)
+	}
+	return prov, m, nil
 }
 
 // sessionProviderBackend 解析这条会话「下一轮落在哪一档」的 backend：钉住的那一档优先
@@ -171,18 +242,21 @@ func sessionProviderBackend(ctx context.Context, sess *chat_entity.Session) (*ag
 	return be, nil
 }
 
-// appendProviderSwitchNotice 在 transcript 追加一条持久 notice，标出「从这里起换了供应商」
-// （决策 9）：两家供应商配同一个 model 时，逐条消息的 model 字段看不出分界。
-// 负载与既有回退 notice 同构（结构化 JSON + 前端 t() 渲染，不把原始 JSON 泄漏给前端）。
+// appendProviderSwitchNotice 在 transcript 追加一条持久 notice，标出「从这里起换了
+// ModelTarget」（决策 9）：两家供应商配同一个 model 时，逐条消息的 model 字段看不出分界。
+// 负载与既有回退 notice 同构（结构化 JSON + 前端 t() 渲染，不把原始 JSON 泄漏给前端），
+// 仍用 kind=switch，仅扩展 providerKey/modelKey + 展示名。
 //
-// 落库失败只记日志：供应商切换本身已经成功落库，为了一条提示把整个切换报成失败，会让
-// 用户以为没切成（实际下一轮已经换了）——这里的降级方向必须是「少一条提示」。
+// 落库失败只记日志：切换本身已经成功落库，为了一条提示把整个切换报成失败，会让用户以为
+// 没切成（实际下一轮已经换了）——这里的降级方向必须是「少一条提示」。
 func (s *chatSvc) appendProviderSwitchNotice(
 	ctx context.Context,
 	sess *chat_entity.Session,
 	be *agent_backend_entity.AgentBackend,
 	providerKey string,
+	modelKey string,
 	providerName string,
+	modelName string,
 ) {
 	msg := &chat_entity.Message{
 		SessionID:  sess.ID,
@@ -192,7 +266,7 @@ func (s *chatSvc) appendProviderSwitchNotice(
 	}
 	if err := msg.SetBlocks([]blocks.ContentBlock{blocks.NoticeBlock{
 		Level: "info",
-		Text:  encodeProviderSwitch(providerKey, providerName),
+		Text:  encodeProviderSwitch(providerKey, modelKey, providerName, modelName),
 	}}); err != nil {
 		logger.Ctx(ctx).Warn("chat_svc.appendProviderSwitchNotice: encode notice failed",
 			zap.Int64("sessionId", sess.ID), zap.Error(err))

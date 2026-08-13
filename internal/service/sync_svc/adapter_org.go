@@ -380,12 +380,15 @@ func agentSyncIDOfLocalID(ctx context.Context, id int64) (string, error) {
 
 // ── backend ─────────────────────────────────────────────────────────────────
 
-// agentBackendPayload 里的 provider 只有 provider_key 这个字符串键：llm_providers
-// 整表（含 APIKey）不出本机（决策 6）。指向哪台 agentred 走上行项顶层的指纹字段。
+// agentBackendPayload 里的 provider 只有 provider_key / model_key 这两个字符串键：
+// llm_providers 整表（含 APIKey 与 Models 正文）不出本机（决策 6），跨机只传稳定的
+// ProviderKey / ModelKey 引用。model_routes 是结构化 Route target 的 JSON 字符串。
+// 指向哪台 agentred 走上行项顶层的指纹字段。
 type agentBackendPayload struct {
 	Type                  string `json:"type"`
 	Name                  string `json:"name"`
 	ProviderKey           string `json:"provider_key"`
+	ModelKey              string `json:"model_key"`
 	CLIPath               string `json:"cli_path"`
 	ModelRoutes           string `json:"model_routes"`
 	Sandbox               string `json:"sandbox"`
@@ -437,6 +440,7 @@ func (agentBackendAdapter) load(ctx context.Context, syncID string) (*outbound, 
 		Type:                  row.Type,
 		Name:                  row.Name,
 		ProviderKey:           row.LLMProviderKey,
+		ModelKey:              row.LLMModelKey,
 		CLIPath:               row.CLIPath,
 		ModelRoutes:           row.ModelRoutes,
 		Sandbox:               row.Sandbox,
@@ -491,6 +495,7 @@ func (agentBackendAdapter) apply(ctx context.Context, in *inbound, resolved map[
 		return err
 	}
 	row.Type, row.Name, row.LLMProviderKey = p.Type, p.Name, p.ProviderKey
+	row.LLMModelKey = p.ModelKey
 	row.DeviceID, row.CLIPath, row.ModelRoutes = deviceID, p.CLIPath, p.ModelRoutes
 	row.Sandbox, row.Approval, row.EnvJSON = p.Sandbox, p.Approval, p.EnvJSON
 	row.ReasoningEffort = p.ReasoningEffort

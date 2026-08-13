@@ -62,6 +62,7 @@ function backend(id: number, deviceId = ""): agent_backend_svc.BackendItem {
     llmProviderType: "",
     llmProviderModel: "",
     llmProviderActive: false,
+    llmModelKey: "",
     cliPath: "",
     modelRoutes: "{}",
     sandbox: "",
@@ -81,7 +82,7 @@ function backend(id: number, deviceId = ""): agent_backend_svc.BackendItem {
     agentCount: 0,
     createtime: 0,
     updatetime: 0,
-  } as agent_backend_svc.BackendItem;
+  } as unknown as agent_backend_svc.BackendItem;
 }
 
 // availabilityStub 让 ListAgentExecTargetAvailability 返回**解析后顺序**（R14），

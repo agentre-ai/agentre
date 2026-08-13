@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
-	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 )
 
 // LaunchCommandTokenPlaceholder 是 gateway token 的字面量占位符，
@@ -20,11 +19,13 @@ const (
 )
 
 // LaunchCommandSpec 是 BuildLaunchCommand 的入参。
-// Provider 可为 nil（CLI 未绑定 LLM 供应商时不写 BASE_URL / API_KEY）。
+// Effective 可为 nil（CLI 未绑定 LLM 供应商时不写 BASE_URL / API_KEY）。
 type LaunchCommandSpec struct {
-	Backend  *agent_backend_entity.AgentBackend
-	Provider *llm_provider_entity.LLMProvider
-	AgentID  int64
+	Backend *agent_backend_entity.AgentBackend
+	// Effective 是执行侧解析结果（EffectiveLLMConfig v1 seam）：ProviderKey 用于
+	// env 网关门控，ModelID 决定 --model / -c model。nil = 无供应商（CLI 登录态）。
+	Effective *EffectiveLLMConfig
+	AgentID   int64
 	// SessionID 是 Agentre chat_sessions.id；部分 backend 用它组装本地运行参数。
 	SessionID int64
 	// Cwd 非空时作为 cd 目标；为空时回退 AgentCwd(AgentID)。chat_svc 调
@@ -73,8 +74,8 @@ func buildClaudeCodeShellCommand(spec LaunchCommandSpec, cwd string) (string, er
 	deps := CLIDeps{}
 	if spec.GatewayURL != "" {
 		deps = CLIDeps{Token: tokenOrPlaceholder(spec.Token), GatewayURL: spec.GatewayURL}
-		if spec.Provider != nil {
-			deps.ProviderKey = spec.Provider.ProviderKey
+		if spec.Effective != nil {
+			deps.ProviderKey = spec.Effective.ProviderKey
 		}
 	}
 	env, err := BuildClaudeCodeEnv(spec.Backend, deps)
@@ -88,8 +89,8 @@ func buildClaudeCodeShellCommand(spec LaunchCommandSpec, cwd string) (string, er
 	}
 
 	argv := []string{binary}
-	if spec.Provider != nil {
-		if model := strings.TrimSpace(spec.Provider.Model); model != "" {
+	if spec.Effective != nil {
+		if model := strings.TrimSpace(spec.Effective.ModelID); model != "" {
 			argv = append(argv, "--model", model)
 		}
 	}
@@ -129,8 +130,8 @@ func buildCodexShellCommand(spec LaunchCommandSpec, cwd string) (string, error) 
 	if eff := codexReasoningEffortConfigValue(spec.Backend.ReasoningEffort); eff != "" {
 		argv = append(argv, "-c", `model_reasoning_effort="`+eff+`"`)
 	}
-	if spec.Provider != nil {
-		if model := strings.TrimSpace(spec.Provider.Model); model != "" {
+	if spec.Effective != nil {
+		if model := strings.TrimSpace(spec.Effective.ModelID); model != "" {
 			// codex 终端版用 -c 覆盖 model；与 BuildCodexConfig 的其它 -c 一致。
 			argv = append(argv, "-c", `model="`+model+`"`)
 		}

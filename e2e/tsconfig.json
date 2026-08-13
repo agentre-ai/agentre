@@ -6,7 +6,13 @@
     "types": ["node"],
     "strict": true,
     "noEmit": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    // lib/*.mjs is plain ESM (the launcher and driver run it with bare `node`); allowJs lets the
+    // Playwright configs import it with inferred types instead of a hand-written .d.ts that
+    // would drift from the guards. Keep it OUT of `include`: Playwright compiles what the TS
+    // project claims, and transpiling these files to CJS breaks them at runtime.
+    "allowJs": true,
+    "checkJs": false
   },
   "include": ["**/*.ts"]
 }

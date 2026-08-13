@@ -41,6 +41,51 @@
     "needsAttention": "Approval",
     "unread": "Unread"
   },
+  "activity": {
+    "header": {
+      "steps": "{{count}} steps",
+      "steps_one": "{{count}} step",
+      "steps_other": "{{count}} steps",
+      "running": "Running · {{count}} steps",
+      "running_one": "Running · {{count}} step",
+      "running_other": "Running · {{count}} steps",
+      "duration": "{{seconds}}s",
+      "durationTitle": "Turn duration"
+    },
+    "elided": {
+      "steps": "{{count}} earlier steps",
+      "steps_one": "{{count}} earlier step",
+      "steps_other": "{{count}} earlier steps"
+    },
+    "summary": {
+      "thinking": "Thinking {{count}}",
+      "read": "Read {{count}}",
+      "edit": "Edited {{count}} files",
+      "edit_one": "Edited {{count}} file",
+      "edit_other": "Edited {{count}} files",
+      "write": "Wrote {{count}}",
+      "command": "Commands {{count}}",
+      "other": "Other {{count}}",
+      "failures": "{{count}} failed"
+    },
+    "row": {
+      "thinking": "Thought",
+      "thinkingMeta": "{{count}} chars",
+      "exit": "exit {{code}}",
+      "failed": "failed",
+      "running": "running",
+      "canceled": "canceled",
+      "unknown": "unknown result",
+      "lines": "{{count}} lines",
+      "lines_one": "{{count}} line",
+      "lines_other": "{{count}} lines",
+      "sections": {
+        "params": "PARAMS",
+        "result": "RESULT",
+        "content": "CONTENT"
+      }
+    }
+  },
   "agentBackends": {
     "actions": {
       "cancelTest": "Cancel Test",
@@ -158,7 +203,8 @@
       "hint": "ANTHROPIC_DEFAULT_*_MODEL. Leave empty to use the main provider.",
       "inheritMain": "Inherit main provider",
       "inheritWithName": "Inherit main provider · {{name}}",
-      "label": "Model Tier Routes"
+      "label": "Model Tier Routes",
+      "tierAria": "Claude tier route"
     },
     "name": {
       "deviceDefault": "{{device}} · {{name}}"
@@ -250,11 +296,13 @@
       "staleOptionalClause": ", or clear the link to use CLI login",
       "staleTitle": "The original LLM provider is disabled or does not match this type",
       "strictMatch": "Strict match · {{type}}",
-      "unlinked": "No linked provider"
+      "unlinked": "No linked provider",
+      "followsDefault": "Follows the provider default model each turn",
+      "fixedNote": "Fixed to this model; provider default changes won't affect it"
     },
     "providerSync": {
-      "descriptionOnly": "Sync writes the locally saved API key to the remote agentred state file. Other form changes are not saved.",
-      "descriptionSave": "The selected remote agentred does not have these providers configured. Sync writes the locally saved API key to the remote agentred state file, then continues saving the agent backend.",
+      "descriptionOnly": "Sync copies the provider's BaseURL, protocol, API key, default model and model catalog to the remote agentred state file. Other form changes are not saved.",
+      "descriptionSave": "The selected remote agentred does not have these providers configured. Sync copies the provider's BaseURL, protocol, API key, default model and model catalog to the remote agentred state file, then continues saving the agent backend.",
       "failedTitle": "Sync Failed",
       "inlineDescription": "This backend will run on remote agentred. You can sync the selected LLM provider to the remote state file first.",
       "inlineTitle": "Remote Provider Sync",
@@ -319,7 +367,6 @@
       "defaultName": "Agent",
       "groupedName": "Agents",
       "runToggle": "Toggle run {{index}}: {{name}}",
-      "stepToggle": "Toggle {{tool}} step details",
       "stop": "Stop",
       "emptyPrompt": "No prompt",
       "emptyResult": "(empty result)",
@@ -348,6 +395,11 @@
         "tools_other": "{{count}} tools",
         "tokens": "{{value}} tokens"
       },
+      "outcome": {
+        "steps": "{{count}} steps",
+        "steps_one": "{{count}} step",
+        "steps_other": "{{count}} steps"
+      },
       "sections": {
         "prompt": "TASK PROMPT",
         "tasks": "TASKS",
@@ -358,11 +410,9 @@
       "status": {
         "done": "DONE",
         "error": "ERROR",
-        "fail": "FAIL",
         "failed": "FAILED",
         "partial": "PARTIAL",
         "running": "RUNNING",
-        "runningLower": "running",
         "waiting": "WAITING",
         "skipped": "SKIPPED",
         "unknown": "UNKNOWN",
@@ -372,8 +422,12 @@
       "summaryRunning": "Subagent is still running. Results will return later...",
       "waitingFirstStep": "Waiting for the first child call..."
     },
+    "code": {
+      "copy": "Copy",
+      "copyAll": "Copy all",
+      "paramCount": "{{count}} params"
+    },
     "fileEdit": {
-      "aria": "{{tool}} tool call",
       "badge": {
         "deleted": "DELETED",
         "new": "NEW"
@@ -383,13 +437,10 @@
       "truncated": "Some lines are truncated · full diff has {{count}} lines (showing first {{shown}})"
     },
     "fileWrite": {
-      "aria": "Write tool call",
       "copyDone": "Full content copied",
       "copyFailed": "Failed to copy full content",
       "copyFull": "Copy Full Content",
       "empty": "Created empty file",
-      "newBadge": "NEW",
-      "title": "Write",
       "truncated": "Content truncated · showing first {{lines}} lines"
     },
     "plan": {
@@ -589,6 +640,7 @@
         "sentence": "Selected provider {{provider}} is unavailable; fell back to the agent binding"
       },
       "providerSwitch": {
+        "fixedModel": "Switched to provider {{provider}} · fixed model {{model}} from here",
         "followAgentBinding": "Switched back to follow the agent binding / CLI login state from here",
         "sentence": "Switched to provider {{provider}} from here"
       }
@@ -612,7 +664,7 @@
         "opusWeekly": "Opus 7-day",
         "sonnetWeekly": "Sonnet 7-day",
         "title": "Claude subscription usage",
-        "usedNote": "Percentages are usage · refreshed every 60s",
+        "usedNote": "Percentages are usage · refreshed every 5 minutes",
         "weekly": "7-day window"
       },
       "resetRemaining": " (resets in {{time}})",
@@ -1257,7 +1309,8 @@
     "skip": "Skip",
     "unassigned": "Unassigned",
     "unknownError": "Unknown error",
-    "unsavedChanges": "Unsaved changes"
+    "unsavedChanges": "Unsaved changes",
+    "saveChanges": "Save changes"
   },
   "codeBlock": {
     "copyDone": "Code copied",
@@ -1590,6 +1643,20 @@
       "testTitle": "Test call (send hi)",
       "testing": "Testing"
     },
+    "defaultSet": {
+      "title": "Set default model to {{model}} · {{provider}}",
+      "description": "Changing the provider default takes effect from the next turn; references using provider-default will follow it dynamically.",
+      "checking": "Checking reference impact…",
+      "confirmHint": "Make “{{model}}” the default model for “{{provider}}”?",
+      "impactTitle": "Dynamic impact",
+      "impactDetail": "This change dynamically affects {{refs}}; they will resolve the new default model on their next turn.",
+      "refBackends": "backend(s)",
+      "refSessions": "session(s)",
+      "refRoutes": "route(s)",
+      "noRefs": "no saved references",
+      "dynamicHint": "Saving does not rewrite these references or append notices to historical sessions; the current turn keeps the old model and the new default resolves from the next turn.",
+      "confirmButton": "Set as default"
+    },
     "empty": {
       "addFirst": "Add First Provider",
       "apiKeyHelp": "How to get an API key",
@@ -1622,7 +1689,17 @@
       "providerKeyPlaceholder": "Generated after saving",
       "showApiKey": "Show API Key",
       "type": "Type",
-      "typePlaceholder": "Select provider type"
+      "typePlaceholder": "Select provider type",
+      "models": "Models",
+      "modelsDescription": "Discover or manually add the models created together with this provider.",
+      "fetchModels": "Fetch models",
+      "addModel": "Add model",
+      "noModels": "No models yet. Use Fetch models to discover from the remote, or Add model to enter one manually.",
+      "modelIdPlaceholder": "Example: claude-opus-4-7",
+      "ctxShort": "Context",
+      "outShort": "Output",
+      "removeModel": "Remove {{model}}",
+      "chooseDefaultHint": "Mark one model as the default; targets that follow the provider default resolve to it."
     },
     "flash": {
       "created": "Provider \"{{name}}\" added",
@@ -1631,7 +1708,15 @@
       "loadFailed": "Load failed: {{message}}",
       "saveFailed": "Save failed: {{message}}",
       "testFailed": "Test failed: {{message}}",
-      "updated": "Provider \"{{name}}\" updated"
+      "updated": "Provider \"{{name}}\" updated",
+      "defaultSet": "{{model}} is now the default model",
+      "modelEnabled": "Model {{model}} enabled",
+      "modelDisabled": "Model {{model}} disabled",
+      "providerEnabled": "Provider {{name}} enabled",
+      "providerDisabled": "Provider {{name}} disabled",
+      "imported": "Imported {{imported}} models, updated {{updated}}",
+      "modelUpdated": "Model {{model}} updated",
+      "modelDeleted": "Model {{model}} deleted"
     },
     "form": {
       "createAriaLabel": "New LLM provider",
@@ -1639,7 +1724,8 @@
       "createTitle": "New LLM Provider",
       "editAriaLabel": "Edit LLM provider",
       "editDescription": "Update credentials or the default model. Leave API Key empty to keep the current value.",
-      "editTitle": "Edit: {{name}}"
+      "editTitle": "Edit connection · {{name}}",
+      "createSubmit": "Create"
     },
     "models": {
       "empty": "The provider did not return any models. Enter the model id manually.",
@@ -1678,7 +1764,9 @@
       "failedTitle": "Test Failed",
       "providerFailed": "\"{{name}}\" connection failed: {{message}}",
       "providerSuccess": "\"{{name}}\" call succeeded. Sent hi and received a model response.",
-      "successTitle": "Test Passed"
+      "successTitle": "Test Passed",
+      "rowSuccess": "Model {{model}} call succeeded. Sent hi and received a model response.",
+      "rowFailed": "Model {{model}} connection failed: {{message}}"
     },
     "toolbar": {
       "add": "New Provider",
@@ -1688,7 +1776,123 @@
     "validation": {
       "apiKeyRequired": "API Key is required",
       "modelRequired": "Enter a default model first",
-      "nameRequired": "Name is required"
+      "nameRequired": "Name is required",
+      "modelIdRequired": "Model ID is required",
+      "duplicateModelId": "Model ID {{modelId}} is duplicated",
+      "defaultRequired": "Choose one model as the default"
+    },
+    "nav": {
+      "ariaLabel": "Provider list",
+      "searchPlaceholder": "Filter providers…",
+      "searchAria": "Filter providers",
+      "add": "Add Provider",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "noMatch": "No matching providers"
+    },
+    "workspace": {
+      "ariaLabel": "{{name}} models",
+      "enableNamed": "Enable {{name}}",
+      "enabledShort": "Enabled",
+      "disabledShort": "Disabled",
+      "test": "Test",
+      "testNamed": "Test {{name}}",
+      "testTitle": "Test connection (sends a minimal request using the default model)",
+      "editConnection": "Edit connection",
+      "editConnectionNamed": "Edit {{name}} connection",
+      "discover": "Discover models",
+      "discoverNamed": "Discover models",
+      "delete": "Delete",
+      "deleteNamed": "Delete {{name}}",
+      "deleteTitle": "Delete provider (requires confirmation)",
+      "cannotEnableNoDefault": "Set an enabled default model before enabling this provider",
+      "searchPlaceholder": "Filter model IDs…",
+      "searchAria": "Filter models",
+      "modelCount": "Showing {{shown}} / {{total}}",
+      "retry": "Retry",
+      "loadingModels": "Loading models…",
+      "noModelsTitle": "No models configured yet",
+      "noModelsDescription": "Discover and import models from the remote, or add a model ID manually.",
+      "discoverModels": "Discover models",
+      "addModelManual": "Add model manually"
+    },
+    "modelsTable": {
+      "ariaLabel": "Model list",
+      "modelId": "Model ID",
+      "context": "Context",
+      "maxOutput": "Max Output",
+      "default": "Default",
+      "defaultBadge": "Default",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "setDefaultAria": "Set {{model}} as default",
+      "currentDefaultAria": "{{model}} is default",
+      "testModelNamed": "Test {{model}}",
+      "testTitle": "Test this model (sends a minimal request)",
+      "editModelNamed": "Edit {{model}}",
+      "deleteModelNamed": "Delete {{model}}",
+      "deleteBlockedDefault": "Default model: set another default before deleting",
+      "deleteTitle": "Delete (requires confirmation)",
+      "disableBlockedDefault": "Default model: set another default before disabling",
+      "enableNamed": "Enable {{model}}"
+    },
+    "delete": {
+      "providerTitle": "Delete provider · {{name}}",
+      "modelTitle": "Delete model · {{model}}",
+      "providerDescription": "Deleting also removes every model under this provider.",
+      "modelDescription": "Reference impact is checked before deletion.",
+      "checking": "Checking reference impact…",
+      "blockedTitle": "Deletion blocked",
+      "blockedProviderDetail": "This provider is referenced by backends, sessions or routes. You can disable it, but not delete it.",
+      "blockedModelDetail": "This model is referenced by {{refs}} and cannot be deleted.",
+      "providerConfirmHint": "This provider has no references. Deleting also removes all its models, and the used ProviderKey / ModelKey are never reused.",
+      "modelConfirmHint": "This model has no references. Saved fixed-model targets pointing at it will become invalid.",
+      "providerConfirmButton": "Delete provider",
+      "modelConfirmButton": "Delete model",
+      "refBackends": "backends",
+      "refSessions": "sessions",
+      "refRoutes": "routes",
+      "noRefs": "no references"
+    },
+    "modelEdit": {
+      "ariaLabel": "Edit model",
+      "title": "Edit model · {{model}}",
+      "description": "Model ID is the string sent to the upstream; Model Key is the stable identifier and cannot be changed after creation.",
+      "modelKey": "Model Key",
+      "modelKeyHint": "Stable identifier referenced by agent backends, sessions and routes; cannot be changed after creation.",
+      "modelId": "Model ID",
+      "name": "Display name",
+      "namePlaceholder": "Optional",
+      "contextWindow": "Context Window",
+      "maxOutput": "Max Output Tokens",
+      "referenceImpactTitle": "This model is referenced",
+      "referenceImpactDescription": "Changing the Model ID affects {{backends}} backends, {{sessions}} sessions and {{routes}} routes; it takes effect from the next turn.",
+      "confirmLabel": "I understand the impact, confirm the change"
+    },
+    "discover": {
+      "title": "Discover and import models · {{name}}",
+      "description": "Models listed by the remote. Select and import in one batch; models with the same ID as a local one are skipped and keep their configuration.",
+      "searchPlaceholder": "Search model IDs…",
+      "searchAria": "Search remote models",
+      "count": "Remote {{remote}} · new {{new}} · existing {{existing}}",
+      "retry": "Retry",
+      "loading": "Scanning the model catalog…",
+      "empty": "The remote returned no models",
+      "selectAllNew": "Select all new models",
+      "selectAllHint": "Existing items are skipped",
+      "existingSkip": "Already exists · skip",
+      "new": "New",
+      "importSummary": "Will import {{count}} new models",
+      "importButton": "Import {{count}} models",
+      "importing": "Importing…",
+      "importButton_one": "Import {{count}} model",
+      "importButton_other": "Import {{count}} models"
+    },
+    "addModel": {
+      "ariaLabel": "Add model manually",
+      "title": "Add model · {{name}}",
+      "description": "Manually add a private, preview or proxy-alias model not listed upstream.",
+      "submit": "Add"
     }
   },
   "mentions": {
@@ -1920,6 +2124,86 @@
     "truncated": "Some items are not listed. Use the filter to narrow the folder."
   },
   "remoteDevices": {
+    "onboarding": {
+      "commands": {
+        "daemonRunning": "Daemon running",
+        "foregroundRun": "agentred run",
+        "installUnix": "curl -fsSL https://github.com/agentre-ai/agentre/releases/latest/download/install.sh | sh",
+        "installWindows": "irm https://github.com/agentre-ai/agentre/releases/latest/download/install.ps1 | iex",
+        "listenAddress": "ws://…:7456/rpc",
+        "pair": "agentred pair",
+        "serviceInstall": "agentred service install --start",
+        "serviceRestart": "agentred service restart",
+        "serviceStatus": "agentred service status",
+        "version": "agentred --version"
+      },
+      "complete": {
+        "action": "Configure Agent Backends",
+        "description": "Choose Claude Code, Codex, or Pi on this device.",
+        "title": "Remote connected"
+      },
+      "copyLabel": "Copy {{label}}",
+      "copySuccess": "Command copied",
+      "install": {
+        "archHint": "Architecture is detected automatically",
+        "description": "Choose the remote operating system, then run the install command in its terminal.",
+        "linux": "Linux",
+        "macos": "macOS",
+        "manual": "Manual installation",
+        "next": "Installed, next",
+        "osLabel": "Remote operating system",
+        "powershell": "PowerShell",
+        "recommended": "Recommended install command",
+        "terminal": "Remote terminal",
+        "verify": "Verify installation",
+        "windows": "Windows",
+        "title": "Install agentred"
+      },
+      "pair": {
+        "back": "Back to service",
+        "commandLabel": "Get pairing information",
+        "description": "Run the pairing command on the remote machine, then enter its address and one-time code.",
+        "submit": "Pair and verify",
+        "title": "Connect this remote machine"
+      },
+      "service": {
+        "background": "Background service (recommended)",
+        "description": "Use the background service for a machine that should stay available.",
+        "diagnostics": {
+          "first": "Run <command>{{command}}</command> and confirm <status>{{status}}</status> appears.",
+          "second": "Confirm the listen address includes <address>{{address}}</address>.",
+          "third": "Keep the service running, then continue to pairing."
+        },
+        "diagnosticsHint": "Run these checks in the remote terminal",
+        "diagnosticsTitle": "Confirm the service is running",
+        "foreground": "Temporary foreground",
+        "foregroundDescription": "Keep this terminal open; closing it stops agentred.",
+        "installLabel": "Install and start service",
+        "modeHint": "Background service is recommended",
+        "modeLabel": "Run mode",
+        "next": "Service is running",
+        "restartLabel": "Restart service",
+        "statusLabel": "Check status",
+        "title": "Start the remote service"
+      },
+      "stepLabel": "Step {{current}} of {{total}}",
+      "steps": {
+        "install": {
+          "done": "Complete",
+          "subtitle": "About 1 minute",
+          "title": "Install agentred"
+        },
+        "pair": {
+          "subtitle": "One-time code",
+          "title": "Pair and verify"
+        },
+        "service": {
+          "done": "Running",
+          "subtitle": "Stay online",
+          "title": "Start the remote service"
+        }
+      }
+    },
     "actions": {
       "addAgentred": "Add agentred",
       "continueAddLan": "+ Add another agentred (LAN)",
@@ -1953,16 +2237,15 @@
       "pairing": "Pairing...",
       "title": "Add agentred Device"
     },
-    "empty": {
-      "middle": ", then run",
-      "prefix": "Run",
-      "suffix": "to get a 6-character pairing code, then return here and choose Add agentred.",
-      "title": "No agentred devices paired"
-    },
     "errors": {
       "dialFailed": "Connection failed: {{message}}",
       "tofuMismatch": "The server identity fingerprint changed. Verify it is safe, then pair again.",
       "unauthorized": "Credentials expired. Pair again."
+    },
+    "load": {
+      "errorDescription": "Check the connection and try again.",
+      "errorTitle": "Couldn't load remote devices",
+      "loading": "Loading remote devices"
     },
     "login": {
       "actions": {
@@ -2899,6 +3182,26 @@
     "noOutput": "No output",
     "expand": "Expand output",
     "collapse": "Collapse output"
+  },
+  "modelTargetPicker": {
+    "special": {
+      "backend": "CLI login state",
+      "chat": "Follow agent binding",
+      "route": "Inherit main binding"
+    },
+    "searchPlaceholder": "Search providers or models…",
+    "clearSearch": "Clear search",
+    "loading": "Loading model catalog…",
+    "error": "Failed to load model catalog",
+    "empty": "No available providers. Create one in LLM Providers first.",
+    "defaultBadge": "default",
+    "defaultLabel": "Follow default model",
+    "invalidHint": "This target is no longer valid (provider or model missing/disabled). Choose again.",
+    "remoteMissing": "Target device is missing this provider. Sync it first.",
+    "noDefaultModel": "No default model set",
+    "remoteSyncNeeded": "Local only — sync to this device first",
+    "fixedModelUnsupported": "This device does not support fixed models — upgrade agentred",
+    "remoteGateHint": "Disabled items need sync to the device or an unsupported capability"
   },
   "statusBar": {
     "agentSummary": "{{count}} agents · {{running}} running",

@@ -1,19 +1,23 @@
 import { defineConfig, devices } from "@playwright/test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-// Deterministic data dir so every config re-eval resolves the SAME path: Playwright loads this
-// config in the main runner AND in each worker, so a random mkdtemp would yield a different dir
-// per process — the db-oracle worker would then read a file the app (launched by the main
-// process) never wrote.
-const dataDir = join(tmpdir(), "agentre-e2e-data");
+import { launchEnv, prepareDirs, resolveTarget } from "./lib/target.mjs";
 
-// Keep-alive (fast inner loop) mode: AGENTRE_E2E_REUSE=1 — reuse a hand-started
-// `wails dev -tags e2e` on :34216 and keep the temp data dir that app owns (no wipe, no rebuild,
-// no app restart between iterations). Default (unset) stays hermetic: fresh data dir + Playwright
-// manages its own webServer. The runner (run-e2e.mjs) reads the same flag to fail fast when no
-// server is up and to skip teardown. See e2e/README.md §4.
+// The suite runs on the `fake` verification target, so `make verify-up` and this config resolve
+// to the same app: one already-running app can serve both. lib/target.mjs derives every path and
+// port from THIS checkout, which is what lets two worktrees run at once — and derives them
+// deterministically, because Playwright loads this config in the main runner AND in each worker
+// (a random mkdtemp would give the db-oracle worker a different dir than the app ever wrote to).
+const target = resolveTarget("fake");
+const { logFile: WEBSERVER_LOG } = target;
+
+// Reuse (fast inner loop) mode: AGENTRE_E2E_REUSE=1 — run against the app `make verify-up`
+// already has up, and keep the data dir that app owns (no wipe, no rebuild, no app restart
+// between iterations). Default (unset) stays hermetic: fresh data dir + Playwright manages its
+// own webServer. The runner (run-e2e.mjs) reads the same flag to fail fast when no server is up
+// and to skip teardown. See e2e/README.md §4.
 const reuseExisting = process.env.AGENTRE_E2E_REUSE === "1";
 
 // Only the main runner (TEST_WORKER_INDEX undefined), not workers, prepares a fresh dir — and it
@@ -21,24 +25,21 @@ const reuseExisting = process.env.AGENTRE_E2E_REUSE === "1";
 // In reuse mode the caller owns the data dir and the running app: never wipe it out from under
 // the server, or the DB oracle and the app diverge.
 if (process.env.TEST_WORKER_INDEX === undefined && !reuseExisting) {
-  rmSync(dataDir, { recursive: true, force: true });
-  mkdirSync(dataDir, { recursive: true });
+  prepareDirs(target, { wipe: true });
 }
 // `wails dev` needs frontend/dist to exist for the //go:embed (mirrors `make dev`). Done here
 // in Node — not via shell `mkdir -p`/`touch` — so the webServer command stays shell-agnostic
 // and runs on native Windows (cmd) too. Idempotent, so it stays unconditional in both modes.
-const distDir = join(__dirname, "..", "frontend", "dist");
+const distDir = join(dirname(fileURLToPath(import.meta.url)), "..", "frontend", "dist");
 mkdirSync(distDir, { recursive: true });
 writeFileSync(join(distDir, ".keep"), "");
 
-process.env.AGENTRE_DATA_DIR = dataDir;
-process.env.AGENTRE_ENV = "test";
+Object.assign(process.env, launchEnv(target));
 
-// Dedicated wails dev server port for e2e (avoids the default 34115 → no collision/false-green
-// against a real `make dev`).
-const DEVSERVER = "localhost:34216";
-const BASE_URL = `http://${DEVSERVER}`;
-const WEBSERVER_LOG = join(tmpdir(), "agentre-e2e-webserver.log");
+// This checkout's own bridge port (never `wails dev`'s default 34115, never another worktree's)
+// → no collision and no false-green against some other running app.
+const DEVSERVER = `localhost:${target.devserverPort}`;
+const BASE_URL = target.baseURL;
 
 export default defineConfig({
   testDir: "./tests",
@@ -70,20 +71,16 @@ export default defineConfig({
     command: `wails dev -tags e2e -devserver ${DEVSERVER} > "${WEBSERVER_LOG}" 2>&1`,
     cwd: "..",
     url: BASE_URL,
-    // Reuse mode forces reuse; otherwise reuse a local dev server already on :34216 (never in
-    // CI, which must get a fresh hermetic server each job).
+    // Reuse mode forces reuse; otherwise reuse a dev server already on this checkout's port
+    // (never in CI, which must get a fresh hermetic server each job).
     reuseExistingServer: reuseExisting || !process.env.CI,
     timeout: 240_000,
     stdout: "ignore",
     stderr: "ignore",
-    env: {
-      AGENTRE_DATA_DIR: dataDir,
-      AGENTRE_ENV: "test",
-      // Bind the local HTTP gateway to an OS-chosen free port (0) instead of the fixed default
-      // 52401. A running real Agentre already holds 52401, so without this the e2e gateway fails
-      // to bind → BaseURL() empty → group_send (and any gateway round-trip) silently dies. Keeps
-      // "a running Agentre does not interfere" true for the gateway too, not just the data dir.
-      AGENTRE_PROXY_PORT: "0",
-    },
+    // Exactly the overrides the launcher injects — data dir, AGENTRE_ENV=test, the isolated
+    // keychain dir, and AGENTRE_PROXY_PORT=0 so the local HTTP gateway binds a free port instead
+    // of the fixed 52401 a running real Agentre already holds (without it BaseURL() is empty and
+    // every gateway round-trip silently dies).
+    env: launchEnv(target),
   },
 });

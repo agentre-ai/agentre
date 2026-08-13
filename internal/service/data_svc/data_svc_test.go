@@ -16,6 +16,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/department_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/paired_agentred_entity"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
@@ -78,11 +79,19 @@ func TestExport_LLMProvidersOnly_Scrubbed(t *testing.T) {
 	rows := []*llm_provider_entity.LLMProvider{
 		{
 			ID: 1, ProviderKey: "key-1", Type: "anthropic", Name: "Main",
-			APIKey: "secret", BaseURL: "https://x", Model: "claude",
-			MaxOutput: 8192, ContextWindow: 200000, Status: consts.ACTIVE,
+			APIKey: "secret", BaseURL: "https://x",
+			Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-1",
+			Status: consts.ACTIVE,
 		},
 	}
 	m.providers.EXPECT().List(gomock.Any()).Return(rows, nil)
+	m.providers.EXPECT().ListModels(gomock.Any(), int64(1)).Return([]*llm_provider_model_entity.LLMProviderModel{
+		{
+			ID: 10, ProviderID: 1, ModelKey: "mk-1", ModelID: "claude-3-5-sonnet",
+			Name: "Sonnet", ContextWindow: 200000, MaxOutput: 8192,
+			Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE,
+		},
+	}, nil)
 
 	Convey("Export llm-providers without secrets", t, func() {
 		res, err := m.svc.Export(m.ctx, &data_svc.ExportRequest{
@@ -103,6 +112,15 @@ func TestExport_LLMProvidersOnly_Scrubbed(t *testing.T) {
 		So(p.ProviderKey, ShouldEqual, "key-1")
 		So(p.Name, ShouldEqual, "Main")
 		So(p.APIKey, ShouldEqual, "") // 关键断言:脱敏
+		// 新 1→N 形状:默认 key + 子模型 + token 元数据原样带出
+		So(p.Enabled, ShouldBeTrue)
+		So(p.DefaultModelKey, ShouldEqual, "mk-1")
+		So(p.Models, ShouldHaveLength, 1)
+		So(p.Models[0].ModelKey, ShouldEqual, "mk-1")
+		So(p.Models[0].ModelID, ShouldEqual, "claude-3-5-sonnet")
+		So(p.Models[0].ContextWindow, ShouldEqual, 200000)
+		So(p.Models[0].MaxOutput, ShouldEqual, 8192)
+		So(p.Models[0].Enabled, ShouldBeTrue)
 		So(res.Summary[string(data_svc.ScopeLLMProviders)], ShouldEqual, 1)
 	})
 }
@@ -112,6 +130,7 @@ func TestExport_LLMProviders_IncludeSecrets(t *testing.T) {
 	m.providers.EXPECT().List(gomock.Any()).Return([]*llm_provider_entity.LLMProvider{
 		{ID: 1, ProviderKey: "k1", Type: "anthropic", Name: "M", APIKey: "sk-xxx"},
 	}, nil)
+	m.providers.EXPECT().ListModels(gomock.Any(), int64(1)).Return(nil, nil)
 
 	Convey("Export 携带 includeSecrets", t, func() {
 		res, err := m.svc.Export(m.ctx, &data_svc.ExportRequest{
@@ -293,8 +312,18 @@ func TestApplyImport_Providers_Create(t *testing.T) {
 	m.backends.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
 	m.depts.EXPECT().List(gomock.Any()).Return(nil, nil)
 
-	m.providers.EXPECT().Create(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider) error {
+	m.providers.EXPECT().CreateWithModels(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider, models []*llm_provider_model_entity.LLMProviderModel, defaultKey string) error {
+			// 连接配置 + 默认 key + 子模型(含 token 元数据)一个业务操作落库
+			So(p.ProviderKey, ShouldEqual, "k1")
+			So(p.APIKey, ShouldEqual, "sk-x")
+			So(defaultKey, ShouldEqual, "mk-1")
+			So(models, ShouldHaveLength, 1)
+			So(models[0].ModelKey, ShouldEqual, "mk-1") // 稳定 key 原样保留
+			So(models[0].ModelID, ShouldEqual, "claude-3-5-sonnet")
+			So(models[0].ContextWindow, ShouldEqual, 200000)
+			So(models[0].MaxOutput, ShouldEqual, 8192)
+			So(models[0].Enabled, ShouldEqual, llm_provider_model_entity.EnabledOn)
 			p.ID = 100
 			return nil
 		})
@@ -306,7 +335,13 @@ func TestApplyImport_Providers_Create(t *testing.T) {
 		Format: data_svc.BundleFormat, Version: 1,
 		Scopes: []string{string(data_svc.ScopeLLMProviders)},
 		Items: data_svc.BundleItems{LLMProviders: []data_svc.BundleLLMProvider{
-			{ProviderKey: "k1", Name: "P1", Type: "anthropic", APIKey: "sk-x"},
+			{
+				ProviderKey: "k1", Name: "P1", Type: "anthropic", APIKey: "sk-x",
+				Enabled: true, DefaultModelKey: "mk-1",
+				Models: []data_svc.BundleLLMProviderModel{
+					{ModelKey: "mk-1", ModelID: "claude-3-5-sonnet", ContextWindow: 200000, MaxOutput: 8192, Enabled: true},
+				},
+			},
 		}},
 	}
 	raw, _ := json.Marshal(bundle)
@@ -366,6 +401,9 @@ func TestApplyImport_Providers_Overwrite(t *testing.T) {
 			So(p.ID, ShouldEqual, 5)
 			So(p.Name, ShouldEqual, "New")
 			So(p.Status, ShouldEqual, consts.ACTIVE) // 保留本地原 status
+			// 新形状:连接字段外还写 enabled + 默认模型 key
+			So(p.Enabled, ShouldEqual, llm_provider_entity.EnabledOn)
+			So(p.DefaultModelKey, ShouldEqual, "mk-1")
 			return nil
 		})
 
@@ -376,12 +414,82 @@ func TestApplyImport_Providers_Overwrite(t *testing.T) {
 		Format: data_svc.BundleFormat, Version: 1,
 		Scopes: []string{string(data_svc.ScopeLLMProviders)},
 		Items: data_svc.BundleItems{LLMProviders: []data_svc.BundleLLMProvider{
-			{ProviderKey: "k1", Name: "New"},
+			{ProviderKey: "k1", Name: "New", Enabled: true, DefaultModelKey: "mk-1"},
 		}},
 	}
 	raw, _ := json.Marshal(bundle)
 
 	Convey("overwrite 调 Update,保留 status", t, func() {
+		res, err := m.svc.ApplyImport(m.ctx, &data_svc.ApplyImportRequest{
+			Raw:              raw,
+			FallbackStrategy: data_svc.ActionOverwrite,
+		})
+		So(err, ShouldBeNil)
+		So(res.Counts["overwrote"], ShouldEqual, 1)
+	})
+}
+
+// TestApplyImport_Providers_Overwrite_UpsertsModels 覆盖已有 Provider 时按稳定
+// ModelKey 做 upsert:bundle 里的模型已存在则更新 token 元数据,缺失则新建。
+func TestApplyImport_Providers_Overwrite_UpsertsModels(t *testing.T) {
+	m := setupDataSvcTest(t)
+	existing := []*llm_provider_entity.LLMProvider{{ID: 5, ProviderKey: "k1", Name: "Old", Status: consts.ACTIVE}}
+	m.providers.EXPECT().List(gomock.Any()).Return(existing, nil).Times(2)
+	m.devices.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
+	m.backends.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
+	m.depts.EXPECT().List(gomock.Any()).Return(nil, nil)
+
+	m.providers.EXPECT().Update(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_entity.LLMProvider{})).
+		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider) error {
+			So(p.ID, ShouldEqual, 5)
+			return nil
+		})
+
+	// 已有模型 mk-1 → 更新;mk-2 不存在 → 新建
+	m.providers.EXPECT().FindModelByKey(gomock.Any(), "mk-1").Return(
+		&llm_provider_model_entity.LLMProviderModel{
+			ID: 11, ProviderID: 5, ModelKey: "mk-1", ModelID: "old-id",
+			ContextWindow: 1000, MaxOutput: 1000, Enabled: llm_provider_model_entity.EnabledOn,
+		}, nil)
+	m.providers.EXPECT().FindModelByKey(gomock.Any(), "mk-2").Return(nil, nil)
+	m.providers.EXPECT().UpdateModel(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_model_entity.LLMProviderModel{})).
+		DoAndReturn(func(_ context.Context, mdl *llm_provider_model_entity.LLMProviderModel) error {
+			So(mdl.ID, ShouldEqual, 11)
+			So(mdl.ModelID, ShouldEqual, "claude-3-5-sonnet") // 可编辑字段被覆盖
+			So(mdl.ContextWindow, ShouldEqual, 200000)
+			So(mdl.MaxOutput, ShouldEqual, 8192)
+			So(mdl.ModelKey, ShouldEqual, "mk-1") // 稳定 key 不变
+			return nil
+		})
+	m.providers.EXPECT().CreateModel(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_model_entity.LLMProviderModel{})).
+		DoAndReturn(func(_ context.Context, mdl *llm_provider_model_entity.LLMProviderModel) error {
+			So(mdl.ProviderID, ShouldEqual, 5)
+			So(mdl.ModelKey, ShouldEqual, "mk-2")
+			So(mdl.ModelID, ShouldEqual, "claude-3-5-haiku")
+			So(mdl.ContextWindow, ShouldEqual, 100000)
+			So(mdl.Enabled, ShouldEqual, llm_provider_model_entity.EnabledOff)
+			return nil
+		})
+
+	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectCommit()
+
+	bundle := data_svc.BundleV1{
+		Format: data_svc.BundleFormat, Version: 1,
+		Scopes: []string{string(data_svc.ScopeLLMProviders)},
+		Items: data_svc.BundleItems{LLMProviders: []data_svc.BundleLLMProvider{
+			{
+				ProviderKey: "k1", Name: "New", Enabled: true, DefaultModelKey: "mk-1",
+				Models: []data_svc.BundleLLMProviderModel{
+					{ModelKey: "mk-1", ModelID: "claude-3-5-sonnet", ContextWindow: 200000, MaxOutput: 8192, Enabled: true},
+					{ModelKey: "mk-2", ModelID: "claude-3-5-haiku", ContextWindow: 100000, MaxOutput: 4096, Enabled: false},
+				},
+			},
+		}},
+	}
+	raw, _ := json.Marshal(bundle)
+
+	Convey("overwrite 按 ModelKey upsert 子模型,保留 token 元数据", t, func() {
 		res, err := m.svc.ApplyImport(m.ctx, &data_svc.ApplyImportRequest{
 			Raw:              raw,
 			FallbackStrategy: data_svc.ActionOverwrite,
@@ -398,9 +506,9 @@ func TestApplyImport_Backend_ResolvesProviderRef(t *testing.T) {
 	m.backends.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{}, nil).Times(2)
 	m.depts.EXPECT().List(gomock.Any()).Return(nil, nil)
 
-	// 先 Create provider
-	m.providers.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_entity.LLMProvider{})).
-		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider) error {
+	// 先 Create provider(经 CreateWithModels 一个事务写入)
+	m.providers.EXPECT().CreateWithModels(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider, _ []*llm_provider_model_entity.LLMProviderModel, _ string) error {
 			p.ID = 50
 			return nil
 		})
@@ -859,6 +967,196 @@ func TestExport_AgentBackends_RemoteDeviceUsesInstanceUUID(t *testing.T) {
 	})
 }
 
+// TestExport_AgentBackend_TypedModelTargetAndStructuredRoutes 导出侧验收：backend 的
+// ModelTarget（LLMProviderKey + LLMModelKey 两个稳定字符串键）与结构化 Route target
+// 原样落入 bundle，modelRoutes 是对象而非字符串，不携带任何 Provider/模型正文。
+func TestExport_AgentBackend_TypedModelTargetAndStructuredRoutes(t *testing.T) {
+	m := setupDataSvcTest(t)
+	m.backends.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{
+		{ID: 10, Type: "claudecode", Name: "Local",
+			LLMProviderKey: "anthropic-main", LLMModelKey: "anthropic-opus-01",
+			ModelRoutes: `{"OPUS":{"providerKey":"anthropic-main","modelKey":"anthropic-opus-01"}` +
+				`,"HAIKU":{"providerKey":"anthropic-main","modelKey":"anthropic-haiku-01"}}`},
+	}, nil)
+
+	Convey("export backend 携带类型化 ModelTarget 与结构化 Route target", t, func() {
+		res, err := m.svc.Export(m.ctx, &data_svc.ExportRequest{
+			Scopes: []string{string(data_svc.ScopeAgentBackends)},
+		})
+		So(err, ShouldBeNil)
+		var b data_svc.BundleV1
+		So(json.Unmarshal(res.JSON, &b), ShouldBeNil)
+		So(b.Items.AgentBackends, ShouldHaveLength, 1)
+		bk := b.Items.AgentBackends[0]
+		So(bk.LLMProviderKey, ShouldEqual, "anthropic-main")
+		So(bk.LLMModelKey, ShouldEqual, "anthropic-opus-01")
+		So(bk.ModelRoutes, ShouldResemble, map[string]data_svc.BundleRouteTarget{
+			"OPUS":  {ProviderKey: "anthropic-main", ModelKey: "anthropic-opus-01"},
+			"HAIKU": {ProviderKey: "anthropic-main", ModelKey: "anthropic-haiku-01"},
+		})
+	})
+}
+
+// TestApplyImport_Backend_TypedModelTargetAndStructuredRoutes 导入侧验收：bundle 的
+// 类型化 ModelTarget 与结构化 Route target 落回 backend 实体——LLMModelKey 原样保留，
+// ModelRoutes 序列化回结构化 JSON 字符串。
+func TestApplyImport_Backend_TypedModelTargetAndStructuredRoutes(t *testing.T) {
+	m := setupDataSvcTest(t)
+	m.providers.EXPECT().List(gomock.Any()).Return([]*llm_provider_entity.LLMProvider{}, nil).Times(2)
+	m.devices.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
+	m.backends.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{}, nil).Times(2)
+	m.depts.EXPECT().List(gomock.Any()).Return(nil, nil).Times(1)
+
+	// provider 在导入范围内，backend 的 provider_key 引用才不 dangling。
+	m.providers.EXPECT().CreateWithModels(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider, _ []*llm_provider_model_entity.LLMProviderModel, _ string) error {
+			p.ID = 50
+			return nil
+		})
+
+	m.backends.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
+		DoAndReturn(func(_ context.Context, bk *agent_backend_entity.AgentBackend) error {
+			So(bk.LLMProviderKey, ShouldEqual, "anthropic-main")
+			So(bk.LLMModelKey, ShouldEqual, "anthropic-opus-01")
+			So(bk.ModelRoutes, ShouldEqual, `{"OPUS":{"providerKey":"anthropic-main","modelKey":"anthropic-opus-01"}}`)
+			bk.ID = 60
+			return nil
+		})
+
+	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectCommit()
+
+	bundle := data_svc.BundleV1{
+		Format: data_svc.BundleFormat, Version: 1,
+		Scopes: []string{string(data_svc.ScopeLLMProviders), string(data_svc.ScopeAgentBackends)},
+		Items: data_svc.BundleItems{
+			LLMProviders: []data_svc.BundleLLMProvider{{ProviderKey: "anthropic-main", Name: "P"}},
+			AgentBackends: []data_svc.BundleAgentBackend{
+				{ExportKey: "ab-1", Type: "claudecode", Name: "B",
+					LLMProviderKey: "anthropic-main", LLMModelKey: "anthropic-opus-01",
+					ModelRoutes: map[string]data_svc.BundleRouteTarget{
+						"OPUS": {ProviderKey: "anthropic-main", ModelKey: "anthropic-opus-01"},
+					}},
+			},
+		},
+	}
+	raw, _ := json.Marshal(bundle)
+
+	Convey("import backend 携带类型化 ModelTarget 与结构化 Route target", t, func() {
+		res, err := m.svc.ApplyImport(m.ctx, &data_svc.ApplyImportRequest{
+			Raw: raw, FallbackStrategy: data_svc.ActionCreate,
+		})
+		So(err, ShouldBeNil)
+		So(res.Counts["created"], ShouldEqual, 2)
+	})
+}
+
+// TestApplyImport_Backend_LegacyStringModelRoutes_Rejected 预发布 bundle 直接切换
+// 到新形状：modelRoutes 仍是 JSON 字符串的旧 fixture 在解析阶段就被明确拒绝，不保留
+// 兼容解析。ApplyImport 在反序列化阶段就返回，不会触达任何 repo。
+func TestApplyImport_Backend_LegacyStringModelRoutes_Rejected(t *testing.T) {
+	m := setupDataSvcTest(t)
+
+	raw := []byte(`{"format":"agentre-data-bundle","version":1,` +
+		`"scopes":["agent_backends"],` +
+		`"items":{"agentBackends":[{"exportKey":"ab-1","type":"claudecode",` +
+		`"name":"B","modelRoutes":"{\"OPUS\":{\"providerKey\":\"p\",\"modelKey\":\"m\"}}"}]}}`)
+
+	Convey("旧 string modelRoutes fixture 被明确拒绝", t, func() {
+		_, err := m.svc.ApplyImport(m.ctx, &data_svc.ApplyImportRequest{
+			Raw: raw, FallbackStrategy: data_svc.ActionCreate,
+		})
+		So(err, ShouldNotBeNil)
+	})
+}
+
+// TestExportImport_RoundTrip_TypedModelTargetAndStructuredRoutes 验收判据本身：设备 A
+// 导出携带类型化 ModelTarget 与结构化 Route target 的 backend（连同它引用的
+// Provider），把导出的 bundle 喂给一台全新的设备 B，LLMModelKey 与 ModelRoutes
+// （结构化 JSON）必须逐字段保留——即便两台设备上 backend 的本地自增 ID 完全不同。
+func TestExportImport_RoundTrip_TypedModelTargetAndStructuredRoutes(t *testing.T) {
+	mA := setupDataSvcTest(t)
+	mA.providers.EXPECT().List(gomock.Any()).Return([]*llm_provider_entity.LLMProvider{
+		{ID: 1, ProviderKey: "anthropic-main", Name: "Anthropic", Type: "anthropic"},
+	}, nil)
+	mA.providers.EXPECT().ListModels(gomock.Any(), int64(1)).Return(nil, nil)
+	mA.backends.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{
+		{ID: 30, Type: "claudecode", Name: "B",
+			LLMProviderKey: "anthropic-main", LLMModelKey: "anthropic-opus-01",
+			ModelRoutes: `{"OPUS":{"providerKey":"anthropic-main","modelKey":"anthropic-opus-01"}` +
+				`,"HAIKU":{"providerKey":"anthropic-main","modelKey":"anthropic-haiku-01"}}`},
+	}, nil)
+
+	exportRes, err := mA.svc.Export(mA.ctx, &data_svc.ExportRequest{
+		Scopes: []string{string(data_svc.ScopeLLMProviders), string(data_svc.ScopeAgentBackends)},
+	})
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	var srcBundle data_svc.BundleV1
+	if err := json.Unmarshal(exportRes.JSON, &srcBundle); err != nil {
+		t.Fatalf("unmarshal exported bundle: %v", err)
+	}
+	srcBk := srcBundle.Items.AgentBackends[0]
+	if srcBk.LLMModelKey != "anthropic-opus-01" {
+		t.Fatalf("exported bundle lost llmModelKey: %q", srcBk.LLMModelKey)
+	}
+	if len(srcBk.ModelRoutes) != 2 {
+		t.Fatalf("expected 2 structured routes in exported bundle, got %d", len(srcBk.ModelRoutes))
+	}
+
+	// 设备 B：全新空库，provider 与 backend 都拿到与设备 A 不同的本地 ID。
+	mB := setupDataSvcTest(t)
+	mB.providers.EXPECT().List(gomock.Any()).Return([]*llm_provider_entity.LLMProvider{}, nil).Times(2)
+	mB.devices.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
+	mB.backends.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{}, nil).Times(2)
+	mB.depts.EXPECT().List(gomock.Any()).Return([]*department_entity.Department{}, nil)
+
+	mB.providers.EXPECT().CreateWithModels(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider, _ []*llm_provider_model_entity.LLMProviderModel, _ string) error {
+			p.ID = 7
+			return nil
+		})
+
+	var got *agent_backend_entity.AgentBackend
+	mB.backends.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
+		DoAndReturn(func(_ context.Context, bk *agent_backend_entity.AgentBackend) error {
+			got = bk
+			bk.ID = 100
+			return nil
+		})
+
+	mB.dbMock.ExpectBegin()
+	mB.dbMock.ExpectCommit()
+
+	raw, err := json.Marshal(srcBundle)
+	if err != nil {
+		t.Fatalf("marshal src bundle: %v", err)
+	}
+
+	applyRes, err := mB.svc.ApplyImport(mB.ctx, &data_svc.ApplyImportRequest{
+		Raw: raw, FallbackStrategy: data_svc.ActionCreate,
+	})
+	if err != nil {
+		t.Fatalf("apply import: %v", err)
+	}
+	if applyRes.Counts["created"] == 0 {
+		t.Fatalf("expected creations, got counts=%v", applyRes.Counts)
+	}
+	if got == nil {
+		t.Fatalf("backend was not created on device B")
+	}
+	if got.LLMProviderKey != "anthropic-main" || got.LLMModelKey != "anthropic-opus-01" {
+		t.Fatalf("typed ModelTarget lost in round-trip: provider=%q model=%q", got.LLMProviderKey, got.LLMModelKey)
+	}
+	// MarshalModelRoutes 按 alias 字典序序列化（HAIKU < OPUS）。
+	if got.ModelRoutes != `{"HAIKU":{"providerKey":"anthropic-main","modelKey":"anthropic-haiku-01"},`+
+		`"OPUS":{"providerKey":"anthropic-main","modelKey":"anthropic-opus-01"}}` {
+		t.Fatalf("structured routes lost in round-trip: %s", got.ModelRoutes)
+	}
+}
+
 func TestApplyImport_RemoteDevice_Create(t *testing.T) {
 	m := setupDataSvcTest(t)
 	m.providers.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
@@ -1238,11 +1536,17 @@ func TestApplyImport_Provider_Duplicate(t *testing.T) {
 	m.backends.EXPECT().List(gomock.Any()).Return(nil, nil).Times(2)
 	m.depts.EXPECT().List(gomock.Any()).Return(nil, nil).Times(1)
 
-	// Duplicate creates a new row with renamed name and new UUID key
-	m.providers.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&llm_provider_entity.LLMProvider{})).
-		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider) error {
+	// Duplicate 创建新行(新 UUID key + (copy) 后缀),模型重 mint 新 ModelKey,
+	// 默认 key 也重映射到新 key(本地已有同 key 模型,唯一索引不允许复用)。
+	m.providers.EXPECT().CreateWithModels(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, p *llm_provider_entity.LLMProvider, models []*llm_provider_model_entity.LLMProviderModel, defaultKey string) error {
 			// uniqueName appends " (copy)" since "P1" is taken
 			So(p.Name, ShouldEqual, "P1 (copy)")
+			So(p.ProviderKey, ShouldNotEqual, "k1")
+			So(models, ShouldHaveLength, 1)
+			So(models[0].ModelKey, ShouldNotEqual, "mk-1") // 重 mint,不复用旧 key
+			So(models[0].ModelID, ShouldEqual, "claude-3-5-sonnet")
+			So(defaultKey, ShouldEqual, models[0].ModelKey) // 默认 key 重映射
 			p.ID = 99
 			return nil
 		})
@@ -1254,7 +1558,13 @@ func TestApplyImport_Provider_Duplicate(t *testing.T) {
 		Format: data_svc.BundleFormat, Version: 1,
 		Scopes: []string{string(data_svc.ScopeLLMProviders)},
 		Items: data_svc.BundleItems{LLMProviders: []data_svc.BundleLLMProvider{
-			{ProviderKey: "k1", Name: "P1", Type: "anthropic"},
+			{
+				ProviderKey: "k1", Name: "P1", Type: "anthropic",
+				Enabled: true, DefaultModelKey: "mk-1",
+				Models: []data_svc.BundleLLMProviderModel{
+					{ModelKey: "mk-1", ModelID: "claude-3-5-sonnet", Enabled: true},
+				},
+			},
 		}},
 	}
 	raw, _ := json.Marshal(bundle)

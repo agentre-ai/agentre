@@ -75,9 +75,10 @@ function backendTypeLabel(type: string): string {
 function machineLabel(
   b: agent_backend_svc.BackendItem | undefined,
   localLabel: string,
+  unresolvedLabel: string,
 ): string {
   if (!b || !b.deviceId) return localLabel;
-  return b.deviceName || b.deviceId;
+  return b.deviceName || unresolvedLabel;
 }
 
 // 不可用原因里哪些是"供应商/配置类"问题（红色强调），哪些是"连通性类"问题
@@ -321,7 +322,11 @@ export function ExecTargetList(props: Props) {
                 return (
                   <React.Fragment key={target.agentBackendId}>
                     {i + 1} ·{" "}
-                    {machineLabel(b, t("org.agent.execTargets.localMachine"))}
+                    {machineLabel(
+                      b,
+                      t("org.agent.execTargets.localMachine"),
+                      t("org.agent.execTargets.reasons.unpaired"),
+                    )}
                     {" —— "}
                     {status ? execTargetReasonLabel(status.reason, t) : ""}
                     <br />
@@ -420,7 +425,11 @@ function ExecTargetRowView(props: RowProps) {
     drag?.listeners?.onKeyDown?.(e);
   };
   const b = props.backend;
-  const local = machineLabel(b, t("org.agent.execTargets.localMachine"));
+  const local = machineLabel(
+    b,
+    t("org.agent.execTargets.localMachine"),
+    t("org.agent.execTargets.reasons.unpaired"),
+  );
   const sub = b
     ? `${backendTypeLabel(b.type)} · ${b.name}`
     : t("org.agent.execTargets.reasons.unknownBackend");
@@ -601,7 +610,8 @@ function AddTargetPanel(props: {
           <div key={deviceId || "local"}>
             <div className="px-3 pb-1 pt-2 text-2xs font-semibold text-subtle-foreground">
               {deviceId
-                ? backends[0].deviceName || deviceId
+                ? backends[0].deviceName ||
+                  t("org.agent.execTargets.addPanel.unpaired")
                 : t("org.agent.execTargets.localMachine")}
             </div>
             {backends.map((b) => {

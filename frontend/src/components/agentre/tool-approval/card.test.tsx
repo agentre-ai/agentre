@@ -36,6 +36,18 @@ describe("ToolApprovalCard", () => {
     expect(screen.getByText("Reject")).toBeDefined();
   });
 
+  it("scrolls a long tool input JSON without an expand control", () => {
+    render(
+      <ToolApprovalCard
+        approval={pending({
+          toolInput: { system_prompt: "x".repeat(300) },
+        })}
+        sessionId={42}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Expand all" })).toBeNull();
+  });
+
   it("calls AnswerToolApproval with allow:true when approve is clicked", async () => {
     const user = userEvent.setup();
     render(<ToolApprovalCard approval={pending()} sessionId={42} />);

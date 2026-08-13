@@ -18,6 +18,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/department_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/paired_agentred_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
@@ -129,17 +130,11 @@ func applyProviders(ctx context.Context, b BundleV1, actions map[string]ItemActi
 			if local == nil {
 				return i18n.NewError(ctx, code.DataImportInvalidAction)
 			}
-			local.Type = p.Type
-			local.Name = p.Name
-			local.BaseURL = p.BaseURL
-			local.Model = p.Model
-			local.MaxOutput = p.MaxOutput
-			local.ContextWindow = p.ContextWindow
-			if p.APIKey != "" {
-				local.APIKey = p.APIKey
-			}
-			local.Updatetime = now
+			assignProviderFields(local, p, now)
 			if err := llm_provider_repo.LLMProvider().Update(ctx, local); err != nil {
+				return err
+			}
+			if err := upsertProviderModels(ctx, local.ID, p.Models, now); err != nil {
 				return err
 			}
 			km.providers[p.ProviderKey] = local.ID
@@ -155,7 +150,10 @@ func applyProviders(ctx context.Context, b BundleV1, actions map[string]ItemActi
 				}
 				return false
 			})
-			if err := llm_provider_repo.LLMProvider().Create(ctx, row); err != nil {
+			// 本地已有同 key 模型(unique index),duplicate 必须重 mint 新 ModelKey,
+			// 默认模型 key 一并重映射到新 key。
+			models, defaultKey := modelEntitiesFromBundle(p, true)
+			if err := llm_provider_repo.LLMProvider().CreateWithModels(ctx, row, models, defaultKey); err != nil {
 				return err
 			}
 			km.providers[p.ProviderKey] = row.ID
@@ -165,7 +163,8 @@ func applyProviders(ctx context.Context, b BundleV1, actions map[string]ItemActi
 				return i18n.NewError(ctx, code.DataImportInvalidAction)
 			}
 			row := newProviderEntity(p, now)
-			if err := llm_provider_repo.LLMProvider().Create(ctx, row); err != nil {
+			models, defaultKey := modelEntitiesFromBundle(p, false)
+			if err := llm_provider_repo.LLMProvider().CreateWithModels(ctx, row, models, defaultKey); err != nil {
 				return err
 			}
 			km.providers[p.ProviderKey] = row.ID
@@ -179,18 +178,112 @@ func applyProviders(ctx context.Context, b BundleV1, actions map[string]ItemActi
 
 func newProviderEntity(p BundleLLMProvider, now int64) *llm_provider_entity.LLMProvider {
 	return &llm_provider_entity.LLMProvider{
-		ProviderKey:   p.ProviderKey,
-		Type:          p.Type,
-		Name:          p.Name,
-		BaseURL:       p.BaseURL,
-		Model:         p.Model,
-		APIKey:        p.APIKey,
-		MaxOutput:     p.MaxOutput,
-		ContextWindow: p.ContextWindow,
-		Status:        consts.ACTIVE,
-		Createtime:    now,
-		Updatetime:    now,
+		ProviderKey:     p.ProviderKey,
+		Type:            p.Type,
+		Name:            p.Name,
+		BaseURL:         p.BaseURL,
+		APIKey:          p.APIKey,
+		Enabled:         boolToEnabled(p.Enabled),
+		DefaultModelKey: p.DefaultModelKey,
+		Status:          consts.ACTIVE,
+		Createtime:      now,
+		Updatetime:      now,
 	}
+}
+
+// assignProviderFields 覆盖已有 Provider 的连接配置 + enabled + 默认模型 key。
+// APIKey 留空沿用本地已保存的 key(与创建 / 更新请求同一约定)。Status 不覆盖。
+func assignProviderFields(local *llm_provider_entity.LLMProvider, p BundleLLMProvider, now int64) {
+	local.Type = p.Type
+	local.Name = p.Name
+	local.BaseURL = p.BaseURL
+	local.Enabled = boolToEnabled(p.Enabled)
+	local.DefaultModelKey = p.DefaultModelKey
+	if p.APIKey != "" {
+		local.APIKey = p.APIKey
+	}
+	local.Updatetime = now
+}
+
+// upsertProviderModels 覆盖一个已有 Provider 时同步其子模型:bundle 里的模型按稳定
+// ModelKey 做 upsert——本地已有则更新可编辑字段(token 元数据 / ModelID / enabled),缺失则
+// 新建并挂到该 Provider。本地多出的模型保留不删(预发布 bundle 的安全默认,不触碰被引用模型)。
+func upsertProviderModels(ctx context.Context, providerID int64, models []BundleLLMProviderModel, now int64) error {
+	for _, m := range models {
+		row, err := llm_provider_repo.LLMProvider().FindModelByKey(ctx, m.ModelKey)
+		if err != nil {
+			return err
+		}
+		if row == nil {
+			if err := llm_provider_repo.LLMProvider().CreateModel(ctx, &llm_provider_model_entity.LLMProviderModel{
+				ProviderID:    providerID,
+				ModelKey:      m.ModelKey,
+				ModelID:       m.ModelID,
+				Name:          m.Name,
+				ContextWindow: m.ContextWindow,
+				MaxOutput:     m.MaxOutput,
+				Enabled:       boolToEnabled(m.Enabled),
+				Status:        consts.ACTIVE,
+				Createtime:    now,
+				Updatetime:    now,
+			}); err != nil {
+				return err
+			}
+			continue
+		}
+		if row.ProviderID != providerID {
+			// 这个 model_key 已属于另一个 Provider(全局唯一),不跨供应商改写。
+			continue
+		}
+		row.ModelID = m.ModelID
+		row.Name = m.Name
+		row.ContextWindow = m.ContextWindow
+		row.MaxOutput = m.MaxOutput
+		row.Enabled = boolToEnabled(m.Enabled)
+		row.Updatetime = now
+		if err := llm_provider_repo.LLMProvider().UpdateModel(ctx, row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// modelEntitiesFromBundle 把 bundle 的 Models 转成实体列表。
+// mintNewKeys=true 时给每个模型重新 mint 稳定 ModelKey(duplicate 场景:本地已有同
+// key 模型,唯一索引不允许复用),并把 defaultModelKey 重映射到对应新 key。
+func modelEntitiesFromBundle(p BundleLLMProvider, mintNewKeys bool) ([]*llm_provider_model_entity.LLMProviderModel, string) {
+	models := make([]*llm_provider_model_entity.LLMProviderModel, 0, len(p.Models))
+	keyRemap := map[string]string{}
+	for _, m := range p.Models {
+		key := m.ModelKey
+		if mintNewKeys {
+			key = uuid.NewString()
+			keyRemap[m.ModelKey] = key
+		}
+		models = append(models, &llm_provider_model_entity.LLMProviderModel{
+			ModelKey:      key,
+			ModelID:       m.ModelID,
+			Name:          m.Name,
+			ContextWindow: m.ContextWindow,
+			MaxOutput:     m.MaxOutput,
+			Enabled:       boolToEnabled(m.Enabled),
+			Status:        consts.ACTIVE,
+		})
+	}
+	defaultKey := p.DefaultModelKey
+	if mintNewKeys && defaultKey != "" {
+		if k, ok := keyRemap[defaultKey]; ok {
+			defaultKey = k
+		}
+	}
+	return models, defaultKey
+}
+
+func boolToEnabled(b bool) int {
+	if b {
+		return llm_provider_entity.EnabledOn
+	}
+	return llm_provider_entity.EnabledOff
 }
 
 func applyRemoteDevices(ctx context.Context, b BundleV1, actions map[string]ItemAction, km *keyMap, counts map[string]int, now int64) (*deviceRefResolver, error) {
@@ -326,7 +419,9 @@ func applyAgentBackends(ctx context.Context, b BundleV1, actions map[string]Item
 			if err != nil {
 				return err
 			}
-			assignBackendFields(local, bk, now, deviceID)
+			if err := assignBackendFields(ctx, local, bk, now, deviceID); err != nil {
+				return err
+			}
 			if err := agent_backend_repo.AgentBackend().Update(ctx, local); err != nil {
 				return err
 			}
@@ -337,7 +432,10 @@ func applyAgentBackends(ctx context.Context, b BundleV1, actions map[string]Item
 			if err != nil {
 				return err
 			}
-			row := newBackendEntity(bk, now, deviceID)
+			row, err := newBackendEntity(bk, now, deviceID)
+			if err != nil {
+				return err
+			}
 			row.Name = uniqueName(bk.Name, func(n string) bool {
 				for _, e := range existing {
 					if e.Name == n {
@@ -359,7 +457,10 @@ func applyAgentBackends(ctx context.Context, b BundleV1, actions map[string]Item
 			if err != nil {
 				return err
 			}
-			row := newBackendEntity(bk, now, deviceID)
+			row, err := newBackendEntity(bk, now, deviceID)
+			if err != nil {
+				return err
+			}
 			if err := agent_backend_repo.AgentBackend().Create(ctx, row); err != nil {
 				return err
 			}
@@ -387,14 +488,19 @@ func importBackendDeviceID(ctx context.Context, bk BundleAgentBackend, km *keyMa
 	return strconv.FormatInt(id, 10), nil
 }
 
-func newBackendEntity(bk BundleAgentBackend, now int64, deviceID string) *agent_backend_entity.AgentBackend {
+func newBackendEntity(bk BundleAgentBackend, now int64, deviceID string) (*agent_backend_entity.AgentBackend, error) {
+	modelRoutes, err := marshalBundleRoutes(bk.ModelRoutes)
+	if err != nil {
+		return nil, err
+	}
 	return &agent_backend_entity.AgentBackend{
 		Type:                  bk.Type,
 		Name:                  bk.Name,
 		LLMProviderKey:        bk.LLMProviderKey,
+		LLMModelKey:           bk.LLMModelKey,
 		DeviceID:              deviceID,
 		CLIPath:               bk.CLIPath,
-		ModelRoutes:           bk.ModelRoutes,
+		ModelRoutes:           modelRoutes,
 		Sandbox:               bk.Sandbox,
 		Approval:              bk.Approval,
 		EnvJSON:               bk.EnvJSON,
@@ -403,22 +509,41 @@ func newBackendEntity(bk BundleAgentBackend, now int64, deviceID string) *agent_
 		Status:                consts.ACTIVE,
 		Createtime:            now,
 		Updatetime:            now,
-	}
+	}, nil
 }
 
-func assignBackendFields(local *agent_backend_entity.AgentBackend, bk BundleAgentBackend, now int64, deviceID string) {
+func assignBackendFields(ctx context.Context, local *agent_backend_entity.AgentBackend, bk BundleAgentBackend, now int64, deviceID string) error {
+	modelRoutes, err := marshalBundleRoutes(bk.ModelRoutes)
+	if err != nil {
+		return i18n.NewError(ctx, code.DataBundleFormatInvalid)
+	}
 	local.Type = bk.Type
 	local.Name = bk.Name
 	local.LLMProviderKey = bk.LLMProviderKey
+	local.LLMModelKey = bk.LLMModelKey
 	local.DeviceID = deviceID
 	local.CLIPath = bk.CLIPath
-	local.ModelRoutes = bk.ModelRoutes
+	local.ModelRoutes = modelRoutes
 	local.Sandbox = bk.Sandbox
 	local.Approval = bk.Approval
 	local.EnvJSON = bk.EnvJSON
 	local.ReasoningEffort = bk.ReasoningEffort
 	local.DefaultPermissionMode = bk.DefaultPermissionMode
 	local.Updatetime = now
+	return nil
+}
+
+// marshalBundleRoutes 把 bundle 的类型化 Route target 序列化回实体持久化的结构化
+// JSON 字符串（交给 agent_backend_entity.MarshalModelRoutes 同一份转换）。
+func marshalBundleRoutes(routes map[string]BundleRouteTarget) (string, error) {
+	if len(routes) == 0 {
+		return "{}", nil
+	}
+	entityRoutes := make(map[string]agent_backend_entity.ModelRouteTarget, len(routes))
+	for alias, r := range routes {
+		entityRoutes[alias] = agent_backend_entity.ModelRouteTarget{ProviderKey: r.ProviderKey, ModelKey: r.ModelKey}
+	}
+	return agent_backend_entity.MarshalModelRoutes(entityRoutes)
 }
 
 // uniqueName 给同名记录加 (copy) / (copy 2) 后缀直到不冲突。

@@ -20,8 +20,8 @@ import (
 )
 
 // 本文件锁住 R15b / 决策36「会话粘性」：续轮按会话钉住的那一档解析 backend（不重挑，
-// 即使排序里有更靠前的档现在可用）；同机多档时取的是原档而不是"同机第一档"；该档
-// 不可用时明确报错而非漂移到别的档；无该值的老会话回落到按 R15 顺序挑并写回。
+// 即使排序里有更靠前的档现在可用）；同机多档时取的是原档而不是"同机第一档"；只有
+// 钉档记录已经不存在时才按当前执行目标恢复；无该值的老会话回落到按 R15 顺序挑并写回。
 
 type execTargetPinMocks struct {
 	agent              *mock_agent_repo.MockAgentRepo
@@ -111,19 +111,26 @@ func TestResolveAgentBackend_GivenSameDeviceMultipleTargets_WhenContinuingTurn_T
 	assert.Equal(t, int64(72), be.ID, "同机多档续轮必须取原档,不是同机第一档 71")
 }
 
-// ── 该档不可用时明确报错而非漂移(决策36的另一半:钉住之后不因为它离线就改派)──
+// ── 钉档记录已被删除时，按 Agent 当前执行目标恢复并替换失效钉档 ────────────
 
-func TestResolveAgentBackend_GivenPinnedTargetNoLongerAvailable_ThenErrorsWithoutFallingBackToPicking(t *testing.T) {
+func TestResolveAgentBackend_GivenPinnedBackendWasDeleted_WhenCurrentTargetIsAvailable_ThenRecoversAndRepins(t *testing.T) {
 	ctx, m, svc := setupExecTargetPinTest(t)
 
 	sess := &chat_entity.Session{ID: 902, AgentID: 403, ExecAgentBackendID: 61}
-	m.agent.EXPECT().Find(ctx, int64(403)).Return(&agent_entity.Agent{ID: 403, AgentBackendID: 61}, nil)
-	// 钉住的档引用的 backend 已经不存在了(比如它被删除):必须报错,不能悄悄回落
-	// 到 PickExecTarget 重挑别的档——没给 ListByAgent 设期望,一旦触发挑选就败。
+	m.agent.EXPECT().Find(ctx, int64(403)).Return(&agent_entity.Agent{ID: 403, AgentBackendID: 62}, nil)
+	// 用户删掉旧 backend 61 并重新给 Agent 配了 backend 62。旧会话里的钉档是
+	// 派生引用，不能让它永久盖过 Agent 当前配置并报成“未绑定可对话后端”。
 	m.backend.EXPECT().Find(ctx, int64(61)).Return(nil, nil)
+	m.execTarget.EXPECT().ListByAgent(ctx, int64(403)).Return([]*agent_entity.AgentExecTarget{
+		{ID: 13, AgentID: 403, AgentBackendID: 62, SortOrder: 0},
+	}, nil)
+	m.backend.EXPECT().Find(ctx, int64(62)).Return(localClaudeCode(62), nil)
+	m.session.EXPECT().UpdateExecDaemon(ctx, int64(902), int64(0), "", int64(62)).Return(nil)
 
-	_, _, _, err := svc.resolveAgentBackend(ctx, sess, sess.AgentID, sess.ProjectID)
-	require.Error(t, err, "钉住的档不可用必须报错,不能静默漂移到别的档")
+	_, be, _, err := svc.resolveAgentBackend(ctx, sess, sess.AgentID, sess.ProjectID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(62), be.ID)
+	assert.Equal(t, int64(62), sess.ExecAgentBackendID, "恢复后要替换内存与数据库里的失效钉档")
 }
 
 // ── ④ 无该值的老会话回落到按 R15 顺序挑,并且真的可以被调用方写回 ──────────

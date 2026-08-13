@@ -3,6 +3,7 @@ package remote_device_svc
 import (
 	"sync"
 
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 	"github.com/agentre-ai/agentre/internal/repository/remote_device_repo"
 )
 
@@ -15,6 +16,11 @@ type service struct {
 
 	providerCacheMu sync.RWMutex
 	providerCache   map[int64][]ProviderSummary
+
+	// capabilitiesMu / capabilities 是 watcher 从 health.ping 记下的能力位（决策 11）。
+	// 与 providerCache 一样是进程内缓存:描述当前那个 daemon 进程,重启桌面后重新探。
+	capabilitiesMu sync.RWMutex
+	capabilities   map[int64][]string
 
 	// outdatedMu / outdated 记着「哪些设备上的 daemon 版本过旧」(R18)。与
 	// providerCache 一样是进程内缓存:它描述当前那个 daemon 进程,重启桌面后重新探。
@@ -31,6 +37,7 @@ func New(repo remote_device_repo.PairedAgentredRepo, dial DaemonDialPort, kc Key
 		keychain:      kc,
 		pool:          pool,
 		providerCache: make(map[int64][]ProviderSummary),
+		capabilities:  make(map[int64][]string),
 		outdated:      make(map[int64]bool),
 	}
 }
@@ -56,6 +63,32 @@ func (s *service) RecordDeviceProviders(deviceID int64, ps []ProviderSummary) {
 	s.providerCacheMu.Lock()
 	s.providerCache[deviceID] = cp
 	s.providerCacheMu.Unlock()
+}
+
+// RecordDeviceCapabilities overwrites the cached capability list for deviceID.
+func (s *service) RecordDeviceCapabilities(deviceID int64, caps []string) {
+	cp := make([]string, len(caps))
+	copy(cp, caps)
+	s.capabilitiesMu.Lock()
+	s.capabilities[deviceID] = cp
+	s.capabilitiesMu.Unlock()
+}
+
+// SupportsLLMModelTarget reports whether deviceID's daemon advertises the
+// llm-model-target-v1 capability（决策 11）。未探过 → false（保守禁用 fixed-model）。
+func (s *service) SupportsLLMModelTarget(deviceID int64) bool {
+	s.capabilitiesMu.RLock()
+	caps, ok := s.capabilities[deviceID]
+	s.capabilitiesMu.RUnlock()
+	if !ok {
+		return false
+	}
+	for _, c := range caps {
+		if c == wire.CapLLMModelTargetV1 {
+			return true
+		}
+	}
+	return false
 }
 
 // ListDeviceProviders returns a defensive copy of the cached provider list for

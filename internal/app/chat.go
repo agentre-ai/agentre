@@ -129,11 +129,12 @@ func (a *App) SetChatPermissionMode(req *chat_svc.SetPermissionModeRequest) (*ch
 	return chat_svc.Chat().SetPermissionMode(a.ctx, req)
 }
 
-// SetChatSessionProvider 切换已有会话的 LLM 供应商（providerKey 空串 = 跟随 agent
-// 绑定，CLI 后端即回到自身登录态）。自下一轮生效，不打断正在进行的轮；所选供应商
-// 缺失 / 停用 / 与后端类型不兼容时拒绝写入并报错，会话保持原供应商。
-func (a *App) SetChatSessionProvider(req *chat_svc.SetSessionProviderRequest) (*chat_svc.SetSessionProviderResponse, error) {
-	return chat_svc.Chat().SetChatSessionProvider(a.ctx, req)
+// SetChatSessionModelTarget 切换已有会话的 LLM ModelTarget（ProviderKey/ModelKey 双空 =
+// 跟随 agent 绑定，CLI 后端即回到自身登录态）。原子写 provider_key + model_key 两列，自
+// 下一轮生效，不打断正在进行的轮；所选 provider/model 缺失 / 停用 / 与后端类型不兼容时
+// 拒绝写入并报错，会话保持原 target。
+func (a *App) SetChatSessionModelTarget(req *chat_svc.SetChatSessionModelTargetRequest) (*chat_svc.SetChatSessionModelTargetResponse, error) {
+	return chat_svc.Chat().SetChatSessionModelTarget(a.ctx, req)
 }
 
 // RegenerateChatMessage 截掉指定 assistant 消息之前的 user 锚点后，用同一段

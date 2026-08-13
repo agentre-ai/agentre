@@ -28,6 +28,34 @@ func TestPrintStatus_ShowsDatabasePathAndSize(t *testing.T) {
 	assert.Contains(t, out, "3.0 GB", "体量要印成人读得懂的量级,3221225472 这串数字判断不了该不该清理")
 }
 
+func TestGivenStatusWithVersionWhenPrintingThenShowsDaemonBuildIdentity(t *testing.T) {
+	var buf bytes.Buffer
+	printStatus(&buf, map[string]any{
+		"pid":              float64(1),
+		"version":          "v1.2.3 (abcdef1)",
+		"listenURLs":       []any{},
+		"pairedPeers":      []any{},
+		"activeSessions":   float64(0),
+		"llmProviderCount": float64(0),
+	})
+
+	assert.Contains(t, buf.String(), "Version: v1.2.3 (abcdef1)\n")
+}
+
+func TestGivenOlderStatusWithoutVersionWhenPrintingThenStillRenders(t *testing.T) {
+	var buf bytes.Buffer
+	printStatus(&buf, map[string]any{
+		"pid":              float64(1),
+		"listenURLs":       []any{},
+		"pairedPeers":      []any{},
+		"activeSessions":   float64(0),
+		"llmProviderCount": float64(0),
+	})
+
+	assert.Contains(t, buf.String(), "Daemon running, pid 1\n")
+	assert.NotContains(t, buf.String(), "Version:")
+}
+
 // TestPrintStatus_OmitsDatabaseLineWhenDaemonDoesNotReportIt 老 daemon 的状态应答里没有
 // dbPath,此时不能印一行空路径的 "Database:" —— 那会让人以为库文件丢了。
 func TestPrintStatus_OmitsDatabaseLineWhenDaemonDoesNotReportIt(t *testing.T) {

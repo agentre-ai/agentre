@@ -41,7 +41,8 @@ func TestRun_HappyPath_EmitsTextDelta(t *testing.T) {
 	r := New()
 	events, result, err := r.Run(ctx, agentruntime.RunRequest{
 		Backend:      &agent_backend_entity.AgentBackend{ID: 7, Type: "builtin", LLMProviderKey: "key-11"},
-		Provider:     &llm_provider_entity.LLMProvider{ID: 11, Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-test"},
+		Provider:     &llm_provider_entity.LLMProvider{ID: 11, Type: string(llm_provider_entity.TypeAnthropic)},
+		Effective:    &agentruntime.EffectiveLLMConfig{ProviderKey: "key-11", ProviderType: string(llm_provider_entity.TypeAnthropic), ModelID: "claude-test"},
 		AgentID:      99,
 		SessionID:    42,
 		SystemPrompt: "test sys",
@@ -103,7 +104,8 @@ func TestRun_BatchesConsecutiveSteerConsumed(t *testing.T) {
 	r := New()
 	events, _, err := r.Run(ctx, agentruntime.RunRequest{
 		Backend:   &agent_backend_entity.AgentBackend{ID: 7, Type: "builtin", LLMProviderKey: "key-11"},
-		Provider:  &llm_provider_entity.LLMProvider{ID: 11, Type: string(llm_provider_entity.TypeAnthropic), Model: "m"},
+		Provider:  &llm_provider_entity.LLMProvider{ID: 11, Type: string(llm_provider_entity.TypeAnthropic)},
+		Effective: &agentruntime.EffectiveLLMConfig{ProviderKey: "key-11", ProviderType: string(llm_provider_entity.TypeAnthropic), ModelID: "m"},
 		AgentID:   99,
 		SessionID: 42,
 		UserText:  "first",
@@ -213,7 +215,8 @@ func TestRun_UsesProviderModel(t *testing.T) {
 	r := New()
 	events, result, err := r.Run(ctx, agentruntime.RunRequest{
 		Backend:   &agent_backend_entity.AgentBackend{ID: 7, Type: "builtin", LLMProviderKey: "key-11"},
-		Provider:  &llm_provider_entity.LLMProvider{ID: 11, Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-test"},
+		Provider:  &llm_provider_entity.LLMProvider{ID: 11, Type: string(llm_provider_entity.TypeAnthropic)},
+		Effective: &agentruntime.EffectiveLLMConfig{ProviderKey: "key-11", ProviderType: string(llm_provider_entity.TypeAnthropic), ModelID: "claude-test"},
 		AgentID:   99,
 		SessionID: 42,
 		UserText:  "ping",

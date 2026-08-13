@@ -72,9 +72,17 @@ type Session struct {
 	// ProviderKey 是会话级 LLM 供应商 key（chat_sessions.provider_key）。
 	// 空串 = 跟随 agent 绑定：每轮由 chat_svc 从 be.LLMProviderKey → prov.Model 解析。
 	// 非空时在解析 prov 时优先于 agent 绑定（spec 决策 2/3）。新建会话随首条消息落库，
-	// 此后可由 chat_svc.SetChatSessionProvider 单列改写（2026-08-10 决策 1，自下一轮
+	// 此后可由 chat_svc.SetChatSessionModelTarget 单列改写（2026-08-10 决策 1，自下一轮
 	// 生效）；所指向供应商缺失/停用时回退 agent 绑定并追加持久 notice（决策 8）。
 	ProviderKey string `gorm:"column:provider_key;type:text;not null;default:''"`
+	// ModelKey 是会话级稳定 ModelKey（chat_sessions.model_key，ModelTarget 契约）。
+	// 与 ProviderKey 组合成会话的 ModelTarget：
+	//   - 两者都空 = inherit-agent（每轮解析 agent 绑定；后端钉了固定模型时沿用）；
+	//   - ProviderKey 非空 + ModelKey 空 = provider-default（每轮解析该 Provider 当前默认）；
+	//   - 两者都非空 = fixed-model（解析指定启用子模型）。
+	// 由 chat_svc.SetChatSessionModelTarget 与 provider_key 同一条原子语句写入；普通
+	// Session Save 必须 Omit 这一列，否则轮中切好的模型会被轮次开始时读出的旧实体冲掉。
+	ModelKey string `gorm:"column:model_key;type:text;not null;default:''"`
 	// ExecDeviceID 执行该会话的配对 daemon(paired_agentreds.id)。0 = 本机执行 ——
 	// 也是老数据的默认值，语义与远端执行落地前完全一致。
 	ExecDeviceID int64 `gorm:"column:exec_device_id;type:bigint;not null;default:0"`

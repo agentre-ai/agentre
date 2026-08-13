@@ -7,8 +7,6 @@ package fakes
 
 import (
 	"context"
-	"os"
-	"strings"
 
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
@@ -18,23 +16,12 @@ import (
 	fakert "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/fake"
 	"github.com/agentre-ai/agentre/internal/pkg/agentskill"
 	"github.com/agentre-ai/agentre/internal/pkg/agenttool"
-	"github.com/agentre-ai/agentre/internal/pkg/keychain"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/service/agent_backend_svc"
 	"github.com/agentre-ai/agentre/internal/service/agent_svc"
 	"github.com/agentre-ai/agentre/internal/service/department_svc"
 )
-
-const e2eKeychainDirEnv = "AGENTRE_E2E_KEYCHAIN_DIR"
-
-func installE2EKeychainOverride() {
-	dir := strings.TrimSpace(os.Getenv(e2eKeychainDirEnv))
-	if dir == "" {
-		return
-	}
-	keychain.SetDefault(keychain.NewFile(dir))
-}
 
 type codexSkillDiscoverer struct{}
 
@@ -79,9 +66,11 @@ func (claudeSkillDiscoverer) Discover(context.Context, agentskill.DiscoverQuery)
 //  2. seed 一个本地 claudecode backend 并挂到默认 CEO agent,
 //     让前端"建会话→发消息→看回复"无需真实 CLI 即可跑通。
 //
+// 隔离 keychain 由 bootstrap(initKeychain,见 internal/bootstrap/keychain.go)在装配
+// Server / Remote Device 之前按 AGENTRE_KEYCHAIN_DIR 建立,这里不再覆盖。
+//
 // 失败只记日志不 panic:e2e 环境异常应让 Playwright 用例红,而不是让 app 崩。
 func Install(ctx context.Context) {
-	installE2EKeychainOverride()
 	// 先接账号:随后 seed 出来的 backend / agent 才会带着账号进出站队列(R3)。
 	installE2ELoggedInAccount(ctx)
 	agentruntime.RegisterRuntime(agent_backend_entity.TypeClaudeCode, fakert.New())
@@ -214,7 +203,6 @@ func Install(ctx context.Context) {
 // RunParams 里的 backend.type 走 agentruntime.RuntimeFor,这里只注册就够。失败只
 // 记日志不 panic —— e2e 环境异常应让 Playwright 用例红,而不是让 daemon 崩。
 func InstallAgentred(ctx context.Context) {
-	installE2EKeychainOverride()
 	agentruntime.RegisterRuntime(agent_backend_entity.TypeClaudeCode, fakert.New())
 	agentskill.RegisterDiscoverer(agent_backend_entity.TypeClaudeCode, claudeSkillDiscoverer{})
 	logger.Ctx(ctx).Info("e2efakes.InstallAgentred: e2e fake runtime installed for agentred")

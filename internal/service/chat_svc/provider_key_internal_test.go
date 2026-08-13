@@ -15,6 +15,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
@@ -74,6 +75,19 @@ func setupDirectRunTest(t *testing.T) (*directRunMocks, context.Context) {
 	return m, context.Background()
 }
 
+// expectDirectResolvable 让直接跑 runTurn 的测试把传入的 prov 变成可被 ResolveTarget
+// 解析的配置（EffectiveLLMConfig v1 seam）：runTurn 的 effectiveLLMForNonRemoteTurn 会
+// 再经 ResolveTarget 查一次 FindByKey + FindModelByKey(DefaultModelKey)，测试必须把这些
+// 查询也搭上，否则单次期望会打爆。
+func expectDirectResolvable(m *directRunMocks, prov *llm_provider_entity.LLMProvider) {
+	m.provider.EXPECT().FindByKey(gomock.Any(), prov.ProviderKey).Return(prov, nil).AnyTimes()
+	m.provider.EXPECT().FindModelByKey(gomock.Any(), prov.DefaultModelKey).Return(
+		&llm_provider_model_entity.LLMProviderModel{
+			ModelKey: prov.DefaultModelKey, ModelID: "model-" + prov.ProviderKey,
+			Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE,
+		}, nil).AnyTimes()
+}
+
 // TestRunTurn_ProviderFallbackAppendsPersistentNotice 钉死决策 8：会话 provider_key
 // 指向的供应商缺失/停用 → 本轮回退 agent 绑定，并在 assistant transcript 追加一条
 // 持久 notice（结构化 {"providerKey":..}，前端 t() 渲染）。notice 随 runTurn 的
@@ -101,8 +115,10 @@ func TestRunTurn_ProviderFallbackAppendsPersistentNotice(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}
 	prov := &llm_provider_entity.LLMProvider{
-		ProviderKey: "key-21", Type: string(llm_provider_entity.TypeAnthropic), Model: "provider-default", Status: consts.ACTIVE,
+		ProviderKey: "key-21", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
+		Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21",
 	}
+	expectDirectResolvable(m, prov)
 	assistant := &chat_entity.Message{ID: 1001, SessionID: 100, Role: "assistant", BlocksJSON: "[]"}
 
 	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil)
@@ -173,8 +189,10 @@ func TestRunTurn_NoModelDeviationNotice(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-99", Status: consts.ACTIVE,
 	}
 	prov := &llm_provider_entity.LLMProvider{
-		ProviderKey: "key-99", Type: string(llm_provider_entity.TypeAnthropic), Model: "provider-default", Status: consts.ACTIVE,
+		ProviderKey: "key-99", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
+		Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-99",
 	}
+	expectDirectResolvable(m, prov)
 	assistant := &chat_entity.Message{ID: 1001, SessionID: 100, Role: "assistant", BlocksJSON: "[]"}
 
 	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil)
@@ -223,8 +241,10 @@ func TestRunTurn_RemoteFallbackSignalAppendsPersistentNotice(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}
 	prov := &llm_provider_entity.LLMProvider{
-		ProviderKey: "key-21", Type: string(llm_provider_entity.TypeAnthropic), Model: "provider-default", Status: consts.ACTIVE,
+		ProviderKey: "key-21", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
+		Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21",
 	}
+	expectDirectResolvable(m, prov)
 	assistant := &chat_entity.Message{ID: 1001, SessionID: 100, Role: "assistant", BlocksJSON: "[]"}
 
 	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil)
@@ -272,8 +292,9 @@ func TestSessionProviderOverride_FallbackNoticeCarriesProviderName(t *testing.T)
 		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.DELETE,
 	}, nil)
 
-	_, notice := s.sessionProviderOverride(ctx, be, "stale-key", nil)
+	_, notice, err := s.sessionProviderOverride(ctx, be, "stale-key", "", nil)
 
+	require.NoError(t, err)
 	require.NotNil(t, notice)
 	assert.JSONEq(t, `{"providerKey":"stale-key","providerName":"中转 · GLM 5.2"}`, notice.Text)
 }
@@ -289,8 +310,9 @@ func TestSessionProviderOverride_FallbackNoticeOmitsNameWhenProviderGone(t *test
 	}
 	m.provider.EXPECT().FindByKey(ctx, "gone-key").Return(nil, nil)
 
-	_, notice := s.sessionProviderOverride(ctx, be, "gone-key", nil)
+	_, notice, err := s.sessionProviderOverride(ctx, be, "gone-key", "", nil)
 
+	require.NoError(t, err)
 	require.NotNil(t, notice)
 	assert.JSONEq(t, `{"providerKey":"gone-key"}`, notice.Text)
 }
@@ -312,7 +334,7 @@ func TestLoadSession_OverlaysApprovalOntoInFlightTurnNotNoticeRow(t *testing.T) 
 
 	noticeRow := &chat_entity.Message{ID: 43, SessionID: 9, Role: "assistant", Seq: 3}
 	require.NoError(t, noticeRow.SetBlocks([]blocks.ContentBlock{blocks.NoticeBlock{
-		Level: "info", Text: encodeProviderSwitch("session-key", "中转 · GLM 5.2"),
+		Level: "info", Text: encodeProviderSwitch("session-key", "", "中转 · GLM 5.2", ""),
 	}}))
 
 	m.session.EXPECT().Find(ctx, int64(9)).Return(&chat_entity.Session{
