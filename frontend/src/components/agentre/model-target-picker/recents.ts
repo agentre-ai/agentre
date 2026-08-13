@@ -51,6 +51,30 @@ export function readRecentTargets(
   }
 }
 
+// removeRecentTarget 移除单个最近目标（chip 的 X 按钮）。移除后不补位，长度自然缩短。
+export function removeRecentTarget(
+  scenario: string,
+  executionLocation: string,
+  target: ModelTarget,
+): void {
+  if (!target || target.providerKey === "") return;
+  try {
+    const prev = readRecentTargets(scenario, executionLocation);
+    const next = prev.filter(
+      (x) =>
+        !(
+          x.providerKey === target.providerKey && x.modelKey === target.modelKey
+        ),
+    );
+    window.localStorage.setItem(
+      recentStorageKey(scenario, executionLocation),
+      JSON.stringify(next),
+    );
+  } catch {
+    // localStorage 不可用（隐私模式等）——最近使用是纯增强，静默忽略。
+  }
+}
+
 // recordRecentTarget 在 target 成功持久化后调用（消费方保存成功后）。native/inherit
 // 双空 key 不进入最近；dedupe 后保持在最前并截断到 5 项。
 export function recordRecentTarget(
