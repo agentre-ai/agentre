@@ -68,12 +68,17 @@ export function BatchDeleteDialog({
           model,
           reason: t("llmProviders.modelsTable.batch.rowDefaultBlocked"),
         });
-      } else {
+      } else if (del.kind === "referenced") {
         protectedItems.push({
           model,
           reason: t("llmProviders.modelsTable.batch.rowReferencedBlocked", {
             count: del.count,
           }),
+        });
+      } else {
+        protectedItems.push({
+          model,
+          reason: t("llmProviders.modelsTable.batch.referencesUnavailable"),
         });
       }
     }

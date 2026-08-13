@@ -92,6 +92,7 @@ export function ProviderWorkspace({
   testingModelId,
   providerRefCounts,
   modelRefCounts,
+  modelRefsLoading,
 }: {
   provider: Provider;
   models: Model[];
@@ -101,6 +102,7 @@ export function ProviderWorkspace({
   testingModelId: number | null;
   providerRefCounts: ReferenceCounts | null;
   modelRefCounts: Map<string, ReferenceCounts>;
+  modelRefsLoading: boolean;
 } & WorkspaceHandlers) {
   const { t } = useTranslation();
   const [search, setSearch] = React.useState("");
@@ -130,6 +132,11 @@ export function ProviderWorkspace({
     : models;
 
   const selectedModels = visible.filter((m) => selected.has(m.id));
+  const selectedDeleteabilityKnown = selectedModels.every(
+    (model) =>
+      model.modelKey === provider.defaultModelKey ||
+      modelRefCounts.has(model.modelKey),
+  );
   const allVisibleSelected =
     visible.length > 0 && visible.every((m) => selected.has(m.id));
 
@@ -389,6 +396,14 @@ export function ProviderWorkspace({
               size="sm"
               className="h-[30px] gap-1.5 px-3 text-xs"
               onClick={handleBatchDelete}
+              disabled={modelRefsLoading || !selectedDeleteabilityKnown}
+              title={
+                modelRefsLoading
+                  ? t("llmProviders.modelsTable.batch.referencesPending")
+                  : !selectedDeleteabilityKnown
+                    ? t("llmProviders.modelsTable.batch.referencesUnavailable")
+                    : undefined
+              }
             >
               {t("llmProviders.modelsTable.batch.delete")}
             </Button>
@@ -554,7 +569,11 @@ export function ProviderWorkspace({
                       ? t("llmProviders.modelsTable.deleteBlockedReferenced", {
                           count: del.count,
                         })
-                      : undefined;
+                      : del.kind === "references-unknown"
+                        ? t(
+                            "llmProviders.modelsTable.batch.referencesUnavailable",
+                          )
+                        : undefined;
                 return (
                   <TableRow
                     key={model.id}
@@ -616,10 +635,14 @@ export function ProviderWorkspace({
                                   ? t(
                                       "llmProviders.modelsTable.batch.rowDefaultBlocked",
                                     )
-                                  : t(
-                                      "llmProviders.modelsTable.batch.rowReferencedBlocked",
-                                      { count: del.count },
-                                    )}
+                                  : del.kind === "referenced"
+                                    ? t(
+                                        "llmProviders.modelsTable.batch.rowReferencedBlocked",
+                                        { count: del.count },
+                                      )
+                                    : t(
+                                        "llmProviders.modelsTable.batch.referencesUnavailable",
+                                      )}
                             </span>
                           ) : null}
                         </div>

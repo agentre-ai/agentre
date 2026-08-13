@@ -64,17 +64,20 @@ export function totalReferences(
 export type ModelDeleteability =
   | { kind: "ok" }
   | { kind: "default" }
+  | { kind: "references-unknown" }
   | { kind: "referenced"; count: number };
 
-// 唯一的「可否删除」判定来源：默认模型不可删、被引用不可删、其余可删。
-// 模型表行内标注与批量删除确认分组共用这一判定，避免另起一套规则。
+// 唯一的「可否删除」判定来源：默认模型不可删；引用尚未加载/加载失败时安全地
+// 保持不可删；确认无引用后才可删。模型表行内标注与批量删除确认分组共用。
 export function modelDeleteability(
   model: Model,
   defaultModelKey: string,
   modelRefCounts: Map<string, ReferenceCounts>,
 ): ModelDeleteability {
   if (model.modelKey === defaultModelKey) return { kind: "default" };
-  const count = totalReferences(modelRefCounts.get(model.modelKey));
+  const counts = modelRefCounts.get(model.modelKey);
+  if (!counts) return { kind: "references-unknown" };
+  const count = totalReferences(counts);
   if (count > 0) return { kind: "referenced", count };
   return { kind: "ok" };
 }

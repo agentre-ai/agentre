@@ -1928,6 +1928,8 @@
         "enable": "Enable selected",
         "disable": "Disable selected",
         "delete": "Delete selected",
+        "referencesPending": "Wait for reference checks to finish before deleting",
+        "referencesUnavailable": "Reference status unavailable: cannot delete safely",
         "rowCanDelete": "Can delete",
         "rowDefaultBlocked": "Default model: cannot delete",
         "rowReferencedBlocked": "Referenced by {{count}}: cannot delete"

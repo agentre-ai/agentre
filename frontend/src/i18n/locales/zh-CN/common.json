@@ -1928,6 +1928,8 @@
         "enable": "批量启用",
         "disable": "批量停用",
         "delete": "批量删除",
+        "referencesPending": "请等待引用检查完成后再删除",
+        "referencesUnavailable": "引用状态不可用，无法安全删除",
         "rowCanDelete": "可删除",
         "rowDefaultBlocked": "默认模型不可删除",
         "rowReferencedBlocked": "引用 {{count}} 处不可删除"

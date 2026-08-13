@@ -425,6 +425,95 @@ describe("LlmProvidersPanel", () => {
     expect(texts[7]).toBe("");
   });
 
+  it("Given reference counts are still loading, When a model is selected, Then batch delete stays blocked until deleteability is known", async () => {
+    const user = userEvent.setup();
+    let resolveReferences: ((value: unknown) => void) | undefined;
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel({
+              id: 13,
+              modelKey: "mk-haiku",
+              modelId: "claude-haiku",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+      LLMModelRefCounts: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveReferences = resolve;
+          }),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    const checkbox = await screen.findByRole("checkbox", {
+      name: "Select claude-haiku",
+    });
+    await user.click(checkbox);
+
+    expect(
+      screen.getByRole("button", { name: "Delete selected" }),
+    ).toBeDisabled();
+
+    resolveReferences?.({
+      counts: { backends: 0, sessions: 0, routes: 0 },
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Delete selected" }),
+      ).not.toBeDisabled();
+    });
+  });
+
+  it("Given a reference lookup fails, When a model is selected, Then batch delete remains blocked instead of treating the model as unreferenced", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel({
+              id: 13,
+              modelKey: "mk-haiku",
+              modelId: "claude-haiku",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+      LLMModelRefCounts: vi.fn(() =>
+        Promise.reject(new Error("reference lookup failed")),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    const checkbox = await screen.findByRole("checkbox", {
+      name: "Select claude-haiku",
+    });
+    await user.click(checkbox);
+
+    const deleteButton = screen.getByRole("button", {
+      name: "Delete selected",
+    });
+    await waitFor(() => expect(deleteButton).toBeDisabled());
+    expect(deleteButton).toHaveAttribute(
+      "title",
+      "Reference status unavailable: cannot delete safely",
+    );
+    expect(
+      screen.getByText("Reference status unavailable: cannot delete safely"),
+    ).toBeInTheDocument();
+  });
+
   it("Given models with and without references, When the table renders, Then the reference column shows the count and a placeholder for unreferenced models", async () => {
     installAppMock({
       ListLLMProviders: vi.fn(() =>

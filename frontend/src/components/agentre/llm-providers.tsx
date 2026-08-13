@@ -94,6 +94,7 @@ export function LlmProvidersPanel({
   const [modelRefCounts, setModelRefCounts] = React.useState<
     Map<string, ReferenceCounts>
   >(new Map());
+  const [modelRefsLoading, setModelRefsLoading] = React.useState(false);
 
   const selectedProvider = providers.find((p) => p.id === selectedId) ?? null;
 
@@ -214,17 +215,20 @@ export function LlmProvidersPanel({
     };
   }, [selectedProvider]);
 
-  // 模型表「引用」列：按 modelKey 逐条拉取引用计数，失败降级为 0。
+  // 模型表「引用」列：按 modelKey 逐条拉取引用计数。新目录先清掉旧计数；单条
+  // 失败保持 unknown，绝不能把「未确认」降级成 0 后开放批量删除。
   React.useEffect(() => {
     const keys = models.map((m) => m.modelKey);
+    setModelRefCounts(new Map());
     if (keys.length === 0) {
-      setModelRefCounts(new Map());
+      setModelRefsLoading(false);
       return;
     }
     let cancelled = false;
+    setModelRefsLoading(true);
     void (async () => {
       const entries = await Promise.all(
-        keys.map(async (key): Promise<[string, ReferenceCounts]> => {
+        keys.map(async (key): Promise<[string, ReferenceCounts] | null> => {
           try {
             const resp = await LLMModelRefCounts(
               new llm_provider_svc.ModelRefCountsRequest({ modelKey: key }),
@@ -234,11 +238,20 @@ export function LlmProvidersPanel({
               resp.counts ?? { backends: 0, sessions: 0, routes: 0 },
             ];
           } catch {
-            return [key, { backends: 0, sessions: 0, routes: 0 }];
+            return null;
           }
         }),
       );
-      if (!cancelled) setModelRefCounts(new Map(entries));
+      if (!cancelled) {
+        setModelRefCounts(
+          new Map(
+            entries.filter(
+              (entry): entry is [string, ReferenceCounts] => entry !== null,
+            ),
+          ),
+        );
+        setModelRefsLoading(false);
+      }
     })();
     return () => {
       cancelled = true;
@@ -690,6 +703,7 @@ export function LlmProvidersPanel({
               testingModelId={testingModelId}
               providerRefCounts={providerRefCounts}
               modelRefCounts={modelRefCounts}
+              modelRefsLoading={modelRefsLoading}
               onTestProvider={handleTestProvider}
               onTestModel={handleTestModel}
               onEditConnection={() => {
@@ -791,6 +805,7 @@ function ProviderManagement({
   onBatchDeleteCompleted,
   providerRefCounts,
   modelRefCounts,
+  modelRefsLoading,
 }: {
   providers: Provider[];
   selectedId: number | null;
@@ -818,6 +833,7 @@ function ProviderManagement({
   onBatchDeleteCompleted: (result: BatchDeleteResult) => void;
   providerRefCounts: ReferenceCounts | null;
   modelRefCounts: Map<string, ReferenceCounts>;
+  modelRefsLoading: boolean;
 }) {
   const { t } = useTranslation();
   const [navSearch, setNavSearch] = React.useState("");
@@ -963,6 +979,7 @@ function ProviderManagement({
             onBatchDeleteCompleted={onBatchDeleteCompleted}
             providerRefCounts={providerRefCounts}
             modelRefCounts={modelRefCounts}
+            modelRefsLoading={modelRefsLoading}
           />
         ) : null}
       </div>
