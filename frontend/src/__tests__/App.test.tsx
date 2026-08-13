@@ -247,6 +247,7 @@ function mockLlmProviders() {
                   hasApiKey: true,
                   id: 1,
                   maskedApiKey: "sk-ant-•••••••••••••• xJ12",
+                  modelCount: 1,
                   name: "Production",
                   providerKey: "pk-production",
                   type: "anthropic",
@@ -260,6 +261,7 @@ function mockLlmProviders() {
                   hasApiKey: false,
                   id: 2,
                   maskedApiKey: "",
+                  modelCount: 0,
                   name: "Ollama 本机",
                   providerKey: "pk-ollama",
                   type: "openai-chat",
@@ -1131,13 +1133,15 @@ describe("App", () => {
       name: /Production/,
     });
     expect(
-      within(production).getByText("https://api.anthropic.com"),
+      within(production).getByText(/https:\/\/api\.anthropic\.com/),
     ).toBeInTheDocument();
+    expect(within(production).getByText(/1 models/)).toBeInTheDocument();
     expect(within(production).queryByText("Enabled")).not.toBeInTheDocument();
     const ollama = within(nav).getByRole("button", { name: /Ollama 本机/ });
     expect(
-      within(ollama).getByText("http://localhost:11434/v1"),
+      within(ollama).getByText(/http:\/\/localhost:11434\/v1/),
     ).toBeInTheDocument();
+    expect(within(ollama).getByText(/0 models/)).toBeInTheDocument();
     expect(within(ollama).getByText("Disabled")).toBeInTheDocument();
 
     expect(
