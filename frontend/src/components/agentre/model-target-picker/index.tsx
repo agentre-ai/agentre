@@ -62,6 +62,8 @@ export type ModelTargetPickerProps = {
   error?: boolean;
   errorText?: string;
   disabled?: boolean;
+  // openOnMount：直达更换绑定等入口打开消费方时，同时展开选择器。
+  openOnMount?: boolean;
   // invalid：当前选中的 target 在目录里解析不出来（Provider/Model 缺失/停用/被删）。
   invalid?: boolean;
   // remoteMissing：目标执行设备上缺少所选 Provider（远端场景提示，task 6 深化）。
@@ -85,9 +87,12 @@ export type ModelTargetPickerProps = {
   align?: "start" | "end";
   className?: string;
   title?: string;
-  // triggerLabel：覆盖触发按钮文案。chat 场景「未选但 agent 已绑 provider」时显示
+  // triggerLabel：覆盖触发按钮主行文案。chat 场景「未选但 agent 已绑 provider」时显示
   // 绑定供应商名，而不是顶部特殊项「跟随 Agent 绑定」；undefined 时按目录解析。
   triggerLabel?: string;
+  // triggerSub：可选触发按钮副行。后端编辑器用它展示当前解析出的生效模型与模式后果；
+  // 未传时保持 model-pill / chat 等既有消费方的单行形态。
+  triggerSub?: React.ReactNode;
   "data-testid"?: string;
   "aria-label"?: string;
 };
@@ -146,6 +151,7 @@ export function ModelTargetPicker({
   error = false,
   errorText,
   disabled = false,
+  openOnMount = false,
   invalid = false,
   remoteMissing = false,
   supportsFixedModel = true,
@@ -157,11 +163,12 @@ export function ModelTargetPicker({
   className,
   title,
   triggerLabel,
+  triggerSub,
   "data-testid": testId,
   "aria-label": ariaLabel,
 }: ModelTargetPickerProps) {
   const { t } = useTranslation();
-  const [open, setOpen] = React.useState(false);
+  const [open, setOpen] = React.useState(openOnMount);
   const [search, setSearch] = React.useState("");
   const [activeIndex, setActiveIndex] = React.useState(0);
   const [recentTick, setRecentTick] = React.useState(0);
@@ -472,7 +479,13 @@ export function ModelTargetPicker({
             "inline-flex w-full items-center justify-between gap-2 rounded-md border border-border bg-background text-xs transition-colors",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
             "disabled:cursor-not-allowed disabled:opacity-60",
-            compact ? "h-7 px-2" : "h-9 px-2.5",
+            triggerSub
+              ? compact
+                ? "min-h-9 px-2 py-1"
+                : "min-h-11 px-2.5 py-1.5"
+              : compact
+                ? "h-7 px-2"
+                : "h-9 px-2.5",
             invalid
               ? "border-status-waiting/60 bg-status-waiting-bg"
               : "hover:bg-secondary/60",
@@ -486,13 +499,23 @@ export function ModelTargetPicker({
                 aria-hidden="true"
               />
             ) : null}
-            <span
-              className={cn(
-                "min-w-0 truncate",
-                invalid ? "text-status-waiting" : "text-foreground",
-              )}
-            >
-              {triggerText}
+            <span className="flex min-w-0 flex-col items-start gap-0.5">
+              <span
+                className={cn(
+                  "max-w-full truncate",
+                  invalid ? "text-status-waiting" : "text-foreground",
+                )}
+              >
+                {triggerText}
+              </span>
+              {triggerSub ? (
+                <span
+                  data-testid="model-target-trigger-sub"
+                  className="max-w-full truncate text-2xs text-muted-foreground"
+                >
+                  {triggerSub}
+                </span>
+              ) : null}
             </span>
           </span>
           <ChevronDown

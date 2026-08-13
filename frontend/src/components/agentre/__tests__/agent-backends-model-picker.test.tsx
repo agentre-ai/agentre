@@ -336,6 +336,45 @@ describe("ModelTargetPicker", () => {
     ).toHaveTextContent("Anthropic · claude-sonnet-4-6");
   });
 
+  it("triggerSub 存在时触发按钮以主副两行呈现，未传时保持既有单行消费方兼容", () => {
+    const { rerender } = render(
+      <ModelTargetPicker
+        scenario="backend"
+        aria-label="Model binding"
+        backendType="claudecode"
+        selected={{ providerKey: "k-anthropic", modelKey: "" }}
+        onChange={vi.fn()}
+        catalog={catalog()}
+        triggerLabel="Anthropic · Follow default"
+        triggerSub="Effective model: claude-sonnet-4-6 · changes next turn"
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: "Model binding" });
+    expect(trigger).toHaveTextContent("Anthropic · Follow default");
+    expect(trigger).toHaveTextContent(
+      "Effective model: claude-sonnet-4-6 · changes next turn",
+    );
+    expect(
+      within(trigger).getByTestId("model-target-trigger-sub"),
+    ).toBeVisible();
+
+    rerender(
+      <ModelTargetPicker
+        scenario="chat"
+        aria-label="Model binding"
+        backendType="claudecode"
+        selected={null}
+        onChange={vi.fn()}
+        catalog={catalog()}
+      />,
+    );
+    expect(
+      within(
+        screen.getByRole("button", { name: "Model binding" }),
+      ).queryByTestId("model-target-trigger-sub"),
+    ).not.toBeInTheDocument();
+  });
+
   it("搜索可过滤，空目录渲染空态", async () => {
     const user = userEvent.setup();
     render(

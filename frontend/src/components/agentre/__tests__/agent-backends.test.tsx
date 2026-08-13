@@ -199,15 +199,15 @@ describe("AgentBackendsPanel", () => {
     });
     await waitFor(() => {
       expect(within(list).getByText("默认助手")).toBeInTheDocument();
-      expect(
-        within(list).getByText(/Anthropic · claude-sonnet-4-6/),
-      ).toBeInTheDocument();
+      expect(within(list).getByText("Anthropic")).toBeInTheDocument();
+      expect(within(list).getByText("claude-sonnet-4-6")).toBeInTheDocument();
+      expect(within(list).getByText("Follow default")).toBeInTheDocument();
     });
     expect(
       within(list).getByRole("img", { name: "Agentre" }),
     ).toBeInTheDocument();
     expect(
-      within(list).getByRole("img", { name: "Claude" }),
+      within(list).getByRole("img", { name: "Anthropic" }),
     ).toBeInTheDocument();
   });
 
@@ -243,6 +243,286 @@ describe("AgentBackendsPanel", () => {
       expect(within(list).getByText("孤儿后端")).toBeInTheDocument();
       expect(within(list).getByText("Needs action")).toBeInTheDocument();
     });
+  });
+
+  it("Given follow-default, fixed, CLI-login and invalid backends, When the list renders, Then each row shows an independent binding summary and change-binding action", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      ListAgentBackends: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 11,
+              type: "claudecode",
+              name: "Follow backend",
+              llmProviderKey: "key-1",
+              llmModelKey: "",
+              llmProviderName: "Anthropic",
+              llmProviderType: "anthropic",
+              llmProviderModel: "claude-sonnet-4-6",
+              llmProviderActive: true,
+              cliPath: "/usr/bin/claude",
+              agentCount: 2,
+            },
+            {
+              id: 12,
+              type: "claudecode",
+              name: "Fixed backend",
+              llmProviderKey: "key-1",
+              llmModelKey: "mk-opus",
+              llmProviderName: "Anthropic",
+              llmProviderType: "anthropic",
+              llmProviderModel: "claude-opus-4-1",
+              llmProviderActive: true,
+              cliPath: "/usr/bin/claude",
+              agentCount: 1,
+            },
+            {
+              id: 13,
+              type: "claudecode",
+              name: "CLI backend",
+              llmProviderKey: "",
+              llmModelKey: "",
+              llmProviderName: "",
+              llmProviderType: "",
+              llmProviderModel: "",
+              llmProviderActive: false,
+              cliPath: "/usr/bin/claude",
+              agentCount: 0,
+            },
+            {
+              id: 14,
+              type: "claudecode",
+              name: "Invalid backend",
+              llmProviderKey: "key-gone",
+              llmModelKey: "mk-gone",
+              llmProviderName: "Removed provider",
+              llmProviderType: "anthropic",
+              llmProviderModel: "claude-removed",
+              llmProviderActive: false,
+              cliPath: "/usr/bin/claude",
+              agentCount: 0,
+            },
+          ],
+        }),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+
+    const followRow = (await screen.findByText("Follow backend")).closest(
+      '[role="listitem"]',
+    ) as HTMLElement;
+    expect(within(followRow).getByText("Anthropic")).toBeInTheDocument();
+    expect(
+      within(followRow).getByText("claude-sonnet-4-6"),
+    ).toBeInTheDocument();
+    expect(within(followRow).getByText("Follow default")).toBeInTheDocument();
+    expect(
+      within(followRow).getByRole("img", { name: "Anthropic" }),
+    ).toBeInTheDocument();
+
+    const fixedRow = screen
+      .getByText("Fixed backend")
+      .closest('[role="listitem"]') as HTMLElement;
+    expect(within(fixedRow).getByText("claude-opus-4-1")).toBeInTheDocument();
+    expect(within(fixedRow).getByText("Fixed")).toBeInTheDocument();
+
+    const cliRow = screen
+      .getByText("CLI backend")
+      .closest('[role="listitem"]') as HTMLElement;
+    expect(within(cliRow).getByText("Use CLI login state")).toBeInTheDocument();
+
+    const invalidRow = screen
+      .getByText("Invalid backend")
+      .closest('[role="listitem"]') as HTMLElement;
+    expect(
+      within(invalidRow).getByText(/binding is invalid/i),
+    ).toBeInTheDocument();
+    const invalidChange = within(invalidRow).getByRole("button", {
+      name: "Change binding for Invalid backend",
+    });
+    expect(invalidChange).toHaveAttribute("data-variant", "default");
+
+    await user.click(
+      within(followRow).getByRole("button", {
+        name: "Change binding for Follow backend",
+      }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Edit Agent Backend",
+    });
+    expect(
+      within(dialog).getByRole("heading", { name: "Model binding" }),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("listbox", { name: "Model binding" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Given a Claude backend editor, When binding mode changes, Then the model-binding block keeps tier routes collapsed and only shows custom model for CLI login", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            mockModel(1, "mk-1", "claude-sonnet-4-6"),
+            mockModel(1, "mk-opus", "claude-opus-4-1"),
+          ],
+        }),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+    await screen.findByText("默认助手");
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
+    );
+
+    const block = within(dialog).getByTestId("model-binding-block");
+    expect(
+      within(block).getByRole("heading", { name: "Model binding" }),
+    ).toBeInTheDocument();
+    const routesToggle = within(block).getByRole("button", {
+      name: /Model tier routes/,
+    });
+    expect(routesToggle).toHaveAttribute("aria-expanded", "false");
+    expect(routesToggle).toHaveTextContent(/OPUS.*main binding/i);
+    expect(routesToggle).toHaveTextContent(/SONNET.*main binding/i);
+    expect(routesToggle).toHaveTextContent(/HAIKU.*main binding/i);
+    expect(within(block).getByLabelText("Custom Model")).toBeInTheDocument();
+    expect(
+      within(block).getByText(/only applies with CLI login/i),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(block).getByRole("button", { name: "Model binding" }),
+    );
+    await user.click(
+      await screen.findByRole("option", {
+        name: /Follow this provider's default/,
+      }),
+    );
+    expect(
+      within(block).queryByLabelText("Custom Model"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(block).getByText(/retained but ignored/i),
+    ).toBeInTheDocument();
+
+    await user.click(routesToggle);
+    expect(routesToggle).toHaveAttribute("aria-expanded", "true");
+    expect(
+      within(block).getAllByRole("button", { name: /Claude tier route/ }),
+    ).toHaveLength(3);
+  });
+
+  it("Given a selected provider target, When the editor renders, Then the picker trigger uses target-and-mode plus effective-model consequence on two lines", async () => {
+    const user = userEvent.setup();
+    installAppMock();
+    render(<AgentBackendsPanel />);
+    const row = (await screen.findByText("默认助手")).closest(
+      '[role="listitem"]',
+    ) as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /Edit/ }));
+    const dialog = await screen.findByRole("dialog");
+    const trigger = within(dialog).getByRole("button", {
+      name: "Model binding",
+    });
+    expect(trigger).toHaveTextContent("Anthropic");
+    expect(trigger).toHaveTextContent("Follow default");
+    expect(trigger).toHaveTextContent("claude-sonnet-4-6");
+    expect(trigger).toHaveTextContent(/next turn/i);
+    expect(
+      within(trigger).getByTestId("model-target-trigger-sub"),
+    ).toBeVisible();
+  });
+
+  it("Given an editor draft, When runtime and target change, Then the effective configuration summary updates live and explains whether saving is possible", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      RemoteDeviceList: vi.fn(() =>
+        Promise.resolve([{ id: 7, name: "linux-srv", online: true }]),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            mockModel(1, "mk-1", "claude-sonnet-4-6"),
+            mockModel(1, "mk-opus", "claude-opus-4-1"),
+          ],
+        }),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+    await screen.findByText("默认助手");
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
+    );
+    const summary = within(dialog).getByTestId("effective-config-summary");
+    expect(summary).toHaveTextContent(/Local/);
+    expect(summary).toHaveTextContent(/CLI login state/);
+    expect(summary).toHaveTextContent(/Can save/);
+    expect(summary).toHaveTextContent(/0 agents/);
+
+    await user.click(
+      within(dialog).getByRole("combobox", { name: "Runtime Device" }),
+    );
+    await user.click(await screen.findByRole("option", { name: /linux-srv/ }));
+    expect(summary).toHaveTextContent("linux-srv");
+
+    await user.click(
+      within(dialog).getByRole("button", { name: "Model binding" }),
+    );
+    await user.click(
+      await screen.findByRole("option", { name: /claude-opus-4-1/ }),
+    );
+    expect(summary).toHaveTextContent(/Anthropic/);
+    expect(summary).toHaveTextContent(/claude-opus-4-1/);
+    expect(summary).toHaveTextContent(/Fixed/);
+
+    await user.clear(within(dialog).getByLabelText("Name"));
+    expect(summary).toHaveTextContent(/Cannot save/);
+    expect(summary).toHaveTextContent(/Enter a backend name/i);
+  });
+
+  it("does not show implementation compatibility terminology and only explains the empty-compatible-provider case with a settings action", async () => {
+    const user = userEvent.setup();
+    const onOpenLlmProviders = vi.fn();
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 2,
+              type: "openai-response",
+              name: "OpenAI",
+              providerKey: "key-2",
+              enabled: true,
+              defaultModelKey: "mk-2",
+            },
+          ],
+        }),
+      ),
+    });
+    render(<AgentBackendsPanel onOpenLlmProviders={onOpenLlmProviders} />);
+    await screen.findByText("默认助手");
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
+    );
+    expect(within(dialog).queryByText(/Strict match/)).not.toBeInTheDocument();
+    expect(
+      within(dialog).getByText(
+        /No providers compatible with this backend type/,
+      ),
+    ).toBeInTheDocument();
+    await user.click(
+      within(dialog).getByRole("button", { name: "Configure LLM providers" }),
+    );
+    expect(onOpenLlmProviders).toHaveBeenCalledTimes(1);
   });
 
   it("shows a provider-empty hint + configure button when the provider list is empty (task 8)", async () => {
@@ -574,7 +854,9 @@ describe("AgentBackendsPanel", () => {
       expect(
         within(dialog).queryByText(/original LLM provider is disabled/),
       ).not.toBeInTheDocument();
-      expect(within(dialog).getByText(/CLI login state/)).toBeInTheDocument();
+      expect(
+        within(dialog).getByRole("button", { name: "Model binding" }),
+      ).toHaveTextContent(/CLI login state/);
     },
   );
 
@@ -605,7 +887,7 @@ describe("AgentBackendsPanel", () => {
     await waitFor(() => expect(input.value).toBe("/opt/homebrew/bin/pi"));
     // piagent 现在显示可选的 provider 选择器（默认未关联走 CLI 自身登录）。
     expect(
-      within(dialog).getByRole("button", { name: "LLM Provider" }),
+      within(dialog).getByRole("button", { name: "Model binding" }),
     ).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
@@ -695,20 +977,17 @@ describe("AgentBackendsPanel", () => {
     );
 
     await user.click(
-      within(dialog).getByRole("button", { name: "LLM Provider" }),
+      within(dialog).getByRole("button", { name: "Model binding" }),
     );
     // piagent 三类全收：anthropic / openai-chat / openai-response 都要列出来。
-    const anthropicOption = await screen.findByRole("option", {
-      name: /Anthropic/,
+    const defaultOptions = await screen.findAllByRole("option", {
+      name: /Follow this provider's default/,
     });
-    expect(anthropicOption).toBeInTheDocument();
-    expect(
-      await screen.findByRole("option", { name: /OpenAI Chat/ }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("option", { name: /OpenAI Response/ }),
-    ).toBeInTheDocument();
-    await user.click(screen.getByRole("option", { name: /OpenAI Response/ }));
+    expect(defaultOptions).toHaveLength(3);
+    expect(screen.getAllByText("Anthropic").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("OpenAI Chat").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("OpenAI Response").length).toBeGreaterThan(0);
+    await user.click(defaultOptions[2]);
 
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
@@ -762,9 +1041,11 @@ describe("AgentBackendsPanel", () => {
       within(dialog).getByRole("radio", { name: /Pi Agent CLI/ }),
     );
     await user.click(
-      within(dialog).getByRole("button", { name: "LLM Provider" }),
+      within(dialog).getByRole("button", { name: "Model binding" }),
     );
-    await user.click(screen.getByRole("option", { name: /Anthropic/ }));
+    await user.click(
+      screen.getByRole("option", { name: /Follow this provider's default/ }),
+    );
 
     // 选中的供应商 Model 为空 → 可见校验提示 + Save 被禁用。
     expect(
@@ -868,9 +1149,11 @@ describe("AgentBackendsPanel", () => {
     await user.click(screen.getByRole("option", { name: /linux-srv/ }));
 
     await user.click(
-      within(dialog).getByRole("button", { name: "LLM Provider" }),
+      within(dialog).getByRole("button", { name: "Model binding" }),
     );
-    await user.click(screen.getByRole("option", { name: /Anthropic/ }));
+    await user.click(
+      screen.getByRole("option", { name: /Follow this provider's default/ }),
+    );
 
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
@@ -926,9 +1209,11 @@ describe("AgentBackendsPanel", () => {
     );
     await user.click(screen.getByRole("option", { name: /linux-srv/ }));
     await user.click(
-      within(editorDialog).getByRole("button", { name: "LLM Provider" }),
+      within(editorDialog).getByRole("button", { name: "Model binding" }),
     );
-    await user.click(screen.getByRole("option", { name: /Anthropic/ }));
+    await user.click(
+      screen.getByRole("option", { name: /Follow this provider's default/ }),
+    );
 
     expect(
       within(editorDialog).getByText("Remote Provider Sync"),
@@ -980,9 +1265,11 @@ describe("AgentBackendsPanel", () => {
     );
     await user.click(screen.getByRole("option", { name: /linux-srv/ }));
     await user.click(
-      within(editorDialog).getByRole("button", { name: "LLM Provider" }),
+      within(editorDialog).getByRole("button", { name: "Model binding" }),
     );
-    await user.click(screen.getByRole("option", { name: /Anthropic/ }));
+    await user.click(
+      screen.getByRole("option", { name: /Follow this provider's default/ }),
+    );
     await user.click(
       within(editorDialog).getByRole("button", { name: "Sync to Remote" }),
     );
@@ -1037,9 +1324,11 @@ describe("AgentBackendsPanel", () => {
     );
     await user.click(screen.getByRole("option", { name: /linux-srv/ }));
     await user.click(
-      within(editorDialog).getByRole("button", { name: "LLM Provider" }),
+      within(editorDialog).getByRole("button", { name: "Model binding" }),
     );
-    await user.click(screen.getByRole("option", { name: /Anthropic/ }));
+    await user.click(
+      screen.getByRole("option", { name: /Follow this provider's default/ }),
+    );
     await user.click(
       within(editorDialog).getByRole("button", { name: "Sync to Remote" }),
     );
@@ -1165,9 +1454,11 @@ describe("AgentBackendsPanel", () => {
     );
     await user.click(screen.getByRole("option", { name: /linux-srv/ }));
     await user.click(
-      within(dialog).getByRole("button", { name: "LLM Provider" }),
+      within(dialog).getByRole("button", { name: "Model binding" }),
     );
-    await user.click(screen.getByRole("option", { name: /Anthropic/ }));
+    await user.click(
+      screen.getByRole("option", { name: /Follow this provider's default/ }),
+    );
 
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
@@ -1220,7 +1511,7 @@ describe("AgentBackendsPanel", () => {
     const dialog = await screen.findByRole("dialog");
     // 通过 Picker 顶部特殊项（CLI 自身登录态）清除 provider 关联。
     await user.click(
-      within(dialog).getByRole("button", { name: "LLM Provider" }),
+      within(dialog).getByRole("button", { name: "Model binding" }),
     );
     await user.click(
       await screen.findByRole("option", { name: /CLI login state/ }),

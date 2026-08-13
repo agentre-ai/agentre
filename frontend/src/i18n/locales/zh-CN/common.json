@@ -87,8 +87,23 @@
       "cancelTestNamed": "取消测试 {{name}}",
       "deleteNamed": "删除 {{name}}",
       "editNamed": "编辑 {{name}}",
+      "changeBinding": "更换绑定",
+      "changeBindingNamed": "更换 {{name}} 的模型绑定",
       "test": "测试连接",
       "testNamed": "测试连接 {{name}}"
+    },
+    "binding": {
+      "label": "模型绑定",
+      "description": "先选择主模型来源；Claude 分级路由与 CLI 专属覆盖都从属于这项绑定。",
+      "cliLogin": "CLI 自身登录态",
+      "cliResolution": "生效模型由该 CLI 自身的登录账号决定",
+      "modeFollow": "跟随默认",
+      "modeFixed": "固定",
+      "targetWithMode": "{{provider}} · {{mode}}",
+      "followResolution": "生效模型：{{model}} · 默认变化会从下一轮起跟随",
+      "fixedResolution": "生效模型：{{model}} · 不受供应商默认变化影响",
+      "invalidTarget": "目标已失效 · {{target}}",
+      "invalidResolution": "该目标无法运行下一轮，请重新选择绑定"
     },
     "approval": {
       "hint": "工具执行前是否人工确认",
@@ -146,7 +161,9 @@
     "defaultModel": {
       "hint": "--model · 留空走供应商模型 / CLI 默认",
       "label": "自定义模型",
-      "placeholder": "如 claude-fable-5 或别名 opus/sonnet（走 CLI 登录态时生效）"
+      "placeholder": "如 claude-fable-5 或别名 opus/sonnet（走 CLI 登录态时生效）",
+      "cliOnlyDescription": "仅在 CLI 自身登录态下生效；绑定 Agentre 供应商后会保留但被忽略。",
+      "ignoredDescription": "自定义 CLI 模型仍会保留，但绑定 Agentre 供应商期间会被忽略。"
     },
     "deleteDialog": {
       "description": "确认删除「{{name}}」？该操作仅软删，不影响已存在的 Agent 引用。",
@@ -199,7 +216,10 @@
       "inheritMain": "继承主供应商",
       "inheritWithName": "继承主供应商 · {{name}}",
       "label": "模型分级路由",
-      "tierAria": "OPUS/SONNET/HAIKU 路由"
+      "tierAria": "OPUS/SONNET/HAIKU 路由",
+      "inheritsSummary": "继承主绑定 → {{target}}",
+      "fixedSummary": "固定 → {{target}}",
+      "invalid": "目标失效"
     },
     "name": {
       "deviceDefault": "{{device}} · {{name}}"
@@ -334,7 +354,37 @@
       "agentCount": "{{count}} agents 使用中",
       "needsAction": "需处理",
       "unused": "暂未被 Agent 使用",
-      "cliLogin": "CLI 登录"
+      "cliLogin": "CLI 登录",
+      "bindingCliLogin": "走 CLI 自身登录态",
+      "bindingInvalid": "模型绑定已失效",
+      "bindingInvalidReason": "{{provider}} · {{model}} 已停用或不存在"
+    },
+    "summary": {
+      "title": "生效配置摘要",
+      "runtime": "运行位置",
+      "source": "模型来源",
+      "model": "生效模型",
+      "routes": "分级路由",
+      "references": "引用数量",
+      "referenceCount": "{{count}} 个 Agent",
+      "canSave": "可保存",
+      "cannotSave": "不可保存",
+      "cannotSaveReason": "无法保存：{{reason}}",
+      "cliAccountModel": "由 CLI 登录账号决定",
+      "unresolvedModel": "尚未解析",
+      "modeGateway": "Gateway 选择",
+      "modeInvalid": "失效",
+      "modeCli": "CLI 登录态",
+      "sources": {
+        "cli": "CLI 自身登录态",
+        "agentre": "Agentre 供应商 · {{provider}}",
+        "openclaw": "OpenClaw Gateway"
+      },
+      "reasons": {
+        "nameRequired": "请填写后端名称",
+        "invalidTarget": "请选择有效的模型绑定",
+        "bindingRequired": "当前没有兼容供应商，请先配置并选择模型绑定"
+      }
     },
     "sandbox": {
       "defaultHint": "空 = 走 codex CLI 默认",

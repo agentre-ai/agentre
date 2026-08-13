@@ -87,8 +87,23 @@
       "cancelTestNamed": "Cancel test for {{name}}",
       "deleteNamed": "Delete {{name}}",
       "editNamed": "Edit {{name}}",
+      "changeBinding": "Change binding",
+      "changeBindingNamed": "Change binding for {{name}}",
       "test": "Test Connection",
       "testNamed": "Test connection for {{name}}"
+    },
+    "binding": {
+      "label": "Model binding",
+      "description": "Choose the model source first; Claude tier routes and CLI-only overrides follow this main binding.",
+      "cliLogin": "CLI login state",
+      "cliResolution": "Effective model is determined by the CLI's own login account",
+      "modeFollow": "Follow default",
+      "modeFixed": "Fixed",
+      "targetWithMode": "{{provider}} · {{mode}}",
+      "followResolution": "Effective model: {{model}} · follows default changes from the next turn",
+      "fixedResolution": "Effective model: {{model}} · unaffected by provider default changes",
+      "invalidTarget": "Invalid target · {{target}}",
+      "invalidResolution": "This target cannot run the next turn; choose another binding"
     },
     "approval": {
       "hint": "Whether tool execution needs human approval",
@@ -146,7 +161,9 @@
     "defaultModel": {
       "hint": "--model · leave empty to use the provider model / CLI default",
       "label": "Custom Model",
-      "placeholder": "e.g. claude-fable-5 or an alias like opus/sonnet (used on CLI login)"
+      "placeholder": "e.g. claude-fable-5 or an alias like opus/sonnet (used on CLI login)",
+      "cliOnlyDescription": "Only applies with CLI login state. It is retained but ignored after binding an Agentre provider.",
+      "ignoredDescription": "The custom CLI model is retained but ignored while an Agentre provider is bound."
     },
     "deleteDialog": {
       "description": "Delete \"{{name}}\"? This is a soft delete and does not affect existing agent references.",
@@ -198,8 +215,11 @@
       "hint": "ANTHROPIC_DEFAULT_*_MODEL. Leave empty to use the main provider.",
       "inheritMain": "Inherit main provider",
       "inheritWithName": "Inherit main provider · {{name}}",
-      "label": "Model Tier Routes",
-      "tierAria": "Claude tier route"
+      "label": "Model tier routes",
+      "tierAria": "Claude tier route",
+      "inheritsSummary": "main binding → {{target}}",
+      "fixedSummary": "fixed → {{target}}",
+      "invalid": "invalid target"
     },
     "name": {
       "deviceDefault": "{{device}} · {{name}}"
@@ -334,7 +354,37 @@
       "agentCount": "{{count}} agents in use",
       "needsAction": "Needs action",
       "unused": "Not used by any agent",
-      "cliLogin": "CLI login"
+      "cliLogin": "CLI login",
+      "bindingCliLogin": "Use CLI login state",
+      "bindingInvalid": "Model binding is invalid",
+      "bindingInvalidReason": "{{provider}} · {{model}} is disabled or no longer available"
+    },
+    "summary": {
+      "title": "Effective configuration summary",
+      "runtime": "Runtime location",
+      "source": "Model source",
+      "model": "Effective model",
+      "routes": "Tier routes",
+      "references": "References",
+      "referenceCount": "{{count}} agents",
+      "canSave": "Can save",
+      "cannotSave": "Cannot save",
+      "cannotSaveReason": "Cannot save: {{reason}}",
+      "cliAccountModel": "Determined by CLI login account",
+      "unresolvedModel": "Unresolved",
+      "modeGateway": "Gateway selection",
+      "modeInvalid": "Invalid",
+      "modeCli": "CLI login",
+      "sources": {
+        "cli": "CLI login state",
+        "agentre": "Agentre provider · {{provider}}",
+        "openclaw": "OpenClaw Gateway"
+      },
+      "reasons": {
+        "nameRequired": "Enter a backend name",
+        "invalidTarget": "Choose a valid model binding",
+        "bindingRequired": "No compatible provider is available; configure one and select a model binding"
+      }
     },
     "sandbox": {
       "defaultHint": "Empty = use codex CLI default",
