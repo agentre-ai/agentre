@@ -233,6 +233,10 @@ describe("ActivityBlock 组头(折叠态)", () => {
 
     fireEvent.click(header);
     expect(header).toHaveAttribute("aria-expanded", "false");
+    // 收缩动画需要内容保持挂载(grid 过渡才有高度可收),过渡结束后才卸载,
+    // 保住折叠态零挂载的性能约定。
+    expect(screen.getAllByTestId("activity-row")).toHaveLength(2);
+    fireEvent.transitionEnd(header.nextElementSibling as HTMLElement);
     expect(screen.queryByTestId("activity-row")).toBeNull();
   });
 });

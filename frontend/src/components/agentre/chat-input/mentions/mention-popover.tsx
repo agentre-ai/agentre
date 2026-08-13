@@ -18,10 +18,14 @@ export function MentionPopover({
   state,
   onPick,
   onHover,
+  onDismiss,
+  editorElement,
 }: {
   state: MentionMenuState;
   onPick: (item: MentionItem) => void;
   onHover: (idx: number) => void;
+  onDismiss?: () => void;
+  editorElement?: HTMLElement | null;
 }): React.ReactElement | null {
   const { t } = useTranslation();
 
@@ -32,6 +36,8 @@ export function MentionPopover({
       selectedIndex={state.selectedIndex}
       itemCount={state.items.length}
       ariaLabel={t("mentions.aria")}
+      onDismiss={onDismiss}
+      editorElement={editorElement}
     >
       {(activeRef) =>
         state.items.map((item, idx) => {

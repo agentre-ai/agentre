@@ -27,6 +27,7 @@ import {
 } from "../../transcript-card";
 import { statusConfig, type AgentStatus } from "../../types";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
+import { useCollapsible } from "../../use-collapsible";
 import {
   commandResultOf,
   isFailedCommandResult,
@@ -50,6 +51,7 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
 }) => {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useTranscriptBooleanState(uiStateKey, false);
+  const { mounted, onTransitionEnd } = useCollapsible(expanded);
 
   const toolName = toolBlock.toolName ?? "tool";
   const input = toolBlock.toolInput as Record<string, unknown> | undefined;
@@ -190,88 +192,101 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
           {statusLabel}
         </TranscriptPill>
       </TranscriptCardHeader>
-      {expanded && (
-        <TranscriptCardBody
-          data-selectable-text="true"
-          className="flex flex-col gap-3"
-        >
-          <Section
-            label={t("canonical.raw.sections.params")}
-            meta={
-              params.length > 0
-                ? t("canonical.code.paramCount", { count: params.length })
-                : undefined
-            }
-            actions={
-              params.length > 0 ? (
-                <button
-                  type="button"
-                  onClick={() => void copyParams()}
-                  className="inline-flex items-center gap-1 rounded border border-border-strong px-1.5 py-0.5 font-sans text-meta text-muted-foreground transition-colors hover:border-primary hover:bg-primary-soft hover:text-primary-text"
-                >
-                  <Copy className="size-3" aria-hidden="true" />
-                  {t("canonical.code.copyAll")}
-                </button>
-              ) : undefined
-            }
-          >
-            {params.length === 0 ? (
-              <div className="text-muted-foreground">
-                {t("canonical.raw.emptyParams")}
-              </div>
-            ) : (
-              <CollapsibleCodeParams
-                entries={params}
-                testIdPrefix={uiStateKey ? `${uiStateKey}:param` : undefined}
-              />
-            )}
-          </Section>
-          <Section
-            label={t("canonical.raw.sections.result")}
-            meta={
-              resultMeta ? (
-                <span
-                  className={!hasResult ? pillConfig.textClassName : undefined}
-                >
-                  {resultMeta}
-                </span>
-              ) : null
-            }
-          >
-            <div className="flex flex-col gap-1">
-              {commandResult ? (
-                commandResult.output ? (
-                  <CollapsibleCode
-                    value={commandResult.output}
-                    surface={isError ? "destructive" : "muted"}
-                    bodyClassName="rounded-sm px-2.5 py-2"
-                  />
-                ) : (
-                  <div className="rounded-sm bg-muted/40 px-2.5 py-2 text-muted-foreground">
-                    {t("canonical.raw.emptyOutput")}
+      <div
+        aria-hidden={!expanded}
+        onTransitionEnd={onTransitionEnd}
+        className="grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
+        style={{ gridTemplateRows: expanded ? "1fr" : "0fr" }}
+      >
+        <div className="min-h-0 overflow-hidden">
+          {mounted ? (
+            <TranscriptCardBody
+              data-selectable-text="true"
+              className="flex flex-col gap-3"
+            >
+              <Section
+                label={t("canonical.raw.sections.params")}
+                meta={
+                  params.length > 0
+                    ? t("canonical.code.paramCount", { count: params.length })
+                    : undefined
+                }
+                actions={
+                  params.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => void copyParams()}
+                      className="inline-flex items-center gap-1 rounded border border-border-strong px-1.5 py-0.5 font-sans text-meta text-muted-foreground transition-colors hover:border-primary hover:bg-primary-soft hover:text-primary-text"
+                    >
+                      <Copy className="size-3" aria-hidden="true" />
+                      {t("canonical.code.copyAll")}
+                    </button>
+                  ) : undefined
+                }
+              >
+                {params.length === 0 ? (
+                  <div className="text-muted-foreground">
+                    {t("canonical.raw.emptyParams")}
                   </div>
-                )
-              ) : hasResult ? (
-                resultBlock?.text ? (
-                  <CollapsibleCode
-                    value={resultBlock.text}
-                    surface={isError ? "destructive" : "muted"}
-                    bodyClassName="rounded-sm px-2.5 py-2"
-                  />
                 ) : (
-                  <div className="rounded-sm bg-muted/40 px-2.5 py-2 text-muted-foreground">
-                    {t("canonical.raw.emptyResult")}
-                  </div>
-                )
-              ) : (
-                <div className="rounded-sm bg-muted/40 px-2.5 py-2 text-muted-foreground">
-                  {"—"}
+                  <CollapsibleCodeParams
+                    entries={params}
+                    testIdPrefix={
+                      uiStateKey ? `${uiStateKey}:param` : undefined
+                    }
+                  />
+                )}
+              </Section>
+              <Section
+                label={t("canonical.raw.sections.result")}
+                meta={
+                  resultMeta ? (
+                    <span
+                      className={
+                        !hasResult ? pillConfig.textClassName : undefined
+                      }
+                    >
+                      {resultMeta}
+                    </span>
+                  ) : null
+                }
+              >
+                <div className="flex flex-col gap-1">
+                  {commandResult ? (
+                    commandResult.output ? (
+                      <CollapsibleCode
+                        value={commandResult.output}
+                        surface={isError ? "destructive" : "muted"}
+                        bodyClassName="rounded-sm px-2.5 py-2"
+                      />
+                    ) : (
+                      <div className="rounded-sm bg-muted/40 px-2.5 py-2 text-muted-foreground">
+                        {t("canonical.raw.emptyOutput")}
+                      </div>
+                    )
+                  ) : hasResult ? (
+                    resultBlock?.text ? (
+                      <CollapsibleCode
+                        value={resultBlock.text}
+                        surface={isError ? "destructive" : "muted"}
+                        bodyClassName="rounded-sm px-2.5 py-2"
+                      />
+                    ) : (
+                      <div className="rounded-sm bg-muted/40 px-2.5 py-2 text-muted-foreground">
+                        {t("canonical.raw.emptyResult")}
+                      </div>
+                    )
+                  ) : (
+                    <div className="rounded-sm bg-muted/40 px-2.5 py-2 text-muted-foreground">
+                      {"—"}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          </Section>
-        </TranscriptCardBody>
-      )}
+              </Section>
+            </TranscriptCardBody>
+          ) : null}
+        </div>
+      </div>
       {showOverlay && perm && (
         <ToolPermissionOverlay
           payload={{ requestId: perm.requestId, toolName: perm.toolName }}

@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
 
 import { RawToolCard } from "./card";
@@ -167,6 +167,29 @@ describe("RawToolCard expansion", () => {
     );
     fireEvent.click(screen.getByRole("button"));
     expect(screen.getByText("No parameters")).toBeDefined();
+  });
+
+  it("Given an expanded card, When collapsed, Then the body stays mounted through the collapse transition and unmounts after it ends", () => {
+    render(
+      <RawToolCard
+        toolBlock={bashUse({
+          toolInput: { command: "echo hi", timeout: 5000 },
+        })}
+        resultBlock={result({ text: "hi\n" })}
+      />,
+    );
+    const header = screen.getByRole("button", { expanded: false });
+    fireEvent.click(header);
+    expect(header).toHaveAttribute("aria-expanded", "true");
+    const grid = header.nextElementSibling as HTMLElement;
+    expect(within(grid).getByText("timeout")).toBeDefined();
+
+    fireEvent.click(header);
+    expect(header).toHaveAttribute("aria-expanded", "false");
+    // 收缩动画期间内容仍挂载(高度过渡需要内容支撑),过渡结束才卸载。
+    expect(within(grid).getByText("timeout")).toBeDefined();
+    fireEvent.transitionEnd(grid);
+    expect(within(grid).queryByText("timeout")).toBeNull();
   });
 });
 

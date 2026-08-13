@@ -94,6 +94,12 @@ export function useSlashMenu({
   >(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [trigger, setTrigger] = useState<"/" | "$">("/");
+  // 弹层开关的 ref 镜像 —— 供 recompute 读取最新 open 而不把它塞进 effect 依赖。
+  // open 进依赖会让 close() 后的 effect 重跑 + trailing recompute() 立刻把菜单重新打开。
+  const openRef = useRef(open);
+  useEffect(() => {
+    openRef.current = open;
+  }, [open]);
 
   const available = useMemo(
     () => listAvailable(backendType, dynamicCommands),
@@ -136,13 +142,13 @@ export function useSlashMenu({
     if (!editor) return;
     const recompute = () => {
       if (available.length === 0) {
-        if (open) close();
+        if (openRef.current) close();
         return;
       }
       const { state } = editor;
       const { $from, empty } = state.selection;
       if (!empty) {
-        if (open) close();
+        if (openRef.current) close();
         return;
       }
       const before = $from.parent.textBetween(
@@ -153,7 +159,7 @@ export function useSlashMenu({
       );
       const hit = detectSlashTrigger(before, triggers);
       if (!hit) {
-        if (open) close();
+        if (openRef.current) close();
         return;
       }
       const triggerPos = $from.start() + hit.startOffset;
@@ -179,7 +185,7 @@ export function useSlashMenu({
       editor.off("update", recompute);
       editor.off("selectionUpdate", recompute);
     };
-  }, [editor, available, triggers, open, close]);
+  }, [editor, available, triggers, close]);
 
   // 选中命令:用 ProseMirror deleteRange 把 / + query 段从编辑器去掉,再回调 onSelect。
   // literal_text 由 chat-input 把完整命令文本填回编辑器(不自动发送);rpc 由 chat-input

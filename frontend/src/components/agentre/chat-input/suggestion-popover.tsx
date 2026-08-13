@@ -18,6 +18,10 @@ type SuggestionPopoverProps = {
   testId?: string;
   className?: string;
   footer?: React.ReactNode;
+  /** 点击弹层与编辑器之外的区域时触发 —— 消费者用它关掉菜单。 */
+  onDismiss?: () => void;
+  /** 编辑器 contentEditable DOM;点击它不视为外部点击,交给编辑器自身的 selection 逻辑。 */
+  editorElement?: HTMLElement | null;
   children: (activeRef: React.Ref<HTMLButtonElement>) => React.ReactNode;
 };
 
@@ -33,13 +37,32 @@ export function SuggestionPopover({
   testId,
   className,
   footer,
+  onDismiss,
+  editorElement,
   children,
 }: SuggestionPopoverProps): React.ReactElement | null {
   const activeRef = React.useRef<HTMLButtonElement>(null);
+  const popoverRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     activeRef.current?.scrollIntoView({ block: "nearest" });
   }, [selectedIndex, itemCount, open]);
+
+  // 点击弹层与编辑器之外的区域 → 关闭菜单。用 pointerdown(先于 mousedown)截获,
+  // 弹层自身与编辑器内的点击都放行:前者用于选中项(项上挂 onMouseDown),
+  // 后者交给编辑器 selectionUpdate 的 trigger 检测决定去留。
+  React.useEffect(() => {
+    if (!open || !onDismiss) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (popoverRef.current?.contains(target)) return;
+      if (editorElement?.contains(target)) return;
+      onDismiss();
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [open, onDismiss, editorElement]);
 
   if (!open || !anchorRect || itemCount === 0) return null;
 
@@ -65,6 +88,7 @@ export function SuggestionPopover({
         role="listbox"
         aria-label={ariaLabel}
         style={style}
+        ref={popoverRef}
         className={cn(popoverClassName, "overflow-y-auto overscroll-contain")}
       >
         {children(activeRef)}
@@ -77,6 +101,7 @@ export function SuggestionPopover({
     <div
       data-testid={testId}
       style={style}
+      ref={popoverRef}
       className={cn(popoverClassName, "flex flex-col overflow-hidden")}
     >
       <div

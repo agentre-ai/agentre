@@ -24,6 +24,7 @@ import { toolCategory } from "../canonical-tool/tier";
 import { shouldIgnoreClickForSelection } from "../copyable-text";
 import type { ActivityStep } from "../transcript-rows";
 import { useTranscriptBooleanState } from "../transcript-ui-state";
+import { useCollapsible } from "../use-collapsible";
 
 import {
   canonicalOf,
@@ -83,6 +84,7 @@ export function ActivityRow({
     step.uiStateKey,
     false,
   );
+  const { mounted, onTransitionEnd } = useCollapsible(expanded);
 
   const weight = stepWeight(step);
   const isThinking = step.type === "thinking";
@@ -173,6 +175,7 @@ export function ActivityRow({
       </button>
       <div
         aria-hidden={!expanded}
+        onTransitionEnd={onTransitionEnd}
         className="grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
         style={{ gridTemplateRows: expanded ? "1fr" : "0fr" }}
       >
@@ -180,8 +183,9 @@ export function ActivityRow({
           {
             // 性能:结果文本懒挂载 —— 折叠态不 mount 这一步的结果(同
             // agent-spawn/card.tsx 已确立的约定:几十 KB 隐藏文本会让整个
-            // transcript 陪跑 layout/paint)。
-            expanded ? (
+            // transcript 陪跑 layout/paint)。收缩动画期间 mounted 仍为 true,
+            // 过渡结束才卸载。
+            mounted ? (
               <div
                 data-testid="activity-row-body"
                 data-selectable-text="true"

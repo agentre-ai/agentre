@@ -31,6 +31,8 @@ export function LocalCommandHistoryPopover({
   onClearFocus,
   onClearBlur,
   onClearKeyDown,
+  onDismiss,
+  editorElement,
 }: {
   state: LocalCommandHistoryMenuState;
   listboxId: string;
@@ -41,6 +43,8 @@ export function LocalCommandHistoryPopover({
   onClearFocus: () => void;
   onClearBlur: React.FocusEventHandler<HTMLButtonElement>;
   onClearKeyDown: React.KeyboardEventHandler<HTMLButtonElement>;
+  onDismiss?: () => void;
+  editorElement?: HTMLElement | null;
 }): React.ReactElement | null {
   const { t } = useTranslation();
 
@@ -52,6 +56,8 @@ export function LocalCommandHistoryPopover({
       itemCount={state.items.length}
       ariaLabel={t("localCommandHistory.aria")}
       listboxId={listboxId}
+      onDismiss={onDismiss}
+      editorElement={editorElement}
       footer={
         <div role="presentation" className="mt-1 border-t border-border pt-1">
           <Button

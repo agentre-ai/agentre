@@ -12,6 +12,7 @@ import {
   type ActivitySummaryPart,
 } from "../transcript-rows";
 import { useTranscriptBooleanState } from "../transcript-ui-state";
+import { useCollapsible } from "../use-collapsible";
 
 import { stepLabel, type PendingOutcome } from "./facts";
 import { ActivityRow } from "./row";
@@ -81,6 +82,7 @@ export function ActivityBlock({
     `${uiStateKey}:all`,
     false,
   );
+  const { mounted, onTransitionEnd } = useCollapsible(expanded);
 
   const handleToggle = (event: React.MouseEvent<HTMLButtonElement>) => {
     if (shouldIgnoreClickForSelection(event)) return;
@@ -174,6 +176,7 @@ export function ActivityBlock({
       </button>
       <div
         aria-hidden={!expanded}
+        onTransitionEnd={onTransitionEnd}
         className="grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
         style={{ gridTemplateRows: expanded ? "1fr" : "0fr" }}
       >
@@ -181,7 +184,8 @@ export function ActivityBlock({
           {
             // 折叠态一个步骤都不 mount(Hard invariant 9):一个 200 步的活动块
             // 折叠时把步骤与结果文本全挂进 DOM,整个 transcript 都要陪跑 layout。
-            expanded ? (
+            // 收缩动画期间 mounted 仍为 true(内容保持挂载供过渡),过渡结束才卸载。
+            mounted ? (
               <div className="ml-1.5 flex flex-col border-l border-border pl-3">
                 {elidedCount > 0 ? (
                   <ElidedSteps
