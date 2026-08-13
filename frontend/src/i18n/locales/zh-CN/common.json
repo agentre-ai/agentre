@@ -3308,7 +3308,15 @@
     "noDefaultModel": "未设置默认模型",
     "remoteSyncNeeded": "本机独有，同步到该设备后可用",
     "fixedModelUnsupported": "该设备不支持固定模型，请升级 agentred",
-    "remoteGateHint": "灰色项需先同步到目标设备，或设备不支持该能力"
+    "remoteGateHint": "灰色项需先同步到目标设备，或设备不支持该能力",
+    "syncProvider": "同步 {{provider}} 到该设备",
+    "syncProviderNamed": "同步 {{provider}} 到该设备",
+    "syncDialog": {
+      "title": "同步供应商到设备",
+      "description": "将 {{provider}} 及其模型目录同步到目标设备。",
+      "confirmation": "此操作会把供应商 API Key 复制到目标设备，请确认后继续。",
+      "confirm": "确认同步"
+    }
   },
   "statusBar": {
     "agentSummary": "{{count}} 个 agent · {{running}} 个运行中",

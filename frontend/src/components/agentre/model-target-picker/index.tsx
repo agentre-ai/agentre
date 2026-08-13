@@ -21,6 +21,7 @@ import {
   RefreshCw,
   Search,
   ShieldAlert,
+  Upload,
   X,
 } from "lucide-react";
 
@@ -80,6 +81,8 @@ export type ModelTargetPickerProps = {
   // 写出「供应商 · 模型」或「跟随该 Agent 绑定的供应商」）。backend 场景未传时
   // 回落「由 CLI 自身的登录账号决定」。
   specialSublabel?: string;
+  // 远端目录缺少本机 Provider 时的显式同步入口；消费方负责确认与执行凭证复制。
+  onSyncProvider?: (provider: PickerProvider) => void;
   // footer：弹层底部常显说明（chat 场景的「自下一轮生效」等），随弹层一起出现。
   footer?: React.ReactNode;
   // compact：表单内嵌（claude tier 路由）用小号触发按钮。
@@ -157,6 +160,7 @@ export function ModelTargetPicker({
   supportsFixedModel = true,
   remoteCatalog,
   specialSublabel,
+  onSyncProvider,
   footer,
   compact = false,
   align = "start",
@@ -788,8 +792,28 @@ export function ModelTargetPicker({
         {remoteByKey != null &&
         executionLocation !== "" &&
         catalogOptions.some((o) => o.disabledHint) ? (
-          <div className="border-t border-border bg-secondary px-3 py-2 text-2xs text-muted-foreground">
-            {t("modelTargetPicker.remoteGateHint")}
+          <div className="flex flex-col gap-2 border-t border-border bg-secondary px-3 py-2 text-2xs text-muted-foreground">
+            <span>{t("modelTargetPicker.remoteGateHint")}</span>
+            {onSyncProvider
+              ? compatible
+                  .filter((provider) => !remoteByKey.has(provider.providerKey))
+                  .map((provider) => (
+                    <button
+                      key={provider.providerKey}
+                      type="button"
+                      className="inline-flex w-fit items-center gap-1 rounded text-primary-text underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                      aria-label={t("modelTargetPicker.syncProviderNamed", {
+                        provider: provider.name,
+                      })}
+                      onClick={() => onSyncProvider(provider)}
+                    >
+                      <Upload className="size-3" aria-hidden="true" />
+                      {t("modelTargetPicker.syncProvider", {
+                        provider: provider.name,
+                      })}
+                    </button>
+                  ))
+              : null}
           </div>
         ) : null}
         {remoteMissing ? (

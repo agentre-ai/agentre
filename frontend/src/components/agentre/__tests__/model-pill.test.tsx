@@ -23,6 +23,7 @@ const appMocks = vi.hoisted(() => ({
   SetChatSessionModelTarget: vi.fn(),
   RemoteDeviceList: vi.fn().mockResolvedValue([]),
   RemoteDeviceListProviders: vi.fn().mockResolvedValue([]),
+  RemoteDeviceSyncProvider: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../../../../wailsjs/go/app/App", () => appMocks);
@@ -47,6 +48,7 @@ beforeEach(() => {
   appMocks.ListLLMModels.mockResolvedValue({ items: [] });
   appMocks.RemoteDeviceList.mockResolvedValue([]);
   appMocks.RemoteDeviceListProviders.mockResolvedValue([]);
+  appMocks.RemoteDeviceSyncProvider.mockResolvedValue(undefined);
 });
 
 function Harness(props: UseProviderPillOptions) {
@@ -860,6 +862,52 @@ describe("ProviderPill · 远端执行（gap 1：chat Picker 接收 daemon 能�
     ).toBeInTheDocument();
   });
 
+  it("远端缺少供应商时提供显式同步入口，确认后复制凭证并刷新目录", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({ items: [CHAT_PROVIDER] });
+    appMocks.RemoteDeviceList.mockResolvedValue([device({ id: 7 })]);
+    appMocks.RemoteDeviceListProviders.mockResolvedValueOnce(
+      [],
+    ).mockResolvedValueOnce([
+      remoteProvider({
+        key: "acme-chat",
+        name: "Acme Chat",
+        type: "openai-chat",
+        models: [],
+      }),
+    ]);
+    render(<Harness backendType="builtin" executionLocation="7" />);
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+
+    const user = userEvent.setup();
+    await user.click(pill);
+    const listbox = screen.getByRole("listbox");
+    const chatDefault = providerDefaultOption(listbox);
+    expect(chatDefault).toBeDisabled();
+
+    await user.click(
+      screen.getByRole("button", { name: "Sync Acme Chat to this device" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Sync provider to device",
+    });
+    expect(dialog).toHaveTextContent(/API key/i);
+    await user.click(
+      within(dialog).getByRole("button", { name: "Confirm sync" }),
+    );
+
+    await waitFor(() =>
+      expect(appMocks.RemoteDeviceSyncProvider).toHaveBeenCalledWith(
+        7,
+        "acme-chat",
+      ),
+    );
+    await waitFor(() =>
+      expect(appMocks.RemoteDeviceListProviders).toHaveBeenCalledTimes(2),
+    );
+  });
+
   it("远端 daemon 无 llm-model-target-v1 能力位（旧/离线）→ 全部 fixed-model 禁用，provider-default 仍可选", async () => {
     appMocks.ListLLMProviders.mockResolvedValue({
       items: [ANTHROPIC_PROVIDER],
@@ -873,6 +921,7 @@ describe("ProviderPill · 远端执行（gap 1：chat Picker 接收 daemon 能�
     appMocks.RemoteDeviceList.mockResolvedValue([
       device({ id: 7, supportsLLMModelTarget: false }),
     ]);
+    appMocks.RemoteDeviceListProviders.mockReset();
     appMocks.RemoteDeviceListProviders.mockResolvedValue([
       remoteProvider({
         models: [

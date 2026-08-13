@@ -4,6 +4,7 @@ import {
   ListLLMProviders,
   RemoteDeviceList,
   RemoteDeviceListProviders,
+  RemoteDeviceSyncProvider,
   SetChatSessionModelTarget,
 } from "../../../../wailsjs/go/app/App";
 import { llm_provider_svc } from "../../../../wailsjs/go/models";
@@ -153,6 +154,8 @@ export interface UseProviderPillReturn {
   supportsFixedModel: boolean;
   /** 目标执行设备上是否缺少当前选中的 Provider（远端场景提示）。 */
   remoteMissing: boolean;
+  /** 把本机 Provider（含 API Key）显式同步到目标设备，并刷新远端目录。 */
+  syncProvider: (providerKey: string) => Promise<void>;
   /** 目标执行位置（透传自选项，供 ProviderPill 传给共享 Picker）。 */
   executionLocation: string;
   /** 模型目录加载中 → pill 禁用。 */
@@ -468,6 +471,15 @@ export function useProviderPill({
     return !remoteCatalog.some((p) => p.providerKey === key);
   }, [remoteDeviceID, remoteCatalog, providerKey, boundProviderKey]);
 
+  const syncProvider = React.useCallback(
+    async (key: string) => {
+      if (remoteDeviceID <= 0) return;
+      await RemoteDeviceSyncProvider(remoteDeviceID, key);
+      await fetchRemote();
+    },
+    [fetchRemote, remoteDeviceID],
+  );
+
   return {
     providerKey,
     modelKey,
@@ -490,5 +502,6 @@ export function useProviderPill({
     remoteCatalog,
     supportsFixedModel,
     remoteMissing,
+    syncProvider,
   };
 }

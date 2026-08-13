@@ -3308,7 +3308,15 @@
     "noDefaultModel": "No default model set",
     "remoteSyncNeeded": "Local only — sync to this device first",
     "fixedModelUnsupported": "This device does not support fixed models — upgrade agentred",
-    "remoteGateHint": "Disabled items need sync to the device or an unsupported capability"
+    "remoteGateHint": "Disabled items need sync to the device or an unsupported capability",
+    "syncProvider": "Sync {{provider}} to this device",
+    "syncProviderNamed": "Sync {{provider}} to this device",
+    "syncDialog": {
+      "title": "Sync provider to device",
+      "description": "Sync {{provider}} and its model catalog to the target device.",
+      "confirmation": "This copies the provider API key to the target device. Confirm before continuing.",
+      "confirm": "Confirm sync"
+    }
   },
   "statusBar": {
     "agentSummary": "{{count}} agents · {{running}} running",
