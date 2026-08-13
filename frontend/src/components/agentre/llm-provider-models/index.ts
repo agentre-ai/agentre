@@ -61,6 +61,24 @@ export function totalReferences(
   return counts.backends + counts.sessions + counts.routes;
 }
 
+export type ModelDeleteability =
+  | { kind: "ok" }
+  | { kind: "default" }
+  | { kind: "referenced"; count: number };
+
+// 唯一的「可否删除」判定来源：默认模型不可删、被引用不可删、其余可删。
+// 模型表行内标注与批量删除确认分组共用这一判定，避免另起一套规则。
+export function modelDeleteability(
+  model: Model,
+  defaultModelKey: string,
+  modelRefCounts: Map<string, ReferenceCounts>,
+): ModelDeleteability {
+  if (model.modelKey === defaultModelKey) return { kind: "default" };
+  const count = totalReferences(modelRefCounts.get(model.modelKey));
+  if (count > 0) return { kind: "referenced", count };
+  return { kind: "ok" };
+}
+
 export function endpointFor(provider: Provider): string {
   const providerType = provider.type as ProviderType;
   const meta =

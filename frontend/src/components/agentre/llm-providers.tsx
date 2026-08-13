@@ -32,6 +32,7 @@ import {
   type DeleteTarget,
   DeleteDialog,
 } from "./llm-provider-models/delete-dialog";
+import { type BatchDeleteResult } from "./llm-provider-models/batch-delete-dialog";
 import {
   type DefaultModelTarget,
   DefaultModelDialog,
@@ -413,6 +414,97 @@ export function LlmProvidersPanel({
     [refreshProviders, t],
   );
 
+  const handleBatchToggleEnabled = React.useCallback(
+    async (models: Model[], enabled: boolean) => {
+      if (!selectedProvider) return;
+      const defaultKey = selectedProvider.defaultModelKey;
+      // 停用时跳过默认模型（默认模型不可停用）；启用只作用于已停用的模型。
+      const targets = enabled
+        ? models.filter((m) => !m.enabled)
+        : models.filter((m) => m.enabled && m.modelKey !== defaultKey);
+      const skippedDefault =
+        !enabled && models.some((m) => m.enabled && m.modelKey === defaultKey);
+
+      let done = 0;
+      let error: string | null = null;
+      for (const model of targets) {
+        try {
+          await SetLLMModelEnabled(
+            new llm_provider_svc.SetModelEnabledRequest({
+              id: model.id,
+              enabled,
+            }),
+          );
+          done += 1;
+        } catch (err) {
+          error = errMessage(err);
+          break;
+        }
+      }
+      const unprocessed = targets.length - done;
+
+      if (error) {
+        setFlash({
+          kind: "err",
+          text: enabled
+            ? t("llmProviders.flash.batchEnabledPartial", {
+                done,
+                unprocessed,
+                message: error,
+              })
+            : t("llmProviders.flash.batchDisabledPartial", {
+                done,
+                unprocessed,
+                message: error,
+              }),
+        });
+      } else if (enabled) {
+        setFlash({
+          kind: "ok",
+          text: t("llmProviders.flash.batchEnabled", { count: done }),
+        });
+      } else if (skippedDefault) {
+        setFlash({
+          kind: "ok",
+          text: t("llmProviders.flash.batchDisabledSkippedDefault", {
+            count: done,
+          }),
+        });
+      } else {
+        setFlash({
+          kind: "ok",
+          text: t("llmProviders.flash.batchDisabled", { count: done }),
+        });
+      }
+      await refreshModels();
+    },
+    [refreshModels, selectedProvider, t],
+  );
+
+  const handleBatchDeleteCompleted = React.useCallback(
+    (result: BatchDeleteResult) => {
+      if (result.error) {
+        setFlash({
+          kind: "err",
+          text: t("llmProviders.flash.batchDeletePartial", {
+            deleted: result.deleted,
+            unprocessed: result.unprocessed,
+            message: result.error,
+          }),
+        });
+      } else {
+        setFlash({
+          kind: "ok",
+          text: t("llmProviders.flash.batchDeleted", {
+            count: result.deleted,
+          }),
+        });
+      }
+      void refreshModels();
+    },
+    [refreshModels, t],
+  );
+
   const handleCopyProviderKey = React.useCallback(
     async (provider: Provider) => {
       try {
@@ -625,6 +717,8 @@ export function LlmProvidersPanel({
                 setDeleteTarget({ kind: "model", model })
               }
               onToggleProviderEnabled={handleToggleProviderEnabled}
+              onBatchToggleEnabled={handleBatchToggleEnabled}
+              onBatchDeleteCompleted={handleBatchDeleteCompleted}
             />
           </div>
         </>
@@ -688,6 +782,8 @@ function ProviderManagement({
   onDeleteModel,
   onDeleteProvider,
   onToggleProviderEnabled,
+  onBatchToggleEnabled,
+  onBatchDeleteCompleted,
   providerRefCounts,
   modelRefCounts,
 }: {
@@ -713,6 +809,8 @@ function ProviderManagement({
   onDeleteModel: (model: Model) => void;
   onDeleteProvider: () => void;
   onToggleProviderEnabled: (provider: Provider) => void;
+  onBatchToggleEnabled: (models: Model[], enabled: boolean) => Promise<void>;
+  onBatchDeleteCompleted: (result: BatchDeleteResult) => void;
   providerRefCounts: ReferenceCounts | null;
   modelRefCounts: Map<string, ReferenceCounts>;
 }) {
@@ -856,6 +954,8 @@ function ProviderManagement({
             onToggleProviderEnabled={() =>
               onToggleProviderEnabled(selectedProvider)
             }
+            onBatchToggleEnabled={onBatchToggleEnabled}
+            onBatchDeleteCompleted={onBatchDeleteCompleted}
             providerRefCounts={providerRefCounts}
             modelRefCounts={modelRefCounts}
           />

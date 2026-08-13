@@ -1706,7 +1706,28 @@
       "providerDisabled": "Provider {{name}} disabled",
       "imported": "Imported {{imported}} models, updated {{updated}}",
       "modelUpdated": "Model {{model}} updated",
-      "modelDeleted": "Model {{model}} deleted"
+      "modelDeleted": "Model {{model}} deleted",
+      "batchDeleted": "Deleted {{count}} models",
+      "batchDeleted_one": "Deleted {{count}} model",
+      "batchDeleted_other": "Deleted {{count}} models",
+      "batchDeletePartial": "Deleted {{deleted}} models · {{unprocessed}} not processed: {{message}}",
+      "batchDeletePartial_one": "Deleted {{deleted}} model · {{unprocessed}} not processed: {{message}}",
+      "batchDeletePartial_other": "Deleted {{deleted}} models · {{unprocessed}} not processed: {{message}}",
+      "batchEnabled": "Enabled {{count}} models",
+      "batchEnabled_one": "Enabled {{count}} model",
+      "batchEnabled_other": "Enabled {{count}} models",
+      "batchEnabledPartial": "Enabled {{done}} models · {{unprocessed}} not processed: {{message}}",
+      "batchEnabledPartial_one": "Enabled {{done}} model · {{unprocessed}} not processed: {{message}}",
+      "batchEnabledPartial_other": "Enabled {{done}} models · {{unprocessed}} not processed: {{message}}",
+      "batchDisabled": "Disabled {{count}} models",
+      "batchDisabled_one": "Disabled {{count}} model",
+      "batchDisabled_other": "Disabled {{count}} models",
+      "batchDisabledSkippedDefault": "Disabled {{count}} models (default model excluded)",
+      "batchDisabledSkippedDefault_one": "Disabled {{count}} model (default model excluded)",
+      "batchDisabledSkippedDefault_other": "Disabled {{count}} models (default model excluded)",
+      "batchDisabledPartial": "Disabled {{done}} models · {{unprocessed}} not processed: {{message}}",
+      "batchDisabledPartial_one": "Disabled {{done}} model · {{unprocessed}} not processed: {{message}}",
+      "batchDisabledPartial_other": "Disabled {{done}} models · {{unprocessed}} not processed: {{message}}"
     },
     "form": {
       "createAriaLabel": "New LLM provider",
@@ -1849,7 +1870,18 @@
       "references": "References",
       "enableColumn": "Enable",
       "moreModelNamed": "More actions for {{model}}",
-      "deleteBlockedReferenced": "Referenced by {{count}}, cannot be deleted"
+      "deleteBlockedReferenced": "Referenced by {{count}}, cannot be deleted",
+      "batch": {
+        "selectedCount": "Selected {{selected}} / {{total}}",
+        "selectAll": "Select all",
+        "clearSelection": "Clear selection",
+        "enable": "Enable selected",
+        "disable": "Disable selected",
+        "delete": "Delete selected",
+        "rowCanDelete": "Can delete",
+        "rowDefaultBlocked": "Default model: cannot delete",
+        "rowReferencedBlocked": "Referenced by {{count}}: cannot delete"
+      }
     },
     "delete": {
       "providerTitle": "Delete provider · {{name}}",
@@ -1868,6 +1900,17 @@
       "refSessions": "sessions",
       "refRoutes": "routes",
       "noRefs": "no references"
+    },
+    "batchDelete": {
+      "title": "Delete selected models",
+      "description": "The deletable models below will be removed; protected models stay unchanged.",
+      "willDelete": "Will be deleted",
+      "protected": "Protected (unchanged)",
+      "noneDeletable": "No deletable models",
+      "deleting": "Deleting…",
+      "confirmButton": "Delete {{count}} models",
+      "confirmButton_one": "Delete {{count}} model",
+      "confirmButton_other": "Delete {{count}} models"
     },
     "modelEdit": {
       "ariaLabel": "Edit model",

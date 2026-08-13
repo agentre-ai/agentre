@@ -212,6 +212,53 @@ function setupMenuUser() {
   return userEvent.setup({ pointerEventsCheck: 0 });
 }
 
+function rowForModel(modelId: string): HTMLTableRowElement {
+  const checkbox = screen.getByRole("checkbox", { name: `Select ${modelId}` });
+  return checkbox.closest("tr") as HTMLTableRowElement;
+}
+
+// 默认模型（mk-default）+ 被引用模型（mk-opus）+ 可删除模型（mk-haiku）。
+function installThreeModels(
+  refs: Record<
+    string,
+    { backends: number; sessions: number; routes: number }
+  > = {},
+) {
+  return installAppMock({
+    ListLLMProviders: vi.fn(() => Promise.resolve({ items: [makeProvider()] })),
+    ListLLMModels: vi.fn(() =>
+      Promise.resolve({
+        items: [
+          makeModel(),
+          makeModel({
+            id: 12,
+            modelKey: "mk-opus",
+            modelId: "claude-opus-4-1",
+            name: "",
+            isDefault: false,
+          }),
+          makeModel({
+            id: 13,
+            modelKey: "mk-haiku",
+            modelId: "claude-haiku",
+            name: "",
+            isDefault: false,
+          }),
+        ],
+      }),
+    ),
+    LLMModelRefCounts: vi.fn((req: unknown) =>
+      Promise.resolve({
+        counts: refs[(req as { modelKey?: string }).modelKey ?? ""] ?? {
+          backends: 0,
+          sessions: 0,
+          routes: 0,
+        },
+      }),
+    ),
+  });
+}
+
 describe("LlmProvidersPanel", () => {
   it("Given providers of different types, When the panel loads, Then the nav groups them by type, shows the endpoint, and marks only disabled providers", async () => {
     const mocks = installAppMock({
@@ -1229,6 +1276,358 @@ describe("LlmProvidersPanel", () => {
     expect(
       within(menu).getByRole("menuitem", { name: "Delete Anthropic" }),
     ).toBeInTheDocument();
+  });
+
+  it("Given models, When the header checkbox is clicked, Then all currently-listed models are selected and the action bar shows the selected count", async () => {
+    installThreeModels();
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+
+    expect(screen.getByText("Selected 3 / 3")).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: "Select claude-sonnet-4-5" }),
+    ).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: "Select claude-opus-4-1" }),
+    ).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: "Select claude-haiku" }),
+    ).toBeChecked();
+  });
+
+  it("Given selection is active, When the toolbar is inspected, Then the search/count toolbar is replaced in place by the selection action bar", async () => {
+    installThreeModels();
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    expect(
+      screen.getByRole("searchbox", { name: "Filter models" }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+
+    // 工具栏被选择态操作条原地替换，搜索框消失
+    expect(
+      screen.queryByRole("searchbox", { name: "Filter models" }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Select all" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Clear selection" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Enable selected" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Disable selected" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Delete selected" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Given selected models, When each row is inspected, Then each row annotates whether it can be deleted", async () => {
+    installThreeModels({
+      "mk-opus": { backends: 1, sessions: 0, routes: 2 },
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+
+    // 被引用模型的标注依赖异步引用计数，等待其加载
+    expect(
+      await within(rowForModel("claude-opus-4-1")).findByText(
+        "Referenced by 3: cannot delete",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(rowForModel("claude-sonnet-4-5")).getByText(
+        "Default model: cannot delete",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(rowForModel("claude-haiku")).getByText("Can delete"),
+    ).toBeInTheDocument();
+  });
+
+  it("Given selected models including protected ones, When batch delete is requested, Then the dialog splits into deletable and protected groups and the primary button states the real delete count", async () => {
+    installThreeModels({
+      "mk-opus": { backends: 1, sessions: 0, routes: 2 },
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+    await within(rowForModel("claude-opus-4-1")).findByText(
+      "Referenced by 3: cannot delete",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Delete selected models",
+    });
+    expect(within(dialog).getByText("Will be deleted")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("Protected (unchanged)"),
+    ).toBeInTheDocument();
+    // 可删除组包含 haiku；被保护组列出默认模型与被引用模型及其原因
+    expect(within(dialog).getByText("claude-haiku")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("Default model: cannot delete"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("Referenced by 3: cannot delete"),
+    ).toBeInTheDocument();
+    const confirm = within(dialog).getByRole("button", {
+      name: "Delete 1 model",
+    });
+    expect(confirm).toBeEnabled();
+  });
+
+  it("Given all selected models are protected, When batch delete is requested, Then the primary button is disabled and explains there is nothing to delete", async () => {
+    installThreeModels({
+      "mk-opus": { backends: 1, sessions: 0, routes: 2 },
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    // 只选中默认模型与被引用模型（均不可删除）
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select claude-sonnet-4-5" }),
+    );
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select claude-opus-4-1" }),
+    );
+    await within(rowForModel("claude-opus-4-1")).findByText(
+      "Referenced by 3: cannot delete",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Delete selected models",
+    });
+    expect(within(dialog).getByText("No deletable models")).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "Delete 0 models" }),
+    ).toBeDisabled();
+  });
+
+  it("Given two deletable models are selected, When batch delete is confirmed, Then DeleteLLMModel is called sequentially for each and the flash reports the deleted count", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              name: "",
+              isDefault: false,
+            }),
+            makeModel({
+              id: 13,
+              modelKey: "mk-haiku",
+              modelId: "claude-haiku",
+              name: "",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Delete selected models",
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Delete 2 models" }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.DeleteLLMModel).toHaveBeenCalledTimes(2);
+    });
+    expect(mocks.DeleteLLMModel).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ id: 12 }),
+    );
+    expect(mocks.DeleteLLMModel).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: 13 }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Deleted 2 models",
+    );
+  });
+
+  it("Given a deletable batch where one delete fails, When batch delete runs, Then it stops at the failure and reports deleted and unprocessed counts", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              name: "",
+              isDefault: false,
+            }),
+            makeModel({
+              id: 13,
+              modelKey: "mk-haiku",
+              modelId: "claude-haiku",
+              name: "",
+              isDefault: false,
+            }),
+            makeModel({
+              id: 14,
+              modelKey: "mk-sonnet-lite",
+              modelId: "claude-sonnet-lite",
+              name: "",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+      DeleteLLMModel: vi
+        .fn()
+        .mockResolvedValueOnce({})
+        .mockRejectedValueOnce(new Error("database locked"))
+        .mockResolvedValue({}),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Delete selected models",
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Delete 3 models" }),
+    );
+
+    // 第 2 条失败后停止，第 3 条不再调用
+    await waitFor(() => {
+      expect(mocks.DeleteLLMModel).toHaveBeenCalledTimes(2);
+    });
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/Deleted 1 model/);
+    expect(alert).toHaveTextContent(/2 not processed/);
+  });
+
+  it("Given selected models including the default, When batch disable runs, Then the default model is skipped with an explanation and the flash reports the disabled count", async () => {
+    const mocks = installThreeModels({
+      "mk-opus": { backends: 1, sessions: 0, routes: 2 },
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Disable selected" }));
+
+    await waitFor(() => {
+      expect(mocks.SetLLMModelEnabled).toHaveBeenCalledTimes(2);
+    });
+    // 默认模型（id 11）不参与停用；opus 与 haiku 被停用
+    expect(mocks.SetLLMModelEnabled).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 12, enabled: false }),
+    );
+    expect(mocks.SetLLMModelEnabled).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 13, enabled: false }),
+    );
+    expect(mocks.SetLLMModelEnabled).not.toHaveBeenCalledWith(
+      expect.objectContaining({ id: 11 }),
+    );
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/Disabled 2 models/);
+    expect(alert).toHaveTextContent(/default model excluded/);
+  });
+
+  it("Given selected models with a disabled one, When batch enable runs, Then only disabled models are enabled and the flash reports the count", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              name: "",
+              isDefault: false,
+              enabled: false,
+            }),
+            makeModel({
+              id: 13,
+              modelKey: "mk-haiku",
+              modelId: "claude-haiku",
+              name: "",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Enable selected" }));
+
+    await waitFor(() => {
+      expect(mocks.SetLLMModelEnabled).toHaveBeenCalledTimes(1);
+    });
+    expect(mocks.SetLLMModelEnabled).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 12, enabled: true }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Enabled 1 model",
+    );
   });
 
   it("Given a provider workspace, When Copy Provider Key is chosen from the More menu, Then the provider key is written to the clipboard and a success flash is shown", async () => {

@@ -36,11 +36,16 @@ import {
 import { LlmModelLogo, LlmProviderLogo } from "../ai-brand-logo";
 import { cn } from "@/lib/utils";
 import {
+  type BatchDeleteResult,
+  BatchDeleteDialog,
+} from "./batch-delete-dialog";
+import {
   type Model,
   type Provider,
   type ReferenceCounts,
   endpointFor,
   formatTokens,
+  modelDeleteability,
   providerTypeMeta,
   totalReferences,
 } from "./index";
@@ -59,6 +64,8 @@ export type WorkspaceHandlers = {
   onTestProvider: () => void;
   onToggleModelEnabled: (model: Model) => void;
   onToggleProviderEnabled: () => void;
+  onBatchToggleEnabled: (models: Model[], enabled: boolean) => Promise<void>;
+  onBatchDeleteCompleted: (result: BatchDeleteResult) => void;
 };
 
 export function ProviderWorkspace({
@@ -78,6 +85,8 @@ export function ProviderWorkspace({
   onEditModel,
   onDeleteModel,
   onToggleProviderEnabled,
+  onBatchToggleEnabled,
+  onBatchDeleteCompleted,
   onRetryModels,
   testingDefault,
   testingModelId,
@@ -95,6 +104,8 @@ export function ProviderWorkspace({
 } & WorkspaceHandlers) {
   const { t } = useTranslation();
   const [search, setSearch] = React.useState("");
+  const [selected, setSelected] = React.useState<Set<number>>(new Set());
+  const [batchDelete, setBatchDelete] = React.useState<Model[] | null>(null);
 
   const meta =
     provider.type in providerTypeMeta
@@ -111,6 +122,21 @@ export function ProviderWorkspace({
           m.name.toLowerCase().includes(trimmed),
       )
     : models;
+
+  const selectedModels = visible.filter((m) => selected.has(m.id));
+  const allVisibleSelected =
+    visible.length > 0 && visible.every((m) => selected.has(m.id));
+
+  const handleBatchToggle = async (enabled: boolean) => {
+    if (selectedModels.length === 0) return;
+    await onBatchToggleEnabled(selectedModels, enabled);
+    setSelected(new Set());
+  };
+
+  const handleBatchDelete = () => {
+    if (selectedModels.length === 0) return;
+    setBatchDelete(selectedModels);
+  };
 
   // Provider 启用需要属于它的启用默认模型
   const defaultModel = models.find(
@@ -305,29 +331,87 @@ export function ProviderWorkspace({
         </div>
       </div>
 
-      {/* Model tools */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 sm:px-4">
-        <div className="relative min-w-0 flex-1">
-          <Search
-            className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
-            aria-hidden="true"
-          />
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.currentTarget.value)}
-            placeholder={t("llmProviders.workspace.searchPlaceholder")}
-            aria-label={t("llmProviders.workspace.searchAria")}
-            className="h-8 w-full rounded-md border border-input bg-transparent pl-8 pr-3 text-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
-          />
+      {/* Model tools：选择态原地替换为操作条 */}
+      {selected.size > 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 sm:px-4">
+          <span className="shrink-0 font-mono text-2xs text-muted-foreground">
+            {t("llmProviders.modelsTable.batch.selectedCount", {
+              selected: selected.size,
+              total: visible.length,
+            })}
+          </span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-[30px] gap-1.5 px-3 text-xs"
+              onClick={() => setSelected(new Set(visible.map((m) => m.id)))}
+            >
+              {t("llmProviders.modelsTable.batch.selectAll")}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-[30px] gap-1.5 px-3 text-xs"
+              onClick={() => setSelected(new Set())}
+            >
+              {t("llmProviders.modelsTable.batch.clearSelection")}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-[30px] gap-1.5 px-3 text-xs"
+              onClick={() => void handleBatchToggle(true)}
+            >
+              {t("llmProviders.modelsTable.batch.enable")}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-[30px] gap-1.5 px-3 text-xs"
+              onClick={() => void handleBatchToggle(false)}
+            >
+              {t("llmProviders.modelsTable.batch.disable")}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              className="h-[30px] gap-1.5 px-3 text-xs"
+              onClick={handleBatchDelete}
+            >
+              {t("llmProviders.modelsTable.batch.delete")}
+            </Button>
+          </div>
         </div>
-        <span className="shrink-0 font-mono text-2xs text-muted-foreground">
-          {t("llmProviders.workspace.modelCount", {
-            shown: visible.length,
-            total: models.length,
-          })}
-        </span>
-      </div>
+      ) : (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 sm:px-4">
+          <div className="relative min-w-0 flex-1">
+            <Search
+              className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.currentTarget.value)}
+              placeholder={t("llmProviders.workspace.searchPlaceholder")}
+              aria-label={t("llmProviders.workspace.searchAria")}
+              className="h-8 w-full rounded-md border border-input bg-transparent pl-8 pr-3 text-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            />
+          </div>
+          <span className="shrink-0 font-mono text-2xs text-muted-foreground">
+            {t("llmProviders.workspace.modelCount", {
+              shown: visible.length,
+              total: models.length,
+            })}
+          </span>
+        </div>
+      )}
 
       {/* Model table */}
       {modelsError ? (
@@ -410,9 +494,16 @@ export function ProviderWorkspace({
             <TableHeader>
               <TableRow className="bg-secondary hover:bg-secondary">
                 <TableHead className="w-[40px] px-4">
-                  {/* 批量选择行为属于任务 3，此处仅占位列 */}
                   <Checkbox
                     aria-label={t("llmProviders.modelsTable.selectAll")}
+                    checked={allVisibleSelected}
+                    onCheckedChange={(checked) => {
+                      if (checked === true) {
+                        setSelected(new Set(visible.map((m) => m.id)));
+                      } else {
+                        setSelected(new Set());
+                      }
+                    }}
                   />
                 </TableHead>
                 <TableHead className="px-4 font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
@@ -444,14 +535,20 @@ export function ProviderWorkspace({
                 const refCount = totalReferences(
                   modelRefCounts.get(model.modelKey),
                 );
-                const deleteBlocked = isDefault || refCount > 0;
-                const deleteBlockedReason = isDefault
-                  ? t("llmProviders.modelsTable.deleteBlockedDefault")
-                  : refCount > 0
-                    ? t("llmProviders.modelsTable.deleteBlockedReferenced", {
-                        count: refCount,
-                      })
-                    : undefined;
+                const del = modelDeleteability(
+                  model,
+                  provider.defaultModelKey,
+                  modelRefCounts,
+                );
+                const deleteBlocked = del.kind !== "ok";
+                const deleteBlockedReason =
+                  del.kind === "default"
+                    ? t("llmProviders.modelsTable.deleteBlockedDefault")
+                    : del.kind === "referenced"
+                      ? t("llmProviders.modelsTable.deleteBlockedReferenced", {
+                          count: del.count,
+                        })
+                      : undefined;
                 return (
                   <TableRow
                     key={model.id}
@@ -462,6 +559,15 @@ export function ProviderWorkspace({
                         aria-label={t("llmProviders.modelsTable.selectModel", {
                           model: model.modelId,
                         })}
+                        checked={selected.has(model.id)}
+                        onCheckedChange={(checked) => {
+                          setSelected((prev) => {
+                            const next = new Set(prev);
+                            if (checked === true) next.add(model.id);
+                            else next.delete(model.id);
+                            return next;
+                          });
+                        }}
                       />
                     </TableCell>
                     <TableCell className="px-4 py-2.5">
@@ -487,6 +593,29 @@ export function ProviderWorkspace({
                           <span className="truncate font-mono text-2xs text-muted-foreground">
                             {model.modelId}
                           </span>
+                          {selected.has(model.id) ? (
+                            <span
+                              className={cn(
+                                "text-2xs",
+                                del.kind === "ok"
+                                  ? "text-status-running"
+                                  : "text-status-error",
+                              )}
+                            >
+                              {del.kind === "ok"
+                                ? t(
+                                    "llmProviders.modelsTable.batch.rowCanDelete",
+                                  )
+                                : del.kind === "default"
+                                  ? t(
+                                      "llmProviders.modelsTable.batch.rowDefaultBlocked",
+                                    )
+                                  : t(
+                                      "llmProviders.modelsTable.batch.rowReferencedBlocked",
+                                      { count: del.count },
+                                    )}
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                     </TableCell>
@@ -637,6 +766,18 @@ export function ProviderWorkspace({
           </Table>
         </div>
       )}
+
+      <BatchDeleteDialog
+        models={batchDelete}
+        defaultModelKey={provider.defaultModelKey}
+        modelRefCounts={modelRefCounts}
+        onClose={() => setBatchDelete(null)}
+        onDone={(result) => {
+          setBatchDelete(null);
+          setSelected(new Set());
+          onBatchDeleteCompleted(result);
+        }}
+      />
     </div>
   );
 }

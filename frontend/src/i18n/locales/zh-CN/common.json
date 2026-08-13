@@ -1706,7 +1706,28 @@
       "providerDisabled": "已停用供应商 {{name}}",
       "imported": "已导入 {{imported}} 个模型，更新 {{updated}} 个",
       "modelUpdated": "已更新模型 {{model}}",
-      "modelDeleted": "已删除模型 {{model}}"
+      "modelDeleted": "已删除模型 {{model}}",
+      "batchDeleted": "已删除 {{count}} 个模型",
+      "batchDeleted_one": "已删除 {{count}} 个模型",
+      "batchDeleted_other": "已删除 {{count}} 个模型",
+      "batchDeletePartial": "已删除 {{deleted}} 个模型，{{unprocessed}} 个未处理：{{message}}",
+      "batchDeletePartial_one": "已删除 {{deleted}} 个模型，{{unprocessed}} 个未处理：{{message}}",
+      "batchDeletePartial_other": "已删除 {{deleted}} 个模型，{{unprocessed}} 个未处理：{{message}}",
+      "batchEnabled": "已启用 {{count}} 个模型",
+      "batchEnabled_one": "已启用 {{count}} 个模型",
+      "batchEnabled_other": "已启用 {{count}} 个模型",
+      "batchEnabledPartial": "已启用 {{done}} 个模型，{{unprocessed}} 个未处理：{{message}}",
+      "batchEnabledPartial_one": "已启用 {{done}} 个模型，{{unprocessed}} 个未处理：{{message}}",
+      "batchEnabledPartial_other": "已启用 {{done}} 个模型，{{unprocessed}} 个未处理：{{message}}",
+      "batchDisabled": "已停用 {{count}} 个模型",
+      "batchDisabled_one": "已停用 {{count}} 个模型",
+      "batchDisabled_other": "已停用 {{count}} 个模型",
+      "batchDisabledSkippedDefault": "已停用 {{count}} 个模型（默认模型不参与停用）",
+      "batchDisabledSkippedDefault_one": "已停用 {{count}} 个模型（默认模型不参与停用）",
+      "batchDisabledSkippedDefault_other": "已停用 {{count}} 个模型（默认模型不参与停用）",
+      "batchDisabledPartial": "已停用 {{done}} 个模型，{{unprocessed}} 个未处理：{{message}}",
+      "batchDisabledPartial_one": "已停用 {{done}} 个模型，{{unprocessed}} 个未处理：{{message}}",
+      "batchDisabledPartial_other": "已停用 {{done}} 个模型，{{unprocessed}} 个未处理：{{message}}"
     },
     "form": {
       "createAriaLabel": "新增 LLM 供应商",
@@ -1849,7 +1870,18 @@
       "references": "引用",
       "enableColumn": "启用",
       "moreModelNamed": "{{model}} 的更多操作",
-      "deleteBlockedReferenced": "被 {{count}} 处引用，无法删除"
+      "deleteBlockedReferenced": "被 {{count}} 处引用，无法删除",
+      "batch": {
+        "selectedCount": "已选 {{selected}} / {{total}}",
+        "selectAll": "全选",
+        "clearSelection": "取消选择",
+        "enable": "批量启用",
+        "disable": "批量停用",
+        "delete": "批量删除",
+        "rowCanDelete": "可删除",
+        "rowDefaultBlocked": "默认模型不可删除",
+        "rowReferencedBlocked": "引用 {{count}} 处不可删除"
+      }
     },
     "delete": {
       "providerTitle": "删除供应商 · {{name}}",
@@ -1868,6 +1900,17 @@
       "refSessions": "个会话",
       "refRoutes": "条路由",
       "noRefs": "无引用"
+    },
+    "batchDelete": {
+      "title": "批量删除模型",
+      "description": "以下可删除的模型将被移除，被保护的模型保持不动。",
+      "willDelete": "将被删除",
+      "protected": "被保护（保持不动）",
+      "noneDeletable": "没有可删除的模型",
+      "deleting": "正在删除…",
+      "confirmButton": "删除 {{count}} 个模型",
+      "confirmButton_one": "删除 {{count}} 个模型",
+      "confirmButton_other": "删除 {{count}} 个模型"
     },
     "modelEdit": {
       "ariaLabel": "编辑模型",
