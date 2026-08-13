@@ -1,6 +1,7 @@
 import * as React from "react";
 import { FileText, Image as ImageIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 
 import {
   previewKind,
@@ -10,6 +11,7 @@ import { OpenPath, WorkspaceFsReadFile } from "@/../wailsjs/go/app/App";
 
 const ABS_POSIX = /^\//;
 const ABS_WINDOWS = /^[A-Za-z]:[\\/]/;
+const ABS_WINDOWS_ROOTED = /^\\/;
 const FILE_PROTOCOL = /^file:\/\//i;
 const SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 const HTTP_PROTOCOL = /^https?:/i;
@@ -43,7 +45,8 @@ function fileURLToPath(href: string): string | null {
   const slash = path.indexOf("/");
   const host = slash >= 0 ? path.slice(0, slash) : path;
   if (host !== "" && host.toLowerCase() !== "localhost") return null;
-  const rest = slash >= 0 ? path.slice(slash) : "/";
+  let rest = slash >= 0 ? path.slice(slash) : "/";
+  if (/^\/[A-Za-z]:[\\/]/.test(rest)) rest = rest.slice(1);
   return decodeLocalPath(rest);
 }
 
@@ -117,7 +120,7 @@ export function classifyMarkdownImage(
     const basename = basenameOf(localPath);
     // 无会话上下文时本地图片维持现状:相对路径剥空(今天被 urlTransform 剥掉);
     // 绝对/file:// 路径原样保留 src(今天的破图行为不变)。
-    if (opts.sessionId === undefined) {
+    if (opts.sessionId === undefined || opts.sessionId <= 0) {
       const relative =
         !ABS_POSIX.test(src) &&
         !ABS_WINDOWS.test(src) &&
@@ -141,7 +144,7 @@ export function classifyMarkdownImage(
   }
 
   if (SCHEME.test(src)) {
-    if (/^(data|javascript):/i.test(src)) {
+    if (/^(data|javascript|file):/i.test(src)) {
       return { kind: "plain", src: undefined };
     }
     return { kind: "plain", src };
@@ -154,9 +157,19 @@ function resolveLocalPath(
   path: string,
   cwd: string | undefined,
 ): { relPath: string | null; absolutePath: string | null } {
-  if (!cwd) return { relPath: null, absolutePath: null };
-  const relPath = toRelPath(path, cwd);
+  if (!cwd || ABS_WINDOWS_ROOTED.test(path)) {
+    return { relPath: null, absolutePath: null };
+  }
+  let relPath = toRelPath(path, cwd);
   if (ABS_POSIX.test(path) || ABS_WINDOWS.test(path)) {
+    if (ABS_WINDOWS.test(path) && ABS_WINDOWS.test(cwd)) {
+      const normalizedPath = toSlash(path);
+      const normalizedCwd = toSlash(cwd).replace(/\/$/, "");
+      const prefix = `${normalizedCwd}/`;
+      if (normalizedPath.toLowerCase().startsWith(prefix.toLowerCase())) {
+        relPath = normalizedPath.slice(prefix.length);
+      }
+    }
     // 绝对路径:落在 cwd 内(toRelPath 成功)且剥出的 relPath 不含越界 ".."
     // 才可点;越界 ".." 与相对路径同一套判定,不读也不可点。
     if (relPath !== null && isRelPathInside(relPath)) {
@@ -192,7 +205,8 @@ function FetchImage({
   const [state, setState] = React.useState<FetchState>({ status: "loading" });
 
   React.useEffect(() => {
-    if (sessionId === undefined) {
+    setState({ status: "loading" });
+    if (sessionId === undefined || sessionId <= 0) {
       setState({ status: "failed", reason: "cannot-preview" });
       return;
     }
@@ -220,7 +234,7 @@ function FetchImage({
     return () => {
       cancelled = true;
     };
-  }, [sessionId, relPath]);
+  }, [sessionId, relPath, absolutePath]);
 
   if (state.status === "loading") {
     return (
@@ -275,7 +289,15 @@ function FallbackChip({
       <button
         type="button"
         className="inline-flex max-w-full items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-meta text-muted-foreground outline-none transition-colors hover:bg-muted/60 focus-visible:ring-[3px] focus-visible:ring-ring/50"
-        onClick={() => OpenPath(absolutePath).catch(() => {})}
+        onClick={() =>
+          OpenPath(absolutePath).catch((err: unknown) => {
+            toast.error(
+              t("richLink.openFailed", {
+                error: err instanceof Error ? err.message : String(err),
+              }),
+            );
+          })
+        }
       >
         {content}
       </button>

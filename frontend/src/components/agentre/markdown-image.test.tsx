@@ -6,6 +6,12 @@ const appMocks = vi.hoisted(() => ({
   OpenPath: vi.fn(),
 }));
 
+const sonnerMocks = vi.hoisted(() => ({
+  toast: { error: vi.fn() },
+}));
+
+vi.mock("sonner", () => sonnerMocks);
+
 vi.mock("@/../wailsjs/go/app/App", () => ({
   WorkspaceFsReadFile: appMocks.WorkspaceFsReadFile,
   OpenPath: appMocks.OpenPath,
@@ -17,6 +23,7 @@ beforeEach(() => {
   appMocks.WorkspaceFsReadFile.mockReset();
   appMocks.OpenPath.mockReset();
   appMocks.OpenPath.mockResolvedValue(undefined);
+  sonnerMocks.toast.error.mockReset();
 });
 
 describe("classifyMarkdownImage", () => {
@@ -61,6 +68,15 @@ describe("classifyMarkdownImage", () => {
     expect(classifyMarkdownImage("/abs/a.png", {})).toEqual({
       kind: "plain",
       src: "/abs/a.png",
+    });
+  });
+
+  it("treats a non-positive sessionId as absent instead of calling the workspace API", () => {
+    expect(
+      classifyMarkdownImage("a.png", { cwd: "/proj", sessionId: 0 }),
+    ).toEqual({
+      kind: "plain",
+      src: undefined,
     });
   });
 
@@ -117,13 +133,41 @@ describe("classifyMarkdownImage", () => {
     });
   });
 
-  it("does not treat a file:// URL with a remote host as a local path", () => {
+  it("strips a file:// URL with a remote host instead of auto-loading a network share", () => {
     expect(
       classifyMarkdownImage("file://server/share/a.png", {
         cwd: "/proj",
         sessionId: 7,
       }),
-    ).toEqual({ kind: "plain", src: "file://server/share/a.png" });
+    ).toEqual({ kind: "plain", src: undefined });
+  });
+
+  it("resolves a localhost file URL with a Windows drive path", () => {
+    expect(
+      classifyMarkdownImage("file://localhost/C:/Users/x/a.png", {
+        cwd: "C:\\Users\\x",
+        sessionId: 7,
+      }),
+    ).toEqual({
+      kind: "fetch",
+      relPath: "a.png",
+      absolutePath: "C:/Users/x/a.png",
+      basename: "a.png",
+    });
+  });
+
+  it("matches Windows absolute paths case-insensitively and across slash styles", () => {
+    expect(
+      classifyMarkdownImage("c:/USERS/x/a.png", {
+        cwd: "C:\\Users\\x",
+        sessionId: 7,
+      }),
+    ).toEqual({
+      kind: "fetch",
+      relPath: "a.png",
+      absolutePath: "c:/USERS/x/a.png",
+      basename: "a.png",
+    });
   });
 
   it("classifies a protocol-relative image URL as remote", () => {
@@ -198,6 +242,32 @@ describe("classifyMarkdownImage", () => {
       basename: "secret.png",
     });
   });
+
+  it("classifies a Windows rooted path (\\foo) as fallback (not read, not clickable)", () => {
+    expect(
+      classifyMarkdownImage("\\Windows\\a.png", {
+        cwd: "C:\\Users\\x",
+        sessionId: 7,
+      }),
+    ).toEqual({
+      kind: "fallback",
+      absolutePath: null,
+      basename: "a.png",
+    });
+  });
+
+  it("classifies a UNC path (\\\\server\\share) as fallback (not read, not clickable)", () => {
+    expect(
+      classifyMarkdownImage("\\\\server\\share\\a.png", {
+        cwd: "C:\\Users\\x",
+        sessionId: 7,
+      }),
+    ).toEqual({
+      kind: "fallback",
+      absolutePath: null,
+      basename: "a.png",
+    });
+  });
 });
 
 describe("MarkdownImage", () => {
@@ -256,6 +326,62 @@ describe("MarkdownImage", () => {
     );
   });
 
+  it("resets to loading when the session changes for the same relPath", async () => {
+    appMocks.WorkspaceFsReadFile.mockResolvedValueOnce({
+      content: "c2Vzc2lvbi03",
+      contentType: "image/png",
+    });
+    const { rerender } = render(
+      <MarkdownImage src="a.png" cwd="/proj" sessionId={7} alt="A" />,
+    );
+    await screen.findByRole("img");
+
+    let resolveSecond:
+      | ((value: { content: string; contentType: string }) => void)
+      | undefined;
+    appMocks.WorkspaceFsReadFile.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSecond = resolve;
+        }),
+    );
+    rerender(<MarkdownImage src="a.png" cwd="/proj" sessionId={8} alt="A" />);
+
+    expect(appMocks.WorkspaceFsReadFile).toHaveBeenLastCalledWith(8, "a.png");
+    expect(screen.queryByRole("img")).toBeNull();
+    resolveSecond?.({ content: "c2Vzc2lvbi04", contentType: "image/png" });
+    await screen.findByRole("img");
+    expect(screen.getByRole("img").getAttribute("src")).toBe(
+      "data:image/png;base64,c2Vzc2lvbi04",
+    );
+  });
+
+  it("refetches when cwd changes for the same session and relPath", async () => {
+    appMocks.WorkspaceFsReadFile.mockResolvedValueOnce({
+      content: "cHJvai0x",
+      contentType: "image/png",
+    });
+    const { rerender } = render(
+      <MarkdownImage src="a.png" cwd="/proj-1" sessionId={7} alt="A" />,
+    );
+    await screen.findByRole("img");
+
+    appMocks.WorkspaceFsReadFile.mockResolvedValueOnce({
+      content: "cHJvai0y",
+      contentType: "image/png",
+    });
+    rerender(<MarkdownImage src="a.png" cwd="/proj-2" sessionId={7} alt="A" />);
+
+    await waitFor(() =>
+      expect(appMocks.WorkspaceFsReadFile).toHaveBeenCalledTimes(2),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("img").getAttribute("src")).toBe(
+        "data:image/png;base64,cHJvai0y",
+      ),
+    );
+  });
+
   it("renders a tooLarge result as the tooLarge chip", async () => {
     appMocks.WorkspaceFsReadFile.mockResolvedValue({
       content: "",
@@ -297,6 +423,19 @@ describe("MarkdownImage", () => {
     expect(button).toHaveTextContent("Cannot preview");
     fireEvent.click(button);
     expect(appMocks.OpenPath).toHaveBeenCalledWith("/proj/notes.txt");
+  });
+
+  it("reports an OpenPath rejection instead of silently swallowing it", async () => {
+    appMocks.OpenPath.mockRejectedValueOnce(new Error("denied"));
+    render(<MarkdownImage src="notes.txt" cwd="/proj" sessionId={7} alt="A" />);
+
+    fireEvent.click(screen.getByRole("button"));
+
+    await waitFor(() =>
+      expect(sonnerMocks.toast.error).toHaveBeenCalledWith(
+        "Open failed: denied",
+      ),
+    );
   });
 
   it("renders an outside-cwd fallback chip as inert text (no button, no open)", () => {
