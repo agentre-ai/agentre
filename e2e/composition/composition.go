@@ -35,14 +35,14 @@ const (
 	syncDeviceFPEnv     = "AGENTRE_E2E_DEVICE_FINGERPRINT"
 	syncRefreshTokenEnv = "AGENTRE_E2E_REFRESH_TOKEN" //nolint:gosec // G101: environment-variable name, not a credential
 
-	remotePeerURLEnv       = "AGENTRE_E2E_REMOTE_PEER_URL"
-	remoteDaemonFPEnv      = "AGENTRE_E2E_REMOTE_DAEMON_FINGERPRINT"
-	remoteInstanceUUIDEnv  = "AGENTRE_E2E_REMOTE_INSTANCE_UUID"
-	remoteDeviceTokenEnv   = "AGENTRE_E2E_REMOTE_DEVICE_TOKEN" //nolint:gosec // G101: environment-variable name, not a credential
-	remoteDeviceName       = "E2E Remote Agentred"
-	remoteBackendName      = "E2E Remote Backend"
-	remoteAgentName        = "E2E Remote Agent"
-	remoteTokenAccountBase = "agentre-daemon-token-"
+	remotePeerURLEnv            = "AGENTRE_E2E_REMOTE_PEER_URL"
+	remoteDaemonFPEnv           = "AGENTRE_E2E_REMOTE_DAEMON_FINGERPRINT"
+	remoteInstanceUUIDEnv       = "AGENTRE_E2E_REMOTE_INSTANCE_UUID"
+	remoteDeviceTokenEnv        = "AGENTRE_E2E_REMOTE_DEVICE_TOKEN" //nolint:gosec // G101: environment-variable name, not a credential
+	remoteDeviceName            = "E2E Remote Agentred"
+	remoteBackendName           = "E2E Remote Backend"
+	remoteAgentName             = "E2E Remote Agent"
+	remoteKeychainAccountPrefix = "agentre-daemon-token-"
 )
 
 // LoggedInIdentity is runner-generated and accepted only by the dedicated E2E
@@ -157,7 +157,7 @@ func installRemotePeer(ctx context.Context, identity RemotePeerIdentity) error {
 	if err != nil {
 		return fmt.Errorf("seed remote device: %w", err)
 	}
-	if err := keychain.Default().Set(remoteTokenAccountBase+strconv.FormatInt(deviceID, 10), identity.DeviceToken); err != nil {
+	if err := keychain.Default().Set(remoteKeychainAccountPrefix+strconv.FormatInt(deviceID, 10), identity.DeviceToken); err != nil {
 		return fmt.Errorf("seed remote device token: %w", err)
 	}
 	backendID, err := ensureRemoteBackend(ctx, identity.DaemonFingerprint)

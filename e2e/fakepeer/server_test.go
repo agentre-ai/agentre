@@ -21,18 +21,19 @@ import (
 )
 
 const (
-	testDeviceFingerprint = "sha256:e2e-desktop"
-	testDeviceToken       = "e2e-device-token-secret"
-	testInstanceUUID      = "e2e-fake-peer-instance"
+	testDeviceFingerprint    = "sha256:e2e-desktop"
+	testDeviceAuthValue      = "e2e-device-auth-value"
+	testInstanceUUID         = "e2e-fake-peer-instance"
+	testControlAuthorization = "e2e-control-auth-value"
 )
 
 func startTestServer(t *testing.T) *Server {
 	t.Helper()
 	server, err := Start(context.Background(), Options{
 		DeviceFingerprint: testDeviceFingerprint,
-		DeviceToken:       testDeviceToken,
+		DeviceToken:       testDeviceAuthValue,
 		InstanceUUID:      testInstanceUUID,
-		ControlToken:      "e2e-control-token",
+		ControlToken:      testControlAuthorization,
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, server.Close()) })
@@ -49,7 +50,7 @@ func authenticatedClient(t *testing.T, server *Server) *client.Client {
 	var auth rpc.ConnectResult
 	require.NoError(t, cli.Call(ctx, "auth.connect", rpc.ConnectParams{
 		DeviceFingerprint:         testDeviceFingerprint,
-		DeviceToken:               testDeviceToken,
+		DeviceToken:               testDeviceAuthValue,
 		ExpectedDaemonFingerprint: rpc.DaemonFingerprint(testInstanceUUID),
 	}, &auth))
 	require.True(t, auth.OK)
@@ -133,7 +134,7 @@ func TestServerGivenWatcherAndBusinessSocketsInEitherOrderSupportsExactRemotePro
 
 			recorded, err := json.Marshal(server.Snapshot())
 			require.NoError(t, err)
-			assert.NotContains(t, string(recorded), testDeviceToken)
+			assert.NotContains(t, string(recorded), testDeviceAuthValue)
 			assert.Contains(t, string(recorded), `"deviceToken":"[REDACTED]"`)
 		})
 	}
