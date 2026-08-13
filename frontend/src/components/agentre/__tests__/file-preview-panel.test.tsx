@@ -923,6 +923,73 @@ describe("FilePreviewPanel", () => {
     });
   });
 
+  describe("shared file type icon identity", () => {
+    const store = () => useChatSidebarStore.getState();
+
+    async function openCodeAndMarkdownTabs() {
+      readFileMock.mockResolvedValue(textView("# a"));
+      store().openPreviewInNewTab(7, "main.go", "directory");
+      store().openPreview(7, "docs/a.md", "directory");
+      renderPanel();
+      return screen.findByRole("complementary", { name: "File preview" });
+    }
+
+    it("shows the same file type identity for a path in the header, its tab and the overflow menu", async () => {
+      const panel = await openCodeAndMarkdownTabs();
+
+      // 活动文件 docs/a.md → markdown 身份在 header 里唯一且一致。
+      const header = screen.getByTestId("file-preview-header");
+      expect(
+        within(header).getByTestId("file-preview-header-icon"),
+      ).toHaveAttribute("data-file-type", "markdown");
+
+      // 每个标签按自己的路径显示自己的身份（不是单一全局档）。
+      const tabs = within(panel).getAllByRole("tab");
+      expect(
+        within(tabs[0]).getByTestId("preview-tab-file-icon"),
+      ).toHaveAttribute("data-file-type", "go");
+      expect(
+        within(tabs[1]).getByTestId("preview-tab-file-icon"),
+      ).toHaveAttribute("data-file-type", "markdown");
+
+      // 溢出菜单里同一路径的身份与标签一致。
+      await userEvent.click(
+        within(panel).getByRole("button", { name: "Open Tab menu" }),
+      );
+      const items = await screen.findAllByRole("menuitem");
+      expect(
+        within(items[0]).getByTestId("preview-overflow-file-icon"),
+      ).toHaveAttribute("data-file-type", "go");
+      expect(
+        within(items[1]).getByTestId("preview-overflow-file-icon"),
+      ).toHaveAttribute("data-file-type", "markdown");
+    });
+
+    it("shows the precise identity for a non-previewable file while keeping the binary body behavior", async () => {
+      readFileMock.mockResolvedValue({
+        content: "",
+        contentType: "",
+        binary: true,
+        tooLarge: false,
+      });
+      store().openPreview(7, "report.pdf", "directory");
+      renderPanel();
+
+      const panel = await screen.findByRole("complementary", {
+        name: "File preview",
+      });
+      // PDF 有精确图标身份，但仍不进预览器：正文保持 binary 提示。
+      expect(
+        within(screen.getByTestId("file-preview-header")).getByTestId(
+          "file-preview-header-icon",
+        ),
+      ).toHaveAttribute("data-file-type", "pdf");
+      expect(
+        await within(panel).findByText(/Binary file, cannot preview/),
+      ).toBeInTheDocument();
+    });
+  });
+
   it("re-reads only content on doneTick for a directory-opened code file", async () => {
     readFileMock.mockResolvedValue(textView("v1"));
     openPreview("a.go", 7, "directory");

@@ -24,17 +24,13 @@ import {
   PanelNotice,
   PanelSkeleton,
 } from "../chat-context-sidebar/views/panel-feedback";
+import { FileTypeIcon } from "../file-type-icon";
 import { MarkdownText } from "../markdown-text";
 import { ResizableSidebar } from "../resizable-sidebar";
 
 import { CodePreview } from "./code-view";
 import { DiffPreview } from "./diff-view";
-import {
-  basename,
-  dirname,
-  PREVIEW_KIND_ICON,
-  previewIconKind,
-} from "./file-meta";
+import { basename, dirname } from "./file-meta";
 import { MarkdownSourceView } from "./markdown-source-view";
 import { PreviewTabStrip } from "./preview-tab-strip";
 
@@ -199,7 +195,6 @@ export function FilePreviewPanel({ sessionId }: Props) {
   if (!path) return null;
 
   const dir = dirname(path);
-  const Icon = PREVIEW_KIND_ICON[previewIconKind(path)];
   // 只有 markdown 有分段控件（渲染/文本/双栏）；代码 / 文本与图片都没有（首视图
   // 由入口模式决定，spec 决策 9）。
   const segments =
@@ -257,10 +252,7 @@ export function FilePreviewPanel({ sessionId }: Props) {
           className="flex h-10 shrink-0 items-center gap-1.5 border-b border-border pl-3 pr-2"
           data-testid="file-preview-header"
         >
-          <Icon
-            className="size-4 shrink-0 text-muted-foreground"
-            aria-hidden="true"
-          />
+          <FileTypeIcon path={path} testId="file-preview-header-icon" />
           <span
             className="shrink truncate font-mono text-xs font-semibold"
             title={path}
