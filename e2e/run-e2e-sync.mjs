@@ -119,7 +119,7 @@ async function main() {
   Object.assign(process.env, {
     AGENTRE_DATA_DIR: dataDir,
     AGENTRE_ENV: "test",
-    AGENTRE_E2E_KEYCHAIN_DIR: keychainDir,
+    AGENTRE_KEYCHAIN_DIR: keychainDir,
     AGENTRE_E2E_SERVER_URL: proxyURL,
     AGENTRE_E2E_SERVER_USER_ID: String(seeded.user_id),
     AGENTRE_E2E_DEVICE_ID: String(byName.desktop.device_id),

@@ -46,6 +46,29 @@ func (s *service) NotifyLocalChange(ctx context.Context, ch LocalChange) {
 	})
 }
 
+// claimAnonymousQueue attaches R13 runtime-claim mutations recorded while
+// logged out to the account that has just authenticated. It reuses the normal
+// outbound queue: account 0 is only a temporary local holding key and is never
+// sent to the server.
+func (s *service) claimAnonymousQueue(ctx context.Context, accountID int64) error {
+	rows, err := syncqueue_repo.OutboundQueue().ListByAccount(ctx, 0)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		moved := *row
+		moved.ID = 0
+		moved.SyncAccountID = accountID
+		if err := syncqueue_repo.OutboundQueue().Create(ctx, &moved); err != nil {
+			return err
+		}
+		if err := syncqueue_repo.OutboundQueue().Delete(ctx, row.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // claimUnowned 落实 R12a：登录前已有的行——它们还不属于任何账号——在登录后归入
 // 当前账号，并**带着自己那个同步标识**正常上行。它们不是别人的数据，只是还没上过云。
 //

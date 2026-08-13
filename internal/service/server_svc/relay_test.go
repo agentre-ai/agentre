@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 	. "github.com/smartystreets/goconvey/convey"
 	"go.uber.org/mock/gomock"
 
+	"github.com/agentre-ai/agentre/internal/daemon/client"
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 	"github.com/agentre-ai/agentre/internal/model/entity/server_state_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/keychain"
@@ -120,6 +122,80 @@ func TestDialDaemonRelay_PreservesServerBasePath(t *testing.T) {
 		So(c, ShouldNotBeNil)
 		So(gotPath, ShouldEqual, prefix+"/v1/relay/client")
 		_ = c.Close()
+	})
+}
+
+func TestNewInboundHubLink_GivenLoggedInDesktop_WhenRun_ThenRegistersWithItsCurrentAccessToken(t *testing.T) {
+	Convey("a logged-in desktop builds the protocol-agnostic inbound relay link", t, func() {
+		registered := make(chan struct{}, 1)
+		upgrader := websocket.Upgrader{}
+		relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/relay/daemon" {
+				t.Errorf("path = %q, want /v1/relay/daemon", r.URL.Path)
+				return
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer desktop-token" {
+				t.Errorf("Authorization = %q, want desktop bearer", got)
+				return
+			}
+			ws, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade relay websocket: %v", err)
+				return
+			}
+			registered <- struct{}{}
+			for {
+				if _, _, err := ws.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}))
+		defer relay.Close()
+
+		ctrl := gomock.NewController(t)
+		mRepo := mock_server_state_repo.NewMockServerStateRepo(ctrl)
+		server_state_repo.RegisterServerState(mRepo)
+		mRepo.EXPECT().Get(gomock.Any()).Return(&server_state_entity.ServerState{
+			ID: 1, ServerURL: relay.URL, DeviceID: 1, ServerUserID: 1,
+			KeychainAccount: "agentre.server.refresh_token",
+		}, nil)
+		svc := server_svc.New(server_svc.NewHTTPClient(relay.URL, "desktop-token"), nil)
+
+		link, err := svc.NewInboundHubLink(context.Background())
+		So(err, ShouldBeNil)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- link.Run(ctx) }()
+		select {
+		case <-registered:
+		case <-time.After(time.Second):
+			t.Fatal("desktop did not register with the relay")
+		}
+		cancel()
+		So(<-done, ShouldBeNil)
+	})
+}
+
+func TestDialDesktopRelay_GivenTargetDesktopAppIsNotRunning_ThenItDoesNotReuseAgentredOfflineError(t *testing.T) {
+	Convey("desktop relay offline is exposed as a distinct typed error", t, func() {
+		relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "relay target offline", http.StatusConflict)
+		}))
+		defer relay.Close()
+
+		loggedIn := &server_state_entity.ServerState{
+			ID: 1, ServerURL: relay.URL, DeviceID: 1, ServerUserID: 1,
+			KeychainAccount: "agentre.server.refresh_token",
+		}
+		ctrl := gomock.NewController(t)
+		mRepo := mock_server_state_repo.NewMockServerStateRepo(ctrl)
+		server_state_repo.RegisterServerState(mRepo)
+		mRepo.EXPECT().Get(gomock.Any()).Return(loggedIn, nil)
+		svc := server_svc.New(server_svc.NewHTTPClient(relay.URL, "tok-9"), nil)
+
+		_, err := svc.DialDesktopRelay(context.Background(), "sha256:desktop", "sha256:caller")
+		So(errors.Is(err, server_svc.ErrDesktopAppNotRunning), ShouldBeTrue)
+		So(errors.Is(err, client.ErrRelayDaemonOffline), ShouldBeFalse)
 	})
 }
 

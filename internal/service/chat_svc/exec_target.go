@@ -13,6 +13,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 )
 
 // sessionBackendID 是「这条会话该用哪个 backend」的单一读口（R15b / 决策36）：
@@ -32,9 +33,10 @@ func sessionBackendID(sess *chat_entity.Session, a *agent_entity.Agent) int64 {
 	return a.AgentBackendID
 }
 
-// execDeviceID 返回 ! 命令应在哪台设备执行：remote 后端取其 DeviceID，本地为空串。
-func execDeviceID(be *agent_backend_entity.AgentBackend) string {
-	if be != nil && be.IsRemote() {
+// execDeviceID 返回 ! 命令应在哪台设备执行：remote 后端取其 DeviceID；本地与指向本机
+// 的 self 档（R13 认领后本机 backend 的 DeviceID 是本机指纹）都返回空串。
+func execDeviceID(ctx context.Context, be *agent_backend_entity.AgentBackend) string {
+	if be != nil && be.IsRemote() && !remote_device_svc.IsSelfDevice(be.DeviceID) {
 		return be.DeviceID
 	}
 	return ""
@@ -69,8 +71,8 @@ func (s *chatSvc) resolveExecTarget(ctx context.Context, sess *chat_entity.Sessi
 	if be == nil {
 		return nil, i18n.NewError(ctx, code.AgentBackendNotFound)
 	}
-	if be.IsRemote() {
-		deviceID, ok := be.DeviceIDInt()
+	if be.IsRemote() && !remote_device_svc.IsSelfDevice(be.DeviceID) {
+		deviceID, ok := localPairedDeviceID(ctx, be.DeviceID)
 		if !ok || deviceID <= 0 {
 			return nil, i18n.NewError(ctx, code.AgentBackendInvalidDevice)
 		}
@@ -79,7 +81,7 @@ func (s *chatSvc) resolveExecTarget(ctx context.Context, sess *chat_entity.Sessi
 	if err != nil {
 		return nil, err
 	}
-	return &LocalCommandScope{DeviceID: execDeviceID(be), Cwd: cwd}, nil
+	return &LocalCommandScope{DeviceID: execDeviceID(ctx, be), Cwd: cwd}, nil
 }
 
 // ResolveLocalCommandScope 为已有 session，或尚未创建 session 的 agent/project 目标

@@ -187,8 +187,11 @@ describe("OrgDetailAgent", () => {
     expect(screen.queryByRole("tab", { name: /Image/ })).toBeNull();
   });
 
-  it("renders the execution targets section as a single-target row (R15/R20)", () => {
+  it("renders the execution targets section as a single-target row (R15/R20)", async () => {
+    const user = userEvent.setup();
     renderPanel({ agentBackendId: 5 }, [backend()]);
+    // 设备顺序是默认作用域；单档行的既有断言针对账号默认顺序列表，先切过去。
+    await user.click(screen.getByRole("button", { name: "Account default" }));
     expect(
       screen.getByRole("heading", { name: "Execution Targets" }),
     ).toBeInTheDocument();
@@ -198,7 +201,8 @@ describe("OrgDetailAgent", () => {
     expect(screen.getByRole("button", { name: /Replace/ })).toBeInTheDocument();
   });
 
-  it("falls back to the Agent backend summary when the backend list is empty", () => {
+  it("falls back to the Agent backend summary when the backend list is empty", async () => {
+    const user = userEvent.setup();
     renderPanel({
       agentBackendId: 5,
       backend: {
@@ -210,6 +214,7 @@ describe("OrgDetailAgent", () => {
         llmProviderActive: true,
       },
     });
+    await user.click(screen.getByRole("button", { name: "Account default" }));
     expect(screen.getByText("Local machine")).toBeInTheDocument();
     expect(screen.getByText(/Claude Code · Claude Code/)).toBeInTheDocument();
   });

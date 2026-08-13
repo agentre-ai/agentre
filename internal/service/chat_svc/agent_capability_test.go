@@ -16,6 +16,8 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo/mock_agent_repo"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 )
 
 // registerCapabilityRepos 注册 agent_repo + agent_backend_repo + AgentExecTarget mock
@@ -61,6 +63,31 @@ func expectCapabilityBackend(
 	backendMock.EXPECT().Find(ctx, backendID).Return(&agent_backend_entity.AgentBackend{
 		ID: backendID, Type: string(agent_backend_entity.TypeClaudeCode), DeviceID: deviceID,
 	}, nil)
+}
+
+// TestAgentBackendHasCapability_SelfFingerprintBackend_ReportsLocalCapabilities
+// R13 认领后本机 backend 的 DeviceID 是本机指纹：能力探针必须把它当本机档查本地
+// runtime 注册表，而不是当远端档直接返回 false。
+func TestAgentBackendHasCapability_SelfFingerprintBackend_ReportsLocalCapabilities(t *testing.T) {
+	Convey("给定指向本机指纹的 claudecode 后端, CapMCPTools 应返回 true", t, func() {
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+		agentMock, backendMock := registerCapabilityRepos(t, ctrl)
+		ctx := context.Background()
+
+		rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+		rds.EXPECT().DeviceFingerprint().Return("sha256:self", nil).AnyTimes()
+		prevSvc := remote_device_svc.Default()
+		remote_device_svc.SetDefault(rds)
+		t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+		expectCapabilityBackend(ctx, agentMock, backendMock, 13, 14, "sha256:self")
+
+		svc := chat_svc.NewChat(chat_svc.NoopEmitter{})
+		ok, err := svc.AgentBackendHasCapability(ctx, 13, capability.CapMCPTools)
+		So(err, ShouldBeNil)
+		So(ok, ShouldBeTrue)
+	})
 }
 
 func TestAgentBackendHasCapability_LocalClaudeCodeHasMCPTools(t *testing.T) {

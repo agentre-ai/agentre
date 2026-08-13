@@ -47,6 +47,11 @@ type UpdateAgentRequest struct {
 	Prompt      []string                      `json:"prompt"`
 	ExecTargets []ExecTargetInputDTO          `json:"execTargets"`
 	Tools       []department_svc.AgentToolDTO `json:"tools"`
+	// OrderOverride 非 nil 时，Update 只写**本端**执行目标顺序覆盖（R14 / R16），
+	// 不碰账号默认顺序、不同步：非空数组 = 按此顺序存覆盖，空数组 = 清除覆盖
+	// （「恢复为账号默认顺序」）。nil = 走既有账号默认全量写入。其余字段在此路径
+	// 下被忽略——顺序覆盖只表达排列，不增删档。
+	OrderOverride []int64 `json:"orderOverride,omitempty"`
 }
 
 type UpdateAgentResponse struct {

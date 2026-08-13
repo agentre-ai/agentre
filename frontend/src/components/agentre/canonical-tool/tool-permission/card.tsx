@@ -18,6 +18,7 @@ import {
   TranscriptPill,
 } from "../../transcript-card";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
+import { useCollapsible } from "../../use-collapsible";
 import type { CanonicalCardProps } from "../props";
 import type { CanonicalDTO, ToolPermissionDTO } from "../types";
 
@@ -64,6 +65,7 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
   );
 
   const [collapsed, setCollapsed] = useTranscriptBooleanState(uiStateKey, true);
+  const { mounted, onTransitionEnd } = useCollapsible(!collapsed);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -197,15 +199,24 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
         </span>
       </TranscriptCardHeader>
 
-      {!collapsed && inputJson && (
-        <TranscriptCardBody>
-          <CollapsibleCode
-            value={inputJson}
-            surface="muted"
-            bodyClassName="rounded-sm px-2.5 py-2"
-          />
-        </TranscriptCardBody>
-      )}
+      <div
+        aria-hidden={collapsed}
+        onTransitionEnd={onTransitionEnd}
+        className="grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
+        style={{ gridTemplateRows: collapsed ? "0fr" : "1fr" }}
+      >
+        <div className="min-h-0 overflow-hidden">
+          {mounted && inputJson ? (
+            <TranscriptCardBody>
+              <CollapsibleCode
+                value={inputJson}
+                surface="muted"
+                bodyClassName="rounded-sm px-2.5 py-2"
+              />
+            </TranscriptCardBody>
+          ) : null}
+        </div>
+      </div>
 
       {!isResolved && (
         <TranscriptCardBody className="flex flex-wrap items-center gap-2">

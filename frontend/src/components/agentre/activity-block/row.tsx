@@ -24,6 +24,7 @@ import { toolCategory } from "../canonical-tool/tier";
 import { shouldIgnoreClickForSelection } from "../copyable-text";
 import type { ActivityStep } from "../transcript-rows";
 import { useTranscriptBooleanState } from "../transcript-ui-state";
+import { useCollapsible } from "../use-collapsible";
 
 import {
   canonicalOf,
@@ -36,6 +37,8 @@ import {
 // ActivityRow —— 活动块展开后的一行。整行是一个原生 button:可 Tab 聚焦、带
 // aria-expanded、focus-visible 走既有的 ring。展开指示(chevron)静息时不可见,
 // hover / 聚焦 / 展开才显形 —— 它是视觉修饰,不影响可聚焦性与读屏播报。
+// **例外是 standalone**(单条不成组、直接落在转录里的那一行):它上面没有组头、
+// 左边没有时间轴竖线,没有任何东西替它说明「这一行能点开」,于是箭头常显。
 //
 // 三档权重(读 / 中性 / 写)只体现在字重与前景色上:行高、内边距、交互完全相同。
 // 分层是为了扫视,不是为了制造第二种控件。
@@ -65,11 +68,14 @@ export function ActivityRow({
   step,
   cwd,
   pendingOutcome,
+  standalone = false,
 }: {
   step: ActivityStep;
   cwd?: string;
   /** 这一步没有结果时报什么(默认「运行中」)—— 见 facts.ts 的 PendingOutcome。 */
   pendingOutcome?: PendingOutcome;
+  /** 这一行没有组头罩着(单条不成组):展开箭头常显,而不是 hover 才显形。 */
+  standalone?: boolean;
 }) {
   const { t } = useTranslation();
   // 折叠态挂在这一步「单独成行时」的同一个 key 上 —— 组内组外字节级一致,
@@ -78,6 +84,7 @@ export function ActivityRow({
     step.uiStateKey,
     false,
   );
+  const { mounted, onTransitionEnd } = useCollapsible(expanded);
 
   const weight = stepWeight(step);
   const isThinking = step.type === "thinking";
@@ -133,8 +140,11 @@ export function ActivityRow({
       >
         <ChevronRight
           aria-hidden="true"
+          data-testid="activity-chevron"
           className={cn(
-            "size-3 shrink-0 text-subtle-foreground opacity-0 transition-[opacity,transform] duration-150 ease-out group-hover:opacity-100 group-focus-visible:opacity-100 motion-reduce:transition-none",
+            "size-3 shrink-0 text-subtle-foreground transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none",
+            !standalone &&
+              "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100",
             expanded && "rotate-90 opacity-100",
           )}
         />
@@ -165,6 +175,7 @@ export function ActivityRow({
       </button>
       <div
         aria-hidden={!expanded}
+        onTransitionEnd={onTransitionEnd}
         className="grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
         style={{ gridTemplateRows: expanded ? "1fr" : "0fr" }}
       >
@@ -172,8 +183,9 @@ export function ActivityRow({
           {
             // 性能:结果文本懒挂载 —— 折叠态不 mount 这一步的结果(同
             // agent-spawn/card.tsx 已确立的约定:几十 KB 隐藏文本会让整个
-            // transcript 陪跑 layout/paint)。
-            expanded ? (
+            // transcript 陪跑 layout/paint)。收缩动画期间 mounted 仍为 true,
+            // 过渡结束才卸载。
+            mounted ? (
               <div
                 data-testid="activity-row-body"
                 data-selectable-text="true"

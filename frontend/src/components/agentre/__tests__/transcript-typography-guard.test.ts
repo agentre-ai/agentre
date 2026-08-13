@@ -34,6 +34,7 @@ export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [
   // 姓名首字母字形,不是正文/元信息文字。那是头像专属尺寸,不归 12px text-meta 管。
   { file: "message-row.tsx", skip: ["type"] },
   { file: "markdown-text.tsx" },
+  { file: "markdown-image.tsx" },
   { file: "code-block.tsx" },
   { file: "thinking-block.tsx" },
   // collapsible-code.tsx 是卡片共用的长内容滚动块。复制角标按钮用 rounded

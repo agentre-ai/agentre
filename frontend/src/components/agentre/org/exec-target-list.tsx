@@ -14,7 +14,14 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
-import { ChevronDown, ChevronUp, GripVertical, Plus, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  GripVertical,
+  Plus,
+  RotateCcw,
+  X,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
@@ -45,6 +52,11 @@ type Props = {
   backends: agent_backend_svc.BackendItem[];
   onChange: (next: ExecTargetRow[]) => void;
   saveRejected?: boolean;
+  // scope 标注这个列表编辑哪一端的顺序（R16）："device" = 本端覆盖（只改这台电脑、
+  // 不同步，隐藏增删、只重排），"default" = 账号默认顺序（同步，可增删）。
+  scope?: "device" | "default";
+  // onRestoreDeviceOrder 在 device 作用域提供「恢复为账号默认顺序」（清除本端覆盖）。
+  onRestoreDeviceOrder?: () => void;
 };
 
 const BACKEND_TYPE_LABEL: Record<string, string> = {
@@ -86,6 +98,8 @@ export function ExecTargetList(props: Props) {
   const { t } = useTranslation();
   const [addOpen, setAddOpen] = React.useState(false);
   const [announcement, setAnnouncement] = React.useState("");
+  const scope = props.scope ?? "default";
+  const deviceScope = scope === "device";
 
   const targetsKey = React.useMemo(
     () =>
@@ -172,9 +186,9 @@ export function ExecTargetList(props: Props) {
       index < props.targets.length - 1
         ? () => move(index, index + 1)
         : undefined,
-    onRemove: !single ? () => removeAt(index) : undefined,
-    replaceBackends: single ? props.backends : undefined,
-    onReplacePick: single ? replaceSole : undefined,
+    onRemove: !single && !deviceScope ? () => removeAt(index) : undefined,
+    replaceBackends: single && !deviceScope ? props.backends : undefined,
+    onReplacePick: single && !deviceScope ? replaceSole : undefined,
   });
 
   return (
@@ -184,29 +198,48 @@ export function ExecTargetList(props: Props) {
           {t("org.agent.execTargets.title")}
         </h3>
         <div className="flex-1" />
-        {props.targets.length > 0 && (
-          <Popover open={addOpen} onOpenChange={setAddOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-7 px-2 text-2xs"
-              >
-                <Plus className="size-3" aria-hidden="true" />
-                {t("org.agent.execTargets.add")}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-72 p-0">
-              <AddTargetPanel
-                backends={props.backends}
-                usedIds={usedIds}
-                onPick={appendBackend}
-              />
-            </PopoverContent>
-          </Popover>
+        {deviceScope ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 text-2xs"
+            onClick={props.onRestoreDeviceOrder}
+          >
+            <RotateCcw className="size-3" aria-hidden="true" />
+            {t("org.agent.execTargets.restoreDefault")}
+          </Button>
+        ) : (
+          props.targets.length > 0 && (
+            <Popover open={addOpen} onOpenChange={setAddOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-2xs"
+                >
+                  <Plus className="size-3" aria-hidden="true" />
+                  {t("org.agent.execTargets.add")}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-72 p-0">
+                <AddTargetPanel
+                  backends={props.backends}
+                  usedIds={usedIds}
+                  onPick={appendBackend}
+                />
+              </PopoverContent>
+            </Popover>
+          )
         )}
       </div>
+
+      {deviceScope && (
+        <p className="text-2xs leading-relaxed text-muted-foreground">
+          {t("org.agent.execTargets.deviceScopeHint")}
+        </p>
+      )}
 
       {props.targets.length === 0 ? (
         <div className="rounded-md border border-border bg-input-bg px-3 py-5 text-center">
@@ -214,31 +247,37 @@ export function ExecTargetList(props: Props) {
             {t("org.agent.execTargets.emptyTitle")}
           </p>
           <p className="mt-1 text-2xs text-muted-foreground">
-            {t("org.agent.execTargets.emptyHint")}
+            {deviceScope
+              ? t("org.agent.execTargets.deviceEmptyHint")
+              : t("org.agent.execTargets.emptyHint")}
           </p>
-          <Popover open={addOpen} onOpenChange={setAddOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                size="sm"
-                className="mt-2 h-7 px-2 text-2xs"
-              >
-                <Plus className="size-3" aria-hidden="true" />
-                {t("org.agent.execTargets.addFull")}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-72 p-0">
-              <AddTargetPanel
-                backends={props.backends}
-                usedIds={usedIds}
-                onPick={appendBackend}
-              />
-            </PopoverContent>
-          </Popover>
-          {props.saveRejected && (
-            <p className="mt-1.5 text-2xs text-destructive">
-              {t("org.agent.execTargets.saveRejected")}
-            </p>
+          {!deviceScope && (
+            <>
+              <Popover open={addOpen} onOpenChange={setAddOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="mt-2 h-7 px-2 text-2xs"
+                  >
+                    <Plus className="size-3" aria-hidden="true" />
+                    {t("org.agent.execTargets.addFull")}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-72 p-0">
+                  <AddTargetPanel
+                    backends={props.backends}
+                    usedIds={usedIds}
+                    onPick={appendBackend}
+                  />
+                </PopoverContent>
+              </Popover>
+              {props.saveRejected && (
+                <p className="mt-1.5 text-2xs text-destructive">
+                  {t("org.agent.execTargets.saveRejected")}
+                </p>
+              )}
+            </>
           )}
         </div>
       ) : (

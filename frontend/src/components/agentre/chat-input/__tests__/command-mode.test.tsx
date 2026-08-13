@@ -1372,4 +1372,33 @@ describe("AIChatInput command mode", () => {
     });
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
   });
+
+  it("Given an open command history menu, When the user pointer-downs outside the editor, Then the menu closes", async () => {
+    const historyBase = reserveReleasedHistoryBase();
+    localCommandHistoryStore.record(repoScope, "git status", historyBase + 10);
+    const editorRef: RefObject<Editor | null> = { current: null };
+
+    render(
+      <>
+        <AIChatInput
+          editorRef={editorRef}
+          localCommandHistoryScope={repoScope}
+          onSubmit={vi.fn()}
+          onCommandSubmit={vi.fn()}
+        />
+        <button type="button" data-testid="outside">
+          outside
+        </button>
+      </>,
+    );
+
+    act(() => {
+      editorRef.current!.commands.insertContent("!git");
+    });
+    await screen.findByRole("listbox", { name: "Shell command history" });
+
+    fireEvent.pointerDown(screen.getByTestId("outside"));
+
+    await vi.waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+  });
 });

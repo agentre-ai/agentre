@@ -133,6 +133,12 @@ func setupChatTest(t *testing.T) *chatMocks {
 	chat_repo.RegisterSession(m.session)
 	chat_repo.RegisterMessage(m.message)
 	agent_repo.RegisterAgentExecTarget(m.execTarget)
+	// R14 顺序解析的宽松桩：这批既有测试不关心本端覆盖（默认无覆盖）。PickExecTarget
+	// 只有在执行目标列表非空且会话未钉住时才走到，这里默认空列表本就让它短路；
+	// 注册一个恒 nil 的覆盖桩只是防御性地保证任何到达该路径的用例都不会打真实库。
+	overrideMock := mock_agent_repo.NewMockAgentExecTargetOverrideRepo(ctrl)
+	overrideMock.EXPECT().Get(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+	agent_repo.RegisterAgentExecTargetOverride(overrideMock)
 
 	// 默认宽松桩：这批既有测试全部模拟"Agent 只有一个（隐式）执行目标"的场景
 	// (m.agent 直接给 AgentBackendID，不途经真实的 agent_exec_targets 表)。
@@ -1447,6 +1453,44 @@ func TestSend_ImageInput(t *testing.T) {
 				}},
 			})
 			assert.Error(t, err)
+		})
+
+		convey.Convey("Given image message on self-fingerprint backend without image capability, when Send, then it fails with AgentBackendTypeUnsupported before persisting", func() {
+			m := setupChatTest(t)
+			ctx := m.ctx
+			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, failRunner{err: errors.New("must not run")})
+			t.Cleanup(restore)
+
+			ctrl := gomock.NewController(t)
+			t.Cleanup(ctrl.Finish)
+			rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+			rds.EXPECT().DeviceFingerprint().Return("sha256:self", nil).AnyTimes()
+			prevSvc := remote_device_svc.Default()
+			remote_device_svc.SetDefault(rds)
+			t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+				ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+			}, nil)
+			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+				ID: 7, Name: "Claude", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+			}, nil)
+			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+				ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), DeviceID: "sha256:self", Status: consts.ACTIVE,
+			}, nil)
+
+			_, err := m.svc.Send(ctx, &chat_svc.SendRequest{
+				SessionID: 100,
+				AgentID:   7,
+				Images: []chat_svc.SendImage{{
+					Name:    "shot.png",
+					DataURL: "data:image/png;base64,iVBORw0KGgo=",
+				}},
+			})
+			var httpErr *httputils.Error
+			require.ErrorAs(t, err, &httpErr)
+			assert.Equal(t, code.AgentBackendTypeUnsupported, httpErr.Code,
+				"self-fingerprint local backend must fail the image capability check up front")
 		})
 	})
 }

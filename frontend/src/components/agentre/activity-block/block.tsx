@@ -1,16 +1,18 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronRight, Layers } from "lucide-react";
+import { ChevronRight, Ellipsis, Layers } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
 import { shouldIgnoreClickForSelection } from "../copyable-text";
-import type {
-  ActivityStep,
-  ActivitySummary,
-  ActivitySummaryPart,
+import {
+  summarizeActivity,
+  type ActivityStep,
+  type ActivitySummary,
+  type ActivitySummaryPart,
 } from "../transcript-rows";
 import { useTranscriptBooleanState } from "../transcript-ui-state";
+import { useCollapsible } from "../use-collapsible";
 
 import { stepLabel, type PendingOutcome } from "./facts";
 import { ActivityRow } from "./row";
@@ -22,6 +24,17 @@ import { ActivityRow } from "./row";
 // 组头是折叠态唯一的信息出口:展开指示 → 活动图标 → N 步 → 汇总 → 耗时。
 // 汇总的类目顺序与截断由行模型层(transcript-rows 的 summarizeActivity)算好,
 // 这里只负责渲染 —— 失败计数单独渲染在末尾,永不参与截断。
+//
+// 运行中的块自动展开,于是一轮跑到几十步时它就是一堵不断长高的墙,新的一步把
+// 正文越推越远。超过阈值时只留最后几行,前面的收成一行可点开的省略行(带被省
+// 略部分的汇总 + 红失败数)。只在运行态生效:落定后整块本来就会自动收起,用户
+// 主动点开时要的是全貌。
+
+// 运行中超过 RUNNING_ELIDE_OVER 步就省略,只保留最后 RUNNING_TAIL 行。
+// 8 行约等于「还能一眼扫完」的上限;保留 6 行足以看出 agent 此刻在什么节奏上,
+// 又不至于让在途的几十步全部挂进 DOM。
+const RUNNING_ELIDE_OVER = 8;
+const RUNNING_TAIL = 6;
 
 export type ActivityBlockProps = {
   steps: ActivityStep[];
@@ -63,6 +76,13 @@ export function ActivityBlock({
     uiStateKey,
     running || defaultExpanded,
   );
+  // 用户点过省略行之后就以用户的选择为准(与展开态同一条约定),运行中新来的
+  // 步骤不会把已经摊开的时间轴重新收回去。
+  const [showAllSteps, setShowAllSteps] = useTranscriptBooleanState(
+    `${uiStateKey}:all`,
+    false,
+  );
+  const { mounted, onTransitionEnd } = useCollapsible(expanded);
 
   const handleToggle = (event: React.MouseEvent<HTMLButtonElement>) => {
     if (shouldIgnoreClickForSelection(event)) return;
@@ -75,9 +95,20 @@ export function ActivityBlock({
   // 的活动块自动展开」在这里已经天然成立,不需要额外的自动展开。
   if (steps.length === 1) {
     return (
-      <ActivityRow step={steps[0]} cwd={cwd} pendingOutcome={pendingOutcome} />
+      <ActivityRow
+        step={steps[0]}
+        cwd={cwd}
+        pendingOutcome={pendingOutcome}
+        standalone
+      />
     );
   }
+
+  const elidedCount =
+    running && !showAllSteps && steps.length > RUNNING_ELIDE_OVER
+      ? steps.length - RUNNING_TAIL
+      : 0;
+  const shownSteps = elidedCount > 0 ? steps.slice(elidedCount) : steps;
 
   const durationLabel =
     !running && durationMs !== undefined && durationMs > 0
@@ -130,16 +161,7 @@ export function ActivityBlock({
         ) : (
           <SummaryText summary={summary} />
         )}
-        {summary.failures > 0 ? (
-          // 失败计数在可伸缩的汇总**之外**:汇总挤不下时先裁汇总,红色计数
-          // 永远在(折叠是收起,不是让发生过的事消失)。
-          <span
-            data-testid="activity-failures"
-            className="shrink-0 font-mono font-semibold text-status-error"
-          >
-            {t("activity.summary.failures", { count: summary.failures })}
-          </span>
-        ) : null}
+        <FailureCount count={summary.failures} />
         {durationLabel ? (
           <span
             data-testid="activity-duration"
@@ -154,6 +176,7 @@ export function ActivityBlock({
       </button>
       <div
         aria-hidden={!expanded}
+        onTransitionEnd={onTransitionEnd}
         className="grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
         style={{ gridTemplateRows: expanded ? "1fr" : "0fr" }}
       >
@@ -161,9 +184,17 @@ export function ActivityBlock({
           {
             // 折叠态一个步骤都不 mount(Hard invariant 9):一个 200 步的活动块
             // 折叠时把步骤与结果文本全挂进 DOM,整个 transcript 都要陪跑 layout。
-            expanded ? (
+            // 收缩动画期间 mounted 仍为 true(内容保持挂载供过渡),过渡结束才卸载。
+            mounted ? (
               <div className="ml-1.5 flex flex-col border-l border-border pl-3">
-                {steps.map((step) => (
+                {elidedCount > 0 ? (
+                  <ElidedSteps
+                    steps={steps.slice(0, elidedCount)}
+                    pendingOutcome={pendingOutcome}
+                    onShowAll={() => setShowAllSteps(true)}
+                  />
+                ) : null}
+                {shownSteps.map((step) => (
                   <ActivityRow
                     key={step.uiStateKey}
                     step={step}
@@ -177,6 +208,70 @@ export function ActivityBlock({
         </div>
       </div>
     </div>
+  );
+}
+
+// ElidedSteps —— 运行中被省略掉的前 N 步收成的一行。形态与活动行完全一致
+// (同样的行高 / 内边距 / 图标位),只是把工具名换成「前 N 步」、摘要换成这 N 步
+// 的汇总 —— 折叠掉的东西必须还报得出账。箭头常显:它是唯一说明「这里还有东西」
+// 的提示。汇总用与组头同一个 summarizeActivity,两处不可能分叉。
+function ElidedSteps({
+  onShowAll,
+  pendingOutcome,
+  steps,
+}: {
+  onShowAll: () => void;
+  pendingOutcome?: PendingOutcome;
+  steps: ActivityStep[];
+}) {
+  const { t } = useTranslation();
+  const summary = React.useMemo(
+    () => summarizeActivity(steps, pendingOutcome === "failed"),
+    [pendingOutcome, steps],
+  );
+
+  const handleClick = (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (shouldIgnoreClickForSelection(event)) return;
+    onShowAll();
+  };
+
+  return (
+    <button
+      type="button"
+      data-testid="activity-elided"
+      aria-expanded={false}
+      onClick={handleClick}
+      className="flex w-full items-center gap-2 rounded px-1.5 py-0.5 text-left font-mono text-meta text-muted-foreground transition-colors duration-150 ease-out hover:bg-muted/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 motion-reduce:transition-none"
+    >
+      <ChevronRight
+        aria-hidden="true"
+        className="size-3 shrink-0 text-subtle-foreground"
+      />
+      <Ellipsis
+        aria-hidden="true"
+        className="size-3 shrink-0 text-subtle-foreground"
+      />
+      <span className="shrink-0">
+        {t("activity.elided.steps", { count: steps.length })}
+      </span>
+      <SummaryText summary={summary} />
+      <FailureCount count={summary.failures} />
+    </button>
+  );
+}
+
+// FailureCount —— 组头与省略行共用:红色计数永远在可伸缩的汇总**之外**,
+// 挤不下时先裁汇总(折叠是收起,不是让发生过的事消失)。
+function FailureCount({ count }: { count: number }) {
+  const { t } = useTranslation();
+  if (count <= 0) return null;
+  return (
+    <span
+      data-testid="activity-failures"
+      className="shrink-0 font-mono font-semibold text-status-error"
+    >
+      {t("activity.summary.failures", { count })}
+    </span>
   );
 }
 

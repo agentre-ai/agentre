@@ -15,6 +15,8 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/keychain"
 	"github.com/agentre-ai/agentre/internal/pkg/openclawgateway"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 )
 
 func savedOpenClawBackend(id int64) *agent_backend_entity.AgentBackend {
@@ -49,6 +51,35 @@ func successfulOpenClawProbeResult() *openclawgateway.ProbeResult {
 }
 
 func TestOpenClawBackendProbe(t *testing.T) {
+	t.Run("Given a self-fingerprint OpenClaw backend when tested then the local gateway probe runs instead of the remote-secret-unavailable shortcut", func(t *testing.T) {
+		ctx, backendMock, _, _, _, svc := setupSvcTest(t)
+		memory := keychain.NewMemory()
+		svc.secrets = memory
+		credential := strings.Repeat("p", 46)
+		require.NoError(t, memory.Set(openClawTokenAccount(93), credential))
+
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+		rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+		rds.EXPECT().DeviceFingerprint().Return("sha256:self", nil).AnyTimes()
+		prevSvc := remote_device_svc.Default()
+		remote_device_svc.SetDefault(rds)
+		t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+		selfBackend := savedOpenClawBackend(93)
+		selfBackend.DeviceID = "sha256:self"
+		backendMock.EXPECT().Find(gomock.Any(), int64(93)).Return(selfBackend, nil)
+		svc.openClawProbe = func(_ context.Context, config openclawgateway.Config, _ openclawgateway.ProbeSelection) (*openclawgateway.ProbeResult, error) {
+			assert.Equal(t, credential, config.Token)
+			return successfulOpenClawProbeResult(), nil
+		}
+
+		response, err := svc.Test(ctx, &TestBackendRequest{ID: 93})
+		require.NoError(t, err)
+		require.True(t, response.OK, "self-fingerprint OpenClaw backend must run the local probe, not OPENCLAW_REMOTE_SECRET_UNAVAILABLE")
+		assert.Equal(t, "2026.7.1-2", response.GatewayVersion)
+	})
+
 	t.Run("Given a saved local backend when tested then the stored credential and stable device identity are used and discovery is returned", func(t *testing.T) {
 		ctx, backendMock, _, _, _, svc := setupSvcTest(t)
 		memory := keychain.NewMemory()

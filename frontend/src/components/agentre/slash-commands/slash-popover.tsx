@@ -21,10 +21,14 @@ export function SlashPopover({
   state,
   onPick,
   onHover,
+  onDismiss,
+  editorElement,
 }: {
   state: SlashMenuState;
   onPick: (cmd: SlashCommand) => void;
   onHover: (idx: number) => void;
+  onDismiss?: () => void;
+  editorElement?: HTMLElement | null;
 }): React.ReactElement | null {
   const { t } = useTranslation();
 
@@ -36,6 +40,8 @@ export function SlashPopover({
       itemCount={state.items.length}
       ariaLabel={t("slashCommands.aria")}
       testId="command-suggestions"
+      onDismiss={onDismiss}
+      editorElement={editorElement}
     >
       {(activeRef) =>
         state.items.map((cmd, idx) => {

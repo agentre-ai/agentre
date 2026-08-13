@@ -177,6 +177,12 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 	acc := turn.New()
 	dispEmit := &dispatcherEmitter{svc: s}
 	turnCtx := s.newTurnContext(assistantMsg, sess, stream, be.Type)
+	// The first event can be the persisted user-message prelude; it is still a
+	// canonical event for remote peers even though the local reducer does not
+	// add it to assistant blocks.
+	if hasFirst {
+		s.publishPeerEvent(sessionID, first)
+	}
 	// 首条若已是标记之外的普通事件,它仍要进 dispatcher(用户消息不进 assistant 内容)。
 	if hasFirst && prelude == nil {
 		if err := s.dispatcher.Apply(ctx, first, acc, dispEmit, nil, turnCtx); err != nil {
@@ -188,6 +194,7 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 		}
 	}
 	for ev := range at.Events {
+		s.publishPeerEvent(sessionID, ev)
 		if err := s.dispatcher.Apply(ctx, ev, acc, dispEmit, nil, turnCtx); err != nil {
 			logger.Ctx(ctx).Warn("chat_svc: autonomous dispatcher Apply failed",
 				zap.String("eventType", fmt.Sprintf("%T", ev)), zap.Error(err))

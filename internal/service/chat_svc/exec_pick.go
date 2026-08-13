@@ -14,13 +14,14 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/project_location_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
-	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_repo"
 	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/service/server_svc"
 )
 
 // ExecTargetChoice 是 PickExecTarget 选中的那一档：目标行本身与它解析出的 backend。
@@ -51,6 +52,12 @@ type ExecTargetAvailabilityView struct {
 	// 展示它（路径回答「换过去在哪个目录干活」，比机器名更有信息量）。会话不绑项目
 	// （projectID<=0）或那台机器上没配这个项目时为空串，界面据此不渲染这一行。
 	ProjectPath string `json:"projectPath"`
+	// Kind 是这一档的目标种类："local"（本机）/ "desktop"（另一台桌面端，派发走 peer
+	// 中继）/ "daemon"（agentred）。前端据它把新对话派到正确通道（R18）。
+	Kind string `json:"kind"`
+	// HasOverride 报告该 Agent 是否有本端顺序覆盖（R14 / R16）：组织架构页据此标注
+	// 「正在用本端顺序」并启用「恢复为账号默认顺序」。同一请求里每档同值。
+	HasOverride bool `json:"hasOverride"`
 }
 
 // ExecTargetNoneAvailableError 在一个 Agent 的执行目标列表非空、但逐档判定全部不可用时
@@ -97,11 +104,11 @@ func (e *ExecTargetNoneAvailableError) As(target any) bool {
 	return false
 }
 
-// PickExecTarget 见 ChatSvc 接口注释。
+// PickExecTarget 见 ChatSvc 接口注释。按 R14 解析后的顺序取第一个可用的档。
 func (s *chatSvc) PickExecTarget(ctx context.Context, agentID int64, projectID int64) (*ExecTargetChoice, error) {
-	targets, err := agent_repo.AgentExecTarget().ListByAgent(ctx, agentID)
+	targets, err := s.resolvedExecTargets(ctx, agentID)
 	if err != nil {
-		return nil, operationFailedWithCause(ctx, err, zap.Int64("agentId", agentID))
+		return nil, err
 	}
 	if len(targets) == 0 {
 		return nil, i18n.NewError(ctx, code.ChatAgentNoBackend)
@@ -139,13 +146,15 @@ func (s *chatSvc) PickExecTarget(ctx context.Context, agentID int64, projectID i
 // evalExecTargetAvailability），但刻意**不在遇到第一个可用档时提前返回**——界面要
 // 同时看到列表里每一档的状态（含徽标「当前生效/在线/离线/未配对/…」），不只是最终
 // 会派发到哪一档。projectID<=0（自由会话）不做项目路径判定，与 PickExecTarget 一致。
-// 空列表返回空切片、无错误——「保存被拒」是写路径（agent_svc.Update）的职责，读路径
-// 只如实报告。
+// 列表按 R14 解析后的顺序给出（本端覆盖 / 无覆盖时桌面端自己提前），每档标注
+// HasOverride。空列表返回空切片、无错误——「保存被拒」是写路径（agent_svc.Update）
+// 的职责，读路径只如实报告。
 func (s *chatSvc) ListExecTargetAvailability(ctx context.Context, agentID int64, projectID int64) ([]ExecTargetAvailabilityView, error) {
-	targets, err := agent_repo.AgentExecTarget().ListByAgent(ctx, agentID)
+	targets, err := s.resolvedExecTargets(ctx, agentID)
 	if err != nil {
-		return nil, operationFailedWithCause(ctx, err, zap.Int64("agentId", agentID))
+		return nil, err
 	}
+	hasOverride := s.hasExecTargetOverride(ctx, agentID)
 	out := make([]ExecTargetAvailabilityView, 0, len(targets))
 	for _, target := range targets {
 		be, err := agent_backend_repo.AgentBackend().Find(ctx, target.AgentBackendID)
@@ -173,6 +182,8 @@ func (s *chatSvc) ListExecTargetAvailability(ctx context.Context, agentID int64,
 			Reason:         reason,
 			Hint:           hint,
 			ProjectPath:    projectPath,
+			HasOverride:    hasOverride,
+			Kind:           s.execTargetKind(ctx, be),
 		})
 	}
 	return out, nil
@@ -195,7 +206,9 @@ func (s *chatSvc) evalExecTargetAvailability(
 	if be == nil {
 		return BlockReasonNoBackend, i18n.T(ctx, code.ChatExecTargetHintBackendGone), nil
 	}
-	if be.IsRemote() {
+	// 指向本机的档（DeviceID == 本机指纹）不是「远端配对设备」：它是这台桌面端自己，
+	// 按本地判据判可用（R14 把自己排第一的前提是它能被本地派发）。
+	if !s.beIsSelf(ctx, be) && be.IsRemote() {
 		reason, hint, err := s.evalRemoteDeviceAvailability(ctx, be)
 		if err != nil {
 			return "", "", err
@@ -226,10 +239,102 @@ func (s *chatSvc) evalExecTargetAvailability(
 	return "", "", nil
 }
 
+// execTargetKind 报告一档执行目标的目标种类（"local" / "desktop" / "daemon"）。
+// 本机档（空 DeviceID 或 == 本机指纹）是 local；具名指纹且能在账号设备清单里命中
+// kind=desktop 的是 desktop；其余远端档（agentred）是 daemon。无法判定时（账号清单
+// 拿不到）如实回 daemon——desktop 归类只在派发通道选择用，误归 daemon 也只是回到
+// 既有 agentred 通道的报错，不会派错机器。
+func (s *chatSvc) execTargetKind(ctx context.Context, be *agent_backend_entity.AgentBackend) string {
+	if be == nil || be.IsLocal() || s.beIsSelf(ctx, be) {
+		return "local"
+	}
+	if strings.HasPrefix(be.DeviceID, "sha256:") {
+		if info, ok := s.accountDeviceFor(ctx, be.DeviceID); ok && info.kind == "desktop" {
+			return "desktop"
+		}
+	}
+	return "daemon"
+}
+
+// accountDeviceFor 在账号设备清单里按指纹找一台设备。server 未接线 / 未登录 / 拉取
+// 失败时返回 not-ok（调用方按「无法判定」处理，不误判可用）。
+func (s *chatSvc) accountDeviceFor(ctx context.Context, fingerprint string) (namedDeviceInfo, bool) {
+	if fingerprint == "" || server_svc.Server() == nil {
+		return namedDeviceInfo{}, false
+	}
+	devices, err := server_svc.Server().ListDevices(ctx)
+	if err != nil {
+		return namedDeviceInfo{}, false
+	}
+	for _, d := range devices {
+		if d.Fingerprint == fingerprint {
+			return namedDeviceInfo{kind: d.Kind, online: d.Online}, true
+		}
+	}
+	return namedDeviceInfo{}, true
+}
+
+// namedDeviceInfo 是账号设备清单里一台设备的窄投影。
+type namedDeviceInfo struct {
+	kind   string // "desktop" | "daemon" | ...
+	online bool
+}
+
+// localPairedDeviceView 按指纹在本机配对表里找一台 LAN 配对的 agentred。查不到返回 nil
+// （未配对是这一档的正常状态之一，R2b，不当异常）。与 agent_backend_svc 的
+// pairedDeviceView 同一取法，chat_svc 侧独立声明以保持 consumer-side 窄依赖。
+func localPairedDeviceView(ctx context.Context, fingerprint string) *remote_device_svc.DeviceView {
+	if fingerprint == "" || remote_device_svc.Default() == nil {
+		return nil
+	}
+	rows, err := remote_device_svc.Default().List(ctx)
+	if err != nil {
+		return nil
+	}
+	for _, row := range rows {
+		if row != nil && row.DaemonFingerprint == fingerprint {
+			return row
+		}
+	}
+	return nil
+}
+
+// localPairedDeviceID 在本地派发边界把 backend 持久化的 DeviceID —— 规范指纹
+// （sha256:…），或历史数值配对行 ID —— 解析成本机 paired_agentreds 的行 ID。只有
+// 解析出的行 ID 才能交给 daemon 池 / 游标 / 路径缓存（那些子系统全部按数值行 ID 建
+// 键）。
+//
+// 返回 (0,false) 的两种情形：DeviceID 为空（本机档），或指纹在本机配对表里查不到
+// （这台 daemon 没在本机配对，不可达）。调用方把它报告为「不可派发」而不是猜一个
+// 行号去拨号。与 agent_backend_svc.localPairedDeviceID 同一取法，chat_svc 侧独立声
+// 明以保持 consumer-side 窄依赖。
+func localPairedDeviceID(ctx context.Context, deviceID string) (int64, bool) {
+	if deviceID == "" {
+		return 0, false
+	}
+	if strings.HasPrefix(deviceID, "sha256:") {
+		view := localPairedDeviceView(ctx, deviceID)
+		if view == nil {
+			return 0, false
+		}
+		return view.ID, true
+	}
+	id, ok := (&agent_backend_entity.AgentBackend{DeviceID: deviceID}).DeviceIDInt()
+	if !ok {
+		return 0, false
+	}
+	return id, true
+}
+
 // evalRemoteDeviceAvailability 见 evalExecTargetAvailability 步骤 2。与 ListAgents 里
 // deviceViews 的取法一致：Get 出错（含未配对时的 not-found）一律当未配对处理，不当成
 // 真失败中断挑选 —— 未配对本就是这一档的正常状态之一（R2b），不是异常。
 func (s *chatSvc) evalRemoteDeviceAvailability(ctx context.Context, be *agent_backend_entity.AgentBackend) (BlockReason, string, error) {
+	// 具名指纹目标（另一台桌面端 / 账号 agentred）：在线态只在中继登记里有真相（R2），
+	// 先按账号设备清单判；不在清单里再退回本机配对表。
+	if strings.HasPrefix(be.DeviceID, "sha256:") {
+		return s.evalNamedRemoteDeviceAvailability(ctx, be)
+	}
 	deviceID, ok := be.DeviceIDInt()
 	if !ok {
 		return BlockReasonExecTargetUnpaired, i18n.T(ctx, code.ChatExecTargetHintUnpaired), nil
@@ -251,6 +356,32 @@ func (s *chatSvc) evalRemoteDeviceAvailability(ctx context.Context, be *agent_ba
 	return "", "", nil
 }
 
+// evalNamedRemoteDeviceAvailability 判一档具名指纹目标的可用性（R15 + R2）。
+//
+// 判据分三段：
+//  1. 账号设备清单（server 中继登记）里命中该指纹：kind=desktop 且 Online → 可用；
+//     kind=desktop 且不在线 →「Agentre 没有运行」（R2，与机器离线区分）；agentred
+//     在线/离线按既有说法。
+//  2. 不在账号清单：可能是本地 LAN 配对的 agentred（指纹），查本机配对表。
+//  3. 都查不到：未配对（R2b）。
+func (s *chatSvc) evalNamedRemoteDeviceAvailability(ctx context.Context, be *agent_backend_entity.AgentBackend) (BlockReason, string, error) {
+	if info, ok := s.accountDeviceFor(ctx, be.DeviceID); ok && info.kind == "desktop" {
+		if !info.online {
+			return BlockReasonExecTargetDesktopNotRunning, i18n.T(ctx, code.ChatExecTargetHintDesktopNotRunning), nil
+		}
+		return "", "", nil
+	}
+	// 本机配对表（LAN agentred，指纹已认领）：命中即按离线判据。
+	view := localPairedDeviceView(ctx, be.DeviceID)
+	if view != nil {
+		if !view.Online {
+			return BlockReasonExecTargetOffline, i18n.T(ctx, code.ChatExecTargetHintOffline), nil
+		}
+		return "", "", nil
+	}
+	return BlockReasonExecTargetUnpaired, i18n.T(ctx, code.ChatExecTargetHintUnpaired), nil
+}
+
 // evalExecTargetProjectPath 见 evalExecTargetAvailability 步骤 4。判据是
 // execTargetProjectPath 的 configured —— 「配没配」与「配的是哪个目录」是同一次
 // 查询的两个投影，不写两份取法。
@@ -262,7 +393,7 @@ func (s *chatSvc) evalExecTargetProjectPath(ctx context.Context, be *agent_backe
 	if configured {
 		return "", "", nil
 	}
-	if be.IsLocal() {
+	if be.IsLocal() || remote_device_svc.IsSelfDevice(be.DeviceID) {
 		return BlockReasonExecTargetProjectPathMissing, i18n.T(ctx, code.ChatExecTargetHintLocalPathMissing), nil
 	}
 	return BlockReasonExecTargetProjectPathMissing, i18n.T(ctx, code.ChatExecTargetHintRemotePathMissing), nil
@@ -276,7 +407,7 @@ func (s *chatSvc) evalExecTargetProjectPath(ctx context.Context, be *agent_backe
 func (s *chatSvc) execTargetProjectPath(
 	ctx context.Context, be *agent_backend_entity.AgentBackend, projectID int64,
 ) (string, bool, error) {
-	if be.IsLocal() {
+	if be.IsLocal() || remote_device_svc.IsSelfDevice(be.DeviceID) {
 		p, err := project_repo.Project().Find(ctx, projectID)
 		if err != nil {
 			return "", false, operationFailedWithCause(ctx, err, zap.Int64("projectId", projectID))
@@ -286,7 +417,15 @@ func (s *chatSvc) execTargetProjectPath(
 		}
 		return p.Path, true, nil
 	}
-	loc, err := project_location_repo.ProjectLocation().FindByProjectAndDevice(ctx, projectID, be.DeviceID)
+	// 具名指纹档按（project, daemon_fingerprint）自然键查行；数值行 ID 档按
+	// device_id 缓存列查（两列同存，决策 26）。
+	var loc *project_location_entity.ProjectLocation
+	var err error
+	if strings.HasPrefix(be.DeviceID, "sha256:") {
+		loc, err = project_location_repo.ProjectLocation().FindByProjectAndFingerprint(ctx, projectID, be.DeviceID)
+	} else {
+		loc, err = project_location_repo.ProjectLocation().FindByProjectAndDevice(ctx, projectID, be.DeviceID)
+	}
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return "", false, nil
@@ -343,7 +482,7 @@ func blockReasonForBackend(
 		if remoteProviderKnownMissing(be) {
 			return false, BlockReasonRemoteProviderMissing, i18n.T(ctx, code.ChatBackendHintRemoteProviderMissing)
 		}
-		if be.IsRemote() {
+		if be.IsRemote() && !remote_device_svc.IsSelfDevice(be.DeviceID) {
 			return true, "", ""
 		}
 		if !gatewayRunning {
@@ -351,7 +490,7 @@ func blockReasonForBackend(
 		}
 		return true, "", ""
 	case agent_backend_entity.TypeOpenClaw:
-		if be.IsRemote() {
+		if be.IsRemote() && !remote_device_svc.IsSelfDevice(be.DeviceID) {
 			return false, BlockReasonRemoteOpenClawUnavailable, i18n.T(ctx, code.ChatBackendHintRemoteOpenClaw)
 		}
 		return true, "", ""

@@ -64,6 +64,9 @@ function Harness({
       >
         insert foo/
       </button>
+      <button type="button" data-testid="outside">
+        outside
+      </button>
       <AIChatInput
         ref={handleRef}
         onSubmit={onSubmit}
@@ -294,6 +297,30 @@ describe("AIChatInput slash menu integration", () => {
     expect(onSubmit).not.toHaveBeenCalled();
     expect(document.querySelector(".ProseMirror")?.textContent ?? "").toContain(
       "$browser:browser",
+    );
+  });
+
+  it("Given an open slash menu, When the user pointer-downs outside the editor, Then the menu closes", async () => {
+    const onSubmit = vi.fn();
+    render(<Harness onSubmit={onSubmit} />);
+
+    act(() => {
+      screen.getByTestId("insert-slash").click();
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("listbox", { name: "Command and skill suggestions" }),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.pointerDown(screen.getByTestId("outside"));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("listbox", {
+          name: "Command and skill suggestions",
+        }),
+      ).toBeNull(),
     );
   });
 

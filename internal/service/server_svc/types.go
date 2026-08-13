@@ -37,4 +37,8 @@ var (
 	ErrAccessDenied      = errors.New("server: access denied")
 	ErrLoginExpired      = errors.New("server: device code expired")
 	ErrRefreshFailed     = errors.New("server: refresh failed")
+	// ErrDesktopAppNotRunning identifies an addressable desktop whose Agentre
+	// App process is not currently registered with the relay. It is deliberately
+	// distinct from client.ErrRelayDaemonOffline, which remains agentred-only.
+	ErrDesktopAppNotRunning = errors.New("relay: Agentre App is not running on the target desktop")
 )

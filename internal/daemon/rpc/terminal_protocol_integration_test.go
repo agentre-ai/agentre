@@ -33,20 +33,20 @@ type rpcTrackedTerminalHandle struct {
 	data chan []byte
 	exit chan pty.ExitInfo
 
-	closeOnce  sync.Once
-	closeCalls atomic.Int32
-	dataCalls  atomic.Int32
-	exitCalls  atomic.Int32
+	completeOnce sync.Once
+	closeCalls   atomic.Int32
+	dataCalls    atomic.Int32
+	exitCalls    atomic.Int32
 }
 
 func newRPCFastTerminalHandle(data []byte, exit pty.ExitInfo) *rpcTrackedTerminalHandle {
-	dataCh := make(chan []byte, 1)
-	dataCh <- data
-	close(dataCh)
-	exitCh := make(chan pty.ExitInfo, 1)
-	exitCh <- exit
-	close(exitCh)
-	return &rpcTrackedTerminalHandle{data: dataCh, exit: exitCh}
+	h := &rpcTrackedTerminalHandle{
+		data: make(chan []byte, 1),
+		exit: make(chan pty.ExitInfo, 1),
+	}
+	h.data <- data
+	h.complete(exit)
+	return h
 }
 
 func newRPCLateTerminalHandle() *rpcTrackedTerminalHandle {
@@ -68,12 +68,16 @@ func (h *rpcTrackedTerminalHandle) Exit() <-chan pty.ExitInfo {
 }
 func (h *rpcTrackedTerminalHandle) Close() error {
 	h.closeCalls.Add(1)
-	h.closeOnce.Do(func() {
-		h.exit <- pty.ExitInfo{Code: 137, Reason: "killed"}
+	h.complete(pty.ExitInfo{Code: 137, Reason: "killed"})
+	return nil
+}
+
+func (h *rpcTrackedTerminalHandle) complete(exit pty.ExitInfo) {
+	h.completeOnce.Do(func() {
+		h.exit <- exit
 		close(h.exit)
 		close(h.data)
 	})
-	return nil
 }
 
 type terminalWebSocketHarness struct {
@@ -159,6 +163,19 @@ func dialTerminalRPCClient(t *testing.T, url string) *daemonclient.Client {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })
 	return client
+}
+
+func TestRPCTrackedTerminalHandle_GivenNaturalCompletionWhenCleanupClosesThenPreservesOutcomeWithoutPanic(t *testing.T) {
+	fastHandle := newRPCFastTerminalHandle([]byte("done"), pty.ExitInfo{Code: 0, Reason: "natural"})
+
+	require.NotPanics(t, func() {
+		require.NoError(t, fastHandle.Close())
+	})
+	require.Equal(t, int32(1), fastHandle.closeCalls.Load())
+	require.Equal(t, []byte("done"), <-fastHandle.Data())
+	outcome, ok := <-fastHandle.Exit()
+	require.True(t, ok)
+	require.Equal(t, pty.ExitInfo{Code: 0, Reason: "natural"}, outcome)
 }
 
 func TestTerminalProtocolRealWebSocket_GivenDataAndExitSentBeforeOpenResponseWhenDesktopPreSubscribesThenCapturesBoth(t *testing.T) {

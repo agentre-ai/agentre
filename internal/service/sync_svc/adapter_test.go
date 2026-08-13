@@ -105,18 +105,12 @@ func TestAgentBackendAdapter_LoadUsesFingerprintAndProviderKeyOnly(t *testing.T)
 			*row = agent_backend_entity.AgentBackend{
 				ID: 9, Type: "claudecode", Name: "构建机 Claude", LLMProviderKey: "anthropic-main",
 				LLMModelKey: "anthropic-opus-01",
-				DeviceID:    "3", CLIPath: "/opt/claude", EnvJSON: `{"K":"V"}`,
+				DeviceID:    "fp-builder", CLIPath: "/opt/claude", EnvJSON: `{"K":"V"}`,
 				SyncMeta: syncmeta_entity.SyncMeta{SyncID: "be-1", SyncVersion: 2},
 			}
 			return true, nil
 		})
 	syncstate_repo.RegisterSyncState(state)
-
-	paired := mock_remote_device_repo.NewMockPairedAgentredRepo(ctrl)
-	paired.EXPECT().Get(gomock.Any(), int64(3)).Return(&paired_agentred_entity.PairedAgentred{
-		ID: 3, DaemonFingerprint: "fp-builder",
-	}, nil)
-	remote_device_repo.RegisterPairedAgentred(paired)
 
 	out, err := agentBackendAdapter{}.load(context.Background(), "be-1")
 	require.NoError(t, err)
@@ -158,58 +152,108 @@ func TestAgentBackendAdapter_ApplyMapsModelKeyToLLMModelKey(t *testing.T) {
 	assert.Equal(t, "anthropic-opus-01", created.LLMModelKey)
 }
 
-// TestAgentBackendAdapter_GivenEmptyDeviceID_KeepsRelativeReference R2/决策 14：
-// device_id 为空的 backend 不翻译成任何机器——它是「当前这台桌面端」这个相对引用，
-// 原样保持为空。
-func TestAgentBackendAdapter_GivenEmptyDeviceID_KeepsRelativeReference(t *testing.T) {
+// TestAgentBackendAdapter_GivenLegacyNumericDeviceID_UploadsCanonicalFingerprint
+// 前端创建 agentred backend 时仍会提交本机 paired_agentreds 的数值行 ID（历史路径），
+// 但 wire 层的 AgentredFingerprint 字段语义是「全局指纹」。数值行 ID 跨机毫无意义——
+// 对端按同号解析会落到它自己那张表里另一台机器上（错机派发）。load 必须把它翻译成
+// 指向那台 daemon 的指纹再上行。
+func TestAgentBackendAdapter_GivenLegacyNumericDeviceID_UploadsCanonicalFingerprint(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	state := mock_syncstate_repo.NewMockSyncStateRepo(ctrl)
-	state.EXPECT().FindRow(gomock.Any(), syncwire.KindAgentBackend, "be-local", gomock.Any()).
+	state.EXPECT().FindRow(gomock.Any(), syncwire.KindAgentBackend, "be-1", gomock.Any()).
 		DoAndReturn(func(_ context.Context, _, _ string, dest any) (bool, error) {
 			row := dest.(*agent_backend_entity.AgentBackend)
 			*row = agent_backend_entity.AgentBackend{
-				ID: 8, Type: "claudecode", Name: "本机", DeviceID: "",
-				SyncMeta: syncmeta_entity.SyncMeta{SyncID: "be-local"},
+				ID: 9, Type: "claudecode", Name: "构建机 Claude",
+				DeviceID: "3", SyncMeta: syncmeta_entity.SyncMeta{SyncID: "be-1", SyncVersion: 2},
 			}
 			return true, nil
 		})
 	syncstate_repo.RegisterSyncState(state)
-	// 配对表一次都不该被问：空 device_id 根本不是一个要解析的引用。
+
+	paired := mock_remote_device_repo.NewMockPairedAgentredRepo(ctrl)
+	paired.EXPECT().Get(gomock.Any(), int64(3)).Return(&paired_agentred_entity.PairedAgentred{
+		ID: 3, DaemonFingerprint: "fp-builder",
+	}, nil)
+	remote_device_repo.RegisterPairedAgentred(paired)
+
+	out, err := agentBackendAdapter{}.load(context.Background(), "be-1")
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "fp-builder", out.AgentredFingerprint,
+		"a numeric paired-row ID must never cross the wire as a fingerprint")
+}
+
+// TestAgentBackendAdapter_GivenLegacyNumericDeviceIDOfUnpairedDaemon_SkipsUpload
+// 数值行 ID 指向的 daemon 已解除配对时翻不出指纹。宁可这一条不上行（旧行为），
+// 也不能让数值行 ID 带着错机语义过机。
+func TestAgentBackendAdapter_GivenLegacyNumericDeviceIDOfUnpairedDaemon_SkipsUpload(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	state := mock_syncstate_repo.NewMockSyncStateRepo(ctrl)
+	state.EXPECT().FindRow(gomock.Any(), syncwire.KindAgentBackend, "be-1", gomock.Any()).
+		DoAndReturn(func(_ context.Context, _, _ string, dest any) (bool, error) {
+			row := dest.(*agent_backend_entity.AgentBackend)
+			*row = agent_backend_entity.AgentBackend{
+				ID: 9, Type: "claudecode", Name: "构建机 Claude",
+				DeviceID: "3", SyncMeta: syncmeta_entity.SyncMeta{SyncID: "be-1", SyncVersion: 2},
+			}
+			return true, nil
+		})
+	syncstate_repo.RegisterSyncState(state)
+
+	paired := mock_remote_device_repo.NewMockPairedAgentredRepo(ctrl)
+	paired.EXPECT().Get(gomock.Any(), int64(3)).Return(nil, nil)
+	remote_device_repo.RegisterPairedAgentred(paired)
+
+	out, err := agentBackendAdapter{}.load(context.Background(), "be-1")
+	require.NoError(t, err)
+	require.Nil(t, out, "an unexpressable numeric target must not be uploaded")
+}
+
+func TestAgentBackendAdapter_GivenCanonicalFingerprint_PreservesItWithoutPairLookup(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	state := mock_syncstate_repo.NewMockSyncStateRepo(ctrl)
+	state.EXPECT().FindRow(gomock.Any(), syncwire.KindAgentBackend, "be-desktop", gomock.Any()).
+		DoAndReturn(func(_ context.Context, _, _ string, dest any) (bool, error) {
+			row := dest.(*agent_backend_entity.AgentBackend)
+			*row = agent_backend_entity.AgentBackend{
+				ID: 8, Type: "claudecode", Name: "Desktop Claude", DeviceID: "sha256:desktop-a",
+				SyncMeta: syncmeta_entity.SyncMeta{SyncID: "be-desktop"},
+			}
+			return true, nil
+		})
+	syncstate_repo.RegisterSyncState(state)
+
+	// A backend's persisted device ID is already the canonical fingerprint. The
+	// sync adapter must not treat it as a local paired-row ID.
 	remote_device_repo.RegisterPairedAgentred(
 		mock_remote_device_repo.NewMockPairedAgentredRepo(gomock.NewController(t)))
 
-	out, err := agentBackendAdapter{}.load(context.Background(), "be-local")
+	out, err := agentBackendAdapter{}.load(context.Background(), "be-desktop")
 	require.NoError(t, err)
 	require.NotNil(t, out)
-	assert.Empty(t, out.AgentredFingerprint)
-
-	// 落地方向同样保持相对：不指向任何机器。
-	backends := mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl)
-	var created *agent_backend_entity.AgentBackend
-	state.EXPECT().FindRow(gomock.Any(), syncwire.KindAgentBackend, "be-local", gomock.Any()).Return(false, nil)
-	backends.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, b *agent_backend_entity.AgentBackend) error { created = b; return nil })
-	agent_backend_repo.RegisterAgentBackend(backends)
-
-	require.NoError(t, agentBackendAdapter{}.apply(context.Background(), &inbound{
-		Kind: syncwire.KindAgentBackend, SyncID: "be-local", Payload: out.Payload,
-	}, map[string]int64{}))
-	require.NotNil(t, created)
-	assert.Empty(t, created.DeviceID, "在对端它同样指「当前这台桌面端」")
+	assert.Equal(t, "sha256:desktop-a", out.AgentredFingerprint)
 }
 
-// TestAgentBackendAdapter_GivenUnpairedFingerprint_DefersInsteadOfLandingAsLocal
-// R2a/R2b：指纹在本机配对表里查不到时暂缓落地——落成空 device_id 会让这一档变成
-// 「本机」，在本机被错误地跑起来。
-func TestAgentBackendAdapter_GivenUnpairedFingerprint_DefersInsteadOfLandingAsLocal(t *testing.T) {
-	in := &inbound{
-		Kind: syncwire.KindAgentBackend, SyncID: "be-1", AgentredFingerprint: "fp-unknown",
-		Payload: []byte(`{"type":"claudecode","name":"构建机"}`),
-	}
-	assert.Equal(t, []ref{{Fingerprint: "fp-unknown"}}, agentBackendAdapter{}.refs(in))
+// TestAgentBackendAdapter_GivenUnpairedFingerprint_PersistsNamedTargetDirectly
+// R12: pairing affects dispatch availability, never the synced target identity.
+func TestAgentBackendAdapter_GivenUnpairedFingerprint_PersistsNamedTargetDirectly(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	state := mock_syncstate_repo.NewMockSyncStateRepo(ctrl)
+	state.EXPECT().FindRow(gomock.Any(), syncwire.KindAgentBackend, "be-1", gomock.Any()).Return(false, nil)
+	syncstate_repo.RegisterSyncState(state)
+	backends := mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl)
+	var created *agent_backend_entity.AgentBackend
+	backends.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, row *agent_backend_entity.AgentBackend) error { created = row; return nil })
+	agent_backend_repo.RegisterAgentBackend(backends)
 
-	err := agentBackendAdapter{}.apply(context.Background(), in, map[string]int64{})
-	assert.ErrorIs(t, err, errRefMissing)
+	in := &inbound{Kind: syncwire.KindAgentBackend, SyncID: "be-1", AgentredFingerprint: "fp-unknown",
+		Payload: []byte(`{"type":"claudecode","name":"构建机"}`)}
+	assert.Empty(t, agentBackendAdapter{}.refs(in))
+	require.NoError(t, agentBackendAdapter{}.apply(context.Background(), in, nil))
+	require.NotNil(t, created)
+	assert.Equal(t, "fp-unknown", created.DeviceID)
 }
 
 // TestAgentExecTargetAdapter_TranslatesBothEndsToSyncIDs R2：执行目标的两端（它所属

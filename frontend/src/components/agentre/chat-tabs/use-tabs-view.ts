@@ -19,7 +19,7 @@ import type { TabStatus } from "./tab";
 export type TabView = {
   id: string;
   title: string;
-  kind: "session" | "new" | "terminal";
+  kind: "session" | "new" | "terminal" | "peer";
   avatar: { letter: string; color: string };
   isPreview: boolean;
   isPinned: boolean;
@@ -70,6 +70,36 @@ export function useTabsView(): TabView[] {
         : reasonToPillText(reason);
     const meta = sid ? (metas.get(sid) ?? null) : null;
     const pid = meta?.projectId ?? 0;
+    // Peer Tab 不落本地 session/meta store：标题与状态都从 tab 自带元数据取，
+    // 项目色 / 来源 / 注意力一律不参与（R22：单端零变化）。
+    const peerActive =
+      tab.meta.kind === "peer"
+        ? {
+            title: tab.title ?? t("chatTabs.peer.title"),
+            status: "idle" as TabStatus,
+            projectColor: null as string | null,
+            chain: null as string[] | null,
+            lastMessageAt: 0,
+          }
+        : null;
+    if (peerActive) {
+      return {
+        id: tab.id,
+        title: peerActive.title,
+        kind: "peer",
+        avatar: { letter: "⌁", color: "var(--status-waiting)" },
+        isPreview: tab.isPreview,
+        isPinned: tab.isPinned,
+        status: peerActive.status,
+        projectColor: peerActive.projectColor,
+        worktree: false,
+        pillText: null,
+        sessionId: 0,
+        projectChain: peerActive.chain,
+        worktreeBranch: null,
+        lastMessageAt: peerActive.lastMessageAt,
+      };
+    }
     const projectColor =
       pid > 0 ? tokenToCssColor(findProjectColorToken(tree, pid)) : null;
     const chain = pid > 0 ? projectChain(tree, pid) : [];

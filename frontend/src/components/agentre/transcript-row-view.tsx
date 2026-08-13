@@ -576,9 +576,11 @@ function extractAssistantOutputText(
 function MessageBody({
   item,
   cwd,
+  sessionId,
 }: {
   item: Extract<TranscriptRowItem, { type: "text" }>;
   cwd?: string;
+  sessionId?: number;
 }) {
   const { text: mentionText, refs: mentionRefs } = React.useMemo(
     () => prepareMentionText(item.text),
@@ -590,7 +592,12 @@ function MessageBody({
     [mentionRefs],
   );
   return (
-    <MarkdownText cwd={cwd} text={mentionText} decorator={mentionDecorator} />
+    <MarkdownText
+      cwd={cwd}
+      sessionId={sessionId}
+      text={mentionText}
+      decorator={mentionDecorator}
+    />
   );
 }
 
@@ -618,9 +625,13 @@ function RenderItemView({
       return null;
     case "text":
       return item.streaming ? (
-        <StreamingMarkdown cwd={ctx?.cwd} text={item.text} />
+        <StreamingMarkdown
+          cwd={ctx?.cwd}
+          sessionId={ctx?.sessionId}
+          text={item.text}
+        />
       ) : (
-        <MessageBody item={item} cwd={ctx?.cwd} />
+        <MessageBody item={item} cwd={ctx?.cwd} sessionId={ctx?.sessionId} />
       );
     case "plan":
       return (
@@ -645,8 +656,11 @@ function RenderItemView({
     case "activity":
       // 活动块:连续的思考 / 只读探查 / 中性 / 写 / 命令 / 失败折成一行组头。
       // 一个块仍然只占一个虚拟行 —— 折叠态不 mount 组内步骤(Hard invariant 9)。
-      // running 只认「仍在流式的消息的末行」:此刻没有别的东西排在它后面,
-      // 说明 agent 正在这一组里干活。轮次落定 → live 变假 → 自动收起。
+      // running 认「仍在流式的消息的末行」:此刻没有别的东西排在它后面,说明
+      // agent 正在这一组里干活。轮次落定 → live 变假 → 自动收起。
+      // item.growing 是唯一的例外:后面那行是一段**还在流的思考**,它一落定就并
+      // 回这个块 —— 这一组并没有结束,不能因为暂时不是末行就收起来(行模型的
+      // markGrowingActivity 负责标)。
       return (
         <ActivityBlock
           steps={item.steps}
@@ -654,7 +668,7 @@ function RenderItemView({
           uiStateKey={item.uiStateKey}
           cwd={ctx?.cwd}
           durationMs={durationMs}
-          running={live}
+          running={live || item.growing === true}
         />
       );
     case "image":

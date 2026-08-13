@@ -110,6 +110,16 @@ func (s *agentSvc) Update(ctx context.Context, req *UpdateAgentRequest) (*Update
 	if existing == nil {
 		return nil, i18n.NewError(ctx, code.AgentNotFound)
 	}
+	// R14 / R16：orderOverride 非 nil = 只写本端顺序覆盖，不碰账号默认执行目标列表、
+	// 不同步（不触发 NotifyUpdate / 墓碑级联）。顺序覆盖只表达排列，不增删档，因此
+	// 其余字段在此路径下被忽略。
+	if req.OrderOverride != nil {
+		if err := s.applyExecTargetOrderOverride(ctx, existing.ID, req.OrderOverride); err != nil {
+			return nil, err
+		}
+		targets, _ := execTargetSnapshot(ctx, existing.ID)
+		return &UpdateAgentResponse{Item: toItem(existing, targets)}, nil
+	}
 	newName := strings.TrimSpace(req.Name)
 	if newName != existing.Name {
 		dup, err := agent_repo.Agent().FindByName(ctx, newName)
@@ -149,6 +159,22 @@ func (s *agentSvc) Update(ctx context.Context, req *UpdateAgentRequest) (*Update
 	notifyDroppedExecTargets(ctx, targetsBefore, targetsAfter, beforeOK && afterOK)
 	sync_svc.NotifyUpdate(ctx, syncwire.KindAgent, existing.ID, existing.SyncMeta)
 	return &UpdateAgentResponse{Item: toItem(existing, targetsAfter)}, nil
+}
+
+// applyExecTargetOrderOverride 把本端执行目标顺序覆盖落到纯本地表（R14）：非空数组
+// 按此顺序 upsert，空数组 = 清除（「恢复为账号默认顺序」）。仓储未装配（同步未就绪
+// 的极端构建）时是空操作——覆盖本就是可选的本地偏好，丢了不丢数据。
+func (s *agentSvc) applyExecTargetOrderOverride(ctx context.Context, agentID int64, order []int64) error {
+	repo := agent_repo.AgentExecTargetOverride()
+	if repo == nil {
+		return nil
+	}
+	if len(order) == 0 {
+		return repo.Delete(ctx, agentID)
+	}
+	o := &agent_entity.AgentExecTargetOverride{AgentID: agentID, Updatetime: s.now()}
+	o.SetOrder(order)
+	return repo.Save(ctx, o)
 }
 
 // buildExecTargets 把 UpdateAgentRequest.ExecTargets 转成仓储层的执行目标列表：

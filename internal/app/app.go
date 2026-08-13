@@ -43,11 +43,21 @@ import (
 type App struct {
 	ctx              context.Context
 	hookPollerCancel context.CancelFunc
+	peerMu           sync.Mutex
+	peerCancel       context.CancelFunc
+	peerDone         chan struct{}
 	ccUsageStop      func()
 	terminalSvc      *terminal_svc.Service
 
 	// quitConfirmed 标记本次退出已被用户确认(或自动更新重启),OnBeforeClose 见到即放行。
-	quitConfirmed atomic.Bool
+	quitConfirmed   atomic.Bool
+	finalQuit       func(context.Context)
+	finalQuitOnce   sync.Once
+	forceExit       func(int)
+	forcedExitDelay time.Duration
+
+	shutdownCleanup func(context.Context)
+	shutdownOnce    sync.Once
 
 	lastImportPath   string
 	lastImportPathMu sync.Mutex
@@ -63,7 +73,15 @@ type AppInfo struct {
 
 // NewApp creates a new App application struct.
 func NewApp() *App {
-	return &App{}
+	a := &App{
+		finalQuit: func(ctx context.Context) {
+			wailsruntime.Quit(ctx)
+		},
+		forceExit:       os.Exit,
+		forcedExitDelay: 250 * time.Millisecond,
+	}
+	a.shutdownCleanup = a.cleanupResources
+	return a
 }
 
 var resetStaleActiveSessions = bootstrap.ResetStaleActiveSessions
@@ -80,8 +98,14 @@ func (a *App) Startup(ctx context.Context) {
 	// Server 联机：绑定 wails 事件源后启动 boot 协程（最长一次刷新）。
 	server_svc.Server().SetEmitter(func(payload any) {
 		wailsruntime.EventsEmit(a.ctx, "server.state", payload)
+		if state, ok := payload.(map[string]any); ok && state["kind"] == "logged_in" {
+			a.startInboundPeer(context.Background())
+		}
 	})
 	bootstrap.ServerBoot(context.Background())
+	a.startInboundPeer(context.Background())
+	// 出站对端客户端（R18/R19）：接线后前端才能把对话派到另一台桌面端 / 接入其会话。
+	a.registerPeerService()
 	// 工作区多端同步的下行轮询（R3：30 秒一轮）。未登录时每一轮都是空操作（R12）。
 	bootstrap.SyncBoot(context.Background())
 
@@ -158,6 +182,25 @@ func (a *App) resetStaleSessionsOnStartup(ctx context.Context) {
 
 // Shutdown is wired to wails OnShutdown.
 func (a *App) Shutdown(ctx context.Context) {
+	if !a.quitConfirmed.Load() {
+		a.shutdownCleanup(ctx)
+		return
+	}
+	a.shutdownOnce.Do(func() {
+		go a.shutdownCleanup(context.WithoutCancel(ctx))
+	})
+}
+
+// cleanupResources starts best-effort resource cleanup after Wails has accepted
+// the quit. Shutdown deliberately does not wait for this method: once the user
+// confirms quitting, a stuck external process or connection must not keep the
+// desktop process alive.
+func (a *App) cleanupResources(ctx context.Context) {
+	a.stopInboundPeer(ctx)
+	// 关闭全部出站对端中继连接（R19：本端退出即结束接入，对端会话不受影响）。
+	if err := a.PeerClose(); err != nil {
+		logger.Ctx(ctx).Warn("app shutdown: close outbound peer relay", zap.Error(err))
+	}
 	if a.hookPollerCancel != nil {
 		a.hookPollerCancel()
 		a.hookPollerCancel = nil
@@ -241,7 +284,15 @@ func shouldPreventQuit(ctx context.Context, confirmed bool,
 // which re-enters OnBeforeClose and is allowed through.
 func (a *App) ConfirmQuit() {
 	a.quitConfirmed.Store(true)
-	wailsruntime.Quit(a.ctx)
+	a.finalQuitOnce.Do(func() {
+		go func() {
+			time.Sleep(a.forcedExitDelay)
+			a.forceExit(0)
+		}()
+		go func() {
+			a.finalQuit(a.ctx)
+		}()
+	})
 }
 
 // registerChatService wires the chat service singleton with a real wails-runtime

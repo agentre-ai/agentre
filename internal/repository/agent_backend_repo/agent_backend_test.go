@@ -11,6 +11,7 @@ import (
 	"github.com/cago-frame/cago/pkg/utils/testutils"
 	"github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
@@ -196,6 +197,33 @@ func TestAgentBackendRepo_Delete(t *testing.T) {
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 	})
+}
+
+func TestAgentBackendRepo_ClaimRelative_ClonesTargetsAndTombstonesOriginals(t *testing.T) {
+	ctx, mock, repo := setupAgentBackendRepoTest(t)
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT \\* FROM `agent_backends` WHERE device_id = \\? AND status = \\? ORDER BY id ASC").
+		WithArgs("", consts.ACTIVE).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "type", "name", "device_id", "status", "sync_id", "sync_account_id"}).
+			AddRow(int64(1), "claudecode", "Local Claude", "", consts.ACTIVE, "backend-old", int64(7)))
+	mock.ExpectQuery("SELECT \\* FROM `agent_exec_targets` WHERE agent_backend_id = \\? ORDER BY agent_id ASC, sort_order ASC, id ASC").
+		WithArgs(int64(1)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "agent_id", "agent_backend_id", "sort_order", "skills_json", "sync_id", "sync_account_id"}).
+			AddRow(int64(3), int64(9), int64(1), 0, `[]`, "target-old", int64(7)))
+	mock.ExpectExec("INSERT INTO `agent_backends`").WillReturnResult(sqlmock.NewResult(2, 1))
+	mock.ExpectExec("DELETE FROM `agent_exec_targets` WHERE id = \\?").WithArgs(int64(3)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO `agent_exec_targets`").WillReturnResult(sqlmock.NewResult(4, 1))
+	mock.ExpectExec("UPDATE `agent_backends` SET `status`=\\?").WithArgs(consts.DELETE, int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	claims, err := repo.ClaimRelative(ctx, "sha256:desktop-a")
+	require.NoError(t, err)
+	require.Len(t, claims, 1)
+	assert.Equal(t, "sha256:desktop-a", claims[0].ClaimedBackend.DeviceID)
+	assert.Equal(t, int64(2), claims[0].ClaimedBackend.ID)
+	require.Len(t, claims[0].ClaimedTargets, 1)
+	assert.Equal(t, int64(2), claims[0].ClaimedTargets[0].AgentBackendID)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestAgentBackendRepo_Update(t *testing.T) {

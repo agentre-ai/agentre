@@ -1283,6 +1283,38 @@ describe("AgentSpawnCard step-list laziness (perf regression)", () => {
       "xxxxx",
     );
   });
+
+  it("Given an expanded single-spawn card with steps, When collapsed, Then steps stay mounted through the collapse transition and unmount only after it ends", () => {
+    const block = normalizedSpawnBlock({
+      mode: "single",
+      status: "completed",
+      runs: [{ id: "run-one", index: 0, agent: "worker", status: "completed" }],
+    });
+    const { container } = render(
+      <AgentSpawnCard
+        toolBlock={block}
+        childBlocks={groupedChildren([
+          {
+            runId: "run-one",
+            toolName: "Read",
+            toolUseId: "c1",
+            toolInput: { path: "./a.ts" },
+            result: "a",
+          },
+        ])}
+      />,
+    );
+
+    const details = expandCard(container);
+    expect(within(details).getAllByTestId("activity-row")).toHaveLength(1);
+
+    // 收起卡片:过渡期间步骤仍挂载(收缩动画需要内容支撑),过渡结束才卸载。
+    fireEvent.click(screen.getByRole("button", { expanded: true }));
+    expect(details).toHaveAttribute("aria-hidden", "true");
+    expect(within(details).getAllByTestId("activity-row")).toHaveLength(1);
+    fireEvent.transitionEnd(details);
+    expect(within(details).queryByTestId("activity-row")).toBeNull();
+  });
 });
 
 // ─── 步骤区 = 转录里的同一个活动块(spec 决策 9 / 子代理 §1-2) ───────────────

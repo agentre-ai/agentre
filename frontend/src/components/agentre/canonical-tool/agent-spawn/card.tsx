@@ -29,6 +29,7 @@ import {
 import { summarizeActivity, type ActivityStep } from "../../transcript-rows";
 import { statusConfig, type AgentStatus } from "../../types";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
+import { useCollapsible } from "../../use-collapsible";
 import type { AgentSpawnChildBlocks, CanonicalCardProps } from "../props";
 import type {
   AgentSpawnDTO,
@@ -352,6 +353,7 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
   const { t } = useTranslation();
   const spawn = readSpawn(toolBlock);
   const [expanded, setExpanded] = useTranscriptBooleanState(uiStateKey, false);
+  const { mounted, onTransitionEnd } = useCollapsible(expanded);
 
   if (!spawn) return null;
 
@@ -608,6 +610,7 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
       <div
         data-slot="agent-spawn-details"
         aria-hidden={!expanded}
+        onTransitionEnd={onTransitionEnd}
         className="grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
         style={{ gridTemplateRows: expanded ? "1fr" : "0fr" }}
       >
@@ -679,8 +682,8 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
               // subagent 可带 150-200 个嵌套步骤,折叠时把整列表 mount 进 DOM
               // (0fr 网格只是视觉隐藏)会让 transcript 在会话打开 / tab 切换 /
               // 滚动时卡顿;展开才挂载。折叠态下 steps 数量仍从 steps.length
-              // 读取,头部/进度/摘要不受影响。
-              expanded ? (
+              // 读取,头部/进度/摘要不受影响。收缩过渡期间 mounted 仍为 true。
+              mounted ? (
                 <AgentSpawnSteps
                   steps={steps}
                   cwd={cwd}
@@ -820,6 +823,7 @@ function GroupedAgentSpawnCard({
   onStopSubagent,
 }: GroupedAgentSpawnCardProps): React.ReactElement {
   const { t } = useTranslation();
+  const { mounted, onTransitionEnd } = useCollapsible(expanded);
   const runs = (spawn.runs ?? []).slice().sort((a, b) => a.index - b.index);
   const outerStatus = spawn.status ?? "running";
   const terminalCount = runs.filter((run) =>
@@ -939,6 +943,7 @@ function GroupedAgentSpawnCard({
       <div
         data-slot="agent-spawn-details"
         aria-hidden={!expanded}
+        onTransitionEnd={onTransitionEnd}
         className="grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
         style={{ gridTemplateRows: expanded ? "1fr" : "0fr" }}
       >
@@ -953,13 +958,13 @@ function GroupedAgentSpawnCard({
                     mode={spawn.mode}
                     blocks={childBlocks.byRun.get(run.id) ?? []}
                     cwd={cwd}
-                    cardExpanded={expanded}
+                    cardExpanded={mounted}
                     uiStateKey={`${keyBase}:run:${run.id || run.index}`}
                   />
                 ))}
               </div>
             </AgentSpawnSection>
-            {fallbackSteps.length > 0 && expanded ? (
+            {fallbackSteps.length > 0 && mounted ? (
               <div data-testid="agent-spawn-fallback-steps">
                 <AgentSpawnSection
                   label={t("canonical.agentSpawn.sections.steps")}
@@ -997,7 +1002,7 @@ function AgentSpawnRunGroup({
   mode: AgentSpawnMode | undefined;
   blocks: ChatBlockData[];
   cwd?: string;
-  /** 卡片级展开态 —— 折叠的卡片不 mount 任何 run 内的步骤(性能)。 */
+  /** 卡片内容挂载态(展开或收缩过渡中)—— 折叠落定后不 mount 任何 run 内的步骤(性能)。 */
   cardExpanded: boolean;
   uiStateKey: string;
 }): React.ReactElement {

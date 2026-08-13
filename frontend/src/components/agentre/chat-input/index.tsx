@@ -543,12 +543,16 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
           onClearFocus={commandHistoryMenu.onClearFocus}
           onClearBlur={commandHistoryMenu.onClearBlur}
           onClearKeyDown={commandHistoryMenu.onClearKeyDown}
+          onDismiss={commandHistoryMenu.dismissCurrent}
+          editorElement={editor?.view.dom ?? null}
         />
         {slashEnabled ? (
           <SlashPopover
             state={slashMenu.state}
             onPick={slashMenu.pick}
             onHover={slashMenu.setSelectedIndex}
+            onDismiss={slashMenu.close}
+            editorElement={editor?.view.dom ?? null}
           />
         ) : null}
         {mentionEnabled ? (
@@ -556,6 +560,8 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
             state={mentionMenu.state}
             onPick={mentionMenu.pick}
             onHover={mentionMenu.setSelectedIndex}
+            onDismiss={mentionMenu.close}
+            editorElement={editor?.view.dom ?? null}
           />
         ) : null}
       </>

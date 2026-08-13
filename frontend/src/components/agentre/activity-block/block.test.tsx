@@ -80,6 +80,24 @@ function subagentState(status: string, taskId: string) {
   return { status, taskId } as unknown as ChatBlockData["subagent"];
 }
 
+// manySteps —— 一轮长活动:每 5 步夹一条失败的命令,其余是只读探查。
+// 24 步时被省略的前 18 步里正好有 3 条失败,足以钉住「省略行仍报红计数」。
+function manySteps(n: number): ActivityStep[] {
+  return Array.from({ length: n }, (_, i) =>
+    i % 5 === 4
+      ? toolStep(
+          `message:1:tool:tool:many-${i}`,
+          { toolInput: { command: `pnpm run step-${i}` }, toolName: "Bash" },
+          { isError: true, text: '{"exitCode":1,"output":"boom"}' },
+        )
+      : toolStep(
+          `message:1:tool:tool:many-${i}`,
+          { toolInput: { path: `/repo/f-${i}.go` }, toolName: "Read" },
+          { text: `line ${i}` },
+        ),
+  );
+}
+
 function summaryOf(partial: Partial<ActivitySummary> = {}): ActivitySummary {
   return {
     failures: 0,
@@ -173,6 +191,27 @@ describe("ActivityBlock 组头(折叠态)", () => {
     expect(within(body).getByText(/func A/)).toBeInTheDocument();
   });
 
+  // 单条不成组的那一行上面没有组头、左边没有时间轴竖线 —— 组内那套「箭头 hover
+  // 才显形」在这里没有任何东西替它说明「这一行能点开」,于是它必须自己显形。
+  it("Given 一段活动只有一步, Then 那一行的展开箭头常显", () => {
+    renderBlock({ steps: [readStep], summary: summaryOf({ steps: 1 }) });
+
+    const chevron = within(screen.getByTestId("activity-row")).getByTestId(
+      "activity-chevron",
+    );
+    expect(chevron.getAttribute("class")).not.toContain("opacity-0");
+  });
+
+  it("Given 组内的活动行, Then 展开箭头仍是 hover / 聚焦才显形(组头已经说明了可展开)", () => {
+    renderBlock({ steps: [readStep, commandStep] });
+    fireEvent.click(screen.getByTestId("activity-header"));
+
+    const rows = screen.getAllByTestId("activity-row");
+    expect(
+      within(rows[0]).getByTestId("activity-chevron").getAttribute("class"),
+    ).toContain("opacity-0");
+  });
+
   it("Given 单步且这一组正在跑, Then 仍是那一行活动行(没有壳可展开)", () => {
     renderBlock({
       running: true,
@@ -194,6 +233,10 @@ describe("ActivityBlock 组头(折叠态)", () => {
 
     fireEvent.click(header);
     expect(header).toHaveAttribute("aria-expanded", "false");
+    // 收缩动画需要内容保持挂载(grid 过渡才有高度可收),过渡结束后才卸载,
+    // 保住折叠态零挂载的性能约定。
+    expect(screen.getAllByTestId("activity-row")).toHaveLength(2);
+    fireEvent.transitionEnd(header.nextElementSibling as HTMLElement);
     expect(screen.queryByTestId("activity-row")).toBeNull();
   });
 });
@@ -616,6 +659,56 @@ describe("ActivityBlock 运行态", () => {
       "false",
     );
     expect(screen.getByTestId("activity-duration")).toHaveTextContent("6.6s");
+  });
+
+  // 运行中的块自动展开,于是一轮跑到几十步时它就是一堵不断长高的墙,新的一步
+  // 把正文越推越远。省略只在**运行态**生效:落定后整块本来就会自动收起,用户
+  // 主动点开时要的是全貌。
+  describe("步数过多时省略前面几步", () => {
+    it("Given 运行中且 24 步, Then 只渲染最后 6 行 + 一行省略行(报被省略部分的步数、汇总与红失败数)", () => {
+      renderBlock({ running: true, steps: manySteps(24) });
+
+      expect(screen.getAllByTestId("activity-row")).toHaveLength(6);
+      const elided = screen.getByTestId("activity-elided");
+      expect(elided.tagName).toBe("BUTTON");
+      expect(within(elided).getByText("18 earlier steps")).toBeInTheDocument();
+      // 汇总走组头那套类目 —— 被省略的 18 步里 15 次查阅、3 条命令。
+      expect(within(elided).getByText(/Read 15/)).toBeInTheDocument();
+      expect(within(elided).getByText(/Commands 3/)).toBeInTheDocument();
+      // 失败计数照常显红:省略是收起,不是让发生过的事消失。
+      const failures = within(elided).getByTestId("activity-failures");
+      expect(failures).toHaveTextContent("3 failed");
+      expect(failures.className).toContain("text-status-error");
+      // 被省略的步骤一个都不 mount(与折叠态同一条性能约定)。
+      expect(screen.queryByText("/repo/f-0.go")).toBeNull();
+      expect(screen.getByText("/repo/f-23.go")).toBeInTheDocument();
+    });
+
+    it("Given 用户点省略行, Then 全部 24 行都在,省略行消失", () => {
+      renderBlock({ running: true, steps: manySteps(24) });
+
+      fireEvent.click(screen.getByTestId("activity-elided"));
+
+      expect(screen.getAllByTestId("activity-row")).toHaveLength(24);
+      expect(screen.queryByTestId("activity-elided")).toBeNull();
+      expect(screen.getByText("/repo/f-0.go")).toBeInTheDocument();
+    });
+
+    it("Given 运行中但只有 8 步(不过阈值), Then 全部渲染,没有省略行", () => {
+      renderBlock({ running: true, steps: manySteps(8) });
+
+      expect(screen.getAllByTestId("activity-row")).toHaveLength(8);
+      expect(screen.queryByTestId("activity-elided")).toBeNull();
+    });
+
+    it("Given 轮次已落定的 24 步, When 用户点开组头, Then 24 行全在(省略只在运行态)", () => {
+      renderBlock({ steps: manySteps(24) });
+
+      fireEvent.click(screen.getByTestId("activity-header"));
+
+      expect(screen.getAllByTestId("activity-row")).toHaveLength(24);
+      expect(screen.queryByTestId("activity-elided")).toBeNull();
+    });
   });
 
   it("Given 用户在运行中手动收起, Then 轮次结束后仍按用户的选择", () => {

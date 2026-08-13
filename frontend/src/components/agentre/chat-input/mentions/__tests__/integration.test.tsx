@@ -82,6 +82,9 @@ function Harness({
       >
         submit
       </button>
+      <button type="button" data-testid="outside">
+        outside
+      </button>
       <AIChatInput
         ref={handleRef}
         onSubmit={onSubmit}
@@ -111,6 +114,18 @@ async function pickMention(label: string): Promise<void> {
 }
 
 describe("AIChatInput @ mention integration", () => {
+  it("Given an open mention menu, When the user pointer-downs outside the editor, Then the menu closes", async () => {
+    render(<Harness onSubmit={vi.fn()} />);
+    act(() => screen.getByTestId("ins").click());
+    await waitFor(() =>
+      expect(screen.getByRole("listbox")).toBeInTheDocument(),
+    );
+
+    fireEvent.pointerDown(screen.getByTestId("outside"));
+
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+  });
+
   it("@ opens grouped popover with agent + project", async () => {
     render(<Harness onSubmit={vi.fn()} />);
     act(() => screen.getByTestId("ins").click());

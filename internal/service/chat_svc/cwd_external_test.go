@@ -10,6 +10,8 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo/mock_chat_repo"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -110,6 +112,39 @@ func TestResolveSessionWorkspace(t *testing.T) {
 
 		_, _, err := chat_svc.NewChat(chat_svc.NoopEmitter{}).ResolveSessionWorkspace(context.Background(), 0)
 		assert.Error(t, err)
+	})
+
+	// R13 认领后本机 backend 的 DeviceID 是本机指纹:ResolveSessionWorkspace 必须把它
+	// 当本机档(deviceID 0 + 本机 cwd),而不是当远端档去配对表里找行报
+	// RemoteDeviceNotFound —— 文件面板在本地会话上就靠这条链拿 cwd。
+	t.Run("self 档 backend → deviceID 0 + 本机 cwd", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+		ctx := context.Background()
+		sessionMock := registerWorkspaceRepos(t, ctrl)
+		agentMock, backendMock := registerCapabilityRepos(t, ctrl)
+		t.Cleanup(func() { chat_svc.RegisterCwdResolver(nil) })
+		chat_svc.RegisterCwdResolver(func(_ context.Context, _ *chat_entity.Session) (string, error) {
+			return "/local/project", nil
+		})
+
+		rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+		rds.EXPECT().DeviceFingerprint().Return("sha256:self", nil).AnyTimes()
+		rds.EXPECT().List(gomock.Any()).Return(nil, nil).AnyTimes()
+		prevSvc := remote_device_svc.Default()
+		remote_device_svc.SetDefault(rds)
+		t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+		sessionMock.EXPECT().Find(ctx, int64(5)).Return(&chat_entity.Session{ID: 5, AgentID: 11, ProjectID: 3}, nil)
+		agentMock.EXPECT().Find(ctx, int64(11)).Return(&agent_entity.Agent{ID: 11, AgentBackendID: 12}, nil)
+		backendMock.EXPECT().Find(ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
+			ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), DeviceID: "sha256:self",
+		}, nil)
+
+		deviceID, cwd, err := chat_svc.NewChat(chat_svc.NoopEmitter{}).ResolveSessionWorkspace(ctx, 5)
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), deviceID)
+		assert.Equal(t, "/local/project", cwd)
 	})
 
 	// 远端 backend 但 DeviceID 解析不出整数时,绝不能退化成 deviceID=0 —— 那会让

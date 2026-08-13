@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, it, expect, vi } from "vitest";
 
@@ -102,6 +102,36 @@ describe("UserAskCard", () => {
     } as unknown as ChatBlockData;
     render(<UserAskCard toolBlock={block} sessionId={1} />);
     expect(screen.getByText("ANSWERED")).toBeDefined();
+  });
+
+  it("Given an expanded card, When collapsed, Then the body stays mounted through the collapse transition and unmounts after it ends", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "AskUserQuestion",
+      canonical: {
+        kind: "user.ask",
+        userAsk: {
+          requestId: "req-1",
+          questions: [
+            {
+              question: "想用哪种方式?",
+              header: "选项",
+              options: [{ label: "A", description: "" }],
+            },
+          ],
+        },
+      },
+    } as unknown as ChatBlockData;
+    render(<UserAskCard toolBlock={block} sessionId={1} />);
+    const header = screen.getByRole("button", { expanded: true });
+    expect(screen.getByText("想用哪种方式?")).toBeDefined();
+
+    fireEvent.click(header);
+    expect(header).toHaveAttribute("aria-expanded", "false");
+    // 收缩动画期间内容仍挂载,过渡结束才卸载。
+    expect(screen.getByText("想用哪种方式?")).toBeDefined();
+    fireEvent.transitionEnd(header.nextElementSibling as HTMLElement);
+    expect(screen.queryByText("想用哪种方式?")).toBeNull();
   });
 
   it("Given answered multiple questions, When switching question tabs, Then answers remain reviewable but locked", async () => {

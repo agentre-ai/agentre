@@ -28,6 +28,7 @@ import {
   TranscriptPill,
 } from "../../transcript-card";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
+import { useCollapsible } from "../../use-collapsible";
 import type { CanonicalCardProps } from "../props";
 import type {
   AskQuestionDTO,
@@ -80,6 +81,7 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
     uiStateKey,
     false,
   );
+  const { mounted, onTransitionEnd } = useCollapsible(!collapsed);
   const [selections, setSelections] = React.useState<Selection[]>(() => {
     const saved = loadTranscriptDraftState<UserAskDraftState>(
       tabStateKey,
@@ -255,63 +257,72 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
         />
       </button>
 
-      {!collapsed && (
+      <div
+        aria-hidden={collapsed}
+        onTransitionEnd={onTransitionEnd}
+        className="grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
+        style={{ gridTemplateRows: collapsed ? "0fr" : "1fr" }}
+      >
         <div className="min-h-0 overflow-hidden">
-          {totalQs > 1 && (
-            <QuestionTabs
-              questions={payload.questions}
-              activeIdx={activeQIdx}
-              selections={selections}
-              onSelect={setActiveQIdx}
-            />
-          )}
-          {/* header 已用 border-b 分隔(单问题时是唯一分隔线,多问题时 QuestionTabs
+          {mounted ? (
+            <div className="min-h-0 overflow-hidden">
+              {totalQs > 1 && (
+                <QuestionTabs
+                  questions={payload.questions}
+                  activeIdx={activeQIdx}
+                  selections={selections}
+                  onSelect={setActiveQIdx}
+                />
+              )}
+              {/* header 已用 border-b 分隔(单问题时是唯一分隔线,多问题时 QuestionTabs
           再补一条 border-b),这里不重复套 TranscriptCardBody 的 border-t,只借它的
           水平内边距 token,避免在 tabs/内容边界叠出两条相邻的分隔线。 */}
-          <TranscriptCardBody className="flex flex-col gap-3 border-t-0">
-            {payload.questions[activeQIdx] && (
-              <QuestionGroup
-                q={payload.questions[activeQIdx]}
-                qIdx={activeQIdx}
-                sel={selections[activeQIdx]}
-                locked={isLocked}
-                onToggle={toggleOption}
-                onOther={setOtherText}
-              />
-            )}
-            {error && (
-              <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                {error}
-              </div>
-            )}
-          </TranscriptCardBody>
+              <TranscriptCardBody className="flex flex-col gap-3 border-t-0">
+                {payload.questions[activeQIdx] && (
+                  <QuestionGroup
+                    q={payload.questions[activeQIdx]}
+                    qIdx={activeQIdx}
+                    sel={selections[activeQIdx]}
+                    locked={isLocked}
+                    onToggle={toggleOption}
+                    onOther={setOtherText}
+                  />
+                )}
+                {error && (
+                  <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    {error}
+                  </div>
+                )}
+              </TranscriptCardBody>
 
-          {!isLocked && (
-            <div className="flex items-center gap-2 border-t border-border px-3.5 py-2.5">
-              <div className="flex-1" />
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={submitting}
-                onClick={() => void handleSubmit(true)}
-              >
-                {t("common.skip")}
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                disabled={submitting}
-                onClick={() => void handleSubmit(false)}
-                className="gap-1.5"
-              >
-                {t("canonical.userAsk.submit")}
-                <CornerDownLeft className="h-3 w-3" />
-              </Button>
+              {!isLocked && (
+                <div className="flex items-center gap-2 border-t border-border px-3.5 py-2.5">
+                  <div className="flex-1" />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={submitting}
+                    onClick={() => void handleSubmit(true)}
+                  >
+                    {t("common.skip")}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={submitting}
+                    onClick={() => void handleSubmit(false)}
+                    className="gap-1.5"
+                  >
+                    {t("canonical.userAsk.submit")}
+                    <CornerDownLeft className="h-3 w-3" />
+                  </Button>
+                </div>
+              )}
             </div>
-          )}
+          ) : null}
         </div>
-      )}
+      </div>
     </TranscriptCard>
   );
 };

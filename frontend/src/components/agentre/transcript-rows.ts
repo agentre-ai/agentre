@@ -138,6 +138,12 @@ export type ActivityRenderItem = {
   steps: ActivityStep[];
   summary: ActivitySummary;
   type: "activity";
+  /**
+   * 这一段还会继续长:后面只跟着一段**还在流的思考**,而流式思考一落定就并回
+   * 这个块。渲染层判「这一组此刻是否在跑」时必须把它算进去 —— 否则思考一开始流,
+   * 块就不再是消息末行,整组被当成已落定而自动收起,思考结束又展开(来回抖动)。
+   */
+  growing?: boolean;
 };
 
 /** 渲染层拿到的活动块 —— 与其它渲染项一样带 uiStateKey(折叠态挂在它上面)。 */
@@ -402,7 +408,20 @@ export function buildRenderItems({
         uiStateKey: itemUIStateKey(messageId, item, idx),
       }),
     );
-  return groupActivityItems(messageId, visible);
+  return markGrowingActivity(groupActivityItems(messageId, visible));
+}
+
+// markGrowingActivity —— 末尾那段还在流的思考不进组(它是那一刻唯一承载 live tail
+// 的表面),于是它会短暂地排在活动块**后面**;等它落定,isFoldableStep 就放行,
+// 它并回同一个块。把这段临时错位标在活动块上,渲染层才不会据「后面还有一行」
+// 断定这一组已经落定。被别的出组项(子代理 / 审批 / 正文)隔开时不标 —— 那种情况
+// 下这一段是真的结束了,不会再有东西并回来。
+function markGrowingActivity(items: VisibleRenderItem[]): VisibleRenderItem[] {
+  const last = items.at(-1);
+  if (last?.type !== "thinking" || !last.streaming) return items;
+  const prev = items.at(-2);
+  if (prev?.type === "activity") prev.growing = true;
+  return items;
 }
 
 // isFoldableStep:这一项能不能折进活动块。

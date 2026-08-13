@@ -3,7 +3,6 @@ package sync_svc
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/syncmeta_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/syncwire"
@@ -123,22 +122,6 @@ func localIDOfFingerprint(ctx context.Context, fingerprint string) (int64, error
 		}
 	}
 	return 0, nil
-}
-
-// fingerprintOfLocalID 把本机 paired_agentreds 的行 ID 翻成指纹（上行方向，R2）。
-// 空 deviceID = 「当前这台桌面端」这个**相对**引用，原样保持为空（决策 14）。
-func fingerprintOfLocalID(ctx context.Context, deviceID int64) (string, error) {
-	if deviceID <= 0 {
-		return "", nil
-	}
-	row, err := remote_device_repo.PairedAgentred().Get(ctx, deviceID)
-	if err != nil {
-		return "", err
-	}
-	if row == nil || row.DaemonFingerprint == "" {
-		return "", fmt.Errorf("sync: paired agentred %d has no fingerprint", deviceID)
-	}
-	return row.DaemonFingerprint, nil
 }
 
 // syncIDOf 取某个对象的同步标识，供上行时把本地引用翻成跨机引用。

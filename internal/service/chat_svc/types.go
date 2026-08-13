@@ -617,6 +617,9 @@ const (
 	BlockReasonExecTargetUnpaired BlockReason = "exec-target-unpaired"
 	// BlockReasonExecTargetOffline 已配对，但该 agentred 当前不在线。
 	BlockReasonExecTargetOffline BlockReason = "exec-target-offline"
+	// BlockReasonExecTargetDesktopNotRunning 目标是一台具名桌面端，且它的 Agentre App
+	// 没有运行（R2：与「机器离线」是两种说法——一个是开应用，一个是开机）。
+	BlockReasonExecTargetDesktopNotRunning BlockReason = "exec-target-desktop-not-running"
 	// BlockReasonExecTargetProjectPathMissing 会话绑定了项目，但这一档所在的机器上
 	// 没有配置这个项目的路径（决策 34）。不绑项目的会话不受这一项约束。
 	BlockReasonExecTargetProjectPathMissing BlockReason = "exec-target-project-path-missing"
@@ -783,6 +786,9 @@ type SendRequest struct {
 	// (前端 Send 响应)能拿到流名。
 	// 前端 Send 默认 false: 发起者自己已从响应拿到流名, 重复推会双开流。子 agent 调用用; 普通会话空。
 	EmitTurnStartedBypass bool `json:"-"`
+	// peerSource is populated only by the account-peer adapter. Keeping it out
+	// of Wails JSON prevents a local caller from forging a source pill.
+	peerSource peerMessageSource
 }
 type SendImage struct {
 	Name    string `json:"name,omitempty"`
@@ -919,6 +925,9 @@ type RegenerateRequest struct {
 type EnqueueRequest struct {
 	SessionID int64  `json:"sessionId"`
 	Text      string `json:"text"`
+	// peerSource is private to the authenticated peer adapter; local enqueue
+	// calls retain their current source-free behavior.
+	peerSource peerMessageSource
 }
 
 // EnqueueResponse 把刚入队消息的稳定 ID 回传给前端。前端按它显示 chip 并

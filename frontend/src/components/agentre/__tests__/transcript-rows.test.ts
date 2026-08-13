@@ -374,6 +374,30 @@ describe("buildRenderItems", () => {
     });
   });
 
+  // 回归 guard:流式思考不进组,于是它会短暂地排在活动块**后面**;渲染层据
+  // 「是不是消息末行」判这一组还在不在跑,行模型不标出「后面那行只是临时的」,
+  // 思考一开始流整组就被当成已落定收起、思考结束又展开(来回抖动)。
+  it("末尾是仍在流的思考时,前一个活动块标 growing —— 那段思考一落定就并回来", () => {
+    const growing = buildRenderItems({
+      messageId: 1,
+      liveThinking: "round2…",
+      liveBlocks: [toolUse("toolu-1"), toolUse("toolu-2")],
+    });
+
+    expect(growing.map((item) => item.type)).toEqual(["activity", "thinking"]);
+    expect(activityAt(growing, 0).growing).toBe(true);
+
+    // 思考已落定(liveTail 有 text)→ 它并回块里,末尾那行不再是临时的,不标。
+    const settled = buildRenderItems({
+      messageId: 1,
+      liveThinking: "round2…",
+      liveTail: " tail",
+      liveBlocks: [toolUse("toolu-1"), toolUse("toolu-2")],
+    });
+
+    expect(activityAt(settled, 0).growing).toBeUndefined();
+  });
+
   it("工具循环里后一轮 thinking 穿插在 tool_result 之后,不再全堆最顶", () => {
     const items = buildRenderItems({
       messageId: 1,

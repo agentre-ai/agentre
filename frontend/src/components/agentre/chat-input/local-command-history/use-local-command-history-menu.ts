@@ -98,6 +98,7 @@ export function useLocalCommandHistoryMenu({
   setSelectedIndex: (index: number) => void;
   clearButtonRef: RefObject<HTMLButtonElement | null>;
   clear: () => void;
+  dismissCurrent: () => void;
   onClearFocus: () => void;
   onClearBlur: (event: ReactFocusEvent<HTMLButtonElement>) => void;
   onClearKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>) => void;
@@ -240,6 +241,12 @@ export function useLocalCommandHistoryMenu({
     suppressedQueryRef.current = query;
     setState(closedState(query));
   }, []);
+
+  // 零参版本的 dismiss:供弹层「点击外部关闭」使用,读取当前 state 的 query 做抑制,
+  // 保证点击外部后菜单不会因为文本仍以 ! 开头而立刻重新弹出。
+  const dismissCurrent = useCallback(() => {
+    dismiss(stateRef.current.query);
+  }, [dismiss]);
 
   const pick = useCallback(
     (entry: LocalCommandHistoryEntry) => {
@@ -421,6 +428,7 @@ export function useLocalCommandHistoryMenu({
     setSelectedIndex,
     clearButtonRef,
     clear,
+    dismissCurrent,
     onClearFocus,
     onClearBlur,
     onClearKeyDown,
