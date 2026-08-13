@@ -1077,10 +1077,15 @@ describe("App", () => {
     expect(backendList).not.toHaveClass("overflow-x-auto");
     await waitFor(() => {
       expect(within(backendList).getByText("默认助手")).toBeInTheDocument();
-      expect(within(backendList).getByText("AWS Bedrock")).toBeInTheDocument();
+      // 后端名与绑定摘要里的供应商名都可能等于 "AWS Bedrock"，用 getAllByText 断言存在。
       expect(
-        within(backendList).getByText(/Anthropic · sonnet-4-6/),
-      ).toBeInTheDocument();
+        within(backendList).getAllByText("AWS Bedrock").length,
+      ).toBeGreaterThanOrEqual(1);
+      // 绑定摘要把供应商名与模型 ID 拆成独立 span，分别断言；"sonnet-4-6" 两个后端都有。
+      expect(within(backendList).getByText("Anthropic")).toBeInTheDocument();
+      expect(
+        within(backendList).getAllByText("sonnet-4-6").length,
+      ).toBeGreaterThanOrEqual(1);
     });
 
     expect(
