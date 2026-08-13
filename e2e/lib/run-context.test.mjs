@@ -80,6 +80,8 @@ test("Given a private run and a secret-bearing parent environment, when Playwrig
     AGENTRE_ENV: "test",
     AGENTRE_PROXY_PORT: "0",
     AGENTRE_E2E_TOKEN: "must-not-reach-playwright",
+    AGENTRE_E2E_REFRESH_TOKEN: "developer-refresh-token",
+    AGENTRE_E2E_SERVER_URL: "https://developer-server.invalid",
   });
 
   assert.equal(env.PATH, "/test/bin");
@@ -91,6 +93,8 @@ test("Given a private run and a secret-bearing parent environment, when Playwrig
   assert.equal(env.TMP, run.browserDir);
   assert.equal(env.TEMP, run.browserDir);
   assert.equal(env.AGENTRE_E2E_TOKEN, undefined);
+  assert.equal(env.AGENTRE_E2E_REFRESH_TOKEN, undefined);
+  assert.equal(env.AGENTRE_E2E_SERVER_URL, undefined);
   assert.equal(env.AGENTRE_E2E_MANIFEST, undefined);
   assert.equal(env.AGENTRE_KEYCHAIN_DIR, undefined);
   assert.equal(env.AGENTRE_ENV, undefined);
@@ -154,7 +158,12 @@ test("Given a failed run containing its token in text artifacts, when evidence i
     await rm(artifactRoot, { recursive: true, force: true });
   });
   await mkdir(run.logsDir, { recursive: true });
-  await writeFile(join(run.logsDir, "app.log"), `safe before ${run.token} safe after`);
+  run.syncIdentity = { refreshToken: "generated-sync-refresh" };
+  run.remoteIdentity = { deviceToken: "generated-remote-device-token" };
+  await writeFile(
+    join(run.logsDir, "app.log"),
+    `safe ${run.token} ${run.controlToken} ${run.syncIdentity.refreshToken} ${run.remoteIdentity.deviceToken} safe`,
+  );
   await writeFile(join(run.keychainDir, "secret-entry"), "must-not-be-retained");
   await writeFile(join(run.browserDir, "browser-secret.json"), "must-not-be-retained");
   await writeFile(join(run.runRoot, "go-overlay.json"), "must-not-be-retained");
@@ -163,7 +172,14 @@ test("Given a failed run containing its token in text artifacts, when evidence i
   await assert.rejects(access(run.runRoot), { code: "ENOENT" });
   const log = await readFile(join(preserved, "logs", "app.log"), "utf8");
   const manifest = await readFile(join(preserved, "manifest.json"), "utf8");
-  assert.equal(log.includes(run.token), false);
+  for (const secret of [
+    run.token,
+    run.controlToken,
+    run.syncIdentity.refreshToken,
+    run.remoteIdentity.deviceToken,
+  ]) {
+    assert.equal(log.includes(secret), false);
+  }
   assert.equal(manifest.includes(run.token), false);
   assert.match(log, /\[REDACTED\]/);
   for (const path of [

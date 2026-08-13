@@ -2,7 +2,7 @@
 // Verification always launches the formal desktop main; this module only supplies
 // checkout-scoped storage, ports, the session handshake, and isolation guards.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect, createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
@@ -129,13 +129,21 @@ export function prepareDirs(target, { wipe }) {
     rmSync(target.keychainDir, { recursive: true, force: true });
     rmSync(target.browserDir, { recursive: true, force: true });
   }
-  mkdirSync(target.dataDir, { recursive: true, mode: 0o700 });
-  mkdirSync(target.keychainDir, { recursive: true, mode: 0o700 });
-  mkdirSync(target.browserDir, { recursive: true, mode: 0o700 });
+  for (const dir of [target.dataDir, target.keychainDir, target.browserDir]) {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    if (process.platform !== "win32") chmodSync(dir, 0o700);
+  }
 }
 
-export function launchEnv(target) {
+export function launchEnv(target, parentEnv = process.env) {
+  const env = { ...parentEnv };
+  for (const name of Object.keys(env)) {
+    if (name.startsWith("AGENTRE_E2E_") || name === "AGENTRE_DATA_DIR" || name === "AGENTRE_KEYCHAIN_DIR") {
+      delete env[name];
+    }
+  }
   return {
+    ...env,
     AGENTRE_DATA_DIR: target.dataDir,
     AGENTRE_ENV: "test",
     AGENTRE_KEYCHAIN_DIR: target.keychainDir,

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { existsSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -17,6 +18,8 @@ import {
   assertIsolatedDataDir,
   assertSanctionedURL,
   productionRoots,
+  launchEnv,
+  prepareDirs,
   resolveTarget,
   sessionPath,
 } from "./target.mjs";
@@ -59,6 +62,29 @@ test("Given a live verification target, when a URL is checked, then only its own
   assert.throws(() => assertSanctionedURL(target, "http://localhost:34115/"), IsolationError);
   assert.throws(() => assertSanctionedURL(target, "https://agentre.ai/"), IsolationError);
   assert.throws(() => assertSanctionedURL(target, "file:///etc/passwd"), IsolationError);
+});
+
+test("Given formal verification with stale E2E variables and missing isolated storage, when launch input is prepared, then private directories are created and E2E composition variables are absent", () => {
+  const target = resolveTarget();
+  for (const path of [target.dataDir, target.keychainDir, target.browserDir]) {
+    rmSync(path, { recursive: true, force: true });
+  }
+
+  prepareDirs(target, { wipe: true });
+  const env = launchEnv(target, {
+    PATH: "/test/bin",
+    AGENTRE_E2E_MANIFEST: "/tmp/stale-manifest",
+    AGENTRE_E2E_REFRESH_TOKEN: "developer-secret",
+  });
+
+  assert.equal(env.PATH, "/test/bin");
+  assert.equal(env.AGENTRE_DATA_DIR, target.dataDir);
+  assert.equal(env.AGENTRE_KEYCHAIN_DIR, target.keychainDir);
+  assert.equal(env.AGENTRE_E2E_MANIFEST, undefined);
+  assert.equal(env.AGENTRE_E2E_REFRESH_TOKEN, undefined);
+  for (const path of [target.dataDir, target.keychainDir, target.browserDir]) {
+    assert.equal(existsSync(path), true);
+  }
 });
 
 test("Given formal verification, when its browser and driven page are prepared, then evidence uses the established 1440x900 viewport in headless and headed modes", async () => {

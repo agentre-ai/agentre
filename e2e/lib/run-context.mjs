@@ -116,14 +116,15 @@ export function appEnvironment(run, parentEnv = process.env) {
 
 export function playwrightEnvironment(run, parentEnv = process.env) {
   const env = { ...parentEnv };
-  for (const name of [
-    "AGENTRE_E2E_MANIFEST",
-    "AGENTRE_E2E_TOKEN",
-    "AGENTRE_KEYCHAIN_DIR",
-    "AGENTRE_ENV",
-    "AGENTRE_PROXY_PORT",
-  ]) {
-    delete env[name];
+  for (const name of Object.keys(env)) {
+    if (
+      name.startsWith("AGENTRE_E2E_") ||
+      name === "AGENTRE_KEYCHAIN_DIR" ||
+      name === "AGENTRE_ENV" ||
+      name === "AGENTRE_PROXY_PORT"
+    ) {
+      delete env[name];
+    }
   }
   return {
     ...env,
@@ -292,7 +293,12 @@ export async function preserveFailureArtifacts(run, artifactBase = join(REPO_ROO
   ]) {
     await rm(join(artifactDir, unsafePath), { recursive: true, force: true });
   }
-  await sanitizeTextFiles(artifactDir, [run.token]);
+  await sanitizeTextFiles(artifactDir, [
+    run.token,
+    run.controlToken,
+    run.syncIdentity?.refreshToken,
+    run.remoteIdentity?.deviceToken,
+  ]);
   await run.remove();
   return artifactDir;
 }

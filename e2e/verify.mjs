@@ -120,7 +120,7 @@ async function up(flags) {
     cwd: repoRoot,
     detached: true,
     stdio: ["ignore", logFd, logFd],
-    env: { ...process.env, ...launchEnv(target) },
+    env: launchEnv(target),
   });
   app.unref();
 
