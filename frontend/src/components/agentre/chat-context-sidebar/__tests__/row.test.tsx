@@ -530,17 +530,25 @@ describe("复制与在文件管理器中显示", () => {
   });
 });
 
-describe("文件图标按扩展名分类", () => {
-  it("markdown / 图片 / 代码 / 通用文件各一类，判定复用可预览性", () => {
+describe("文件类型图标经共享组件渲染", () => {
+  it("语言与常见格式的身份通过共享 FileTypeIcon 渲染，而非四档可预览性", () => {
     renderChanges({});
-    const kindOf = (name: string) =>
-      within(rowOf(name))
-        .getByTestId("row-file-icon")
-        .getAttribute("data-file-kind");
+    const typeOf = (name: string) =>
+      rowOf(name)
+        .querySelector("[data-file-type]")
+        ?.getAttribute("data-file-type");
 
-    expect(kindOf("README.md")).toBe("markdown");
-    expect(kindOf("logo.png")).toBe("image");
-    expect(kindOf("chat.go")).toBe("code");
-    expect(kindOf("archive.zip")).toBe("other");
+    expect(typeOf("chat.go")).toBe("go");
+    expect(typeOf("README.md")).toBe("markdown");
+    expect(typeOf("logo.png")).toBe("image");
+    expect(typeOf("archive.zip")).toBe("archive");
+  });
+
+  it("图标是装饰元素，对辅助技术隐藏", () => {
+    renderChanges({});
+    expect(rowOf("chat.go").querySelector("[data-file-type]")).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
   });
 });

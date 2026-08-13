@@ -1,10 +1,4 @@
-import {
-  Ellipsis,
-  File as FileGeneric,
-  FileCode,
-  FileImage,
-  FileText,
-} from "lucide-react";
+import { Ellipsis } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -27,7 +21,7 @@ import type {
   PreviewSourceMode,
 } from "@/stores/chat-sidebar-store";
 
-import { previewKind, resolvePreviewRelPath, toRelPath } from "../previewable";
+import { resolvePreviewRelPath, toRelPath } from "../previewable";
 
 import {
   CONTEXT_MENU_PARTS,
@@ -351,29 +345,5 @@ export function SidebarRow({
         <RowMenu model={model} parts={CONTEXT_MENU_PARTS} />
       </ContextMenuContent>
     </ContextMenu>
-  );
-}
-
-/**
- * FileTypeIcon 按扩展名分四类：markdown / 图片 / 代码文本 / 不在 allowlist 内的
- * 通用文件。分类判定复用 previewKind —— 图标与「能不能预览」永远说同一件事。
- */
-export function FileTypeIcon({ path }: { path: string }) {
-  const kind = previewKind(path);
-  const Icon =
-    kind === "markdown"
-      ? FileText
-      : kind === "image"
-        ? FileImage
-        : kind === "code"
-          ? FileCode
-          : FileGeneric;
-  return (
-    <Icon
-      data-testid="row-file-icon"
-      data-file-kind={kind ?? "other"}
-      className="size-3.5 shrink-0"
-      aria-hidden="true"
-    />
   );
 }

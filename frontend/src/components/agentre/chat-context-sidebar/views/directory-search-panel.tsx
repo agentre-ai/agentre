@@ -2,12 +2,13 @@ import { Folder, Search, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { FileTypeIcon } from "@/components/agentre/file-type-icon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 import { PanelNotice, PanelSkeleton } from "./panel-feedback";
 import { SidebarList } from "./sidebar-list";
-import { FileTypeIcon, SidebarRow } from "./sidebar-row";
+import { SidebarRow } from "./sidebar-row";
 import type { DirectorySearch, SearchHit } from "./use-directory-search";
 
 type Props = {

@@ -7,6 +7,7 @@ import {
   SelectDirectory,
   WorkspaceFsListDir,
 } from "@/../wailsjs/go/app/App";
+import { FileTypeIcon } from "@/components/agentre/file-type-icon";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -25,7 +26,7 @@ import {
 import { DirectorySearchPanel } from "./directory-search-panel";
 import { errorText, PanelNotice, PanelSkeleton } from "./panel-feedback";
 import { SidebarList } from "./sidebar-list";
-import { FileTypeIcon, SidebarRow } from "./sidebar-row";
+import { SidebarRow } from "./sidebar-row";
 import { indentStyle } from "./tree-indent";
 import {
   INACTIVE_DIRECTORY_SEARCH,
