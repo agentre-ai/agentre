@@ -197,10 +197,13 @@ make verify-down                   # VERIFY_FLAGS=--wipe also removes the isolat
 Ports and dirs are derived per checkout (§3), so `make verify-status` is how you read them —
 nothing hardcodes a number.
 
-**Nothing is visible by default.** The browser runs headless, and because the frontend calls
+**Nothing is visible by default.** The browser runs headless and every driven page is explicitly
+set to a fixed **1440×900 viewport**, so full-page evidence remains legible and consistent instead
+of inheriting Chromium's small platform-dependent default. Because the frontend calls
 `WindowShow()` on mount — from the driving browser as much as from the native webview — the
 launcher hides the native window again right after boot, and `drive.mjs goto` re-hides it after
-each navigation. `VERIFY_FLAGS=--headed` is there for when you want to watch.
+each navigation. `VERIFY_FLAGS=--headed` is there for when you want to watch; driven pages keep
+the same viewport size.
 
 The launcher writes a session handshake (`<instance>/<flavor>.json`) that the driver reads, so no
 command repeats a port or a path. It is idempotent — a second `verify-up` reports
