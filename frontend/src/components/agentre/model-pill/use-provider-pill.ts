@@ -88,6 +88,12 @@ export interface UseProviderPillOptions {
   /** agent 已绑定的 provider key；空串 = 未绑（CLI 登录态）。 */
   boundProviderKey?: string | null;
   /**
+   * agent 已绑定的 model key；空串/null = 跟随该供应商默认，非空 = 固定模型。
+   * undefined 表示新建会话的 ChatAgentItem 没有 model key：此时 UI 只承诺跟随绑定
+   * 供应商，不猜测模型（spec 2026-08-13 决策 18）。
+   */
+  boundModelKey?: string | null;
+  /**
    * >0 = 已有会话：选择立即持久化（调用 SetChatSessionModelTarget）；0 / undefined =
    * 新建会话：纯瞬态，首发 Send 时随 SendRequest.ProviderKey/ModelKey 透传
    * （spec 2026-08-11「新建与已有会话流程」）。
@@ -116,6 +122,15 @@ export interface UseProviderPillOptions {
    */
   executionLocation?: string;
 }
+
+export type ProviderPillState = {
+  mode: "follow-agent" | "provider-default" | "fixed" | "invalid";
+  providerLabel: string;
+  providerType: string;
+  modelLabel: string;
+  resolutionLabel: string;
+  dynamic: boolean;
+};
 
 export interface UseProviderPillReturn {
   /** 当前选择的 provider key；空串 = 跟随 agent 绑定。新建会话是纯瞬态本地值，
@@ -152,6 +167,10 @@ export interface UseProviderPillReturn {
   unbound: boolean;
   /** 生效 key：providerKey || boundProviderKey（用于 pill 标签 / 高亮）。 */
   effectiveKey: string;
+  /** Composer 常驻 pill 的四态与解析结果。 */
+  pillState: ProviderPillState;
+  /** Picker 顶部「跟随 Agent 绑定」项的解析副行。 */
+  boundResolutionLabel: string;
   /** 当前选中 target 在目录里解析不出来（Provider/Model 缺失/停用/被删）→「目标已失效」。 */
   invalid: boolean;
   /** pill 是否禁用（规格「UI 与禁用状态」状态表：加载中 / 后端不可选 / 无兼容供应商）。 */
@@ -179,6 +198,7 @@ export interface UseProviderPillReturn {
 export function useProviderPill({
   backendType,
   boundProviderKey,
+  boundModelKey,
   sessionId,
   persistedProviderKey,
   persistedModelKey,
@@ -313,6 +333,67 @@ export function useProviderPill({
     return !m || !m.enabled;
   }, [catalog, providerKey, modelKey]);
 
+  const boundState = React.useMemo<ProviderPillState>(() => {
+    const provider = catalog.find(
+      (candidate) => candidate.providerKey === boundProviderKey,
+    );
+    const providerLabel = provider?.name ?? boundProviderKey ?? "";
+    const providerType = provider?.type ?? "";
+
+    // 新建会话没有 agent model key。即使目录能看见默认模型，也不能据此断言 agent
+    // 后端绑定的是 provider-default；它也可能固定到了另一个模型（决策 18）。
+    if (boundModelKey === undefined) {
+      return {
+        mode: "follow-agent",
+        providerLabel,
+        providerType,
+        modelLabel: "",
+        resolutionLabel: providerLabel,
+        dynamic: false,
+      };
+    }
+
+    const fixedModel = boundModelKey
+      ? provider?.models.find((model) => model.modelKey === boundModelKey)
+      : undefined;
+    const resolvedModel = fixedModel ?? provider?.defaultModel ?? undefined;
+    const modelLabel = resolvedModel?.modelId ?? "";
+    return {
+      mode: "follow-agent",
+      providerLabel,
+      providerType,
+      modelLabel,
+      resolutionLabel: modelLabel
+        ? `${providerLabel} · ${modelLabel}`
+        : providerLabel,
+      dynamic: !fixedModel && !!resolvedModel,
+    };
+  }, [boundModelKey, boundProviderKey, catalog]);
+
+  const pillState = React.useMemo<ProviderPillState>(() => {
+    if (providerKey === "" && modelKey === "") return boundState;
+
+    const provider = catalog.find(
+      (candidate) => candidate.providerKey === providerKey,
+    );
+    const providerLabel = provider?.name ?? providerKey;
+    const providerType = provider?.type ?? "";
+    const selectedModel = modelKey
+      ? provider?.models.find((model) => model.modelKey === modelKey)
+      : (provider?.defaultModel ?? undefined);
+    const modelLabel = selectedModel?.modelId ?? modelKey;
+    return {
+      mode: invalid ? "invalid" : modelKey ? "fixed" : "provider-default",
+      providerLabel,
+      providerType,
+      modelLabel,
+      resolutionLabel: modelLabel
+        ? `${providerLabel} · ${modelLabel}`
+        : providerLabel,
+      dynamic: !invalid && modelKey === "" && !!selectedModel,
+    };
+  }, [boundState, catalog, invalid, modelKey, providerKey]);
+
   // ── 远端门控（gap 1）：目标执行设备是远端时，以 daemon 目录为可运行事实源。──────
   // 只认纯数字串设备 id（与 agent-backends 同款解析）；本机 / 非数字 id → 不启用远端门控。
   const remoteDeviceID =
@@ -400,6 +481,8 @@ export function useProviderPill({
     error,
     unbound: !boundProviderKey,
     effectiveKey: providerKey || boundProviderKey || "",
+    pillState,
+    boundResolutionLabel: boundState.resolutionLabel,
     invalid,
     disabled: loading || catalogLoading || disabledReason !== null,
     disabledReason,

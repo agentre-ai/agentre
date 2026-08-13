@@ -379,6 +379,8 @@ function resetStore() {
   componentMocks.setMode.mockClear();
   ccUsageMock.calls.length = 0;
   appMocks.SendChatMessage.mockReset();
+  appMocks.ListLLMModels.mockReset();
+  appMocks.ListLLMModels.mockResolvedValue({ items: [] });
   appMocks.RegenerateChatMessage.mockReset();
   appMocks.SetChatGoal.mockReset();
   appMocks.GetChatGoal.mockReset();
@@ -2979,7 +2981,7 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
     expect(appMocks.ListLLMProviders).not.toHaveBeenCalled();
   });
 
-  it("已有会话渲染供应商选择器并显示会话当前供应商（决策 10：取代『无 pill』的旧决策 7）", async () => {
+  it("已有会话跟随 Agent 固定绑定时，组合根把 agentModelKey 交给 pill 并显示解析模型", async () => {
     resetStore();
     appMocks.ListLLMProviders.mockClear();
     appMocks.ListLLMProviders.mockResolvedValue({
@@ -2990,21 +2992,41 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
           name: "Acme",
           type: "anthropic",
           enabled: true,
-          defaultModelKey: "",
+          defaultModelKey: "mk-default",
           model: "claude-sonnet-4-5",
+        },
+      ],
+    });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [
+        {
+          modelKey: "mk-default",
+          modelId: "claude-haiku-4-5",
+          name: "claude-haiku-4-5",
+          enabled: true,
+        },
+        {
+          modelKey: "mk-fixed",
+          modelId: "claude-sonnet-4-5",
+          name: "claude-sonnet-4-5",
+          enabled: true,
         },
       ],
     });
     mockSessionStore.session = makeSession({
       backendType: "claudecode",
-      providerKey: "acme-anthropic",
+      providerKey: "",
+      modelKey: "",
       agentProviderKey: "acme-anthropic",
+      agentModelKey: "mk-fixed",
     });
     render(<ChatPanel sessionId={42} newSessionAgent={null} />);
 
     const pill = await screen.findByTestId("provider-pill");
     await waitFor(() => expect(pill).not.toBeDisabled());
-    expect(pill).toHaveTextContent("Acme");
+    expect(pill).toHaveTextContent("Follow agent binding");
+    expect(pill).toHaveTextContent("Acme · claude-sonnet-4-5");
+    expect(pill).not.toHaveTextContent("claude-haiku-4-5");
     expect(appMocks.ListLLMProviders).toHaveBeenCalled();
   });
 

@@ -1376,15 +1376,16 @@ function ChatPanel({
   // 的「已有会话不渲染任何切换器」）：不可切换（openclaw / 无兼容供应商 / 加载中）
   // 时 pill 常显但 disabled + tooltip 说明原因，不再隐藏。
   // 新建会话的绑定供应商来自 newSessionAgent（尚无 session 行）；已有会话来自
-  // ChatSessionDetail.agentProviderKey / providerKey（task 1 已产出）。已有会话选中
-  // 立即持久化（SetChatSessionProvider），成功后 reloadSession() 把新追加的切换
-  // notice 拉进 transcript。
+  // ChatSessionDetail.agentProviderKey / agentModelKey / providerKey / modelKey。已有会话
+  // 选中后立即持久化（SetChatSessionModelTarget），成功再 reloadSession() 把新追加的
+  // switch notice 拉进 transcript。
   const providerPill = useProviderPill({
     backendType: activeBackendType,
     boundProviderKey:
       sessionId > 0
         ? session?.agentProviderKey
         : newSessionAgent?.llmProviderKey,
+    boundModelKey: sessionId > 0 ? session?.agentModelKey : undefined,
     sessionId,
     persistedProviderKey: sessionId > 0 ? session?.providerKey : undefined,
     persistedModelKey: sessionId > 0 ? session?.modelKey : undefined,

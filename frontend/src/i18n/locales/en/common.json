@@ -685,9 +685,9 @@
         "sentence": "Selected provider {{provider}} is unavailable; fell back to the agent binding"
       },
       "providerSwitch": {
-        "fixedModel": "Switched to provider {{provider}} · fixed model {{model}} from here",
-        "followAgentBinding": "Switched back to follow the agent binding / CLI login state from here",
-        "sentence": "Switched to provider {{provider}} from here"
+        "fixedModel": "$t(providerPill.mode.fixed) · {{provider}} · {{model}} from here",
+        "followAgentBinding": "$t(modelTargetPicker.special.chat) from here",
+        "sentence": "$t(providerPill.mode.followDefault) · {{provider}} from here"
       }
     },
     "meta": {
@@ -2773,12 +2773,12 @@
     "disabledNoCompatibleProviders": "No available provider matches this backend type",
     "disabledUnsupportedBackend": "This backend does not use agentre providers",
     "errorFetch": "Failed to load providers. Please try again.",
-    "followAgentBinding": "Follow agent binding",
-    "followAgentBindingDesc": "Use the provider default bound to this agent",
-    "followAgentBindingUnboundDesc": "Leave unselected; use the CLI login state",
-    "heading": "Provider",
+    "mode": {
+      "fixed": "Fixed model",
+      "followDefault": "Follow provider default",
+      "invalid": "No longer valid"
+    },
     "switchNote": "Switching takes effect from the next turn; the turn in progress is unaffected",
-    "title": "Select provider · current {{provider}}",
     "unselected": "Select provider"
   },
   "permissionMode": {
