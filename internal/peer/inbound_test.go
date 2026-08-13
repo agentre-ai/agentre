@@ -134,15 +134,21 @@ func TestInbound_GivenRelayReconnectAndShutdown_WhenAuthorizedPeerCallsCapabilit
 	assert.NotEmpty(t, capabilities.Result, "the existing runtime method must reach the desktop peer registry")
 
 	// The desktop session adapter uses the established runtime.session.* wire
-	// family; these two calls must reach it after the same account handshake.
+	// family. JSON-RPC permits omitting params for a parameterless method, while
+	// methods with required fields must continue to reject the same omission.
+	missingAttachParams := relayRequest(t, ws, "desktop-peer", rpc.Frame{
+		JSONRPC: "2.0", ID: json.RawMessage(`40`), Method: wire.MethodSessionAttach,
+	})
+	require.NotNil(t, missingAttachParams.Error)
+	assert.Equal(t, rpc.ErrInvalidParams.Code, missingAttachParams.Error.Code)
+
 	listed := relayRequest(t, ws, "desktop-peer", rpc.Frame{
 		JSONRPC: "2.0", ID: json.RawMessage(`4`), Method: wire.MethodSessionList,
-		Params: mustJSON(t, struct{}{}),
 	})
-	require.Nil(t, listed.Error, "an authorized peer must list desktop sessions")
+	require.Nil(t, listed.Error, "a parameterless session-list request may omit params")
 	var list wire.SessionListResult
 	require.NoError(t, json.Unmarshal(listed.Result, &list))
-	require.Equal(t, []wire.SessionSummary{{
+	expectedSessions := []wire.SessionSummary{{
 		SessionID:       1,
 		PeerFingerprint: "sha256:desktop",
 		AgentID:         7,
@@ -152,7 +158,16 @@ func TestInbound_GivenRelayReconnectAndShutdown_WhenAuthorizedPeerCallsCapabilit
 		LifecycleState:  wire.SessionLifecycleRunning,
 		WaitingForInput: true,
 		UpdatedAt:       1710000000000,
-	}}, list.Sessions, "desktop rows carry every required summary field without a degraded fallback")
+	}}
+	require.Equal(t, expectedSessions, list.Sessions, "desktop rows carry every required summary field without a degraded fallback")
+
+	explicitEmptyParams := relayRequest(t, ws, "desktop-peer", rpc.Frame{
+		JSONRPC: "2.0", ID: json.RawMessage(`41`), Method: wire.MethodSessionList,
+		Params: mustJSON(t, struct{}{}),
+	})
+	require.Nil(t, explicitEmptyParams.Error, "an explicit empty params object remains compatible")
+	require.NoError(t, json.Unmarshal(explicitEmptyParams.Result, &list))
+	require.Equal(t, expectedSessions, list.Sessions)
 
 	attached := relayRequest(t, ws, "desktop-peer", rpc.Frame{
 		JSONRPC: "2.0", ID: json.RawMessage(`5`), Method: wire.MethodSessionAttach,
@@ -215,11 +230,11 @@ func registerInboundPeerChat(t *testing.T) {
 		ID: 7, Name: "Release captain", AgentBackendID: 11, Status: consts.ACTIVE,
 		SyncMeta: syncmeta_entity.SyncMeta{SyncID: "01HXAGENTIDENTITY0000000000"},
 	}
-	device.EXPECT().DeviceFingerprint().Return("sha256:desktop", nil)
-	agents.EXPECT().List(gomock.Any()).Return([]*agent_entity.Agent{agent}, nil)
+	device.EXPECT().DeviceFingerprint().Return("sha256:desktop", nil).Times(2)
+	agents.EXPECT().List(gomock.Any()).Return([]*agent_entity.Agent{agent}, nil).Times(2)
 	sessions.EXPECT().ListByAgentPagedIncludingGroups(gomock.Any(), int64(7), 0, gomock.Any()).Return([]*chat_entity.Session{{
 		ID: 1, AgentID: 7, Title: "Ship the release", AgentStatus: "waiting", LastMessageAt: 1710000000000, Status: consts.ACTIVE,
-	}}, nil)
+	}}, nil).Times(2)
 	sessions.EXPECT().Find(gomock.Any(), int64(1)).Return(&chat_entity.Session{
 		ID: 1, AgentID: 7, Title: "Ship the release", AgentStatus: "waiting", Status: consts.ACTIVE,
 	}, nil)

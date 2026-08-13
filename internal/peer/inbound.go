@@ -135,6 +135,9 @@ func capabilities(_ context.Context, raw json.RawMessage) (any, error) {
 }
 
 func listSessions(ctx context.Context, raw json.RawMessage) (any, error) {
+	if len(raw) == 0 {
+		raw = json.RawMessage(`{}`)
+	}
 	var params struct{}
 	if err := json.Unmarshal(raw, &params); err != nil {
 		return nil, rpc.ErrInvalidParams
