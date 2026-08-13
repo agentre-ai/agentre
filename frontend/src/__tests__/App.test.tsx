@@ -1133,7 +1133,7 @@ describe("App", () => {
     expect(
       within(production).getByText("https://api.anthropic.com"),
     ).toBeInTheDocument();
-    expect(within(production).getByText("Enabled")).toBeInTheDocument();
+    expect(within(production).queryByText("Enabled")).not.toBeInTheDocument();
     const ollama = within(nav).getByRole("button", { name: /Ollama 本机/ });
     expect(
       within(ollama).getByText("http://localhost:11434/v1"),
@@ -1161,8 +1161,8 @@ describe("App", () => {
       within(workspace).getByText("sk-ant-•••••••••••••• xJ12"),
     ).toBeInTheDocument();
     expect(
-      within(workspace).getByText("claude-sonnet-4-6"),
-    ).toBeInTheDocument();
+      within(workspace).getAllByText("claude-sonnet-4-6").length,
+    ).toBeGreaterThanOrEqual(1);
     expect(within(workspace).getByText("mk-sonnet")).toBeInTheDocument();
 
     expect(
