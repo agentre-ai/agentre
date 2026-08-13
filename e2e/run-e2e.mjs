@@ -1,114 +1,194 @@
-// Cross-platform e2e runner: runs `playwright test` (forwarding extra args), then cleans up
-// AFTER Playwright has fully exited (webServer torn down, app gone, db closed, vite orphaned).
-//
-// Why a Node wrapper instead of cleaning up elsewhere — see e2e/README.md §7:
-//   - globalTeardown runs while Playwright still MANAGES the webServer → killing there
-//     SIGTERMs the live server (exit 143).
-//   - a Makefile `pkill -f "wails dev …"` self-matches the recipe shell's own /proc/<pid>/cmdline
-//     on Linux and SIGTERMs make. The runner's cmdline is `node run-e2e.mjs`, so it's safe.
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { existsSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { blocksFreshRun, liveSessions, portListening, resolveTarget } from "./lib/target.mjs";
-import { reapOrphanVite } from "./lib/procs.mjs";
+import { createAppOverlay } from "./lib/app-overlay.mjs";
+import {
+  ProcessSupervisor,
+  REPO_ROOT,
+  appEnvironment,
+  changedDatabaseMetadata,
+  createRunContext,
+  playwrightEnvironment,
+  preserveFailureArtifacts,
+  productionAndDevelopmentRoots,
+  snapshotDatabaseMetadata,
+  spawnLogged,
+  waitForURL,
+} from "./lib/run-context.mjs";
 
-const here = dirname(fileURLToPath(import.meta.url)); // e2e/
-const repoRoot = join(here, "..");
-// The committed suite runs on the `fake` verification target, so one already-running
-// `make verify-up` app can serve both (see lib/target.mjs). These must stay equal to the paths
-// playwright.config.ts hardcodes — pinned by lib/target.test.mjs.
-const { dataDir, keychainDir, logFile: webserverLog, devserverPort: DEVSERVER_PORT } =
-  resolveTarget("fake");
-
+const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const playwrightCli = require.resolve("@playwright/test/cli");
+const artifactRoot = join(here, "artifacts");
 
-// Keep-alive (fast inner loop) mode — see e2e/README.md §4. The caller owns a hand-started
-// `wails dev -tags e2e` on :34216, so this runner must NOT tear anything down (no orphan-vite
-// reap, no temp-dir removal) or the next iteration's reuse breaks. playwright.config.ts reads the
-// same flag to skip the data-dir wipe and force reuseExistingServer.
-const reuseExisting = process.env.AGENTRE_E2E_REUSE === "1";
+function childResult(child) {
+  return new Promise((resolve) => {
+    child.once("error", (error) => resolve({ code: 1, signal: null, error }));
+    child.once("exit", (code, signal) => resolve({ code: code ?? 1, signal, error: null }));
+  });
+}
+
+async function runNodeGuards() {
+  const child = spawn(
+    process.execPath,
+    ["--test", "lib/run-context.test.mjs", "lib/app-overlay.test.mjs"],
+    {
+      cwd: here,
+      stdio: "inherit",
+    },
+  );
+  const result = await childResult(child);
+  if (result.code !== 0) throw new Error("runner isolation tests failed");
+}
+
+function viteCommand(run) {
+  return [
+    "--dir",
+    "frontend",
+    "exec",
+    "vite",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    String(run.vitePort),
+  ];
+}
+
+function appCommand(run) {
+  return [
+    "dev",
+    "-m",
+    "-nosyncgomod",
+    "-skipbindings",
+    "-nogorebuild",
+    "-frontenddevserverurl",
+    run.viteURL,
+    "-devserver",
+    `127.0.0.1:${run.port}`,
+  ];
+}
 
 async function main() {
-  // The isolation guards are the one thing every mode depends on; run them before anything is
-  // launched so a broken contract fails here rather than half-way through a suite.
-  const guards = spawn(process.execPath, ["--test", "lib/*.test.mjs"], {
-    cwd: here,
-    stdio: "inherit",
+  await runNodeGuards();
+
+  const before = await snapshotDatabaseMetadata(productionAndDevelopmentRoots());
+  const run = await createRunContext();
+  writeFileSync(run.protectedMetadataBefore, `${JSON.stringify(before, null, 2)}\n`, {
+    mode: 0o600,
   });
-  const guardsCode = await new Promise((res) => guards.on("exit", res));
-  if (guardsCode !== 0) {
-    console.error("isolation guard tests failed — refusing to launch an app.");
-    process.exit(guardsCode ?? 1);
-  }
+  const supervisor = new ProcessSupervisor();
+  let exitCode = 1;
+  let failure;
+  let interrupted = false;
+  let artifactDir;
 
-  // Reuse mode is an explicit "I started the server" contract: fail fast with instructions
-  // instead of letting Playwright quietly start a fresh app against a stale data dir. Two
-  // conditions must hold: :34216 is listening AND it is serving the e2e temp data dir (the
-  // agentre.db file is where a correctly-overridden server writes it). A server up on the real
-  // data dir (AGENTRE_DATA_DIR not set) would silently seed the user's real DB — reject it.
-  // A fresh run wipes and re-seeds `dataDir` before launching and deletes it after passing. With
-  // a `make verify-up` app living on that same dir, that is silent destruction of a running app
-  // — refuse, and name the two ways out.
-  const blocked = blocksFreshRun(liveSessions(), { reuse: reuseExisting });
-  if (blocked.length > 0) {
-    console.error(
-      `a verification app is up on ${dataDir} (flavor ${blocked.map((s) => s.flavor).join(", ")}).\n` +
-        "A fresh suite run would wipe the data dir underneath it. Either:\n" +
-        "  make verify-down            # stop it, then re-run\n" +
-        "  AGENTRE_E2E_REUSE=1 …       # run against it instead (no wipe, no teardown)",
+  const stopForSignal = async (signal) => {
+    interrupted = true;
+    failure = new Error(`runner received ${signal}`);
+    await supervisor.stopAll();
+  };
+  const handlers = new Map(
+    ["SIGINT", "SIGTERM"].map((signal) => {
+      const handler = () => void stopForSignal(signal);
+      process.once(signal, handler);
+      return [signal, handler];
+    }),
+  );
+
+  try {
+    mkdirSync(join(REPO_ROOT, "frontend", "dist"), { recursive: true });
+    writeFileSync(join(REPO_ROOT, "frontend", "dist", ".keep"), "");
+
+    const vite = supervisor.track(
+      spawnLogged("pnpm", viteCommand(run), {
+        cwd: REPO_ROOT,
+        env: process.env,
+        logPath: join(run.logsDir, "vite.log"),
+      }),
     );
-    process.exit(1);
-  }
+    const viteExit = childResult(vite);
+    await Promise.race([
+      waitForURL(run.viteURL),
+      viteExit.then((result) => {
+        throw new Error(`Vite exited before readiness (code ${result.code})`);
+      }),
+    ]);
 
-  if (reuseExisting) {
-    const up = await portListening(DEVSERVER_PORT);
-    const dbPath = join(dataDir, "agentre.db");
-    const dbPresent = existsSync(dbPath);
-    if (!up || !dbPresent) {
-      console.error(
-        "AGENTRE_E2E_REUSE=1 reuses an already-running verification app, but " +
-          (!up
-            ? `nothing is listening on :${DEVSERVER_PORT}.`
-            : `:${DEVSERVER_PORT} is up but '${dbPath}' is missing — the running server is not using the isolated data dir.`) +
-          "\nStart it with the launcher (it owns the isolated data dir, keychain dir and gateway port):\n" +
-          "  make verify-up\n" +
-          "Runs without AGENTRE_E2E_REUSE keep starting (and tearing down) their own fresh server.",
+    const overlayPath = createAppOverlay(REPO_ROOT, run.runRoot);
+    const app = supervisor.track(
+      spawnLogged("wails", appCommand(run), {
+        cwd: join(REPO_ROOT, "e2e", "app"),
+        env: {
+          ...appEnvironment(run),
+          GOFLAGS: `${process.env.GOFLAGS ?? ""} -overlay=${overlayPath}`.trim(),
+        },
+        logPath: run.appLog,
+      }),
+    );
+    const appExit = childResult(app);
+    await Promise.race([
+      waitForURL(run.baseURL),
+      appExit.then((result) => {
+        throw new Error(`dedicated E2E app exited before readiness (code ${result.code})`);
+      }),
+    ]);
+    if (interrupted) throw failure;
+
+    const playwright = supervisor.track(
+      spawn(
+        process.execPath,
+        [playwrightCli, "test", ...process.argv.slice(2)],
+        {
+          cwd: here,
+          stdio: "inherit",
+          env: playwrightEnvironment(run),
+          detached: process.platform !== "win32",
+        },
+      ),
+    );
+    const result = await childResult(playwright);
+    if (result.code !== 0) {
+      throw new Error(
+        result.signal
+          ? `Playwright terminated by ${result.signal}`
+          : `Playwright failed with exit ${result.code}`,
       );
-      process.exit(1);
+    }
+    exitCode = 0;
+  } catch (error) {
+    failure = error;
+  } finally {
+    await supervisor.stopAll();
+    for (const [signal, handler] of handlers) process.removeListener(signal, handler);
+
+    const after = await snapshotDatabaseMetadata(productionAndDevelopmentRoots());
+    writeFileSync(run.protectedMetadataAfter, `${JSON.stringify(after, null, 2)}\n`, {
+      mode: 0o600,
+    });
+    const polluted = changedDatabaseMetadata(before, after);
+    if (polluted.length > 0) {
+      exitCode = 1;
+      failure = new Error(
+        `storage isolation violation: protected SQLite metadata changed:\n${polluted.join("\n")}`,
+      );
+    }
+
+    if (exitCode === 0) {
+      await run.remove();
+    } else {
+      artifactDir = await preserveFailureArtifacts(run, artifactRoot);
     }
   }
 
-  const child = spawn(
-    process.execPath,
-    [playwrightCli, "test", ...process.argv.slice(2)],
-    { cwd: here, stdio: "inherit" },
-  );
-
-  child.on("exit", (code) => {
-    // Reuse mode: the caller owns the server, the data dir and the log — leave them all alone.
-    if (!reuseExisting) cleanup(code === 0);
-    // Mirror the child's outcome; a signal-killed run (code === null) counts as failure.
-    process.exit(code ?? 1);
-  });
+  if (failure) console.error(failure.message);
+  if (artifactDir) console.error(`sanitized E2E artifacts preserved at ${artifactDir}`);
+  process.exit(exitCode);
 }
 
-// Always reap the orphan vite (hygiene). On FAILURE keep the temp data dir (agentre.db + logs)
-// and the webserver log so you / CI can inspect them; the next fresh run wipes the dir at start
-// anyway (playwright.config main-runner rm+mkdir). On success, remove both. Never called in reuse
-// mode, where the caller owns the server.
-function cleanup(passed) {
-  // Skip the reap while a `make verify-up` app is running: the reap matches vite by repo path,
-  // so it would take that app's dev server down with it (see lib/target.mjs liveSessions).
-  if (liveSessions().length === 0) reapOrphanVite(repoRoot);
-  if (passed) {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(keychainDir, { recursive: true, force: true });
-    rmSync(webserverLog, { force: true });
-  }
-}
-
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

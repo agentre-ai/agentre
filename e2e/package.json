@@ -3,11 +3,11 @@
   "private": true,
   "type": "module",
   "version": "0.0.0",
-  "description": "Agentre GUI end-to-end tests (Playwright × Wails dev bridge, fake runtime)",
+  "description": "Isolated headless Agentre desktop end-to-end tests",
   "scripts": {
     "setup": "pnpm install && pnpm exec playwright install chromium",
     "test": "node run-e2e.mjs",
-    "test:guards": "node --test \"lib/*.test.mjs\"",
+    "test:guards": "node --test lib/run-context.test.mjs lib/app-overlay.test.mjs",
     "test:scratch": "node run-e2e.mjs -c playwright.scratch.config.ts",
     "test:sync": "node run-e2e-sync.mjs",
     "verify": "node verify.mjs",

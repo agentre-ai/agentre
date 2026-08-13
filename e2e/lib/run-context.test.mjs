@@ -1,0 +1,176 @@
+import assert from "node:assert/strict";
+import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { EventEmitter } from "node:events";
+import { test } from "node:test";
+
+import {
+  ProcessSupervisor,
+  appEnvironment,
+  changedDatabaseMetadata,
+  createRunContext,
+  playwrightEnvironment,
+  preserveFailureArtifacts,
+  snapshotDatabaseMetadata,
+} from "./run-context.mjs";
+
+test("Given two launches, when run contexts are created, then each gets private random storage, token, manifest, and loopback dynamic ports", async (t) => {
+  const first = await createRunContext();
+  const second = await createRunContext();
+  t.after(async () => {
+    await first.remove();
+    await second.remove();
+  });
+
+  assert.notEqual(first.runRoot, second.runRoot);
+  assert.notEqual(first.token, second.token);
+  assert.notEqual(first.port, second.port);
+  assert.notEqual(first.vitePort, second.vitePort);
+  assert.notEqual(first.port, first.vitePort);
+  assert.match(first.baseURL, /^http:\/\/127\.0\.0\.1:\d+$/);
+  assert.match(first.viteURL, /^http:\/\/127\.0\.0\.1:\d+$/);
+
+  const manifest = JSON.parse(await readFile(first.manifestPath, "utf8"));
+  assert.deepEqual(manifest, {
+    runRoot: first.runRoot,
+    dataDir: first.dataDir,
+    keychainDir: first.keychainDir,
+    token: first.token,
+  });
+  assert.equal(first.env.AGENTRE_E2E_MANIFEST, first.manifestPath);
+  assert.equal(first.env.AGENTRE_E2E_TOKEN, first.token);
+  assert.equal(first.env.AGENTRE_DATA_DIR, first.dataDir);
+  assert.equal(first.env.AGENTRE_KEYCHAIN_DIR, first.keychainDir);
+  assert.equal(first.env.AGENTRE_PROXY_PORT, "0");
+  assert.equal(first.env.AGENTRE_RUNTIME_MODE, undefined);
+
+  if (process.platform !== "win32") {
+    for (const dir of [first.runRoot, first.dataDir, first.keychainDir]) {
+      assert.equal((await stat(dir)).mode & 0o077, 0, `${dir} must be private`);
+    }
+  }
+});
+
+test("Given a private run and external E2E credentials in the parent, when the app is launched, then only this run's manifest, token, and storage overrides are inherited", async (t) => {
+  const run = await createRunContext();
+  t.after(() => run.remove());
+
+  const env = appEnvironment(run, {
+    PATH: "/test/bin",
+    AGENTRE_E2E_SERVER_URL: "https://real.example.invalid",
+    AGENTRE_E2E_REFRESH_TOKEN: "real-secret",
+    AGENTRE_E2E_TOKEN: "stale-token",
+  });
+
+  assert.equal(env.PATH, "/test/bin");
+  assert.equal(env.AGENTRE_E2E_SERVER_URL, undefined);
+  assert.equal(env.AGENTRE_E2E_REFRESH_TOKEN, undefined);
+  assert.equal(env.AGENTRE_E2E_TOKEN, run.token);
+  assert.equal(env.AGENTRE_E2E_MANIFEST, run.manifestPath);
+  assert.equal(env.AGENTRE_DATA_DIR, run.dataDir);
+  assert.equal(env.AGENTRE_KEYCHAIN_DIR, run.keychainDir);
+});
+
+test("Given a private run and a secret-bearing parent environment, when Playwright is launched, then browser state stays in the run root and the app token is not inherited", async (t) => {
+  const run = await createRunContext();
+  t.after(() => run.remove());
+
+  const env = playwrightEnvironment(run, {
+    PATH: "/test/bin",
+    AGENTRE_ENV: "test",
+    AGENTRE_PROXY_PORT: "0",
+    AGENTRE_E2E_TOKEN: "must-not-reach-playwright",
+  });
+
+  assert.equal(env.PATH, "/test/bin");
+  assert.equal(env.AGENTRE_DATA_DIR, run.dataDir);
+  assert.equal(env.AGENTRE_E2E_BASE_URL, run.baseURL);
+  assert.equal(env.AGENTRE_E2E_RUN_ID, basename(run.runRoot));
+  assert.equal(env.AGENTRE_E2E_PLAYWRIGHT_DIR, run.playwrightDir);
+  assert.equal(env.TMPDIR, run.browserDir);
+  assert.equal(env.TMP, run.browserDir);
+  assert.equal(env.TEMP, run.browserDir);
+  assert.equal(env.AGENTRE_E2E_TOKEN, undefined);
+  assert.equal(env.AGENTRE_E2E_MANIFEST, undefined);
+  assert.equal(env.AGENTRE_KEYCHAIN_DIR, undefined);
+  assert.equal(env.AGENTRE_ENV, undefined);
+  assert.equal(env.AGENTRE_PROXY_PORT, undefined);
+});
+
+test("Given protected production/development DB files, when only metadata is snapshotted, then existence, size, and mtime pollution is detected without reading contents", async (t) => {
+  const root = await createRunContext();
+  t.after(() => root.remove());
+  const protectedRoot = join(root.runRoot, "protected-agentre");
+  await mkdir(protectedRoot, { recursive: true });
+  const db = join(protectedRoot, "agentre.db");
+  await writeFile(db, "real-data-must-not-be-opened");
+
+  const before = await snapshotDatabaseMetadata([protectedRoot]);
+  assert.deepEqual(Object.keys(before).sort(), [
+    db,
+    `${db}-shm`,
+    `${db}-wal`,
+  ].sort());
+  assert.equal(before[db].exists, true);
+  assert.equal(before[db].size, 28);
+  assert.equal("contents" in before[db], false);
+
+  await writeFile(db, "polluted");
+  const after = await snapshotDatabaseMetadata([protectedRoot]);
+  assert.deepEqual(changedDatabaseMetadata(before, after), [db]);
+});
+
+test("Given supervised children and an unrelated process, when cleanup runs, then only recorded child trees are terminated once", async () => {
+  const calls = [];
+  const supervisor = new ProcessSupervisor(async (pid) => calls.push(pid));
+  supervisor.track({ pid: 101 });
+  supervisor.track({ pid: 202 });
+
+  await supervisor.stopAll();
+  await supervisor.stopAll();
+
+  assert.deepEqual(calls.sort((a, b) => a - b), [101, 202]);
+  assert.equal(calls.includes(999), false);
+});
+
+test("Given a supervised child that has already exited, when cleanup runs, then its recycled PID is not terminated", async () => {
+  const calls = [];
+  const supervisor = new ProcessSupervisor(async (pid) => calls.push(pid));
+  const child = new EventEmitter();
+  child.pid = 303;
+  supervisor.track(child);
+  child.emit("exit", 0, null);
+
+  await supervisor.stopAll();
+
+  assert.deepEqual(calls, []);
+});
+
+test("Given a failed run containing its token in text artifacts, when evidence is preserved, then the report path is retained and secrets are redacted", async (t) => {
+  const run = await createRunContext();
+  const artifactRoot = join(dirname(run.runRoot), `${basename(run.runRoot)}-artifacts`);
+  t.after(async () => {
+    await run.remove();
+    await rm(artifactRoot, { recursive: true, force: true });
+  });
+  await mkdir(run.logsDir, { recursive: true });
+  await writeFile(join(run.logsDir, "app.log"), `safe before ${run.token} safe after`);
+  await writeFile(join(run.keychainDir, "secret-entry"), "must-not-be-retained");
+  await writeFile(join(run.browserDir, "browser-secret.json"), "must-not-be-retained");
+  await writeFile(join(run.runRoot, "go-overlay.json"), "must-not-be-retained");
+
+  const preserved = await preserveFailureArtifacts(run, artifactRoot);
+  await assert.rejects(access(run.runRoot), { code: "ENOENT" });
+  const log = await readFile(join(preserved, "logs", "app.log"), "utf8");
+  const manifest = await readFile(join(preserved, "manifest.json"), "utf8");
+  assert.equal(log.includes(run.token), false);
+  assert.equal(manifest.includes(run.token), false);
+  assert.match(log, /\[REDACTED\]/);
+  for (const path of [
+    join(preserved, "keychain"),
+    join(preserved, "browser"),
+    join(preserved, "go-overlay.json"),
+  ]) {
+    await assert.rejects(access(path), { code: "ENOENT" });
+  }
+});

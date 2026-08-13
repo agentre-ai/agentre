@@ -1,0 +1,286 @@
+import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import {
+  chmodSync,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = dirname(fileURLToPath(import.meta.url));
+export const REPO_ROOT = resolve(here, "..", "..");
+const DATABASE_FILES = ["agentre.db", "agentre.db-wal", "agentre.db-shm"];
+
+export function productionAndDevelopmentRoots(env = process.env) {
+  const production = [];
+  if (process.platform === "darwin") {
+    production.push(join(homedir(), "Library", "Application Support", "agentre"));
+  } else if (process.platform === "win32") {
+    for (const base of [env.APPDATA, env.LOCALAPPDATA]) {
+      if (base) production.push(join(base, "agentre"));
+    }
+  } else {
+    production.push(join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agentre"));
+  }
+  return [...production, ...production.map((root) => `${root}-dev`)];
+}
+
+function makePrivateDir(path) {
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") chmodSync(path, 0o700);
+}
+
+async function reserveLoopbackPort() {
+  return new Promise((resolvePort, reject) => {
+    const server = createServer();
+    server.unref();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close((error) => (error ? reject(error) : resolvePort(port)));
+    });
+  });
+}
+
+export async function createRunContext({ prefix = "agentre-e2e-" } = {}) {
+  const runRoot = mkdtempSync(join(tmpdir(), prefix));
+  if (process.platform !== "win32") chmodSync(runRoot, 0o700);
+  const dataDir = join(runRoot, "data");
+  const keychainDir = join(runRoot, "keychain");
+  const browserDir = join(runRoot, "browser");
+  const logsDir = join(runRoot, "logs");
+  const playwrightDir = join(runRoot, "playwright");
+  for (const dir of [dataDir, keychainDir, browserDir, logsDir, playwrightDir]) makePrivateDir(dir);
+
+  const token = randomBytes(32).toString("hex");
+  const manifestPath = join(runRoot, "manifest.json");
+  writeFileSync(
+    manifestPath,
+    `${JSON.stringify({ runRoot, dataDir, keychainDir, token }, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+  if (process.platform !== "win32") chmodSync(manifestPath, 0o600);
+
+  const port = await reserveLoopbackPort();
+  const vitePort = await reserveLoopbackPort();
+  return {
+    runRoot,
+    dataDir,
+    keychainDir,
+    browserDir,
+    logsDir,
+    playwrightDir,
+    manifestPath,
+    token,
+    port,
+    vitePort,
+    baseURL: `http://127.0.0.1:${port}`,
+    viteURL: `http://127.0.0.1:${vitePort}`,
+    appLog: join(logsDir, "app.log"),
+    protectedMetadataBefore: join(runRoot, "protected-db-before.json"),
+    protectedMetadataAfter: join(runRoot, "protected-db-after.json"),
+    env: {
+      AGENTRE_E2E_MANIFEST: manifestPath,
+      AGENTRE_E2E_TOKEN: token,
+      AGENTRE_DATA_DIR: dataDir,
+      AGENTRE_KEYCHAIN_DIR: keychainDir,
+      AGENTRE_ENV: "test",
+      AGENTRE_PROXY_PORT: "0",
+    },
+    remove: () => rm(runRoot, { recursive: true, force: true }),
+  };
+}
+
+export function appEnvironment(run, parentEnv = process.env) {
+  const env = { ...parentEnv };
+  for (const name of Object.keys(env)) {
+    if (name.startsWith("AGENTRE_E2E_") || name === "AGENTRE_DATA_DIR" || name === "AGENTRE_KEYCHAIN_DIR") {
+      delete env[name];
+    }
+  }
+  return { ...env, ...run.env };
+}
+
+export function playwrightEnvironment(run, parentEnv = process.env) {
+  const env = { ...parentEnv };
+  for (const name of [
+    "AGENTRE_E2E_MANIFEST",
+    "AGENTRE_E2E_TOKEN",
+    "AGENTRE_KEYCHAIN_DIR",
+    "AGENTRE_ENV",
+    "AGENTRE_PROXY_PORT",
+  ]) {
+    delete env[name];
+  }
+  return {
+    ...env,
+    AGENTRE_DATA_DIR: run.dataDir,
+    AGENTRE_E2E_BASE_URL: run.baseURL,
+    AGENTRE_E2E_RUN_ID: basename(run.runRoot),
+    AGENTRE_E2E_PLAYWRIGHT_DIR: run.playwrightDir,
+    TMPDIR: run.browserDir,
+    TMP: run.browserDir,
+    TEMP: run.browserDir,
+  };
+}
+
+export async function snapshotDatabaseMetadata(roots = productionAndDevelopmentRoots()) {
+  const snapshot = {};
+  for (const root of roots) {
+    for (const name of DATABASE_FILES) {
+      const path = join(root, name);
+      try {
+        const info = statSync(path);
+        snapshot[path] = {
+          exists: true,
+          size: info.size,
+          mtimeMs: info.mtimeMs,
+        };
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+        snapshot[path] = { exists: false, size: 0, mtimeMs: 0 };
+      }
+    }
+  }
+  return snapshot;
+}
+
+export function changedDatabaseMetadata(before, after) {
+  const paths = new Set([...Object.keys(before), ...Object.keys(after)]);
+  return [...paths]
+    .filter((path) => JSON.stringify(before[path]) !== JSON.stringify(after[path]))
+    .sort();
+}
+
+export async function waitForURL(url, { timeoutMs = 240_000, intervalMs = 250 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url, { redirect: "manual" });
+      if (response.status < 500) return;
+      lastError = new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, intervalMs));
+  }
+  throw new Error(`timed out waiting for ${url}: ${lastError?.message ?? "not reachable"}`);
+}
+
+export function spawnLogged(command, args, { cwd = REPO_ROOT, env = process.env, logPath }) {
+  makePrivateDir(dirname(logPath));
+  const log = createWriteStream(logPath, { flags: "a", mode: 0o600 });
+  const child = spawn(command, args, {
+    cwd,
+    env,
+    detached: process.platform !== "win32",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout.pipe(log, { end: false });
+  child.stderr.pipe(log, { end: false });
+  child.once("close", () => log.end());
+  return child;
+}
+
+export async function terminateProcessTree(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  if (process.platform === "win32") {
+    await new Promise((resolveDone) => {
+      const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+      killer.once("exit", resolveDone);
+      killer.once("error", resolveDone);
+    });
+    return;
+  }
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch (error) {
+    if (error?.code === "ESRCH") return;
+    throw error;
+  }
+  await new Promise((resolveWait) => setTimeout(resolveWait, 1500));
+  try {
+    process.kill(-pid, 0);
+    process.kill(-pid, "SIGKILL");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+}
+
+export class ProcessSupervisor {
+  constructor(terminate = terminateProcessTree) {
+    this.terminate = terminate;
+    this.children = new Map();
+    this.stopping = null;
+  }
+
+  track(child) {
+    if (child?.pid) {
+      this.children.set(child.pid, child);
+      child.once?.("exit", () => this.children.delete(child.pid));
+      child.once?.("error", () => this.children.delete(child.pid));
+    }
+    return child;
+  }
+
+  async stopAll() {
+    if (this.stopping) return this.stopping;
+    this.stopping = Promise.allSettled(
+      [...this.children.keys()].map((pid) => this.terminate(pid)),
+    ).then(() => {
+      this.children.clear();
+    });
+    return this.stopping;
+  }
+}
+
+function redact(value, secrets) {
+  let out = value;
+  for (const secret of secrets.filter(Boolean)) out = out.split(secret).join("[REDACTED]");
+  return out;
+}
+
+async function sanitizeTextFiles(root, secrets) {
+  if (!existsSync(root)) return;
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      await sanitizeTextFiles(path, secrets);
+      continue;
+    }
+    if (!/\.(json|log|txt|md)$/i.test(entry.name)) continue;
+    const content = await readFile(path, "utf8");
+    await writeFile(path, redact(content, secrets), { mode: 0o600 });
+  }
+}
+
+export async function preserveFailureArtifacts(run, artifactBase = join(REPO_ROOT, "e2e-artifacts")) {
+  const artifactDir = join(artifactBase, basename(run.runRoot));
+  await rm(artifactDir, { recursive: true, force: true });
+  await mkdir(artifactDir, { recursive: true, mode: 0o700 });
+  await cp(run.runRoot, artifactDir, { recursive: true, force: true });
+  for (const unsafePath of [
+    "browser",
+    "keychain",
+    "fake-runtime.go",
+    "go-overlay.json",
+    ".agentre-e2e-consumed",
+  ]) {
+    await rm(join(artifactDir, unsafePath), { recursive: true, force: true });
+  }
+  await sanitizeTextFiles(artifactDir, [run.token]);
+  await run.remove();
+  return artifactDir;
+}

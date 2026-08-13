@@ -161,7 +161,7 @@ e2e-app:
 
 # E2E orchestration is rebuilt by later plan tasks; this target establishes the
 # dedicated build boundary consumed by that runner.
-e2e: e2e-app
+e2e:
 	cd e2e && pnpm test
 
 # 临时功能验证:跑 e2e/scratch/ 里的一次性 spec(不提交)。约定/用法见 e2e/README.md §6。
