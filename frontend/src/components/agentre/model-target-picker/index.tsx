@@ -206,6 +206,15 @@ export function ModelTargetPicker({
   const followDefaultLabel = t("modelTargetPicker.followDefault");
   const noDefaultModelLabel = t("modelTargetPicker.noDefaultModel");
 
+  // remoteByKey：daemon 目录的 Provider/Model 存在性索引（task 6 决策 12）。
+  // providerKey → provider（含其 models 的 modelKey 集合）。
+  const remoteByKey = React.useMemo(() => {
+    if (!remoteCatalog) return null;
+    const m = new Map<string, PickerProvider>();
+    for (const p of remoteCatalog) m.set(p.providerKey, p);
+    return m;
+  }, [remoteCatalog]);
+
   // 最近使用（按执行位置指纹隔离）。只展示当前 backend 兼容的项；失效项禁用并给原因。
   const recents = React.useMemo(() => {
     // recentTick 仅在移除 chip 后递增，强制重新读取 localStorage；读取仍走 localStorage
@@ -225,8 +234,20 @@ export function ModelTargetPicker({
         p.models.some((m) => m.modelKey === r.modelKey && m.enabled);
       const target: ModelTarget = {
         providerKey: r.providerKey,
-        modelKey: r.modelKey === p.defaultModel?.modelKey ? "" : r.modelKey,
+        modelKey: r.modelKey,
       };
+      const remoteProvider =
+        executionLocation !== "" ? remoteByKey?.get(p.providerKey) : undefined;
+      const remoteTargetOk =
+        remoteByKey == null || executionLocation === ""
+          ? true
+          : target.modelKey === ""
+            ? remoteProvider?.defaultModel?.modelKey ===
+              p.defaultModel?.modelKey
+            : supportsFixedModel &&
+              remoteProvider?.models.some(
+                (model) => model.modelKey === target.modelKey && model.enabled,
+              ) === true;
       const dedupeKey = `${target.providerKey}\u0000${target.modelKey}`;
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
@@ -238,14 +259,18 @@ export function ModelTargetPicker({
         key: `recent-${dedupeKey}`,
         label,
         target,
-        disabled: !p.enabled || !modelOk,
+        disabled: !p.enabled || !modelOk || !remoteTargetOk,
         title: !p.enabled
           ? disabledProviderHint
           : !modelOk
             ? disabledModelHint
-            : target.modelKey
-              ? undefined
-              : t("modelTargetPicker.defaultLabel"),
+            : !remoteTargetOk
+              ? !supportsFixedModel && target.modelKey
+                ? remoteFixedHint
+                : remoteSyncHint
+              : target.modelKey
+                ? undefined
+                : t("modelTargetPicker.defaultLabel"),
       });
     }
     return out.slice(0, 5);
@@ -256,17 +281,12 @@ export function ModelTargetPicker({
     recentTick,
     disabledProviderHint,
     disabledModelHint,
+    remoteByKey,
+    supportsFixedModel,
+    remoteFixedHint,
+    remoteSyncHint,
     t,
   ]);
-
-  // remoteByKey：daemon 目录的 Provider/Model 存在性索引（task 6 决策 12）。
-  // providerKey → provider（含其 models 的 modelKey 集合）。
-  const remoteByKey = React.useMemo(() => {
-    if (!remoteCatalog) return null;
-    const m = new Map<string, PickerProvider>();
-    for (const p of remoteCatalog) m.set(p.providerKey, p);
-    return m;
-  }, [remoteCatalog]);
 
   // 目录选项（provider-default 首项，再 fixed-model 列表）。
   const catalogOptions = React.useMemo(() => {
@@ -280,9 +300,14 @@ export function ModelTargetPicker({
           : undefined;
       const providerSyncNeeded =
         remoteByKey != null && executionLocation !== "" && !remoteProvider;
-      // provider-default 首项：当前默认模型解析结果（可能缺失 = 目标已失效，但仍可选，
-      // 由后端/父组件按 kind 决定是否阻止保存）。
+      // provider-default 的运行语义由 Provider 当前 defaultModelKey 决定；远端目录里的
+      // 默认 key 不一致时，即使同名 Provider 已存在也必须重新同步后才能保存。
       const defaultModel = p.defaultModel;
+      const defaultSyncNeeded =
+        remoteByKey != null &&
+        executionLocation !== "" &&
+        remoteProvider != null &&
+        remoteProvider.defaultModel?.modelKey !== defaultModel?.modelKey;
       out.push({
         key: `default-${p.providerKey}`,
         kind: "provider-default",
@@ -295,12 +320,13 @@ export function ModelTargetPicker({
             })
           : noDefaultModelLabel,
         target: { providerKey: p.providerKey, modelKey: "" },
-        disabled: !p.enabled || providerSyncNeeded,
-        disabledHint: providerSyncNeeded
-          ? remoteSyncHint
-          : !p.enabled
-            ? disabledProviderHint
-            : undefined,
+        disabled: !p.enabled || providerSyncNeeded || defaultSyncNeeded,
+        disabledHint:
+          providerSyncNeeded || defaultSyncNeeded
+            ? remoteSyncHint
+            : !p.enabled
+              ? disabledProviderHint
+              : undefined,
       });
       // fixed-model 列表。
       for (const m of p.models) {
@@ -796,7 +822,13 @@ export function ModelTargetPicker({
             <span>{t("modelTargetPicker.remoteGateHint")}</span>
             {onSyncProvider
               ? compatible
-                  .filter((provider) => !remoteByKey.has(provider.providerKey))
+                  .filter((provider) =>
+                    catalogOptions.some(
+                      (option) =>
+                        option.target.providerKey === provider.providerKey &&
+                        option.disabledHint === remoteSyncHint,
+                    ),
+                  )
                   .map((provider) => (
                     <button
                       key={provider.providerKey}

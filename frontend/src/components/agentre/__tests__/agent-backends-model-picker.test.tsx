@@ -626,6 +626,35 @@ describe("ModelTargetPicker", () => {
     });
   });
 
+  it("recent chip 保留当前默认模型的 fixed 语义，不降级成 provider-default", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    recordRecentTarget("backend", "", {
+      providerKey: "k-anthropic",
+      modelKey: "mk-1",
+    });
+    render(
+      <ModelTargetPicker
+        scenario="backend"
+        aria-label="LLM Provider"
+        backendType="claudecode"
+        selected={null}
+        onChange={onChange}
+        catalog={catalog()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "LLM Provider" }));
+    const chip = await screen.findByRole("button", {
+      name: "claude-sonnet-4-6",
+    });
+    await user.click(chip);
+    expect(onChange).toHaveBeenCalledWith({
+      providerKey: "k-anthropic",
+      modelKey: "mk-1",
+    });
+  });
+
   it("禁用项给出行内原因：供应商停用 / 模型停用", async () => {
     const user = userEvent.setup();
     // 供应商停用：default 与 fixed 都给出「供应商已停用」。
@@ -717,15 +746,22 @@ describe("ModelTargetPicker remote gating (task 6)", () => {
     );
   });
 
-  it("模型在 daemon 上不存在 → fixed-model 禁用并给出行内同步原因", async () => {
+  it("模型在 daemon 上不存在 → fixed-model、最近使用都禁用，并提供重新同步入口", async () => {
     const user = userEvent.setup();
+    const onChange = vi.fn();
+    const onSyncProvider = vi.fn();
+    recordRecentTarget("backend", "7", {
+      providerKey: "k-anthropic",
+      modelKey: "mk-opus",
+    });
     render(
       <ModelTargetPicker
         scenario="backend"
         aria-label="LLM Provider"
         backendType="claudecode"
         selected={null}
-        onChange={vi.fn()}
+        onChange={onChange}
+        onSyncProvider={onSyncProvider}
         catalog={catalog()}
         executionLocation="7"
         supportsFixedModel
@@ -744,9 +780,56 @@ describe("ModelTargetPicker remote gating (task 6)", () => {
     expect(options[3]).toHaveTextContent(
       "Local only — sync to this device first",
     );
-    // 远端门控提示行出现。
+
+    // 最近使用不能绕过同一远端门控。
+    const recent = screen.getByRole("button", { name: "claude-opus-4-8" });
+    expect(recent).toBeDisabled();
+    await user.click(recent);
+    expect(onChange).not.toHaveBeenCalled();
+
+    // Provider 已存在但目录过期时仍需提供整包重新同步入口。
+    const sync = screen.getByRole("button", {
+      name: "Sync Anthropic to this device",
+    });
+    await user.click(sync);
+    expect(onSyncProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ providerKey: "k-anthropic" }),
+    );
+  });
+
+  it("daemon 的默认模型与本机不一致时，provider-default 禁用并要求同步", async () => {
+    const user = userEvent.setup();
+    const localCatalog = catalog();
+    localCatalog[0] = {
+      ...localCatalog[0],
+      defaultModel: localCatalog[0].models[1],
+    };
+    render(
+      <ModelTargetPicker
+        scenario="backend"
+        aria-label="LLM Provider"
+        backendType="claudecode"
+        selected={null}
+        onChange={vi.fn()}
+        onSyncProvider={vi.fn()}
+        catalog={localCatalog}
+        executionLocation="7"
+        supportsFixedModel
+        remoteCatalog={remoteCatalogWith()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "LLM Provider" }));
+    const list = await screen.findByRole("listbox", { name: "LLM Provider" });
+    const providerDefault = within(list).getByRole("option", {
+      name: /Follow this provider's default/i,
+    });
+    expect(providerDefault).toHaveAttribute("aria-disabled", "true");
+    expect(providerDefault).toHaveTextContent(
+      "Local only — sync to this device first",
+    );
     expect(
-      await screen.findByText(/sync to the device|同步到目标设备/),
+      screen.getByRole("button", { name: "Sync Anthropic to this device" }),
     ).toBeInTheDocument();
   });
 

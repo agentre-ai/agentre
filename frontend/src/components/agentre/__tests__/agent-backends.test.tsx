@@ -1432,7 +1432,20 @@ describe("AgentBackendsPanel", () => {
       ),
       RemoteDeviceListProviders: vi.fn(() =>
         Promise.resolve([
-          { key: "key-1", name: "Anthropic", type: "anthropic" },
+          {
+            key: "key-1",
+            name: "Anthropic",
+            type: "anthropic",
+            defaultModelKey: "mk-1",
+            models: [
+              {
+                key: "mk-1",
+                modelId: "claude-sonnet-4-6",
+                name: "claude-sonnet-4-6",
+                enabled: true,
+              },
+            ],
+          },
         ]),
       ),
     });

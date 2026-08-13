@@ -107,6 +107,12 @@ export function ProviderWorkspace({
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
   const [batchDelete, setBatchDelete] = React.useState<Model[] | null>(null);
 
+  React.useEffect(() => {
+    setSearch("");
+    setSelected(new Set());
+    setBatchDelete(null);
+  }, [provider.id]);
+
   const meta =
     provider.type in providerTypeMeta
       ? providerTypeMeta[provider.type as keyof typeof providerTypeMeta]

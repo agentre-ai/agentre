@@ -1335,6 +1335,62 @@ describe("LlmProvidersPanel", () => {
     ).toBeInTheDocument();
   });
 
+  it("Given models are selected, When another provider is opened, Then the old provider selection is cleared", async () => {
+    const first = makeProvider({
+      id: 1,
+      name: "Anthropic",
+      providerKey: "pk-1",
+    });
+    const second = makeProvider({
+      id: 2,
+      name: "OpenAI",
+      providerKey: "pk-2",
+      type: "openai-response",
+      defaultModelKey: "mk-gpt",
+    });
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [first, second] }),
+      ),
+      ListLLMModels: vi.fn((req: unknown) =>
+        Promise.resolve({
+          items:
+            (req as { id?: number }).id === 1
+              ? [makeModel()]
+              : [
+                  makeModel({
+                    id: 21,
+                    providerId: 2,
+                    providerKey: "pk-2",
+                    modelKey: "mk-gpt",
+                    modelId: "gpt-5",
+                  }),
+                ],
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select claude-sonnet-4-5" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Clear selection" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /OpenAI/ }));
+
+    await screen.findByRole("region", { name: /OpenAI models/ });
+    expect(
+      screen.getByRole("searchbox", { name: "Filter models" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Clear selection" }),
+    ).toBeNull();
+  });
+
   it("Given selected models, When each row is inspected, Then each row annotates whether it can be deleted", async () => {
     installThreeModels({
       "mk-opus": { backends: 1, sessions: 0, routes: 2 },
