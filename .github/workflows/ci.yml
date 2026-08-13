@@ -85,7 +85,13 @@ jobs:
       - name: Create frontend dist placeholder
         run: mkdir -p frontend/dist && touch frontend/dist/.gitkeep
       - name: Generate Wails bindings
-        run: wails generate module
+        env:
+          # The bindings helper executes main(), including bootstrap. Keep its
+          # device identity inside the runner instead of requiring Secret Service.
+          AGENTRE_KEYCHAIN_DIR: ${{ runner.temp }}/agentre-bindings-keychain
+        run: |
+          mkdir -m 700 "$AGENTRE_KEYCHAIN_DIR"
+          wails generate module
       - name: Install dependencies
         run: cd frontend && pnpm install --frozen-lockfile
       - name: Test
