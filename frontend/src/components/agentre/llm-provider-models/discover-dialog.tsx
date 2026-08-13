@@ -2,9 +2,12 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import {
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Download,
   Inbox,
   Loader2,
+  Pencil,
   RefreshCw,
   Search,
   TriangleAlert,
@@ -37,22 +40,80 @@ import {
   formatTokens,
 } from "./index";
 
+// 模型族可读标签：内置目录 vendor 为小写标识，映射为品牌名；未收录的 vendor
+// 兜底为大小写可读形式，认不出的（空 vendor）由调用方归入「其它」分组。
+const VENDOR_LABELS: Record<string, string> = {
+  anthropic: "Anthropic",
+  deepseek: "DeepSeek",
+  gemini: "Gemini",
+  glm: "GLM",
+  kimi: "Kimi",
+  meta: "Meta",
+  minimax: "MiniMax",
+  mistral: "Mistral AI",
+  openai: "OpenAI",
+  qwen: "Qwen",
+  xai: "xAI",
+};
+
+function vendorLabel(vendor: string): string {
+  if (!vendor) return "";
+  return (
+    VENDOR_LABELS[vendor] ?? vendor.charAt(0).toUpperCase() + vendor.slice(1)
+  );
+}
+
+type FailureKind =
+  | "auth"
+  | "endpoint"
+  | "server"
+  | "status"
+  | "network"
+  | "generic";
+
+// 把上游错误归类成可理解的失败原因；原始文本只用于折叠区，不作为主文案。
+function discoverFailure(err: unknown): { kind: FailureKind; code?: string } {
+  const msg = errMessage(err);
+  const status = msg.match(/http\s+(\d{3})/i)?.[1];
+  if (status) {
+    const code = Number(status);
+    if (code === 401 || code === 403) return { kind: "auth" };
+    if (code === 404) return { kind: "endpoint" };
+    if (code >= 500) return { kind: "server" };
+    return { kind: "status", code: status };
+  }
+  if (
+    /(?:connection refused|no such host|getaddrinfo|timed out|timeout|econnrefused|enotfound|dial tcp|network)/i.test(
+      msg,
+    )
+  ) {
+    return { kind: "network" };
+  }
+  return { kind: "generic" };
+}
+
+type VendorGroup = { key: string; label: string; items: ModelInfo[] };
+
 export function DiscoverDialog({
   provider,
   existingModels,
   onClose,
+  onEditConnection,
   onImported,
 }: {
   provider: Provider | null;
   existingModels: Model[];
   onClose: () => void;
+  onEditConnection: () => void;
   onImported: (resp: llm_provider_svc.ImportModelsResponse) => void;
 }) {
   const { t } = useTranslation();
   const open = provider !== null;
   const [items, setItems] = React.useState<ModelInfo[]>([]);
   const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
+  const [fetchError, setFetchError] = React.useState<string | null>(null);
+  const [importError, setImportError] = React.useState<string | null>(null);
+  const [showRaw, setShowRaw] = React.useState(false);
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [search, setSearch] = React.useState("");
   const [importing, setImporting] = React.useState(false);
@@ -67,7 +128,9 @@ export function DiscoverDialog({
     if (!provider) return;
     const requestId = ++requestRef.current;
     setLoading(true);
-    setError(null);
+    setFetchError(null);
+    setImportError(null);
+    setShowRaw(false);
     try {
       const resp = await PreviewLLMModels(
         new llm_provider_svc.PreviewModelsRequest({
@@ -84,7 +147,7 @@ export function DiscoverDialog({
         new Set(list.filter((m) => !existingIds.has(m.id)).map((m) => m.id)),
       );
     } catch (err) {
-      if (requestId === requestRef.current) setError(errMessage(err));
+      if (requestId === requestRef.current) setFetchError(errMessage(err));
     } finally {
       if (requestId === requestRef.current) setLoading(false);
     }
@@ -108,6 +171,29 @@ export function DiscoverDialog({
           m.vendor.toLowerCase().includes(trimmed),
       )
     : items;
+
+  const groups: VendorGroup[] = React.useMemo(() => {
+    const map = new Map<string, ModelInfo[]>();
+    for (const m of visible) {
+      const key = m.vendor?.trim().toLowerCase() || "__unknown__";
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(m);
+    }
+    return [...map.entries()]
+      .map(([key, groupItems]) => ({
+        key,
+        label:
+          key === "__unknown__"
+            ? t("llmProviders.discover.otherVendor")
+            : vendorLabel(key),
+        items: groupItems,
+      }))
+      .sort((a, b) => {
+        if (a.key === "__unknown__") return 1;
+        if (b.key === "__unknown__") return -1;
+        return a.label.localeCompare(b.label);
+      });
+  }, [visible, t]);
 
   const toggle = React.useCallback((id: string) => {
     setSelected((prev) => {
@@ -148,7 +234,7 @@ export function DiscoverDialog({
   const importModels = React.useCallback(async () => {
     if (!provider || selectedCount === 0) return;
     setImporting(true);
-    setError(null);
+    setImportError(null);
     try {
       const resp = await ImportLLMModels(
         new llm_provider_svc.ImportModelsRequest({
@@ -169,7 +255,7 @@ export function DiscoverDialog({
       onImported(resp);
       onClose();
     } catch (err) {
-      setError(errMessage(err));
+      setImportError(errMessage(err));
     } finally {
       setImporting(false);
     }
@@ -184,6 +270,7 @@ export function DiscoverDialog({
   ]);
 
   const providerName = provider ? provider.name : "";
+  const failure = fetchError ? discoverFailure(fetchError) : null;
 
   return (
     <Dialog
@@ -226,7 +313,7 @@ export function DiscoverDialog({
         </div>
 
         <DialogBody className="space-y-2">
-          {error ? (
+          {fetchError && failure ? (
             <div
               role="alert"
               className="flex flex-col items-start gap-2 rounded-md border border-status-error/40 bg-destructive-soft px-3 py-2.5 text-status-error"
@@ -236,23 +323,60 @@ export function DiscoverDialog({
                   className="mt-0.5 size-4 shrink-0"
                   aria-hidden="true"
                 />
-                <span className="leading-relaxed">{error}</span>
+                <span className="leading-relaxed">
+                  {t(`llmProviders.discover.error.${failure.kind}`, {
+                    code: failure.code,
+                  })}
+                </span>
               </div>
-              <Button
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1.5 text-2xs"
+                  onClick={onEditConnection}
+                >
+                  <Pencil className="size-3" aria-hidden="true" />
+                  {t("llmProviders.discover.goEditConnection")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1.5 text-2xs"
+                  onClick={() => void fetchPreview()}
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <Loader2
+                      className="size-3 animate-spin"
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <RefreshCw className="size-3" aria-hidden="true" />
+                  )}
+                  {t("llmProviders.discover.retry")}
+                </Button>
+              </div>
+              <button
                 type="button"
-                variant="outline"
-                size="sm"
-                className="h-7 gap-1.5 text-2xs"
-                onClick={() => void fetchPreview()}
-                disabled={loading}
+                className="flex items-center gap-1 text-2xs text-muted-foreground underline-offset-2 hover:underline"
+                onClick={() => setShowRaw((v) => !v)}
+                aria-expanded={showRaw}
               >
-                {loading ? (
-                  <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+                {showRaw ? (
+                  <ChevronUp className="size-3" aria-hidden="true" />
                 ) : (
-                  <RefreshCw className="size-3" aria-hidden="true" />
+                  <ChevronDown className="size-3" aria-hidden="true" />
                 )}
-                {t("llmProviders.discover.retry")}
-              </Button>
+                {t("llmProviders.discover.viewRawResponse")}
+              </button>
+              {showRaw ? (
+                <pre className="max-h-40 w-full overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-secondary px-2.5 py-2 font-mono text-2xs text-foreground">
+                  {fetchError}
+                </pre>
+              ) : null}
             </div>
           ) : loading ? (
             <div className="flex items-center gap-2 py-6 text-2xs text-muted-foreground">
@@ -270,7 +394,7 @@ export function DiscoverDialog({
               </p>
             </div>
           ) : (
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               <label className="flex items-center gap-2 rounded-md border border-border bg-secondary px-2.5 py-2">
                 <Checkbox
                   checked={allNewChecked}
@@ -285,55 +409,78 @@ export function DiscoverDialog({
                   {t("llmProviders.discover.selectAllHint")}
                 </span>
               </label>
-              {visible.map((m) => {
-                const existing = existingIds.has(m.id);
-                const checked = selected.has(m.id);
-                return (
-                  <div
-                    key={m.id}
-                    className="flex items-center gap-2.5 rounded-md border border-border px-2.5 py-2"
-                  >
-                    <Checkbox
-                      checked={existing ? false : checked}
-                      disabled={existing}
-                      onCheckedChange={() => toggle(m.id)}
-                      aria-label={m.id}
-                    />
-                    <LlmModelLogo
-                      providerType={provider?.type ?? ""}
-                      model={m.id}
-                      className="size-4"
-                    />
-                    <span className="min-w-0 flex-1 truncate font-mono text-xs">
-                      {m.id}
-                    </span>
-                    {m.contextWindow > 0 || m.maxOutput > 0 ? (
-                      <span className="shrink-0 font-mono text-2xs text-muted-foreground">
-                        {formatTokens(m.contextWindow)} ctx ·{" "}
-                        {formatTokens(m.maxOutput)} out
-                      </span>
+              {groups.map((group) => (
+                <div key={group.key} className="space-y-1">
+                  <div className="flex items-center gap-1.5 pt-1 text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                    {group.key !== "__unknown__" ? (
+                      <LlmModelLogo
+                        providerType={provider?.type ?? ""}
+                        model={group.items[0]?.id ?? ""}
+                        className="size-3.5"
+                      />
                     ) : null}
-                    <span
-                      className={
-                        existing
-                          ? "shrink-0 rounded-sm bg-muted px-1.5 py-0.5 text-2xs text-muted-foreground"
-                          : "shrink-0 rounded-sm bg-primary-soft px-1.5 py-0.5 text-2xs text-primary-text"
-                      }
-                    >
-                      {existing
-                        ? t("llmProviders.discover.existingSkip")
-                        : t("llmProviders.discover.new")}
-                    </span>
+                    <span>{group.label}</span>
                   </div>
-                );
-              })}
+                  {group.items.map((m) => {
+                    const existing = existingIds.has(m.id);
+                    const checked = selected.has(m.id);
+                    return (
+                      <div
+                        key={m.id}
+                        className="flex items-center gap-2.5 rounded-md border border-border px-2.5 py-2"
+                      >
+                        <Checkbox
+                          checked={existing ? false : checked}
+                          disabled={existing}
+                          onCheckedChange={() => toggle(m.id)}
+                          aria-label={m.id}
+                        />
+                        <LlmModelLogo
+                          providerType={provider?.type ?? ""}
+                          model={m.id}
+                          className="size-4"
+                        />
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                          {m.id}
+                        </span>
+                        {m.contextWindow > 0 || m.maxOutput > 0 ? (
+                          <span className="shrink-0 font-mono text-2xs text-muted-foreground">
+                            {formatTokens(m.contextWindow)} ctx ·{" "}
+                            {formatTokens(m.maxOutput)} out
+                          </span>
+                        ) : null}
+                        <span
+                          className={
+                            existing
+                              ? "shrink-0 rounded-sm bg-muted px-1.5 py-0.5 text-2xs text-muted-foreground"
+                              : "shrink-0 rounded-sm bg-primary-soft px-1.5 py-0.5 text-2xs text-primary-text"
+                          }
+                        >
+                          {existing
+                            ? t("llmProviders.discover.existingSkip")
+                            : t("llmProviders.discover.new")}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
             </div>
           )}
         </DialogBody>
 
+        {importError ? (
+          <p role="alert" className="px-5 pb-1 text-2xs text-status-error">
+            {importError}
+          </p>
+        ) : null}
+
         <DialogFooter className="justify-between gap-2">
           <span className="text-2xs leading-relaxed text-muted-foreground">
             {t("llmProviders.discover.importSummary", { count: selectedCount })}
+            {existingCount > 0
+              ? ` · ${t("llmProviders.discover.importSummaryExisting")}`
+              : ""}
           </span>
           <div className="flex items-center gap-2">
             <Button

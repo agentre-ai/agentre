@@ -1655,4 +1655,238 @@ describe("LlmProvidersPanel", () => {
       "Provider Key copied",
     );
   });
+
+  it("Given a multi-vendor preview with existing and unknown-vendor models, When discover is opened, Then models are grouped by vendor, existing items stay disabled, and select-all targets only new models", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({ items: [makeModel({ modelId: "gpt-5" })] }),
+      ),
+      PreviewLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: "gpt-5",
+              vendor: "openai",
+              contextWindow: 100000,
+              maxOutput: 8000,
+              modalities: [],
+              thinking: false,
+              knownInCago: true,
+            },
+            {
+              id: "gpt-5.1",
+              vendor: "openai",
+              contextWindow: 120000,
+              maxOutput: 9000,
+              modalities: [],
+              thinking: false,
+              knownInCago: true,
+            },
+            {
+              id: "deepseek-chat",
+              vendor: "deepseek",
+              contextWindow: 64000,
+              maxOutput: 4096,
+              modalities: [],
+              thinking: false,
+              knownInCago: false,
+            },
+            {
+              id: "custom-xyz",
+              vendor: "",
+              contextWindow: 0,
+              maxOutput: 0,
+              modalities: [],
+              thinking: false,
+              knownInCago: false,
+            },
+          ],
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(screen.getByRole("button", { name: "Discover models" }));
+
+    const dialog = await screen.findByRole("dialog", { name: /Discover/ });
+
+    // 远端总数 / 新增数 / 已存在数
+    expect(
+      await within(dialog).findByText("Remote 4 · new 3 · existing 1"),
+    ).toBeInTheDocument();
+
+    // 按模型族分组 + 认不出的兜底分组
+    expect(within(dialog).getByText("OpenAI")).toBeInTheDocument();
+    expect(within(dialog).getByText("DeepSeek")).toBeInTheDocument();
+    expect(within(dialog).getByText("Other")).toBeInTheDocument();
+
+    // 新 / 已存在 · 跳过 区分
+    expect(within(dialog).getAllByText("New")).toHaveLength(3);
+    expect(
+      within(dialog).getByText("Already exists · skip"),
+    ).toBeInTheDocument();
+
+    // 已存在项不可勾选
+    expect(
+      within(dialog).getByRole("checkbox", { name: "gpt-5" }),
+    ).toBeDisabled();
+
+    // 全选只作用于新模型：先取消一个新项使全选处于未全选态，再点全选
+    await user.click(
+      within(dialog).getByRole("checkbox", { name: "gpt-5.1" }),
+    );
+    await user.click(
+      within(dialog).getByRole("checkbox", {
+        name: "Select all new models",
+      }),
+    );
+    expect(
+      within(dialog).getByRole("checkbox", { name: "gpt-5.1" }),
+    ).toBeChecked();
+    expect(
+      within(dialog).getByRole("checkbox", { name: "deepseek-chat" }),
+    ).toBeChecked();
+    expect(
+      within(dialog).getByRole("checkbox", { name: "custom-xyz" }),
+    ).toBeChecked();
+    expect(
+      within(dialog).getByRole("checkbox", { name: "gpt-5" }),
+    ).not.toBeChecked();
+
+    // 底部导入结论 + 已存在项保持不变
+    expect(
+      within(dialog).getByText(/Will import 3 new models/),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(
+        /keep their name, context, default and reference/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("Given preview fails with an HTTP 401, When discover is opened, Then it shows an understandable reason with next steps and collapses the raw response until expanded", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({ items: [makeModel()] }),
+      ),
+      PreviewLLMModels: vi.fn(() =>
+        Promise.reject(
+          new Error(
+            'http 401: {"type":"error","error":{"request_id":"req_123"}}',
+          ),
+        ),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(screen.getByRole("button", { name: "Discover models" }));
+
+    const dialog = await screen.findByRole("dialog", { name: /Discover/ });
+    const alert = await within(dialog).findByRole("alert");
+
+    // 可理解的失败原因，原始 JSON 不作为主文案
+    expect(alert).toHaveTextContent(/API Key/i);
+    expect(alert).not.toHaveTextContent("request_id");
+
+    // 可执行的下一步：前往编辑连接 / 重试
+    expect(
+      within(alert).getByRole("button", { name: /Edit connection/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(alert).getByRole("button", { name: "Retry" }),
+    ).toBeInTheDocument();
+
+    // 原始响应默认折叠，按需展开
+    expect(within(alert).queryByText(/request_id/)).not.toBeInTheDocument();
+    await user.click(
+      within(alert).getByRole("button", { name: /raw response/i }),
+    );
+    expect(within(alert).getByText(/request_id/)).toBeInTheDocument();
+
+    // 前往编辑连接直达编辑弹窗
+    await user.click(
+      within(alert).getByRole("button", { name: /Edit connection/i }),
+    );
+    expect(
+      await screen.findByRole("dialog", { name: /Edit connection/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("Given a catalog-known model id, When the manual add dialog fills it in, Then context and max output are autofilled, stay editable, and an empty display name falls back to the model id", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [] })),
+      LookupLLMModel: vi.fn(() =>
+        Promise.resolve({
+          known: true,
+          vendor: "anthropic",
+          contextWindow: 200000,
+          maxOutput: 64000,
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      await screen.findByRole("button", { name: "Add model manually" }),
+    );
+
+    const dialog = await screen.findByRole("dialog", {
+      name: /Add model/,
+    });
+    const modelIdInput = within(dialog).getByLabelText("Model ID");
+    fireEvent.change(modelIdInput, { target: { value: "claude-sonnet-4-5" } });
+    fireEvent.blur(modelIdInput);
+
+    // 内置目录命中自动填入上下文窗口与最大输出
+    await waitFor(() => {
+      expect(within(dialog).getByLabelText("Context Window")).toHaveValue(
+        200000,
+      );
+    });
+    expect(within(dialog).getByLabelText("Max Output Tokens")).toHaveValue(
+      64000,
+    );
+
+    // 补全后仍可修改
+    fireEvent.change(within(dialog).getByLabelText("Context Window"), {
+      target: { value: "300000" },
+    });
+    expect(within(dialog).getByLabelText("Context Window")).toHaveValue(300000);
+
+    // 显示名称可留空
+    expect(within(dialog).getByLabelText("Display name")).toHaveValue("");
+
+    await user.click(within(dialog).getByRole("button", { name: "Add" }));
+
+    await waitFor(() => {
+      expect(mocks.ImportLLMModels).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerId: 1,
+          models: expect.arrayContaining([
+            expect.objectContaining({
+              modelId: "claude-sonnet-4-5",
+              name: "",
+              contextWindow: 300000,
+              maxOutput: 64000,
+            }),
+          ]),
+        }),
+      );
+    });
+  });
 });

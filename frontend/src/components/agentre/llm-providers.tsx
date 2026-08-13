@@ -733,6 +733,11 @@ export function LlmProvidersPanel({
         provider={discoverProvider}
         existingModels={models}
         onClose={() => setDiscoverProvider(null)}
+        onEditConnection={() => {
+          if (discoverProvider)
+            setFormMode({ kind: "edit", provider: discoverProvider });
+          setDiscoverProvider(null);
+        }}
         onImported={handleImported}
       />
       <AddModelDialog

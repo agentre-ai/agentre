@@ -14,7 +14,10 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 
-import { ImportLLMModels } from "../../../../wailsjs/go/app/App";
+import {
+  ImportLLMModels,
+  LookupLLMModel,
+} from "../../../../wailsjs/go/app/App";
 import { llm_provider_svc } from "../../../../wailsjs/go/models";
 import { type Provider, errMessage } from "./index";
 
@@ -50,6 +53,7 @@ export function AddModelDialog({
   const [maxOutput, setMaxOutput] = React.useState<number>(0);
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const lastFilledIdRef = React.useRef("");
 
   React.useEffect(() => {
     if (!open) return;
@@ -58,7 +62,25 @@ export function AddModelDialog({
     setContextWindow(0);
     setMaxOutput(0);
     setError(null);
+    lastFilledIdRef.current = "";
   }, [open]);
+
+  // 内置目录命中时自动回填上下文与最大输出；同一 id 只回填一次，后续改动不被覆盖。
+  const handleModelIdBlur = React.useCallback(async () => {
+    const id = modelId.trim();
+    if (!id || id === lastFilledIdRef.current) return;
+    try {
+      const resp = await LookupLLMModel(
+        new llm_provider_svc.LookupModelRequest({ id }),
+      );
+      if (!resp.known) return;
+      setContextWindow(resp.contextWindow >= 0 ? resp.contextWindow : 0);
+      setMaxOutput(resp.maxOutput >= 0 ? resp.maxOutput : 0);
+      lastFilledIdRef.current = id;
+    } catch {
+      // 目录查询失败不阻塞手动添加：保留用户已填写的值。
+    }
+  }, [modelId]);
 
   const submit = React.useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
@@ -122,6 +144,7 @@ export function AddModelDialog({
                 value={modelId}
                 placeholder={t("llmProviders.fields.modelIdPlaceholder")}
                 onChange={(e) => setModelId(e.currentTarget.value)}
+                onBlur={() => void handleModelIdBlur()}
                 className="h-9 font-mono text-xs"
                 aria-label={t("llmProviders.modelEdit.modelId")}
               />
