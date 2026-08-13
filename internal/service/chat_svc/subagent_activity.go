@@ -101,6 +101,7 @@ func (s *chatSvc) driveSubagentActivity(ctx context.Context, sessionID int64, be
 	dispEmit := &subagentActivityEmitter{inner: &dispatcherEmitter{svc: s}, sessionID: sessionID}
 	turnCtx := s.newTurnContext(launchMsg, sess, stream, be.Type)
 	for ev := range act.Events {
+		s.publishPeerEvent(sessionID, ev)
 		if err := s.dispatcher.Apply(ctx, ev, acc, dispEmit, nil, turnCtx); err != nil {
 			logger.Ctx(ctx).Warn("chat_svc: subagent activity dispatcher Apply failed",
 				zap.String("eventType", fmt.Sprintf("%T", ev)), zap.Error(err))

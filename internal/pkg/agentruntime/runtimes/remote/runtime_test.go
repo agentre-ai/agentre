@@ -1422,6 +1422,66 @@ func TestSubmitToolPermission_Success(t *testing.T) {
 	require.NoError(t, rt.SubmitToolPermission(context.Background(), 10, "p-1", true, true, ""))
 }
 
+func TestSubmitControls_GivenRemoteControlResult_WhenSubmitted_ThenSurfacesAlreadyHandledAndAcceptsLegacyOK(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		drive  func(*Runtime) error
+	}{
+		{
+			name:   "answer",
+			method: wire.MethodSubmitAnswer,
+			drive: func(rt *Runtime) error {
+				return rt.SubmitAnswer(context.Background(), 18, "r-1", nil, nil, true)
+			},
+		},
+		{
+			name:   "tool permission",
+			method: wire.MethodSubmitToolPermission,
+			drive: func(rt *Runtime) error {
+				return rt.SubmitToolPermission(context.Background(), 18, "p-1", true, false, "")
+			},
+		},
+	}
+	responses := []struct {
+		name    string
+		json    string
+		wantErr error
+	}{
+		{name: "second endpoint", json: `{"alreadyHandled":true}`, wantErr: agentruntime.ErrWaiterNotFound},
+		{name: "legacy empty OK", json: `{}`},
+	}
+
+	for _, tc := range tests {
+		for _, response := range responses {
+			t.Run(tc.name+"/"+response.name, func(t *testing.T) {
+				_, cli, _, rt := setupRemote(t)
+				cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, _ any, result any) error {
+						*(result.(*wire.RunAck)) = wire.RunAck{SessionID: 18}
+						return nil
+					})
+				_, _, err := rt.Run(context.Background(), agentruntime.RunRequest{
+					Backend:   &agent_backend_entity.AgentBackend{Type: "claudecode"},
+					SessionID: 18,
+				})
+				require.NoError(t, err)
+
+				cli.EXPECT().Call(gomock.Any(), tc.method, gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, _ any, result any) error {
+						return json.Unmarshal([]byte(response.json), result)
+					})
+				err = tc.drive(rt)
+				if response.wantErr != nil {
+					assert.ErrorIs(t, err, response.wantErr)
+				} else {
+					require.NoError(t, err)
+				}
+			})
+		}
+	}
+}
+
 // ── R12 桌面侧:对端 origin 传播 ─────────────────────────────────────────────
 
 const (

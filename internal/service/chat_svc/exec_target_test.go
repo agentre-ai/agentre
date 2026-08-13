@@ -24,6 +24,8 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo/mock_chat_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_location_repo/mock_project_location_repo"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 )
 
 type execTargetMocks struct {
@@ -83,6 +85,40 @@ func TestResolveLocalCommandScope_GivenExistingLocalSession_WhenResolved_ThenRet
 	scope, err := svc.ResolveLocalCommandScope(ctx, &ResolveLocalCommandScopeRequest{SessionID: 71})
 	require.NoError(t, err)
 	assert.Equal(t, &LocalCommandScope{DeviceID: "", Cwd: "/workspace/current-local"}, scope)
+}
+
+// TestResolveLocalCommandScope_GivenSelfBackend_ThenLocalScope R13 认领后本机
+// backend 的 DeviceID 是本机指纹。"!" 命令范围解析必须把这种档当成本机档：
+// DeviceID 为空、cwd 走本机 CwdResolver——而不是因 self 指纹在本机配对表里查不到而
+// 误报 AgentBackendInvalidDevice。
+func TestResolveLocalCommandScope_GivenSelfBackend_ThenLocalScope(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+	rds.EXPECT().DeviceFingerprint().Return("sha256:self", nil).AnyTimes()
+	rds.EXPECT().List(gomock.Any()).Return(nil, nil).AnyTimes()
+	prevSvc := remote_device_svc.Default()
+	remote_device_svc.SetDefault(rds)
+	t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+	ctx, m, svc := setupExecTargetTest(t)
+	sess := &chat_entity.Session{ID: 78, AgentID: 34, ProjectID: 44, ExecAgentBackendID: 58}
+	agent := &agent_entity.Agent{ID: 34, AgentBackendID: 50}
+	backend := &agent_backend_entity.AgentBackend{
+		ID: 58, Type: string(agent_backend_entity.TypeClaudeCode), DeviceID: "sha256:self",
+	}
+	m.session.EXPECT().Find(ctx, int64(78)).Return(sess, nil)
+	m.agent.EXPECT().Find(ctx, int64(34)).Return(agent, nil)
+	m.backend.EXPECT().Find(ctx, int64(58)).Return(backend, nil)
+	RegisterCwdResolver(func(_ context.Context, got *chat_entity.Session) (string, error) {
+		return "/workspace/self", nil
+	})
+	t.Cleanup(func() { RegisterCwdResolver(nil) })
+	// 本机档不查 project_locations——self 不是配对 agentred，该表没有以 self 指纹为键的行。
+
+	scope, err := svc.ResolveLocalCommandScope(ctx, &ResolveLocalCommandScopeRequest{SessionID: 78})
+	require.NoError(t, err)
+	assert.Equal(t, &LocalCommandScope{DeviceID: "", Cwd: "/workspace/self"}, scope)
 }
 
 // TestResolveLocalCommandScope_GivenSessionWithStickyExecTarget_ThenScopeFollowsPinnedBackendNotAgentPrimary

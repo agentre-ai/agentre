@@ -3,6 +3,7 @@ package chat_svc
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/cago-frame/cago/pkg/i18n"
 	"github.com/cago-frame/cago/pkg/utils/httputils"
@@ -10,12 +11,14 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/project_location_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 )
 
 // cwdUnavailableReasonFor 把 resolveSessionCwd 的错误分类成结构化字符串（R10），
@@ -65,7 +68,9 @@ func resolveSessionCwd(ctx context.Context, sess *chat_entity.Session, be *agent
 	if sess == nil {
 		return "", nil
 	}
-	if be == nil || be.IsLocal() {
+	// self 档（R13 认领后本机 backend 的 DeviceID 是本机指纹）也按本机处理：
+	// cwd 走本机 CwdResolver（project.Path / AgentCwd fallback）。
+	if be == nil || be.IsLocal() || remote_device_svc.IsSelfDevice(be.DeviceID) {
 		if resolveCwdFn != nil {
 			return resolveCwdFn(ctx, sess)
 		}
@@ -78,7 +83,16 @@ func resolveSessionCwd(ctx context.Context, sess *chat_entity.Session, be *agent
 	if repo == nil {
 		return "", errors.New("project_location_repo not registered")
 	}
-	loc, err := repo.FindByProjectAndDevice(ctx, sess.ProjectID, be.DeviceID)
+	// 具名指纹档（另一台桌面端 / 账号 agentred）按（project, daemon_fingerprint）
+	// 自然键查行；数值行 ID 档按 device_id 缓存列查。project_locations 两列同存
+	// （决策 26），不能用指纹去匹配数值缓存列，反之亦然。
+	var loc *project_location_entity.ProjectLocation
+	var err error
+	if strings.HasPrefix(be.DeviceID, "sha256:") {
+		loc, err = repo.FindByProjectAndFingerprint(ctx, sess.ProjectID, be.DeviceID)
+	} else {
+		loc, err = repo.FindByProjectAndDevice(ctx, sess.ProjectID, be.DeviceID)
+	}
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return "", i18n.NewError(ctx, code.ProjectLocationMissing)
@@ -129,8 +143,10 @@ func (s *chatSvc) ResolveSessionWorkspace(ctx context.Context, sessionID int64) 
 	}
 
 	var deviceID int64
-	if be.IsRemote() {
-		id, ok := be.DeviceIDInt()
+	// self 档（R13 认领后本机 backend 的 DeviceID 是本机指纹）也按本机处理：deviceID 0
+	// 让 workspace_fs_svc 走本机文件系统，而不是去配对表里找行报 RemoteDeviceNotFound。
+	if be.IsRemote() && !remote_device_svc.IsSelfDevice(be.DeviceID) {
+		id, ok := localPairedDeviceID(ctx, be.DeviceID)
 		if !ok {
 			return 0, "", i18n.NewError(ctx, code.RemoteDeviceNotFound)
 		}

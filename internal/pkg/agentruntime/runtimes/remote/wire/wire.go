@@ -187,10 +187,16 @@ type ProviderSummary struct {
 	Models          []ModelSummary `json:"models,omitempty"`
 }
 
-// OK 大部分 mutating 方法 (Steer / Abort / SetPermissionMode / SubmitAnswer /
-// SubmitToolPermission) 不需要返回值,统一返这个空 struct 让 JSON-RPC 框架知道
+// OK 大部分 mutating 方法不需要返回值,统一返这个空 struct 让 JSON-RPC 框架知道
 // 是「成功无 payload」。
 type OK struct{}
+
+// PeerSessionControlResult reports that another endpoint won the race to answer
+// a pending ask or tool permission. Older peers return an empty object, whose
+// zero value preserves the original successful outcome.
+type PeerSessionControlResult struct {
+	AlreadyHandled bool `json:"alreadyHandled,omitempty"`
+}
 
 type GoalParams struct {
 	SessionID         int64           `json:"sessionId"`

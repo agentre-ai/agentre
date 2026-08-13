@@ -15,6 +15,8 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/keychain"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 )
 
 type failingOpenClawKeychain struct {
@@ -219,6 +221,32 @@ func TestOpenClawTokenIsNotPartOfWailsDTOs(t *testing.T) {
 }
 
 func TestResolveOpenClawRuntimeConfig(t *testing.T) {
+	t.Run("Given a self-fingerprint OpenClaw backend when a turn starts then local config resolves instead of reporting remote secret unavailable", func(t *testing.T) {
+		ctx, backendMock, _, _, _, svc := setupSvcTest(t)
+		memory := keychain.NewMemory()
+		svc.secrets = memory
+		credential := strings.Repeat("s", 45)
+		require.NoError(t, memory.Set(openClawTokenAccount(99), credential))
+
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+		rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+		rds.EXPECT().DeviceFingerprint().Return("sha256:self", nil).AnyTimes()
+		prevSvc := remote_device_svc.Default()
+		remote_device_svc.SetDefault(rds)
+		t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+		selfBackend := savedOpenClawBackend(99)
+		selfBackend.DeviceID = "sha256:self"
+		backendMock.EXPECT().Find(gomock.Any(), int64(99)).Return(selfBackend, nil)
+
+		config, err := svc.resolveOpenClawRuntimeConfig(ctx, 99)
+		require.NoError(t, err)
+		assert.Equal(t, "ws://127.0.0.1:18789", config.URL)
+		assert.Equal(t, credential, config.Token)
+		require.NotNil(t, config.Identity)
+	})
+
 	t.Run("Given a saved local OpenClaw backend when a turn starts then runtime config receives the keychain token and stable identity", func(t *testing.T) {
 		ctx, backendMock, _, _, _, svc := setupSvcTest(t)
 		memory := keychain.NewMemory()

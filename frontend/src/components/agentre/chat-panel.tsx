@@ -132,6 +132,7 @@ import {
   GetChatGoal,
   GetChatLaunchCommand,
   MarkChatSessionRead,
+  PeerRunFresh,
   EnsureChatSession,
   RegenerateChatMessage,
   RenameChatSession,
@@ -568,6 +569,13 @@ type ChatPanelProps = {
   newSessionContext?: NewSessionContext;
   /** 新会话首发成功后回调，父级用来同步 selectedSessionId/agentId。*/
   onSessionCreated?: (sessionId: number, agentId: number) => void;
+  /** 新建会话派到一台远端桌面端（R18）成功后回调，父级关掉新建 Tab 并打开 Peer Tab。*/
+  onPeerSessionCreated?: (peer: {
+    fingerprint: string;
+    sessionId: number;
+    title: string;
+    deviceName: string;
+  }) => void;
   /** 会话被删除或加载失败时回调，父级清掉选中状态。*/
   onSessionDeleted?: () => void;
   /** 任何会让父级列表（Agent / 项目）需要刷新的 RPC 成功后调一次。*/
@@ -640,6 +648,7 @@ function ChatPanel({
   newSessionAgent,
   newSessionContext,
   onSessionCreated,
+  onPeerSessionCreated,
   onSessionDeleted,
   onSidebarShouldReload,
   headerTopline,
@@ -730,6 +739,13 @@ function ChatPanel({
   const [overrideBackendType, setOverrideBackendType] = React.useState<
     string | null
   >(null);
+  // 改选后实际生效档的目标种类与设备身份（R18）：空会话态首发时据此决定走本地 Send
+  // 还是 peer RunFresh（桌面派发）。由 NewSessionExecTargetLine 报上来。
+  const [effectiveTarget, setEffectiveTarget] = React.useState<{
+    kind: "local" | "desktop" | "daemon";
+    deviceId: string;
+    deviceName: string;
+  } | null>(null);
 
   const {
     session,
@@ -1676,6 +1692,33 @@ function ChatPanel({
     // 否则 RPC 失败时 UI 完全无声（用户在 composer 干瞪眼）。doEnqueue 的 fallback
     // 也走这里，set notice 后不 rethrow，正好顶替 doEnqueue 原本的 setNotice。
     try {
+      // R18 桌面派发：空会话态且生效目标是另一台桌面端（kind=desktop）时，新建会话
+      // 走 peer RunFresh（对端真实会话 id 回传），不走本地 EnsureChatSession/Send。
+      // agentred 与本机行为不变（R22）。
+      if (
+        targetSessionId === 0 &&
+        effectiveTarget?.kind === "desktop" &&
+        effectiveTarget.deviceId
+      ) {
+        const ack = await PeerRunFresh({
+          fingerprint: effectiveTarget.deviceId,
+          agentId,
+          projectId: newSessionContext?.projectId ?? 0,
+          title: text,
+          text,
+          permissionMode:
+            permissionModeOverride ??
+            (isModeSwitchable ? permissionMode.mode : ""),
+        } as Parameters<typeof PeerRunFresh>[0]);
+        onPeerSessionCreated?.({
+          fingerprint: effectiveTarget.deviceId,
+          sessionId: ack?.sessionId ?? 0,
+          title: text,
+          deviceName: effectiveTarget.deviceName,
+        });
+        onSidebarShouldReload?.();
+        return;
+      }
       // 新建会话路径：把项目上下文带上（仅 targetSessionId=0 时生效）；
       // 已存在会话续发：projectId 在 Send 端被忽略，传 0 也无害。
       const sendPayload: Record<string, unknown> = {
@@ -2765,6 +2808,7 @@ function ChatPanel({
                         overrideBackendId={execTargetOverride}
                         onOverride={setExecTargetOverride}
                         onOverrideBackendType={setOverrideBackendType}
+                        onEffectiveTarget={setEffectiveTarget}
                       />
                     ) : null}
                   </div>

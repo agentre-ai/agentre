@@ -13,11 +13,15 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/agentre-ai/agentre/internal/daemon/handlers"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/syncmeta_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
+	"github.com/agentre-ai/agentre/internal/pkg/syncwire"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
@@ -26,6 +30,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
 	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 	"github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/service/sync_svc"
 )
 
 func setupSvcTest(t *testing.T) (
@@ -784,6 +789,39 @@ func TestTestBackend_HappyPath(t *testing.T) {
 	})
 }
 
+// TestTestBackend_SelfFingerprintRunsLocalProbe R13 认领后本机 backend 的 DeviceID
+// 是本机指纹。测试按钮必须把它当本地档跑本地 prober，而不是误报「远端设备不存在」
+// （本机指纹永远不是配对 agentred 行）。
+func TestTestBackend_SelfFingerprintRunsLocalProbe(t *testing.T) {
+	convey.Convey("给定指向本机指纹的 claudecode backend, Test 走本地 prober", t, func() {
+		ctx, backendMock, _, _, proberMock, svc := setupSvcTest(t)
+
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+		rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+		rds.EXPECT().DeviceFingerprint().Return("sha256:self", nil).AnyTimes()
+		rds.EXPECT().List(gomock.Any()).Return(nil, nil).AnyTimes()
+		prevSvc := remote_device_svc.Default()
+		remote_device_svc.SetDefault(rds)
+		t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+		saved := &agent_backend_entity.AgentBackend{
+			ID: 8, Type: string(agent_backend_entity.TypeClaudeCode), Name: "claude",
+			LLMProviderKey: "", Status: consts.ACTIVE, DeviceID: "sha256:self",
+		}
+		backendMock.EXPECT().Find(gomock.Any(), int64(8)).Return(saved, nil)
+		proberMock.EXPECT().
+			Run(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{}), gomock.Any()).
+			Return("pong", nil)
+
+		res, err := svc.Test(ctx, &TestBackendRequest{ID: 8})
+		assert.NoError(t, err)
+		assert.NotNil(t, res)
+		assert.True(t, res.OK)
+		assert.Equal(t, "pong", res.Message)
+	})
+}
+
 func TestTestBackend_NoProvider(t *testing.T) {
 	convey.Convey("claudecode/codex 不关联供应商时跳过 gateway，调 prober 走 CLI 自身登录", t, func() {
 		convey.Convey("claudecode draft 无 provider → 不签 token，prober 收到空 deps", func() {
@@ -1143,8 +1181,105 @@ func setupSvcTestWithRemoteDevice(t *testing.T) (
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 	rd := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+	previous := remote_device_svc.Default()
 	remote_device_svc.SetDefault(rd)
+	t.Cleanup(func() { remote_device_svc.SetDefault(previous) })
 	return ctx, backendMock, providerMock, agentMock, rd, prober, svc
+}
+
+type recordingClaimSync struct {
+	sync_svc.SyncSvc
+	changes []sync_svc.LocalChange
+}
+
+func (s *recordingClaimSync) NotifyRuntimeClaim(_ context.Context, change sync_svc.LocalChange) {
+	s.changes = append(s.changes, change)
+}
+
+func TestClaimRelativeBackends_ClonesAndTombstonesThroughNormalSyncMutations(t *testing.T) {
+	ctx, backendMock, _, _, rd, _, svc := setupSvcTestWithRemoteDevice(t)
+	rd.EXPECT().DeviceFingerprint().Return("sha256:desktop-a", nil)
+	original := &agent_backend_entity.AgentBackend{ID: 1, DeviceID: "", SyncMeta: syncmeta_entity.SyncMeta{SyncID: "backend-old"}}
+	claimed := &agent_backend_entity.AgentBackend{ID: 2, DeviceID: "sha256:desktop-a", SyncMeta: syncmeta_entity.SyncMeta{SyncID: "backend-new"}}
+	oldTarget := &agent_entity.AgentExecTarget{ID: 3, SyncMeta: syncmeta_entity.SyncMeta{SyncID: "target-old"}}
+	newTarget := &agent_entity.AgentExecTarget{ID: 4, SyncMeta: syncmeta_entity.SyncMeta{SyncID: "target-new"}}
+	backendMock.EXPECT().ClaimRelative(ctx, "sha256:desktop-a").Return([]agent_backend_repo.RelativeClaim{{
+		OriginalBackend: original, ClaimedBackend: claimed,
+		OriginalTargets: []*agent_entity.AgentExecTarget{oldTarget}, ClaimedTargets: []*agent_entity.AgentExecTarget{newTarget},
+	}}, nil)
+	recorder := &recordingClaimSync{}
+	sync_svc.SetDefault(recorder)
+	t.Cleanup(func() { sync_svc.SetDefault(nil) })
+
+	require.NoError(t, svc.ClaimRelativeBackends(ctx))
+	assert.Equal(t, []sync_svc.LocalChange{
+		{Kind: syncwire.KindAgentBackend, LocalID: 2, Op: sync_svc.OpCreate, Meta: claimed.SyncMeta},
+		{Kind: syncwire.KindAgentExecTarget, LocalID: 4, Op: sync_svc.OpCreate, Meta: newTarget.SyncMeta},
+		{Kind: syncwire.KindAgentExecTarget, LocalID: 3, Op: sync_svc.OpDelete, Meta: oldTarget.SyncMeta},
+		{Kind: syncwire.KindAgentBackend, LocalID: 1, Op: sync_svc.OpDelete, Meta: original.SyncMeta},
+	}, recorder.changes)
+}
+
+func TestClaimRelativeBackends_GivenFingerprintFailure_DoesNotMutate(t *testing.T) {
+	ctx, _, _, _, rd, _, svc := setupSvcTestWithRemoteDevice(t)
+	rd.EXPECT().DeviceFingerprint().Return("", errors.New("keychain unavailable"))
+
+	err := svc.ClaimRelativeBackends(ctx)
+	assert.EqualError(t, err, "keychain unavailable")
+}
+
+func TestBackend_GivenCanonicalFingerprint_ResolvesPairedRowForRemoteProbe(t *testing.T) {
+	ctx, backendMock, _, _, rd, _, svc := setupSvcTestWithRemoteDevice(t)
+	fake := &fakeRemoteCLI{probeResp: &handlers.CLIProbeResult{Text: "pong"}}
+	svc.remoteCLI = fake
+	backendMock.EXPECT().Find(ctx, int64(9)).Return(&agent_backend_entity.AgentBackend{
+		ID: 9, Type: "claudecode", Name: "desktop", DeviceID: "sha256:desktop-a", Status: consts.ACTIVE,
+	}, nil)
+	rd.EXPECT().List(ctx).Return([]*remote_device_svc.DeviceView{{ID: 7, DaemonFingerprint: "sha256:desktop-a"}}, nil)
+
+	resp, err := svc.Test(ctx, &TestBackendRequest{ID: 9})
+	require.NoError(t, err)
+	assert.True(t, resp.OK)
+	assert.Equal(t, 1, fake.probeCalls)
+}
+
+func TestResolveCLIPath_GivenCanonicalFingerprint_UsesLocalPairedRowAtDispatch(t *testing.T) {
+	ctx, _, _, _, rd, _, svc := setupSvcTestWithRemoteDevice(t)
+	fake := &fakeRemoteCLI{resolveResp: &ResolveCLIPathResponse{Path: "/remote/bin/claude", Found: true}}
+	svc.remoteCLI = fake
+	rd.EXPECT().List(ctx).Return([]*remote_device_svc.DeviceView{
+		{ID: 7, DaemonFingerprint: "sha256:desktop-a"},
+	}, nil)
+
+	resp, err := svc.ResolveCLIPath(ctx, &ResolveCLIPathRequest{Type: "claudecode", DeviceID: "sha256:desktop-a"})
+	require.NoError(t, err)
+	assert.True(t, resp.Found)
+	assert.Equal(t, int64(7), fake.resolveDeviceID)
+}
+
+func TestCreateBackend_GivenCanonicalFingerprint_PersistsItAfterMatchingPairedDevice(t *testing.T) {
+	ctx, backendMock, providerMock, _, rd, _, svc := setupSvcTestWithRemoteDevice(t)
+	providerMock.EXPECT().FindByKey(gomock.Any(), "key-1").Return(activeProvider("key-1"), nil)
+	expectDefaultModelResolution(providerMock, "key-1", 1)
+	backendMock.EXPECT().FindByName(gomock.Any(), "desktop-cc").Return(nil, nil)
+	backendMock.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, b *agent_backend_entity.AgentBackend) error {
+			assert.Equal(t, "sha256:desktop-a", b.DeviceID)
+			b.ID = 11
+			return nil
+		},
+	)
+	rd.EXPECT().List(ctx).Return([]*remote_device_svc.DeviceView{
+		{ID: 7, Name: "desktop-a", DaemonFingerprint: "sha256:desktop-a", Online: true},
+	}, nil)
+
+	resp, err := svc.Create(ctx, &CreateBackendRequest{
+		Type: "claudecode", Name: "desktop-cc", LLMProviderKey: "key-1", DeviceID: "sha256:desktop-a",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "sha256:desktop-a", resp.Item.DeviceID)
+	assert.Equal(t, "desktop-a", resp.Item.DeviceName)
+	assert.True(t, resp.Item.Online)
 }
 
 func TestCreateBackend_RemoteDeviceValidation(t *testing.T) {
@@ -1174,20 +1309,22 @@ func TestCreateBackend_RemoteDeviceValidation(t *testing.T) {
 			convey.So(resp.Item.DeviceName, convey.ShouldEqual, "linux-srv")
 			convey.So(resp.Item.Online, convey.ShouldBeTrue)
 		})
-		convey.Convey("device 空 = 本地 → 不调 remote_device_svc", func() {
-			ctx, backendMock, providerMock, _, _, _, svc := setupSvcTestWithRemoteDevice(t)
+		convey.Convey("device 空 = 本机指纹", func() {
+			ctx, backendMock, providerMock, _, rd, _, svc := setupSvcTestWithRemoteDevice(t)
 			providerMock.EXPECT().FindByKey(gomock.Any(), "key-1").Return(activeProvider("key-1"), nil).AnyTimes()
 			expectDefaultModelResolution(providerMock, "key-1", 1)
 			backendMock.EXPECT().FindByName(gomock.Any(), "local-cc").Return(nil, nil)
 			backendMock.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
 				func(_ context.Context, b *agent_backend_entity.AgentBackend) error { b.ID = 12; return nil },
 			)
+			rd.EXPECT().DeviceFingerprint().Return("sha256:this-desktop", nil)
+			rd.EXPECT().List(ctx).Return(nil, nil)
 			resp, err := svc.Create(ctx, &CreateBackendRequest{
 				Type: "claudecode", Name: "local-cc",
 				LLMProviderKey: "key-1", DeviceID: "",
 			})
 			convey.So(err, convey.ShouldBeNil)
-			convey.So(resp.Item.DeviceID, convey.ShouldEqual, "")
+			convey.So(resp.Item.DeviceID, convey.ShouldEqual, "sha256:this-desktop")
 			convey.So(resp.Item.DeviceName, convey.ShouldEqual, "")
 		})
 	})

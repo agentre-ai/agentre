@@ -74,9 +74,11 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	if req.Backend == nil || !req.Backend.IsOpenClaw() {
 		return nil, nil, fmt.Errorf("openclaw runtime: OpenClaw backend is required")
 	}
-	if req.Backend.IsRemote() {
-		return nil, nil, fmt.Errorf("openclaw runtime: remote secret enrollment is unavailable")
-	}
+	// 本地 runtime 只收得到本机网关的档：指向本机指纹的档（R13 认领后本地 backend 的
+	// DeviceID == 本机指纹）在这里不是「远端」，而另一台机器的 OpenClaw 档在
+	// resolveAgentBackend 就已拒绝、也到不了本地 runtime。是否拿得到远端 secret 由
+	// config resolver 定夺（远端档的 resolver 会回 ErrOpenClawRemoteSecretUnavailable），
+	// 这里不再用 DeviceID 非空当「远端」拦——那会把本机档误杀。
 	if req.SessionID <= 0 || req.Backend.ID <= 0 {
 		return nil, nil, fmt.Errorf("openclaw runtime: backend and chat session IDs are required")
 	}

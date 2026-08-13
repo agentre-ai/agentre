@@ -50,6 +50,7 @@ import { safeAgentColor, type OrgAgent, type OrgDepartment } from "./types";
 import { useAutoSave } from "./use-auto-save";
 import { AutoSaveStatus } from "./auto-save-status";
 import { ExecTargetList, type ExecTargetRow } from "./exec-target-list";
+import { useExecTargetAvailability } from "./use-exec-target-availability";
 import {
   ExecTargetSkillsBlock,
   type CopySource,
@@ -196,6 +197,76 @@ export function OrgDetailAgent(props: Props) {
       skills: skillsByBackend.get(r.agentBackendId) ?? [],
     }));
     patch({ execTargets: merged }, { immediate: true });
+  };
+
+  // ── R16：执行目标列表的作用范围切换 ──
+  // "device" = 本端顺序（拖拽只写本端覆盖，不同步）；"default" = 账号默认顺序（同步）。
+  const [scopeMode, setScopeMode] = React.useState<"device" | "default">(
+    "device",
+  );
+
+  // 本端生效顺序（R14 解析后的顺序，含覆盖 / 无覆盖时本机自己提前）来自后端
+  // ListExecTargetAvailability 的返回数组顺序；hasOverride 标注是否处于本端覆盖。
+  const deviceTargetsKey = React.useMemo(
+    () =>
+      execTargets
+        .map((t) => t.agentBackendId)
+        .slice()
+        .sort((a, b) => a - b)
+        .join(","),
+    [execTargets],
+  );
+  const availability = useExecTargetAvailability(
+    props.agent.id,
+    deviceTargetsKey,
+  );
+  const [deviceTargets, setDeviceTargets] = React.useState<ExecTargetRow[]>([]);
+  React.useEffect(() => {
+    if (availability.orderedTargets.length > 0) {
+      setDeviceTargets(availability.orderedTargets);
+    }
+  }, [availability.orderedTargets]);
+
+  // device 作用域的重排 / 恢复都只写本端覆盖（orderOverride），不碰账号默认。
+  const writeDeviceOverride = React.useCallback(
+    (order: number[]) => {
+      void wrap(() =>
+        props.onUpdate(
+          agent_svc.UpdateAgentRequest.createFrom({
+            id: props.agent.id,
+            name,
+            description,
+            avatarColor,
+            avatarIcon,
+            prompt: prompt.split("\n").filter((s) => s.trim() !== ""),
+            execTargets,
+            tools,
+            orderOverride: order,
+          }),
+        ),
+      ).then(() => availability.reload());
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      props.agent.id,
+      name,
+      description,
+      avatarColor,
+      avatarIcon,
+      prompt,
+      execTargets,
+      tools,
+    ],
+  );
+
+  const handleDeviceReorder = (next: ExecTargetRow[]) => {
+    setDeviceTargets(next);
+    void writeDeviceOverride(next.map((t) => t.agentBackendId));
+  };
+
+  const handleRestoreDeviceOrder = () => {
+    setDeviceTargets([]);
+    void writeDeviceOverride([]);
   };
 
   const patchTargetSkills = (
@@ -607,16 +678,51 @@ export function OrgDetailAgent(props: Props) {
               </AlertDescription>
             </Alert>
           ) : null}
-          <ExecTargetList
-            agentId={props.agent.id}
-            agentName={props.agent.name}
-            targets={execTargets.map((t) => ({
-              agentBackendId: t.agentBackendId,
-            }))}
-            backends={backendsForList}
-            onChange={patchExecTargets}
-            saveRejected={pendingInvalid && execTargets.length === 0}
-          />
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5">
+              <Button
+                type="button"
+                variant={scopeMode === "device" ? "secondary" : "ghost"}
+                size="sm"
+                className="h-7 px-2 text-2xs"
+                onClick={() => setScopeMode("device")}
+              >
+                {t("org.agent.execTargets.scopeDevice")}
+              </Button>
+              <Button
+                type="button"
+                variant={scopeMode === "default" ? "secondary" : "ghost"}
+                size="sm"
+                className="h-7 px-2 text-2xs"
+                onClick={() => setScopeMode("default")}
+              >
+                {t("org.agent.execTargets.scopeDefault")}
+              </Button>
+            </div>
+          </div>
+          {scopeMode === "device" ? (
+            <ExecTargetList
+              agentId={props.agent.id}
+              agentName={props.agent.name}
+              targets={deviceTargets}
+              backends={backendsForList}
+              onChange={handleDeviceReorder}
+              scope="device"
+              onRestoreDeviceOrder={handleRestoreDeviceOrder}
+            />
+          ) : (
+            <ExecTargetList
+              agentId={props.agent.id}
+              agentName={props.agent.name}
+              targets={execTargets.map((t) => ({
+                agentBackendId: t.agentBackendId,
+              }))}
+              backends={backendsForList}
+              onChange={patchExecTargets}
+              saveRejected={pendingInvalid && execTargets.length === 0}
+              scope="default"
+            />
+          )}
         </section>
 
         <section className="space-y-2" data-slot="agent-section-prompt">

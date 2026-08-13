@@ -3,7 +3,6 @@ package sync_svc
 import (
 	"context"
 	"encoding/json"
-	"strconv"
 
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/cago-frame/cago/pkg/logger"
@@ -17,6 +16,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/department_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_repo"
+	"github.com/agentre-ai/agentre/internal/repository/remote_device_repo"
 	"github.com/agentre-ai/agentre/internal/repository/syncstate_repo"
 )
 
@@ -413,15 +413,28 @@ func (agentBackendAdapter) load(ctx context.Context, syncID string) (*outbound, 
 	if err != nil || !found {
 		return nil, err
 	}
-	// device_id 为空 = 「当前这台桌面端」，是个相对引用，原样保持为空（决策 14）。
-	deviceID, _ := strconv.ParseInt(row.DeviceID, 10, 64)
-	fingerprint, err := fingerprintOfLocalID(ctx, deviceID)
-	if err != nil {
-		// 本机已经解除了这台 agentred 的配对，翻不出指纹。宁可这条不上行，也不能
-		// 让它带着空指纹过机——那会在对端变成「跑在你那台桌面端上」（决策 14）。
-		logger.Ctx(ctx).Warn("sync_svc: backend points at an unpaired agentred, skipping upload",
-			zap.String("syncId", syncID), zap.Int64("deviceId", deviceID))
-		return nil, nil //nolint:nilerr // 见上：不是失败，是这一条按设计不发
+	// DeviceID is the canonical target fingerprint, so a canonical value (sha256:…,
+	// or any non-numeric shape) crosses the sync boundary unchanged. A legacy
+	// numeric value is a LOCAL paired_agentreds row ID (the pre-R13 producer still
+	// submits those): it is resolved to its daemon's fingerprint on upload — a raw
+	// row ID must never cross as a fingerprint, it would resolve to a
+	// possibly-different paired row on the target desktop and dispatch to the
+	// wrong machine. A numeric value whose daemon is no longer paired cannot be
+	// expressed cross-machine, so the row is skipped (mirrors the pre-R13
+	// fingerprintOfLocalID behavior).
+	backendFingerprint := row.DeviceID
+	if legacyID, ok := (&agent_backend_entity.AgentBackend{DeviceID: row.DeviceID}).DeviceIDInt(); ok {
+		var skip bool
+		var ferr error
+		backendFingerprint, skip, ferr = backendFingerprintForSync(ctx, legacyID)
+		if ferr != nil {
+			return nil, ferr
+		}
+		if skip {
+			logger.Ctx(ctx).Debug("sync_svc.agentBackendAdapter: backend targets an unpaired agentred, skipping upload",
+				zap.String("syncId", syncID), zap.String("deviceId", row.DeviceID))
+			return nil, nil // 见上：不是失败，是这一条按设计不发
+		}
 	}
 	payload, err := json.Marshal(agentBackendPayload{
 		Type:                  row.Type,
@@ -447,31 +460,35 @@ func (agentBackendAdapter) load(ctx context.Context, syncID string) (*outbound, 
 	return &outbound{
 		SyncID:              row.SyncID,
 		UpdatedAt:           row.Updatetime,
-		AgentredFingerprint: fingerprint,
+		AgentredFingerprint: backendFingerprint,
 		Payload:             payload,
 	}, nil
 }
 
-// refs 指纹非空时要求本机配对表里有那一行：本机 agent_backends 只能用
-// paired_agentreds 的本地 ID 表达「哪台机器」，翻不出来就只能暂缓落地，
-// 否则这一档会被写成「本机」（决策 14 的相对引用语义）而在本机被错误地跑起来。
-func (agentBackendAdapter) refs(in *inbound) []ref {
-	return []ref{{Fingerprint: in.AgentredFingerprint}}
+// backendFingerprintForSync 把本地 paired_agentreds 的行 ID 翻成全局指纹（上行方向，
+// 旧 fingerprintOfLocalID 的语义）。翻不出（未配对 / 无指纹）时 skip=true —— 数值
+// 行 ID 只在本机有意义，带它过机就是对端错机派发的根因。
+func backendFingerprintForSync(ctx context.Context, id int64) (fingerprint string, skip bool, err error) {
+	row, err := remote_device_repo.PairedAgentred().Get(ctx, id)
+	if err != nil {
+		return "", false, err
+	}
+	if row == nil || row.DaemonFingerprint == "" {
+		return "", true, nil
+	}
+	return row.DaemonFingerprint, false, nil
 }
+
+// refs is empty: a backend stores the canonical target fingerprint directly.
+// A missing local pairing affects dispatch availability, not sync convergence.
+func (agentBackendAdapter) refs(*inbound) []ref { return nil }
 
 func (agentBackendAdapter) apply(ctx context.Context, in *inbound, resolved map[string]int64) error {
 	var p agentBackendPayload
 	if err := json.Unmarshal(in.Payload, &p); err != nil {
 		return err
 	}
-	deviceID := ""
-	if in.AgentredFingerprint != "" {
-		id := resolvedID(resolved, ref{Fingerprint: in.AgentredFingerprint})
-		if id == 0 {
-			return errRefMissing
-		}
-		deviceID = strconv.FormatInt(id, 10)
-	}
+	deviceID := in.AgentredFingerprint
 	row := &agent_backend_entity.AgentBackend{}
 	found, err := syncstate_repo.SyncState().FindRow(ctx, syncwire.KindAgentBackend, in.SyncID, row)
 	if err != nil {

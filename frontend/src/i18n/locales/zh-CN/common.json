@@ -870,7 +870,8 @@
         "unknownBackend": "未知后端类型",
         "unpaired": "这台电脑未配对它",
         "offline": "离线",
-        "projectPathMissing": "这台机器上没有配置这个项目的路径"
+        "projectPathMissing": "这台机器上没有配置这个项目的路径",
+        "desktopNotRunning": "那台电脑上的 Agentre 没有运行"
       }
     },
     "launchCommand": {
@@ -1137,6 +1138,10 @@
       "hint": "激活 · 点 ✕ 关闭",
       "session": "sess-{{id}}",
       "worktree": "worktree {{branch}}"
+    },
+    "peer": {
+      "title": "远端会话",
+      "titleWithDevice": "远端 · {{deviceName}}"
     }
   },
   "commandPalette": {
@@ -2362,6 +2367,23 @@
         "cert": "证书（PEM）"
       },
       "title": "TLS 信任"
+    },
+    "desktop": {
+      "kindBadge": "桌面端",
+      "thisDevice": "本机",
+      "running": "正在运行",
+      "notRunning": "这台电脑上的 Agentre 没有运行",
+      "lastSeen": "上次在线 {{time}}",
+      "sessionsToggleAria": "展开/收起这台桌面端的会话",
+      "loadingSessions": "正在加载会话…",
+      "noSessions": "这台桌面端上还没有会话",
+      "untitledSession": "未命名会话",
+      "session": {
+        "running": "运行中",
+        "waiting": "等待输入",
+        "interrupted": "已中断",
+        "idle": "空闲"
+      }
     }
   },
   "richLink": {
@@ -2478,7 +2500,12 @@
           "unpaired": "这台电脑未配对它",
           "offline": "离线",
           "projectPathMissing": "这台机器上没有配置这个项目的路径"
-        }
+        },
+        "scopeDevice": "本设备顺序",
+        "scopeDefault": "账号默认顺序",
+        "deviceScopeHint": "这里改的是这台电脑上派发会话用的顺序，只影响本设备、不会同步到其它设备。",
+        "restoreDefault": "恢复为账号默认顺序",
+        "deviceEmptyHint": "本设备顺序尚未加载。"
       },
       "basicInfo": "基本信息",
       "charCount": "{{count}} 字",
@@ -3183,5 +3210,33 @@
     "unread_one": "{{count}} 条未读",
     "unread_other": "{{count}} 条未读",
     "attentionAria": "{{summary}}，点击打开第一个待处理会话"
+  },
+  "peerPanel": {
+    "header": {
+      "remote": "在 {{device}} 上"
+    },
+    "status": {
+      "connecting": "连接中…",
+      "ready": "已接入",
+      "unavailable": "不可用"
+    },
+    "error": {
+      "title": "无法接入远端会话",
+      "description": "无法连接到 {{device}} 上的 Agentre。请确认那台电脑上的 Agentre 正在运行。"
+    },
+    "composerPlaceholder": "发送消息到远端会话…",
+    "sendFailed": "发送失败，请重试",
+    "alreadyHandled": "该决策已被处理，状态已刷新",
+    "decision": {
+      "askTitle": "远端会话在等待你的回答",
+      "answer": "回答",
+      "askAnswered": "该提问已被回答",
+      "askSkipped": "该提问已被跳过",
+      "permissionTitle": "{{tool}} 请求工具权限",
+      "allow": "允许",
+      "deny": "拒绝",
+      "permissionAllowed": "该工具权限已允许",
+      "permissionDenied": "该工具权限已拒绝"
+    }
   }
 }

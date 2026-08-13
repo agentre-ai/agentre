@@ -13,6 +13,9 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
 )
 
@@ -236,6 +239,51 @@ func TestInitIgnoresAGENTREDebugEnv(t *testing.T) {
 	}
 	if loggerCfg.Level != "info" {
 		t.Fatalf("logger level = %q, want info", loggerCfg.Level)
+	}
+}
+
+// TestClaimRelativeBackends_GivenOccupiedSortOrder_AtomicallyReplacesTheTarget
+// uses the bootstrapped SQLite schema because sqlmock cannot enforce the real
+// (agent_id, sort_order) uniqueness constraint. R13 requires a runtime claim
+// to replace the old target without changing this desktop's active count.
+func TestClaimRelativeBackends_GivenOccupiedSortOrder_AtomicallyReplacesTheTarget(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTRE_DATA_DIR", dataDir)
+	t.Setenv("AGENTRE_ENV", "test")
+
+	runtime, err := Init(context.Background())
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(runtime.Close)
+
+	gdb := db.Default()
+	original := &agent_backend_entity.AgentBackend{
+		Type: "claudecode", Name: "legacy relative", Status: 1,
+	}
+	if err := gdb.Create(original).Error; err != nil {
+		t.Fatalf("create relative backend: %v", err)
+	}
+	if err := gdb.Create(&agent_entity.AgentExecTarget{
+		AgentID: 1, AgentBackendID: original.ID, SortOrder: 0,
+	}).Error; err != nil {
+		t.Fatalf("create original target: %v", err)
+	}
+
+	claims, err := agent_backend_repo.AgentBackend().ClaimRelative(context.Background(), "sha256:desktop-a")
+	if err != nil {
+		t.Fatalf("ClaimRelative() error = %v", err)
+	}
+	if len(claims) != 1 {
+		t.Fatalf("claim count = %d, want 1", len(claims))
+	}
+
+	var targets []agent_entity.AgentExecTarget
+	if err := gdb.Where("agent_id = ?", 1).Order("sort_order ASC").Find(&targets).Error; err != nil {
+		t.Fatalf("list claimed targets: %v", err)
+	}
+	if len(targets) != 1 || targets[0].AgentBackendID != claims[0].ClaimedBackend.ID || targets[0].SortOrder != 0 {
+		t.Fatalf("claimed targets = %#v, want one replacement at sort order 0", targets)
 	}
 }
 

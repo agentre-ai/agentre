@@ -237,6 +237,45 @@ func TestRuntimeCapabilities(t *testing.T) {
 	var _ agentruntime.Aborter = runtime
 }
 
+// TestRuntimeRunsSelfFingerprintBackendLocally R13 认领后本机 OpenClaw backend 的
+// DeviceID 是本机指纹:本地 runtime 必须把它当本机档拨本机网关,而不是在入口就把它
+// 当远端档拦成 "remote secret enrollment is unavailable"。
+func TestRuntimeRunsSelfFingerprintBackendLocally(t *testing.T) {
+	paramsSeen := make(chan runtimeAgentParams, 1)
+	gatewayURL := runtimeGateway(t, func(conn *websocket.Conn, connection int) {
+		runtimeHandshake(t, conn, connection)
+		request := runtimeReadTurnRequest(t, conn)
+		var params runtimeAgentParams
+		require.NoError(t, json.Unmarshal(request.Params, &params))
+		paramsSeen <- params
+		runtimeWrite(t, conn, map[string]any{
+			"type": "res", "id": request.ID, "ok": true,
+			"payload": map[string]any{"runId": params.IdempotencyKey, "status": "accepted"},
+		})
+		runtimeWrite(t, conn, map[string]any{
+			"type": "event", "event": "agent", "seq": 2,
+			"payload": map[string]any{
+				"runId": params.IdempotencyKey, "sessionKey": params.SessionKey,
+				"seq": 1, "stream": "lifecycle", "ts": 1,
+				"data": map[string]any{"phase": "end"},
+			},
+		})
+	})
+
+	runtime := New(runtimeResolver(t, gatewayURL))
+	selfBackend := runtimeBackend()
+	selfBackend.DeviceID = "sha256:self"
+	events, result, err := runtime.Run(context.Background(), agentruntime.RunRequest{
+		Backend: selfBackend, SessionID: 44, UserText: "run locally",
+	})
+	require.NoError(t, err, "self-fingerprint OpenClaw backend must dial the local gateway, not be rejected as remote")
+	_ = collectRuntimeEvents(t, events)
+
+	params := <-paramsSeen
+	assert.Equal(t, "run locally", params.Message)
+	assert.Empty(t, result.Model)
+}
+
 func TestRuntimeOmitsModelOverrideWithoutAdminScope(t *testing.T) {
 	t.Run("Given a discovered backend model and non-admin operator scopes, when a turn starts, then the agent request inherits the Gateway model", func(t *testing.T) {
 		paramsSeen := make(chan runtimeAgentParams, 1)

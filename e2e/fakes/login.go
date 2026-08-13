@@ -17,6 +17,7 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
+	"github.com/agentre-ai/agentre/internal/bootstrap"
 	"github.com/agentre-ai/agentre/internal/model/entity/server_state_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/keychain"
 	"github.com/agentre-ai/agentre/internal/repository/server_state_repo"
@@ -134,8 +135,25 @@ func installE2ELoggedInAccount(ctx context.Context) {
 	server_svc.SetDefault(svc)
 	sync_svc.SetDefault(sync_svc.New(svc))
 
+	// 登录夹具换过 keychain 并重绑了 server_svc:boot 时 InitRemoteDevice 捕获的是当时
+	// (系统)keychain 与旧 server_svc。不重建的话,随后 seed 的本机 backend 会认领 boot
+	// 旧指纹,remote-agentred 装配后 self identity 与登录身份分叉,本地轮误走未配对
+	// agentred。生产登录复用既有 keychain,不会触发这个分叉；重建只属于 harness。
+	if err := rebindRemoteDeviceAfterLogin(ctx); err != nil {
+		logger.Ctx(ctx).Error("e2efakes.login: rebind remote device failed", zap.Error(err))
+		return
+	}
+
 	logger.Ctx(ctx).Info("e2efakes.login: seeded a logged-in desktop",
 		zap.String("serverURL", baseURL), zap.Int64("deviceId", deviceID))
+}
+
+// rebindRemoteDeviceAfterLogin 按**当前** keychain 与 server_svc 重建 remote_device_svc。
+// 它必须在 seed 本机 backend 之前执行(install.go 在 installE2ELoggedInAccount 之后才建
+// 本机档),并且是 remote agentred 播种不得再触碰 remote_device_svc 的前提 —— 播种时
+// ConnPool 已经持有登录后重绑的 server_svc,self identity 不会再变。
+func rebindRemoteDeviceAfterLogin(ctx context.Context) error {
+	return bootstrap.InitRemoteDevice(ctx)
 }
 
 // exchangeRefreshToken performs the same POST /v1/oauth/token/refresh the desktop

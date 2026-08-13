@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 
 import { AddDeviceDialog } from "./add-device-dialog";
+import { DesktopDeviceRow } from "./desktop-device-row";
 import { AgentredOnboarding } from "./agentred-onboarding";
 import { DeviceRow } from "./device-row";
 import { hostOf } from "./format";
@@ -77,6 +78,7 @@ export function RemoteDevicesPanel({
   const { t } = useTranslation();
   const {
     devices,
+    accountDevices,
     loadState,
     add,
     remove,
@@ -103,6 +105,10 @@ export function RemoteDevicesPanel({
   }, []);
 
   const onlineCount = devices.filter((d) => d.online).length;
+  // 账号设备清单里的桌面端（R19）：不参与 LAN 配对行合并，单独作为可展开行。
+  const desktopDevices = (accountDevices ?? []).filter(
+    (d) => d.Kind === "desktop",
+  );
   const reloadInBackground = () => {
     void reload().catch(() => {});
   };
@@ -233,6 +239,16 @@ export function RemoteDevicesPanel({
           </Button>
         </div>
       )}
+
+      {desktopDevices.length > 0 ? (
+        <div className="flex flex-col gap-2">
+          {/* 账号设备清单里 kind=desktop 的行（R19）：正在运行的桌面端可展开出会话
+              列表，未运行时按 R2 说明「Agentre 未运行」而不是「离线」。 */}
+          {desktopDevices.map((d) => (
+            <DesktopDeviceRow key={d.ID} device={d} now={now} />
+          ))}
+        </div>
+      ) : null}
 
       <Dialog
         open={removeFor !== null}

@@ -37,7 +37,14 @@ jobs:
           go-version-file: go.mod
       - name: Create frontend dist placeholder
         run: mkdir -p frontend/dist && touch frontend/dist/.gitkeep
-      - run: make test-backend
+      - name: Test backend
+        env:
+          # Bootstrap claims relative backends against the local device identity.
+          # Linux hosted runners do not provide a Secret Service keychain.
+          AGENTRE_KEYCHAIN_DIR: ${{ runner.temp }}/agentre-test-keychain
+        run: |
+          mkdir -m 700 "$AGENTRE_KEYCHAIN_DIR"
+          make test-backend
 
   frontend-lint:
     name: Frontend Lint
@@ -85,7 +92,13 @@ jobs:
       - name: Create frontend dist placeholder
         run: mkdir -p frontend/dist && touch frontend/dist/.gitkeep
       - name: Generate Wails bindings
-        run: wails generate module
+        env:
+          # The bindings helper executes main(), including bootstrap. Keep its
+          # device identity inside the runner instead of requiring Secret Service.
+          AGENTRE_KEYCHAIN_DIR: ${{ runner.temp }}/agentre-bindings-keychain
+        run: |
+          mkdir -m 700 "$AGENTRE_KEYCHAIN_DIR"
+          wails generate module
       - name: Install dependencies
         run: cd frontend && pnpm install --frozen-lockfile
       - name: Test

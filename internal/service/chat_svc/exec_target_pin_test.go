@@ -24,33 +24,40 @@ import (
 // 钉档记录已经不存在时才按当前执行目标恢复；无该值的老会话回落到按 R15 顺序挑并写回。
 
 type execTargetPinMocks struct {
-	agent      *mock_agent_repo.MockAgentRepo
-	execTarget *mock_agent_repo.MockAgentExecTargetRepo
-	backend    *mock_agent_backend_repo.MockAgentBackendRepo
-	session    *mock_chat_repo.MockSessionRepo
+	agent              *mock_agent_repo.MockAgentRepo
+	execTarget         *mock_agent_repo.MockAgentExecTargetRepo
+	execTargetOverride *mock_agent_repo.MockAgentExecTargetOverrideRepo
+	backend            *mock_agent_backend_repo.MockAgentBackendRepo
+	session            *mock_chat_repo.MockSessionRepo
 }
 
 func setupExecTargetPinTest(t *testing.T) (context.Context, *execTargetPinMocks, *chatSvc) {
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	m := &execTargetPinMocks{
-		agent:      mock_agent_repo.NewMockAgentRepo(ctrl),
-		execTarget: mock_agent_repo.NewMockAgentExecTargetRepo(ctrl),
-		backend:    mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl),
-		session:    mock_chat_repo.NewMockSessionRepo(ctrl),
+		agent:              mock_agent_repo.NewMockAgentRepo(ctrl),
+		execTarget:         mock_agent_repo.NewMockAgentExecTargetRepo(ctrl),
+		execTargetOverride: mock_agent_repo.NewMockAgentExecTargetOverrideRepo(ctrl),
+		backend:            mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl),
+		session:            mock_chat_repo.NewMockSessionRepo(ctrl),
 	}
 
 	prevAgent := agent_repo.Agent()
 	prevExecTarget := agent_repo.AgentExecTarget()
+	prevOverride := agent_repo.AgentExecTargetOverride()
 	prevBackend := agent_backend_repo.AgentBackend()
 	prevSession := chat_repo.Session()
 	agent_repo.RegisterAgent(m.agent)
 	agent_repo.RegisterAgentExecTarget(m.execTarget)
+	agent_repo.RegisterAgentExecTargetOverride(m.execTargetOverride)
 	agent_backend_repo.RegisterAgentBackend(m.backend)
 	chat_repo.RegisterSession(m.session)
+	// R14 顺序解析的宽松桩：这批用例不关心本端覆盖（默认无覆盖）。
+	m.execTargetOverride.EXPECT().Get(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	t.Cleanup(func() {
 		agent_repo.RegisterAgent(prevAgent)
 		agent_repo.RegisterAgentExecTarget(prevExecTarget)
+		agent_repo.RegisterAgentExecTargetOverride(prevOverride)
 		agent_backend_repo.RegisterAgentBackend(prevBackend)
 		chat_repo.RegisterSession(prevSession)
 	})

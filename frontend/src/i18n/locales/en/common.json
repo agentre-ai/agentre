@@ -870,7 +870,8 @@
         "unknownBackend": "Unknown backend type",
         "unpaired": "This computer isn't paired with it",
         "offline": "Offline",
-        "projectPathMissing": "This machine has no path configured for this project"
+        "projectPathMissing": "This machine has no path configured for this project",
+        "desktopNotRunning": "Agentre is not running on that computer"
       }
     },
     "launchCommand": {
@@ -1137,6 +1138,10 @@
       "hint": "Activate · click ✕ to close",
       "session": "sess-{{id}}",
       "worktree": "worktree {{branch}}"
+    },
+    "peer": {
+      "title": "Remote session",
+      "titleWithDevice": "Remote · {{deviceName}}"
     }
   },
   "commandPalette": {
@@ -2362,6 +2367,23 @@
         "cert": "Certificate (PEM)"
       },
       "title": "TLS Trust"
+    },
+    "desktop": {
+      "kindBadge": "Desktop",
+      "thisDevice": "This device",
+      "running": "Running",
+      "notRunning": "Agentre is not running on this computer",
+      "lastSeen": "Last seen {{time}}",
+      "sessionsToggleAria": "Expand/collapse this desktop's sessions",
+      "loadingSessions": "Loading sessions…",
+      "noSessions": "This desktop has no sessions yet",
+      "untitledSession": "Untitled session",
+      "session": {
+        "running": "Running",
+        "waiting": "Waiting for input",
+        "interrupted": "Interrupted",
+        "idle": "Idle"
+      }
     }
   },
   "richLink": {
@@ -2478,7 +2500,12 @@
           "unpaired": "This computer isn't paired with it",
           "offline": "Offline",
           "projectPathMissing": "This machine has no configured path for this project"
-        }
+        },
+        "scopeDevice": "This device",
+        "scopeDefault": "Account default",
+        "deviceScopeHint": "This is the order used when starting sessions on this computer only. Dragging changes it on this device alone and is not synced to other devices.",
+        "restoreDefault": "Restore account default order",
+        "deviceEmptyHint": "This device's order is not loaded yet."
       },
       "basicInfo": "Basic Info",
       "charCount": "{{count}} chars",
@@ -3183,5 +3210,33 @@
     "unread_one": "{{count}} unread",
     "unread_other": "{{count}} unread",
     "attentionAria": "{{summary}} — click to open the first session needing attention"
+  },
+  "peerPanel": {
+    "header": {
+      "remote": "on {{device}}"
+    },
+    "status": {
+      "connecting": "Connecting…",
+      "ready": "Attached",
+      "unavailable": "Unavailable"
+    },
+    "error": {
+      "title": "Cannot attach remote session",
+      "description": "Could not reach Agentre on {{device}}. Make sure Agentre is running on that computer."
+    },
+    "composerPlaceholder": "Send a message to the remote session…",
+    "sendFailed": "Send failed, please retry",
+    "alreadyHandled": "That decision was already handled; state refreshed",
+    "decision": {
+      "askTitle": "The remote session is waiting for your answer",
+      "answer": "Answer",
+      "askAnswered": "That question was already answered",
+      "askSkipped": "That question was skipped",
+      "permissionTitle": "{{tool}} is requesting tool permission",
+      "allow": "Allow",
+      "deny": "Deny",
+      "permissionAllowed": "Tool permission was allowed",
+      "permissionDenied": "Tool permission was denied"
+    }
   }
 }

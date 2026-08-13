@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/agentre-ai/agentre/internal/daemon/client"
+	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 	"github.com/agentre-ai/agentre/internal/model/entity/server_state_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/syncwire"
 )
@@ -26,10 +27,17 @@ type ServerSvc interface {
 	// AccessToken returns the current hub access token (empty when not logged in).
 	// Consumed by the relay dial to authenticate /v1/relay/client.
 	AccessToken() string
+	// NewInboundHubLink creates the desktop's one relay-registration transport.
+	// The peer package layers its session-level adapter on top of this link.
+	NewInboundHubLink(ctx context.Context) (*rpc.HubLink, error)
 	// DialDaemonRelay connects to the given daemon through the account relay,
 	// presenting peerFingerprint (the desktop's own device fingerprint) to
 	// auth.account — the same identity the LAN path presents (R5/R6).
 	DialDaemonRelay(ctx context.Context, daemonFingerprint, peerFingerprint string) (*client.Client, error)
+	// DialDesktopRelay connects to a desktop App through the account relay. A
+	// registered desktop with no live App maps to ErrDesktopAppNotRunning,
+	// distinct from the existing agentred offline result.
+	DialDesktopRelay(ctx context.Context, desktopFingerprint, peerFingerprint string) (*client.Client, error)
 	// SyncPush 上行一批本地改动；超窗口设备返回 syncwire.ErrResyncRequired（R6a）。
 	SyncPush(ctx context.Context, items []syncwire.PushItem) ([]syncwire.PushResult, error)
 	// SyncPull 按版本游标增量下行；cursor = 0 拉全量快照。
