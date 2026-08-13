@@ -1,6 +1,6 @@
 # 会话文件类型图标
 
-> Status: Approved
+> Status: Approved — Logo A visual revision
 > Owner: chat experience（前端）
 > Last updated: 2026-08-13
 
@@ -30,7 +30,7 @@
 | 2 | 建立一个统一的文件类型分类器和一个统一的文件图标组件，所有文件相关表面消费同一结果 | 现状已有两个粗粒度入口，继续局部扩展会漂移。拒绝：在文件树、Git、预览标签各写一张后缀表 |
 | 3 | 识别优先级为完整文件名、复合文件名/后缀、普通后缀、语言识别回退、通用文件回退，匹配不区分大小写 | `Dockerfile`、`pnpm-lock.yaml`、`.env.local`、`.d.ts`、`.tar.gz` 不能由最后一个后缀准确表达。拒绝：只取最后一个点后的后缀 |
 | 4 | 文件类型分类与 `previewKind` / `resolvePreviewRelPath` 严格分离 | 用户确认 PDF、ZIP、Office 等应有精确图标，但现有预览能力不扩展。拒绝：为了显示图标把这些格式加入预览 allowlist |
-| 5 | 采用 mockup B 的 17px 品牌启发色小方块，内部渲染 Tabler 图标；颜色来自少量语义化文件身份 token，未知类型回退中性灰 | 用户确认 mockup B；颜色和字形双重编码比通用描边图标更适合 240px 密集侧栏。拒绝：直接使用硬编码品牌十六进制；拒绝：只使用低彩字母方块 |
+| 5 | 采用 Logo A 的无容器彩色图标：17px 仅作为对齐槽位，内部直接渲染 16–17px Tabler Brand Logo 或文件类型 glyph，不显示背景、描边、圆角或文字缩写；颜色来自少量语义化文件身份 token，未知类型回退中性灰 | 用户在看到小方块实装截图后否定其背景与边框感，并批准真实 Logo A。直接着色的品牌/类型字形在密集侧栏中保留语言辨识度，同时减少视觉噪声。拒绝：彩色背景小方块；拒绝：用 `Go / TS / Py` 文本缩写冒充最终图标；拒绝：只使用同形状的通用文件线图标；拒绝：硬编码品牌十六进制 |
 | 6 | Git 状态字母与文件类型图标同时保留，二者不互相着色或替代 | `M/A/D/R` 表达状态，文件图标表达类型；两者含义独立。拒绝：用文件图标颜色承载 Git 状态 |
 | 7 | 首轮提供精选的高频格式集合，而非声明支持完整图标主题；未知格式稳定回退 | 常见仓库的扫描收益集中在语言、配置、文档、数据、媒体、归档与项目入口文件。拒绝：维护数百种冷门格式与专用图标 |
 
@@ -56,9 +56,13 @@
 
 ## 视觉与主题
 
-文件图标是固定 17px、圆角 4px 的小方块，位于现有文件名左侧图标列，不改变树缩进、行高、菜单槽位或文字截断优先级。内部 Iconify 图标缩放到可在该尺寸清晰辨认的范围，不显示额外文字标签。
+文件图标使用固定 17px 的透明对齐槽位，位于现有文件名左侧图标列，不改变树缩进、行高、菜单槽位或文字截断优先级。槽位本身没有背景、描边、圆角、阴影或内边距；内部 Iconify glyph 直接缩放到 16–17px，并通过 `currentColor` 着色。选中、hover 和聚焦背景只属于整行或既有标签，不为图标增加单独底板。
 
-颜色使用少量可复用的文件身份 token，而不是每个扩展名单独拥有一个颜色：蓝、黄、青、紫、橙、绿、红和中性。每个 token 同时定义浅色与深色值，并由设计系统文档记录。语言和格式映射到这些色调；颜色只帮助扫描，图标字形始终提供第二重非颜色线索。
+高辨识度语言和生态优先使用已安装 Tabler 集合中的品牌/语言 Logo，例如 Go、Python、TypeScript、JavaScript、React、Rust 与 npm；文档、配置、数据、媒体、归档和未知格式使用对应的文件类型 glyph。最终图标不得以 `Go / TS / Py / JS` 等文本缩写代替 Logo；没有专用品牌 glyph 的语言使用其已登记的通用代码图标与身份色安全回退。
+
+颜色使用少量可复用的文件身份 token，而不是每个扩展名单独拥有一个颜色：蓝、黄、青、紫、橙、绿、红和中性。每个 token 同时定义浅色与深色值，并由设计系统文档记录；组件通过 `text-file-<tone>` 将 token 应用于 glyph，不使用 `bg-file-<tone>`。颜色只帮助扫描，Logo 或文件类型 glyph 始终提供第二重非颜色线索。
+
+目录不是文件类型。折叠目录继续使用中性的 `Folder` 与 `ChevronRight`，展开目录使用中性的 `FolderOpen` 与 `ChevronDown`；目录图标不消费文件分类器，不继承语言身份色，也不因本轮视觉修改改变尺寸、缩进或展开交互。目录搜索结果若代表目录，同样继续显示中性文件夹图标。
 
 图标自身为装饰元素并隐藏于辅助技术。文件行、标签和标题继续由文件名提供可访问名称；Git 状态继续由现有隐藏文字标签提供语义。图标不会增加 tooltip、可聚焦点或点击目标。
 
@@ -96,16 +100,17 @@
 | Seam | What it verifies | Prior art |
 |---|---|---|
 | 文件类型分类纯函数 | 完整文件名优先级、复合后缀、普通扩展名、大小写、Windows/POSIX 路径、语言与常见格式映射、未知输入回退 | `frontend/src/lib/file-preview/monaco-language.test.ts` 的路径语言表驱动测试 |
-| 统一文件图标组件 | 分类结果选择正确静态图标和色调、固定尺寸、装饰性无障碍属性、未知类型中性回退 | `frontend/src/components/agentre/chat-context-sidebar/__tests__/row.test.tsx` 现有四档图标测试 |
+| 统一文件图标组件 | 分类结果选择正确静态 Logo/glyph 和 `text-file-*` 色调、17px 透明槽位、16–17px glyph、无背景/描边/圆角/文字缩写、装饰性无障碍属性、未知类型中性回退 | `frontend/src/components/agentre/file-type-icon.test.tsx` 现有分类与组件测试 |
 | 文件树/搜索/Git 行渲染 | 三种列表都消费统一组件；Git 状态字母与类型图标共存；不可预览的 PDF/ZIP 仍不可点击预览 | `row.test.tsx`、`files-panel.test.tsx`、`git-tab.test.tsx` 现有行交互与不可预览断言 |
 | 预览表面渲染 | 标签、溢出菜单与标题对同一路径显示一致类型身份，不改变标签交互 | `frontend/src/components/agentre/file-preview/preview-tab-strip.tsx` 与现有 file-preview 测试 |
 | 主题与依赖守卫 | 新色彩仅来自成对浅/深 token；静态单图标导入，不使用在线 Iconify 字符串加载或整 collection | `frontend/src/styles/globals.css` / `docs/design.md` 的 token 约定与源码复核 |
 
-自动化不适合判断 17px 图标在实际 WebView 的主观清晰度。实现完成后需要在真实浅色与深色主题、常规与窄侧栏下观察语言、PDF/Office、归档、媒体、未知文件和带 Git 状态的文件行；同时复核 mockup B 的密度和层级是否保持。
+自动化不适合判断 16–17px Logo/glyph 在实际 WebView 的主观清晰度。实现完成后需要在真实浅色与深色主题、常规与窄侧栏下观察 Go、Python、TypeScript、JavaScript、React、Rust 等代码 Logo，以及 PDF、归档、媒体、未知文件和带 Git 状态的文件行；同时确认图标没有独立背景/边框，目录仍显示中性的真实文件夹与 Chevron，并复核 Logo A 的密度和层级是否保持。
 
 ## Links
 
-- 视觉 mockup（本地产物，不在 Git）：`.dev-kit/artifacts/2026-08-13-session-file-icons/mockups/`
+- 已批准视觉 mockup（本地产物，不在 Git）：`.dev-kit/artifacts/2026-08-13-session-file-icons/mockups/logo-icon-a.png`
+- 可运行 mockup 源（本地产物，不在 Git）：`.dev-kit/artifacts/2026-08-13-session-file-icons/mockups/logo-icon-a.html`
 - 前置文件面板设计：[`2026-08-09-session-files-ux-refine.md`](./2026-08-09-session-files-ux-refine.md)
 - 设计系统：[`../design.md`](../design.md)
 - 前端约定：[`../frontend.md`](../frontend.md)
