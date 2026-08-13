@@ -139,11 +139,15 @@ function resolveLocalPath(
   if (!cwd) return { relPath: null, absolutePath: null };
   const relPath = toRelPath(path, cwd);
   if (ABS_POSIX.test(path) || ABS_WINDOWS.test(path)) {
-    // 绝对路径:落在 cwd 内(toRelPath 成功)才可点。
-    return { relPath, absolutePath: relPath !== null ? path : null };
+    // 绝对路径:落在 cwd 内(toRelPath 成功)且剥出的 relPath 不含越界 ".."
+    // 才可点;越界 ".." 与相对路径同一套判定,不读也不可点。
+    if (relPath !== null && isRelPathInside(relPath)) {
+      return { relPath, absolutePath: path };
+    }
+    return { relPath: null, absolutePath: null };
   }
   const slash = toSlash(path);
-  if (!isRelPathInside(slash)) return { relPath, absolutePath: null };
+  if (!isRelPathInside(slash)) return { relPath: null, absolutePath: null };
   const sep = cwd.includes("\\") ? "\\" : "/";
   const base = cwd.endsWith("/") || cwd.endsWith("\\") ? cwd : `${cwd}${sep}`;
   return { relPath, absolutePath: base + slash };

@@ -140,6 +140,32 @@ describe("classifyMarkdownImage", () => {
       basename: "secret.png",
     });
   });
+
+  it("classifies an absolute path with .. escaping cwd as fallback (not read, not clickable)", () => {
+    expect(
+      classifyMarkdownImage("/proj/../secret.png", {
+        cwd: "/proj",
+        sessionId: 7,
+      }),
+    ).toEqual({
+      kind: "fallback",
+      absolutePath: null,
+      basename: "secret.png",
+    });
+  });
+
+  it("classifies a file:// path with .. escaping cwd as fallback (not read, not clickable)", () => {
+    expect(
+      classifyMarkdownImage("file:///proj/../secret.png", {
+        cwd: "/proj",
+        sessionId: 7,
+      }),
+    ).toEqual({
+      kind: "fallback",
+      absolutePath: null,
+      basename: "secret.png",
+    });
+  });
 });
 
 describe("MarkdownImage", () => {
@@ -232,6 +258,21 @@ describe("MarkdownImage", () => {
   it("does not read a .. traversal that escapes cwd (inert chip)", () => {
     const { container } = render(
       <MarkdownImage src="../secret.png" cwd="/proj" sessionId={7} alt="A" />,
+    );
+    expect(container.textContent).toContain("secret.png");
+    expect(container.textContent).toContain("Cannot preview");
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(appMocks.WorkspaceFsReadFile).not.toHaveBeenCalled();
+  });
+
+  it("does not read an absolute path with .. escaping cwd (inert chip)", () => {
+    const { container } = render(
+      <MarkdownImage
+        src="/proj/../secret.png"
+        cwd="/proj"
+        sessionId={7}
+        alt="A"
+      />,
     );
     expect(container.textContent).toContain("secret.png");
     expect(container.textContent).toContain("Cannot preview");
