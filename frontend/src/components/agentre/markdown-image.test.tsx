@@ -131,12 +131,11 @@ describe("classifyMarkdownImage", () => {
     });
   });
 
-  it("keeps .. traversal out of the clickable absolutePath (backend rejects the read)", () => {
+  it("classifies .. traversal that escapes cwd as fallback (not read, not clickable)", () => {
     expect(
       classifyMarkdownImage("../secret.png", { cwd: "/proj", sessionId: 7 }),
     ).toEqual({
-      kind: "fetch",
-      relPath: "../secret.png",
+      kind: "fallback",
       absolutePath: null,
       basename: "secret.png",
     });
@@ -228,5 +227,15 @@ describe("MarkdownImage", () => {
     expect(container.textContent).toContain("Cannot preview");
     expect(screen.queryByRole("button")).toBeNull();
     expect(appMocks.OpenPath).not.toHaveBeenCalled();
+  });
+
+  it("does not read a .. traversal that escapes cwd (inert chip)", () => {
+    const { container } = render(
+      <MarkdownImage src="../secret.png" cwd="/proj" sessionId={7} alt="A" />,
+    );
+    expect(container.textContent).toContain("secret.png");
+    expect(container.textContent).toContain("Cannot preview");
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(appMocks.WorkspaceFsReadFile).not.toHaveBeenCalled();
   });
 });

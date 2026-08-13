@@ -44,7 +44,7 @@ function toSlash(path: string): string {
 }
 
 // 相对路径是否仍落在 cwd 内(不因 ".." 越界)。后端 workspacefs.ReadFile 是权威
-// 边界,这里只是为 chip 可点性做 UX 预判。
+// 边界,这里只做 UX 预判:越界的路径既不该读(fetch/fallback 分档),也不可点。
 function isRelPathInside(relPath: string): boolean {
   const parts = relPath.split("/");
   let depth = 0;
@@ -107,7 +107,11 @@ export function classifyMarkdownImage(
       return { kind: "plain", src: relative ? undefined : src };
     }
     const resolved = resolveLocalPath(localPath, opts.cwd);
-    if (resolved.relPath !== null && previewKind(localPath) === "image") {
+    if (
+      resolved.relPath !== null &&
+      resolved.absolutePath !== null &&
+      previewKind(localPath) === "image"
+    ) {
       return {
         kind: "fetch",
         relPath: resolved.relPath,
@@ -248,7 +252,7 @@ function FallbackChip({
     return (
       <button
         type="button"
-        className="inline-flex max-w-full items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-meta text-muted-foreground hover:bg-muted/60"
+        className="inline-flex max-w-full items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-meta text-muted-foreground outline-none transition-colors hover:bg-muted/60 focus-visible:ring-[3px] focus-visible:ring-ring/50"
         onClick={() => OpenPath(absolutePath).catch(() => {})}
       >
         {content}
