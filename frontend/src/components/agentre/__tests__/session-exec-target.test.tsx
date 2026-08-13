@@ -55,6 +55,8 @@ type BackendItem = {
   deviceId?: string;
   deviceName?: string;
   online?: boolean;
+  llmProviderKey?: string;
+  llmModelKey?: string;
 };
 
 function stubWails(
@@ -141,7 +143,13 @@ describe("NewSessionExecTargetLine", () => {
         { agentBackendId: 52, available: true },
       ],
       [
-        { id: 51, name: "Desktop Claude", deviceId: "sha256:desktop-a" },
+        {
+          id: 51,
+          name: "Desktop Claude",
+          deviceId: "sha256:desktop-a",
+          llmProviderKey: "desktop-provider",
+          llmModelKey: "desktop-model",
+        },
         { id: 52, name: "Local Claude", deviceId: "" },
       ],
       [{ Fingerprint: "sha256:desktop-a", Name: "Studio Mac" }],
@@ -154,6 +162,9 @@ describe("NewSessionExecTargetLine", () => {
         expect.objectContaining({
           deviceId: "sha256:desktop-a",
           deviceName: "Studio Mac",
+          backendType: "",
+          llmProviderKey: "desktop-provider",
+          llmModelKey: "desktop-model",
         }),
       ),
     );

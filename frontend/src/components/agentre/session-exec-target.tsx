@@ -34,6 +34,8 @@ export type ExecTargetCandidate = {
   online: boolean;
   backendType: string;
   backendName: string;
+  llmProviderKey: string;
+  llmModelKey: string;
   available: boolean;
   reason: string;
   hint: string;
@@ -97,6 +99,8 @@ export function useExecTargetCandidates(agentId: number, projectId: number) {
             online: b?.online ?? false,
             backendType: b?.type ?? "",
             backendName: b?.name ?? "",
+            llmProviderKey: b?.llmProviderKey ?? "",
+            llmModelKey: b?.llmModelKey ?? "",
             available: a.available,
             reason: a.reason,
             hint: a.hint,
@@ -218,6 +222,9 @@ export type NewSessionExecTargetLineProps = {
       kind: "local" | "desktop" | "daemon";
       deviceId: string;
       deviceName: string;
+      backendType: string;
+      llmProviderKey: string;
+      llmModelKey: string;
     } | null,
   ) => void;
 };
@@ -270,6 +277,9 @@ export function NewSessionExecTargetLine(props: NewSessionExecTargetLineProps) {
             kind: effective.kind,
             deviceId: effective.deviceId,
             deviceName: effective.deviceName,
+            backendType: effective.backendType,
+            llmProviderKey: effective.llmProviderKey,
+            llmModelKey: effective.llmModelKey,
           }
         : null,
     );

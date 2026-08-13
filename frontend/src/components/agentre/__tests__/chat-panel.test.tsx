@@ -99,6 +99,9 @@ const componentMocks = vi.hoisted(() => ({
     kind: "local" | "desktop" | "daemon";
     deviceId: string;
     deviceName: string;
+    backendType?: string;
+    llmProviderKey?: string;
+    llmModelKey?: string;
   },
   computeComposerContextUsage: vi.fn((..._args: unknown[]) => ({
     max: 0,
@@ -4982,6 +4985,58 @@ describe("ChatPanel · 新会话 tab 输入守卫（非可对话 Agent）", () =
 });
 
 describe("ChatPanel · 远端 ModelTarget Picker 门控（gap 1：ProviderPill 接收 daemon 目录/能力）", () => {
+  it("Given the effective new-session backend has a different binding from the Agent primary backend, When the Composer loads, Then follow-binding resolves from the effective backend", async () => {
+    resetStore();
+    mockSessionStore.session = null;
+    componentMocks.effectiveExecTarget = {
+      kind: "local",
+      deviceId: "",
+      deviceName: "Local",
+      backendType: "claudecode",
+      llmProviderKey: "target-provider",
+      llmModelKey: "",
+    };
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [
+        {
+          id: 11,
+          providerKey: "primary-provider",
+          name: "Primary Provider",
+          type: "anthropic",
+          enabled: true,
+          defaultModelKey: "",
+        },
+        {
+          id: 12,
+          providerKey: "target-provider",
+          name: "Target Provider",
+          type: "anthropic",
+          enabled: true,
+          defaultModelKey: "",
+        },
+      ],
+    });
+
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Eng",
+            agentBackendId: 1,
+            backendType: "claudecode",
+            llmProviderKey: "primary-provider",
+          } as never
+        }
+      />,
+    );
+
+    expect(await screen.findByTestId("provider-pill")).toHaveTextContent(
+      "Target Provider",
+    );
+  });
+
   it("Given a new chat overrides the Agent default to another remote target, When the Composer loads, Then model gating uses the effective target", async () => {
     resetStore();
     mockSessionStore.session = null;

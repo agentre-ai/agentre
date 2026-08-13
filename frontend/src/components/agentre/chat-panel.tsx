@@ -745,6 +745,9 @@ function ChatPanel({
     kind: "local" | "desktop" | "daemon";
     deviceId: string;
     deviceName: string;
+    backendType: string;
+    llmProviderKey: string;
+    llmModelKey: string;
   } | null>(null);
 
   const {
@@ -1192,9 +1195,10 @@ function ChatPanel({
   // 空会话态改选了执行目标时，以该档的 backend type 为准（overrideBackendType 由
   // NewSessionExecTargetLine 报上来），caps / pill 与 Send 都跟随实际后端。
   const newSessionBackendType =
-    execTargetOverride && overrideBackendType
+    effectiveTarget?.backendType ||
+    (execTargetOverride && overrideBackendType
       ? overrideBackendType
-      : (newSessionAgent?.backendType ?? "");
+      : (newSessionAgent?.backendType ?? ""));
   const activeBackendType = session?.backendType ?? newSessionBackendType;
 
   // Claude Code OAuth 配额 HUD:仅 claudecode backend 显示。device 维度优先 session
@@ -1400,8 +1404,11 @@ function ChatPanel({
     boundProviderKey:
       sessionId > 0
         ? session?.agentProviderKey
-        : newSessionAgent?.llmProviderKey,
-    boundModelKey: sessionId > 0 ? session?.agentModelKey : undefined,
+        : (effectiveTarget?.llmProviderKey ?? newSessionAgent?.llmProviderKey),
+    boundModelKey:
+      sessionId > 0
+        ? session?.agentModelKey
+        : (effectiveTarget?.llmModelKey ?? undefined),
     sessionId,
     persistedProviderKey: sessionId > 0 ? session?.providerKey : undefined,
     persistedModelKey: sessionId > 0 ? session?.modelKey : undefined,

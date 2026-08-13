@@ -1346,23 +1346,27 @@ function BackendEditor({
   const [remoteProviders, setRemoteProviders] = React.useState<
     ProviderSummary[]
   >([]);
-  React.useEffect(() => {
+  const remoteProviderRequestRef = React.useRef(0);
+  const refreshRemoteProviders = React.useCallback(async () => {
+    const request = ++remoteProviderRequestRef.current;
     if (state.kind === "closed" || remoteDeviceID <= 0) {
       setRemoteProviders([]);
       return;
     }
-    let mounted = true;
-    void RemoteDeviceListProviders(remoteDeviceID)
-      .then((rows) => {
-        if (mounted) setRemoteProviders((rows ?? []) as ProviderSummary[]);
-      })
-      .catch(() => {
-        if (mounted) setRemoteProviders([]);
-      });
-    return () => {
-      mounted = false;
-    };
+    try {
+      const rows = await RemoteDeviceListProviders(remoteDeviceID);
+      if (remoteProviderRequestRef.current === request) {
+        setRemoteProviders((rows ?? []) as ProviderSummary[]);
+      }
+    } catch {
+      if (remoteProviderRequestRef.current === request) {
+        setRemoteProviders([]);
+      }
+    }
   }, [state.kind, remoteDeviceID]);
+  React.useEffect(() => {
+    void refreshRemoteProviders();
+  }, [refreshRemoteProviders]);
 
   const remoteSupportsFixedModel = React.useMemo(() => {
     const dv = devices.find((d) => d.id === remoteDeviceID);
@@ -1443,29 +1447,107 @@ function BackendEditor({
     };
   }
 
-  async function missingRemoteProviderKeys(
+  type RemoteDraftInspection = {
+    missingProviderKeys: string[];
+    targetIssue: "fixedUnsupported" | "syncNeeded" | null;
+  };
+
+  async function inspectRemoteDraft(
     draft: BackendDraft,
-  ): Promise<string[]> {
+  ): Promise<RemoteDraftInspection> {
     const resolved = resolveExecutionDevice(
       draft.deviceId,
       localFingerprint,
       devices,
     );
-    if (!resolved.remote) return [];
-    const deviceID = resolved.pairedDeviceId;
-    if (deviceID <= 0) return referencedProviderKeys(draft);
+    if (!resolved.remote) {
+      return { missingProviderKeys: [], targetIssue: null };
+    }
 
-    const keys = referencedProviderKeys(draft);
-    if (keys.length === 0) return [];
+    const providerKeys = referencedProviderKeys(draft);
+    if (providerKeys.length === 0) {
+      return { missingProviderKeys: [], targetIssue: null };
+    }
+    const deviceID = resolved.pairedDeviceId;
+    if (deviceID <= 0) {
+      return { missingProviderKeys: providerKeys, targetIssue: null };
+    }
 
     const remoteRaw = (await RemoteDeviceListProviders(deviceID)) as
       | ProviderSummary[]
       | null
       | undefined;
-    const remoteKeys = new Set(
-      (remoteRaw ?? []).map((p) => p.key ?? "").filter(Boolean),
+    const remoteByKey = new Map(
+      (remoteRaw ?? [])
+        .filter((provider) => provider.key)
+        .map((provider) => [provider.key ?? "", provider] as const),
     );
-    return keys.filter((key) => !remoteKeys.has(key));
+    const missingProviderKeys = providerKeys.filter(
+      (key) => !remoteByKey.has(key),
+    );
+    if (missingProviderKeys.length > 0) {
+      return { missingProviderKeys, targetIssue: null };
+    }
+
+    const targets: RouteTarget[] = [];
+    if (draft.llmProviderKey) {
+      targets.push({
+        providerKey: draft.llmProviderKey,
+        modelKey: draft.llmModelKey,
+      });
+    }
+    if (draft.type === "claudecode") {
+      targets.push(...Object.values(draft.modelRoutes));
+    }
+    const supportsFixedModel =
+      devices.find((device) => device.id === deviceID)
+        ?.supportsLLMModelTarget ?? false;
+    for (const target of targets) {
+      const providerKey = target.providerKey.trim();
+      if (!providerKey) continue;
+      const remoteProvider = remoteByKey.get(providerKey);
+      if (!remoteProvider) continue;
+      const modelKey = target.modelKey.trim();
+      if (modelKey) {
+        if (!supportsFixedModel) {
+          return {
+            missingProviderKeys: [],
+            targetIssue: "fixedUnsupported",
+          };
+        }
+        const remoteModel = (remoteProvider.models ?? []).find(
+          (model) => model.key === modelKey && model.enabled,
+        );
+        if (!remoteModel) {
+          return { missingProviderKeys: [], targetIssue: "syncNeeded" };
+        }
+        continue;
+      }
+      const localDefaultModelKey = targetCatalog.find(
+        (provider) => provider.providerKey === providerKey,
+      )?.defaultModel?.modelKey;
+      if (localDefaultModelKey) {
+        const remoteDefaultModel = (remoteProvider.models ?? []).find(
+          (model) =>
+            model.key === remoteProvider.defaultModelKey && model.enabled,
+        );
+        if (
+          remoteProvider.defaultModelKey !== localDefaultModelKey ||
+          !remoteDefaultModel
+        ) {
+          return { missingProviderKeys: [], targetIssue: "syncNeeded" };
+        }
+      }
+    }
+    return { missingProviderKeys: [], targetIssue: null };
+  }
+
+  function remoteTargetIssueMessage(
+    issue: RemoteDraftInspection["targetIssue"],
+  ): string {
+    return issue === "fixedUnsupported"
+      ? t("modelTargetPicker.fixedModelUnsupported")
+      : t("modelTargetPicker.remoteSyncNeeded");
   }
 
   async function saveDraft(draft: BackendDraft) {
@@ -1656,13 +1738,21 @@ function BackendEditor({
     setSubmitting(true);
     try {
       const draft = buildDraft();
-      const missingKeys = await missingRemoteProviderKeys(draft);
-      if (missingKeys.length > 0) {
+      const inspection = await inspectRemoteDraft(draft);
+      if (inspection.missingProviderKeys.length > 0) {
+        const missingKeys = inspection.missingProviderKeys;
         setProviderSyncError(null);
         setPendingProviderSync({
           draft,
           providerKeys: missingKeys,
           saveAfterSync: true,
+        });
+        return;
+      }
+      if (inspection.targetIssue) {
+        setSaveResult({
+          kind: "err",
+          text: remoteTargetIssueMessage(inspection.targetIssue),
         });
         return;
       }
@@ -1692,10 +1782,26 @@ function BackendEditor({
       }
       const draft = pendingProviderSync.draft;
       if (saveAfterSync) {
+        const inspection = await inspectRemoteDraft(draft);
+        if (
+          inspection.missingProviderKeys.length > 0 ||
+          inspection.targetIssue
+        ) {
+          setProviderSyncError(
+            inspection.targetIssue
+              ? remoteTargetIssueMessage(inspection.targetIssue)
+              : t("modelTargetPicker.remoteSyncNeeded"),
+          );
+          return;
+        }
         await saveDraft(draft);
       } else {
         setPendingProviderSync(null);
-        await onSaved(t("agentBackends.flash.providerSynced"));
+        await refreshRemoteProviders();
+        setSaveResult({
+          kind: "ok",
+          text: t("agentBackends.flash.providerSynced"),
+        });
       }
     } catch (err) {
       setProviderSyncError(providerSyncMessageFromError(err));
@@ -1703,6 +1809,21 @@ function BackendEditor({
       setSyncingProvider(false);
       setSubmitting(false);
     }
+  }
+
+  function handlePickerProviderSync(provider: PickerProvider) {
+    setLlmProviderKey(provider.providerKey);
+    setLlmModelKey("");
+    setProviderSyncError(null);
+    setPendingProviderSync({
+      draft: {
+        ...buildDraft(),
+        llmProviderKey: provider.providerKey,
+        llmModelKey: "",
+      },
+      providerKeys: [provider.providerKey],
+      saveAfterSync: false,
+    });
   }
 
   function handleManualProviderSync() {
@@ -1943,6 +2064,7 @@ function BackendEditor({
               setLlmProviderKey(providerKey);
               setLlmModelKey(modelKey);
             }}
+            onSyncProvider={handlePickerProviderSync}
             invalid={mainTargetInvalid}
             piAgentModelMissing={piAgentModelMissing}
             editing={!!editing}
@@ -1954,15 +2076,7 @@ function BackendEditor({
             supportsFixedModel={
               remoteExecution ? remoteSupportsFixedModel : true
             }
-            remoteCatalog={
-              !remoteExecution
-                ? undefined
-                : remoteDeviceID <= 0
-                  ? []
-                  : remotePickerCatalog.length > 0
-                    ? remotePickerCatalog
-                    : undefined
-            }
+            remoteCatalog={remoteExecution ? remotePickerCatalog : undefined}
             routes={routes}
             onRoutesChange={setRoutes}
             customModel={defaultModel}
@@ -2417,6 +2531,7 @@ function ModelBindingSection({
   value,
   modelKey,
   onTargetChange,
+  onSyncProvider,
   invalid,
   piAgentModelMissing,
   editing,
@@ -2439,6 +2554,7 @@ function ModelBindingSection({
   value: string;
   modelKey: string;
   onTargetChange: (target: RouteTarget) => void;
+  onSyncProvider: (provider: PickerProvider) => void;
   invalid: boolean;
   piAgentModelMissing: boolean;
   editing: boolean;
@@ -2477,6 +2593,7 @@ function ModelBindingSection({
         value={value}
         modelKey={modelKey}
         onTargetChange={onTargetChange}
+        onSyncProvider={onSyncProvider}
         invalid={invalid}
         piAgentModelMissing={piAgentModelMissing}
         editing={editing}
@@ -2526,6 +2643,7 @@ function ModelTargetField({
   value,
   modelKey,
   onTargetChange,
+  onSyncProvider,
   invalid,
   piAgentModelMissing,
   editing,
@@ -2544,6 +2662,7 @@ function ModelTargetField({
   value: string;
   modelKey: string;
   onTargetChange: (t: { providerKey: string; modelKey: string }) => void;
+  onSyncProvider: (provider: PickerProvider) => void;
   invalid: boolean;
   piAgentModelMissing: boolean;
   editing: boolean;
@@ -2644,6 +2763,7 @@ function ModelTargetField({
               modelKey: target.modelKey,
             })
           }
+          onSyncProvider={onSyncProvider}
           catalog={catalog}
           loading={catalogLoading}
           error={catalogError}

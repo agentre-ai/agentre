@@ -37,6 +37,14 @@ import { AgentBackendsPanel } from "../agent-backends";
 
 type AnyFn = (...args: unknown[]) => unknown;
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 type AppMockShape = {
   ListAgentBackends: AnyFn;
   ListLLMProviders: AnyFn;
@@ -446,6 +454,122 @@ describe("AgentBackendsPanel", () => {
     ).toBeVisible();
   });
 
+  it("Given remote catalog requests overlap, When an old device responds last, Then it cannot replace the current device catalog", async () => {
+    const user = userEvent.setup();
+    const oldCatalog = deferred<unknown[]>();
+    installAppMock({
+      RemoteDeviceList: vi.fn(() =>
+        Promise.resolve([
+          {
+            id: 7,
+            name: "old-daemon",
+            daemonFingerprint: "sha256:old-daemon",
+            online: true,
+            supportsLLMModelTarget: true,
+          },
+          {
+            id: 8,
+            name: "current-daemon",
+            daemonFingerprint: "sha256:current-daemon",
+            online: true,
+            supportsLLMModelTarget: true,
+          },
+        ]),
+      ),
+      RemoteDeviceListProviders: vi.fn((...args: unknown[]) =>
+        Number(args[0]) === 7
+          ? oldCatalog.promise
+          : Promise.resolve([
+              {
+                key: "key-1",
+                name: "Anthropic",
+                type: "anthropic",
+                defaultModelKey: "mk-1",
+                models: [
+                  {
+                    key: "mk-1",
+                    modelId: "claude-sonnet-4-6",
+                    enabled: true,
+                  },
+                ],
+              },
+            ]),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+    await screen.findByText("默认助手");
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
+    );
+    await user.click(
+      within(dialog).getByRole("combobox", { name: "Runtime Device" }),
+    );
+    await user.click(await screen.findByRole("option", { name: /old-daemon/ }));
+    await user.click(
+      within(dialog).getByRole("combobox", { name: "Runtime Device" }),
+    );
+    await user.click(
+      await screen.findByRole("option", { name: /current-daemon/ }),
+    );
+    await waitFor(() =>
+      expect(appMocks.RemoteDeviceListProviders).toHaveBeenCalledWith(8),
+    );
+    oldCatalog.resolve([]);
+    await Promise.resolve();
+    await user.click(
+      within(dialog).getByRole("button", { name: "Model binding" }),
+    );
+
+    expect(
+      screen.queryByRole("button", {
+        name: "Sync Anthropic to this device",
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Given a paired remote daemon has no provider catalog and lacks fixed-model capability, When the binding picker opens, Then fixed models fail closed", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      RemoteDeviceList: vi.fn(() =>
+        Promise.resolve([
+          {
+            id: 7,
+            name: "legacy-daemon",
+            daemonFingerprint: "sha256:legacy-daemon",
+            online: true,
+            supportsLLMModelTarget: false,
+          },
+        ]),
+      ),
+      RemoteDeviceListProviders: vi.fn(() => Promise.resolve([])),
+    });
+    render(<AgentBackendsPanel />);
+    await screen.findByText("默认助手");
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
+    );
+    await user.click(
+      within(dialog).getByRole("combobox", { name: "Runtime Device" }),
+    );
+    await user.click(
+      await screen.findByRole("option", { name: /legacy-daemon/ }),
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: "Model binding" }),
+    );
+
+    const fixedOption = (
+      await screen.findAllByRole("option", {
+        name: /claude-sonnet-4-6/,
+      })
+    ).find((option) => option.getAttribute("data-kind") === "fixed");
+    expect(fixedOption).toHaveAttribute("aria-disabled", "true");
+  });
+
   it("Given an editor draft, When runtime and target change, Then the effective configuration summary updates live and explains whether saving is possible", async () => {
     const user = userEvent.setup();
     installAppMock({
@@ -456,6 +580,29 @@ describe("AgentBackendsPanel", () => {
             name: "linux-srv",
             daemonFingerprint: "sha256:linux-srv",
             online: true,
+            supportsLLMModelTarget: true,
+          },
+        ]),
+      ),
+      RemoteDeviceListProviders: vi.fn(() =>
+        Promise.resolve([
+          {
+            key: "key-1",
+            name: "Anthropic",
+            type: "anthropic",
+            defaultModelKey: "mk-1",
+            models: [
+              {
+                key: "mk-1",
+                modelId: "claude-sonnet-4-6",
+                enabled: true,
+              },
+              {
+                key: "mk-opus",
+                modelId: "claude-opus-4-1",
+                enabled: true,
+              },
+            ],
           },
         ]),
       ),
@@ -1141,6 +1288,7 @@ describe("AgentBackendsPanel", () => {
 
   it("保存远端 claudecode 且远端缺少 provider 时提示同步，确认后先同步再保存", async () => {
     const user = userEvent.setup();
+    let synced = false;
     const mocks = installAppMock({
       RemoteDeviceList: vi.fn(() =>
         Promise.resolve([
@@ -1149,10 +1297,35 @@ describe("AgentBackendsPanel", () => {
             name: "linux-srv",
             daemonFingerprint: "sha256:remote-daemon",
             online: true,
+            supportsLLMModelTarget: true,
           },
         ]),
       ),
-      RemoteDeviceListProviders: vi.fn(() => Promise.resolve([])),
+      RemoteDeviceListProviders: vi.fn(() =>
+        Promise.resolve(
+          synced
+            ? [
+                {
+                  key: "key-1",
+                  name: "Anthropic",
+                  type: "anthropic",
+                  defaultModelKey: "mk-1",
+                  models: [
+                    {
+                      key: "mk-1",
+                      modelId: "claude-sonnet-4-6",
+                      enabled: true,
+                    },
+                  ],
+                },
+              ]
+            : [],
+        ),
+      ),
+      RemoteDeviceSyncProvider: vi.fn(() => {
+        synced = true;
+        return Promise.resolve(undefined);
+      }),
     });
     render(<AgentBackendsPanel />);
 
@@ -1177,10 +1350,10 @@ describe("AgentBackendsPanel", () => {
       within(dialog).getByRole("button", { name: "Model binding" }),
     );
     await user.click(
-      screen.getByRole("option", { name: /Follow this provider's default/ }),
+      screen.getByRole("button", {
+        name: "Sync Anthropic to this device",
+      }),
     );
-
-    await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
     const syncDialog = await screen.findByRole("dialog", {
       name: /Sync Remote LLM Provider/,
@@ -1193,11 +1366,22 @@ describe("AgentBackendsPanel", () => {
     expect(mocks.CreateAgentBackend).not.toHaveBeenCalled();
 
     await user.click(
-      within(syncDialog).getByRole("button", { name: "Sync and Save" }),
+      within(syncDialog).getByRole("button", { name: "Sync to Remote" }),
     );
+    await waitFor(() =>
+      expect(mocks.RemoteDeviceSyncProvider).toHaveBeenCalledWith(7, "key-1"),
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: "Model binding" }),
+    );
+    await user.click(
+      await screen.findByRole("option", {
+        name: /Follow this provider's default/,
+      }),
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
-      expect(mocks.RemoteDeviceSyncProvider).toHaveBeenCalledWith(7, "key-1");
       expect(mocks.CreateAgentBackend).toHaveBeenCalledWith(
         expect.objectContaining({
           type: "claudecode",
@@ -1209,7 +1393,7 @@ describe("AgentBackendsPanel", () => {
     });
   });
 
-  it("选择远端 provider 后在编辑弹窗里显示同步入口，手动同步成功后提示并关闭弹窗", async () => {
+  it("选择远端 provider 后在编辑弹窗里显示同步入口，手动同步成功后刷新目录并保留草稿", async () => {
     const user = userEvent.setup();
     const mocks = installAppMock({
       RemoteDeviceList: vi.fn(() =>
@@ -1237,14 +1421,9 @@ describe("AgentBackendsPanel", () => {
       within(editorDialog).getByRole("button", { name: "Model binding" }),
     );
     await user.click(
-      screen.getByRole("option", { name: /Follow this provider's default/ }),
-    );
-
-    expect(
-      within(editorDialog).getByText("Remote Provider Sync"),
-    ).toBeInTheDocument();
-    await user.click(
-      within(editorDialog).getByRole("button", { name: "Sync to Remote" }),
+      screen.getByRole("button", {
+        name: "Sync Anthropic to this device",
+      }),
     );
 
     const syncDialog = await screen.findByRole("dialog", {
@@ -1258,7 +1437,7 @@ describe("AgentBackendsPanel", () => {
       expect(mocks.RemoteDeviceSyncProvider).toHaveBeenCalledWith(7, "key-1");
       expect(mocks.CreateAgentBackend).not.toHaveBeenCalled();
       expect(screen.getByText(/Remote provider synced/)).toBeInTheDocument();
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(editorDialog).toBeInTheDocument();
     });
   });
 
@@ -1293,10 +1472,9 @@ describe("AgentBackendsPanel", () => {
       within(editorDialog).getByRole("button", { name: "Model binding" }),
     );
     await user.click(
-      screen.getByRole("option", { name: /Follow this provider's default/ }),
-    );
-    await user.click(
-      within(editorDialog).getByRole("button", { name: "Sync to Remote" }),
+      screen.getByRole("button", {
+        name: "Sync Anthropic to this device",
+      }),
     );
 
     const syncDialog = await screen.findByRole("dialog", {
@@ -1352,10 +1530,9 @@ describe("AgentBackendsPanel", () => {
       within(editorDialog).getByRole("button", { name: "Model binding" }),
     );
     await user.click(
-      screen.getByRole("option", { name: /Follow this provider's default/ }),
-    );
-    await user.click(
-      within(editorDialog).getByRole("button", { name: "Sync to Remote" }),
+      screen.getByRole("button", {
+        name: "Sync Anthropic to this device",
+      }),
     );
 
     const syncDialog = await screen.findByRole("dialog", {
@@ -1427,7 +1604,19 @@ describe("AgentBackendsPanel", () => {
       ),
       RemoteDeviceListProviders: vi.fn(() =>
         Promise.resolve([
-          { key: "key-1", name: "Anthropic", type: "anthropic" },
+          {
+            key: "key-1",
+            name: "Anthropic",
+            type: "anthropic",
+            defaultModelKey: "mk-1",
+            models: [
+              {
+                key: "mk-1",
+                modelId: "claude-sonnet-4-6",
+                enabled: true,
+              },
+            ],
+          },
         ]),
       ),
     });
@@ -1457,6 +1646,142 @@ describe("AgentBackendsPanel", () => {
         }),
       );
     });
+  });
+
+  it("Given a remote provider-default key points to a disabled model, When Save is clicked, Then persistence fails closed", async () => {
+    const user = userEvent.setup();
+    const mocks = installAppMock({
+      ListAgentBackends: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 13,
+              type: "claudecode",
+              name: "disabled remote default",
+              deviceId: "sha256:remote-daemon",
+              deviceName: "Remote daemon",
+              llmProviderKey: "key-1",
+              llmModelKey: "",
+              cliPath: "claude",
+              modelRoutes: {},
+              envJson: "{}",
+              agentCount: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+      RemoteDeviceList: vi.fn(() =>
+        Promise.resolve([
+          {
+            id: 7,
+            name: "Remote daemon",
+            daemonFingerprint: "sha256:remote-daemon",
+            online: true,
+            supportsLLMModelTarget: true,
+          },
+        ]),
+      ),
+      RemoteDeviceListProviders: vi.fn(() =>
+        Promise.resolve([
+          {
+            key: "key-1",
+            name: "Anthropic",
+            type: "anthropic",
+            defaultModelKey: "mk-1",
+            models: [
+              {
+                key: "mk-1",
+                modelId: "claude-sonnet-4-6",
+                enabled: false,
+              },
+            ],
+          },
+        ]),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+
+    const row = (await screen.findByText("disabled remote default")).closest(
+      '[role="listitem"]',
+    ) as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /Edit/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(mocks.UpdateAgentBackend).not.toHaveBeenCalled(),
+    );
+    expect(dialog).toHaveTextContent(/sync to this device first/i);
+  });
+
+  it("Given an existing remote fixed-model binding targets a daemon without fixed-model capability, When Save is clicked, Then persistence fails closed", async () => {
+    const user = userEvent.setup();
+    const mocks = installAppMock({
+      ListAgentBackends: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 13,
+              type: "claudecode",
+              name: "legacy fixed",
+              deviceId: "sha256:legacy-daemon",
+              deviceName: "Legacy daemon",
+              llmProviderKey: "key-1",
+              llmModelKey: "mk-1",
+              cliPath: "claude",
+              modelRoutes: {},
+              envJson: "{}",
+              agentCount: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+      RemoteDeviceList: vi.fn(() =>
+        Promise.resolve([
+          {
+            id: 7,
+            name: "Legacy daemon",
+            daemonFingerprint: "sha256:legacy-daemon",
+            online: true,
+            supportsLLMModelTarget: false,
+          },
+        ]),
+      ),
+      RemoteDeviceListProviders: vi.fn(() =>
+        Promise.resolve([
+          {
+            key: "key-1",
+            name: "Anthropic",
+            type: "anthropic",
+            defaultModelKey: "mk-1",
+            models: [
+              {
+                key: "mk-1",
+                modelId: "claude-sonnet-4-6",
+                enabled: true,
+              },
+            ],
+          },
+        ]),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+
+    const row = (await screen.findByText("legacy fixed")).closest(
+      '[role="listitem"]',
+    ) as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /Edit/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(mocks.UpdateAgentBackend).not.toHaveBeenCalled(),
+    );
+    expect(dialog).toHaveTextContent(/does not support fixed models/i);
   });
 
   it("Given a saved account-desktop fingerprint without a paired agentred row, When it is edited, Then the named device remains visible and preserved", async () => {
