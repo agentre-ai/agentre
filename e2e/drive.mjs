@@ -30,8 +30,7 @@ function parseArgs(argv) {
   const flags = {};
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === "--flavor") flags.flavor = argv[++i];
-    else if (arg === "--scenario") flags.scenario = argv[++i];
+    if (arg === "--scenario") flags.scenario = argv[++i];
     else if (arg === "--nth") flags.nth = Number(argv[++i]);
     else if (arg === "--state") flags.state = argv[++i];
     else if (arg === "--timeout") flags.timeout = Number(argv[++i]);
@@ -99,7 +98,7 @@ function locate(page, spec, flags) {
 }
 
 async function attach(session) {
-  const target = resolveTarget(session.flavor);
+  const target = resolveTarget();
   // A dead app and a blank page look identical through CDP: the browser answers, the page is
   // empty, and a snapshot reports "0 elements" as if the UI were simply bare. Ask the bridge
   // first so the failure names itself.
@@ -107,9 +106,9 @@ async function attach(session) {
     await fetch(target.baseURL, { signal: AbortSignal.timeout(3000) });
   } catch {
     throw new Error(
-      `the ${session.flavor} app is not serving ${target.baseURL} any more.\n` +
-        `Check it: make verify-status FLAVOR=${session.flavor}, and \`node e2e/drive.mjs logs\` ` +
-        "for why it stopped (a `wails dev` app restarts on Go/TS edits and dies if its vite is killed).",
+      `the verification app is not serving ${target.baseURL} any more.\n` +
+        "Check it with `make verify-status`, and use `node e2e/drive.mjs logs` " +
+        "for why it stopped (a `wails dev` app restarts on Go/TS edits and dies if its Vite process is killed).",
     );
   }
   const { chromium } = await import("@playwright/test");
@@ -119,7 +118,7 @@ async function attach(session) {
   } catch (err) {
     throw new Error(
       `cannot reach the verification browser at ${session.cdpURL} — is it still up? ` +
-        `(make verify-status FLAVOR=${session.flavor})\n${err.message}`,
+        `(make verify-status)\n${err.message}`,
     );
   }
   const context = browser.contexts()[0];
@@ -136,9 +135,6 @@ const COMMANDS = {
     const path = rest[0] ?? "/";
     const url = assertSanctionedURL(target, new URL(path, target.baseURL).toString());
     await page.goto(url, { waitUntil: "domcontentloaded" });
-    // The frontend calls WindowShow() on mount — including from this browser, over the bridge —
-    // so every navigation pops the native window back up. Put it away again.
-    if (session.headless) await page.evaluate(() => window.runtime?.WindowHide?.()).catch(() => {});
     return `at ${page.url()}`;
   },
 
@@ -284,11 +280,11 @@ async function main() {
   if (!command || !COMMANDS[command]) {
     console.error(
       `usage: node drive.mjs <${Object.keys(COMMANDS).join("|")}> [args] ` +
-        "[--scenario <slug>] [--flavor fake|real] [--nth N] [--state visible|hidden] [--timeout ms] [--full]",
+        "[--scenario <slug>] [--nth N] [--state visible|hidden] [--timeout ms] [--full]",
     );
     return 2;
   }
-  const session = requireLiveSession(flags.flavor);
+  const session = requireLiveSession();
   const dirs = scenarioDirs(flags);
   const started = new Date();
   const printable = [command, ...rest].join(" ");

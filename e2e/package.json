@@ -6,10 +6,8 @@
   "description": "Isolated headless Agentre desktop end-to-end tests",
   "scripts": {
     "setup": "pnpm install && pnpm exec playwright install chromium",
-    "test": "node run-e2e.mjs",
-    "test:guards": "node --test lib/run-context.test.mjs lib/app-overlay.test.mjs",
-    "test:scratch": "node run-e2e.mjs -c playwright.scratch.config.ts",
-    "test:sync": "node run-e2e-sync.mjs",
+    "test": "pnpm run test:guards && node run-e2e.mjs",
+    "test:guards": "node --test lib/run-context.test.mjs lib/app-overlay.test.mjs lib/fake-sync-server.test.mjs lib/target.test.mjs lib/current-contract.test.mjs",
     "verify": "node verify.mjs",
     "drive": "node drive.mjs"
   },

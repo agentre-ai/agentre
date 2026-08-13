@@ -35,9 +35,8 @@ e2e/test-results/
 e2e/playwright-report/
 e2e/artifacts/
 e2e/.last-run.json
-# 一次性功能验证脚本不提交(约定见 e2e/README.md),仅保留 README
-e2e/scratch/*
-!e2e/scratch/README.md
+# Local driven-verification evidence is never committed.
+e2e/scratch/
 
 # Local dev
 /.env

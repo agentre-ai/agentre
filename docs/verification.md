@@ -1,90 +1,85 @@
 # Feature verification
 
-Confirming a change really works — or that a bug really reproduces — by driving the real running app, and what that run leaves behind. The harness itself is [`../e2e/README.md`](../e2e/README.md)'s; test design is [testing.md](testing.md)'s; log and SQLite investigation is [debugging.md](debugging.md)'s.
+Confirming a change works — or that a bug reproduces — by driving the formal running desktop, and defining what that run leaves behind. Harness mechanics are owned by [`../e2e/README.md`](../e2e/README.md); test design by [testing.md](testing.md); log and SQLite investigation by [debugging.md](debugging.md).
 
 ## When to skip this route
 
-Use targeted committed tests alone when they fully observe the changed logic — pure logic, parsers, reducers, `pkg/*` protocol decoding, docs, comments, types, and anything the committed suite already proves. Use this route when the behaviour depends on cross-process wiring that a unit test cannot cover: real Wails IPC, the real service → repository → SQLite chain, a real CLI subprocess or gateway round-trip. It does not replace TDD — a reproduction is the "confirm the bug exists" step of [AGENTS.md](../AGENTS.md)'s Fix Discipline and still owes the committed failing test.
+Use targeted committed tests when they fully observe the changed logic: pure logic, parsers, reducers, protocol decoding, docs, comments, types, and behavior already established by the committed suite. Use real verification when the claim depends on cross-process/platform wiring that an automated test cannot establish: formal Wails startup, a real Server or daemon, a real agent CLI subprocess, gateway integration, or a platform-specific window/lifecycle effect.
+
+This route does not replace TDD. A reproducible bug still owes the committed failing regression test required by [AGENTS.md](../AGENTS.md).
 
 ## The route
 
-**Start one app, drive it, record as you go.** You do not author a spec to look at something once.
+**Start one formal desktop, drive it, record as you go, then stop it.** Do not author a one-off spec.
 
 ```bash
-make verify-up                       # fake runtime: deterministic, no CLI subprocess, no auth
-make verify-up FLAVOR=real           # real claude-code / codex CLIs, no e2e build tag
-export AGENTRE_VERIFY_SCENARIO=<scenario>   # every drive call records into this scenario
+make verify-up
+export AGENTRE_VERIFY_SCENARIO=<scenario>
 
-node e2e/drive.mjs snapshot                       # what is on screen, and how to address it
+node e2e/drive.mjs snapshot
 node e2e/drive.mjs click "testid=nav-settings"
 node e2e/drive.mjs shot 01-settings
 node e2e/drive.mjs sql "select status, count(*) from chat_sessions group by status"
 node e2e/drive.mjs logs 40
 
-make verify-down                     # add VERIFY_FLAGS=--wipe to drop the isolated state too
+make verify-down                    # retain isolated state for investigation
+make verify-down VERIFY_FLAGS=--wipe
 ```
 
-1. Run the targeted tests and `cd frontend && pnpm exec tsc -b --noEmit`; run `make test-backend` only when the blast radius is not confirmed local or a gate requires it.
+Use `make verify-up VERIFY_FLAGS=--headed` when the attached Chromium itself must be visible. Chromium is otherwise headless. The formal native desktop window keeps product behavior; the verification launcher does not hide or otherwise alter it.
 
-```bash
-go test -race -run TestName "./internal/service/${domain}_svc/..."
-cd frontend && pnpm test -- path/to/file.test.tsx
-```
+1. Run the narrow committed tests and type checks first. Run broader backend/frontend gates when the blast radius or repository gate requires them.
+2. Create `e2e/scratch/<scenario>/report.md` from [references/verification-report-template.md](references/verification-report-template.md) **before** starting acceptance/reproduction evidence.
+3. Bring up the target. `make verify-up` launches the formal main with checkout-scoped `AGENTRE_DATA_DIR`, file keychain, browser directory, bridge/CDP ports, and gateway port override. Never hand-start the app against your own data directory.
+4. Configure only the real dependencies the claim requires. The verifier may explicitly configure a real `agentre-server`, `agentred`, Claude Code, Codex, or Pi CLI. If the real dependency is unavailable, record the check as failed or `not observed`; do not replace it with a fake.
+5. Drive one action per command. `drive.mjs` appends commands/outcomes to `logs/drive.log`, writes screenshots to `screenshots/`, and offers a read-only SQLite oracle independent of the app service layer.
+6. Capture deciding observations while the run is alive. Stop retains the isolated database and logs by default, but external state and transient process output may disappear.
+7. Fill the verdict table last, keeping failed and unreached checks visible. Then stop the launcher and account for retained/wiped state.
 
-2. Bring up the target. `make verify-up` owns the isolated data directory, keychain directory, gateway port and bridge port — a real dependency is reached through those overrides, and configuration it lacks is asked for, not arranged around. Never hand-start an app against your own data directory to verify something.
-3. Choose the cheapest form that observes the contract, and put everything it produces under gitignored `e2e/scratch/<scenario>/`:
+A quick private look may use the default `_unscoped` ledger and be deleted immediately. A spec acceptance, bug reproduction, or result reported to another person requires the scenario directory and report.
 
-   | To reach and observe the target | You author |
-   |---|---|
-   | an existing command or entry point suffices, and it neither depends on nor writes your own machine state | nothing — drive it yourself and read the oracle |
-   | it needs a specific launch, isolated state or real-target configuration, and the observation is one-off | nothing — `make verify-up` is that launch; drive it with `drive.mjs` |
-   | the sequence must be replayed, or timing/concurrency is the contract | a full asserting spec |
+## Choosing the observation
 
-   This project:
+| Change lands in | Reach it with | Independent oracle |
+|---|---|---|
+| `agrctl` or `agentred` | run the formal binary | full command, exit code, deciding stdout/stderr or read-only status query |
+| GUI or Wails IPC | formal desktop via `verify-up` + `drive.mjs` | read-only query against the isolated `agentre.db`, plus screenshots/action ledger |
+| real agent CLI behavior | formal desktop with that CLI actually installed/configured | redacted event-kind/timing/stop-reason lines plus SQLite/UI state |
+| real Server or daemon integration | formal desktop plus the explicitly configured real process | both ends' redacted logs/status and independent persisted-state reads |
+| migration | forward command against a database containing real existing rows | before/after query, row counts/edge values, rollback or restore evidence |
 
-   | Change lands in | Reach it with | You author | Oracle |
-   |---|---|---|---|
-   | CLI or daemon — `agrctl`, `agentred` | run the binary | nothing | full command, exit code, the deciding stdout/stderr lines |
-   | GUI or IPC | `make verify-up` + `node e2e/drive.mjs …` | nothing | `drive.mjs sql` against the isolated `agentre.db`, plus the screenshots and `logs/drive.log` the run wrote |
-   | real claude-code / codex behaviour | `make verify-up FLAVOR=real` + the same driver | nothing | the same, plus `drive.mjs logs` (enable Debug Logging in Settings → Version & Updates for raw frames) |
-   | replay, timing or concurrency as the contract | a scratch spec on the harness, reusing the running app (`AGENTRE_E2E_REUSE=1 make e2e-scratch TASK="scratch/<scenario>/"`) | a full spec | the `e2e-fake-reply: <prompt>` round-trip **plus** the DB oracle — e.g. `runningSessionCount()` polling to `0` |
-   | sync against a real server and a peer | `make e2e-sync` ([`../e2e/README.md`](../e2e/README.md#10-the-sync-suite-make-e2e-sync--a-real-server-and-a-simulated-peer)) | per that suite | that suite's assertions |
-   | a migration | the forward command against a DB holding real existing rows | nothing | the same query before and after, side by side; rollback command, or restore evidence plus the explicit no-down rationale |
+In every form, one observation comes from a path the driven surface does not share. A successful UI message alone cannot prove the database write happened; a client log alone cannot prove the peer persisted the request.
 
-   In every form one observation comes from a path the driven surface does not share — the DB read back independently of the app's own service layer. Asserting the UI updated is necessary but not sufficient; a failed write behind a cheerful UI is exactly what the oracle catches.
+## What the route guarantees and refuses
 
-4. Before running, create `report.md` from [references/verification-report-template.md](references/verification-report-template.md); update it as evidence arrives.
-5. Record how the target was driven, exit codes where the form produces them, deciding runtime observations, gaps and shortest user reproduction steps. `drive.mjs` already appends every action and its outcome to `e2e/scratch/<scenario>/logs/drive.log`, and writes screenshots into `screenshots/` — the report cites those, it does not restate them.
+The launcher and driver enforce these rules:
 
-A quick look you delete in a minute does not need a scenario directory; run without `AGENTRE_VERIFY_SCENARIO` and the ledger lands in `e2e/scratch/_unscoped/`. The directory and `report.md` are required when the run is acceptance against a spec, a bug reproduction, or anything whose result you report to someone.
+- **Formal entry only.** Verification launches the repository root desktop main, not the independent E2E app and not an E2E manifest/composition.
+- **Throwaway local state only.** [`../e2e/lib/target.mjs`](../e2e/lib/target.mjs) allow-lists one checkout-scoped data directory and rejects installed, development, arbitrary, and other-checkout roots.
+- **File keychain only for the run.** The launcher creates a private keychain directory before startup. An unsafe or missing configured directory makes bootstrap fail; it never falls back to the system keychain.
+- **Own origin only.** The driver accepts only the recorded loopback bridge and rejects the normal development bridge and external origins.
+- **Read-only DB oracle.** Only `SELECT`, `WITH`, `PRAGMA`, and `EXPLAIN` statements are accepted.
+- **No process adoption.** A process already holding the checkout's verification port without the recorded session is refused, not driven or killed.
+- **Worktree isolation.** Target paths, session file, and ports derive from the checkout path, so distinct worktrees do not share verification state.
+- **Real dependency honesty.** There is no fake mode or fallback. An unavailable external dependency means the corresponding criterion failed or was not observed.
+- **Scoped cleanup.** Stop acts on recorded process IDs. Wipe deletes only target directories that pass the isolation allow-list.
 
-For acceptance against a spec in `docs/specs/`, `<scenario>` is that spec's slug. Extract each acceptance criterion into one verdict row and evidence section. Verdict labels are `holds`, `does not hold`, `not observed`, and they live only in the Verdict table.
+## Safety, authorization, and privacy
 
-For bug reproduction, state whether the reproduction asserts expected behaviour (red until fixed) or current buggy behaviour (green until fixed), then turn it into the committed failing test Fix Discipline requires. Choosing a form that authors nothing does not remove that test.
+Never weaken an assertion, skip a failed step, or describe red as green. `holds` means the deciding runtime observation happened; `not observed` names exactly what prevented it.
 
-## What the route guarantees, and what it refuses
+Obtain authorization before destructive or externally visible effects: writing a real Server account, pairing/claiming a daemon, modifying remote projects, invoking paid agent APIs, or running a migration over real rows. State the blast radius and cleanup before execution.
 
-The launcher and the driver enforce this — they are not conventions you have to remember:
-
-- **Only a throwaway app is ever driven.** Each flavor has its own temp data directory; the installed app's root and your own `make dev` root are refused by name ([`../e2e/lib/target.mjs`](../e2e/lib/target.mjs) `assertIsolatedDataDir`).
-- **Only that app's own origin is ever driven.** `drive.mjs` refuses any other URL, including the other flavor's port and `make dev`'s 34115.
-- **The isolated keychain applies to both flavors.** `AGENTRE_KEYCHAIN_DIR` is not gated on the `e2e` build tag (`internal/bootstrap/keychain.go`), so a real-runtime run cannot write to your system keychain; an unusable directory fails startup rather than falling back.
-- **The oracle is read-only.** `drive.mjs sql` accepts only `SELECT` / `WITH` / `PRAGMA` / `EXPLAIN`: a verification run observes state, it does not manufacture it.
-- **Nothing takes over your screen.** The browser is headless and the app's native window is hidden right after boot (and again after each navigation, because the frontend re-shows it on mount). `make verify-up VERIFY_FLAGS=--headed` when you want to watch.
-- **Every checkout is its own island.** Ports, data dir, keychain dir and session file are derived from the checkout's absolute path, so a second worktree can verify at the same time and neither can touch the other's state. Within one checkout only one flavor at a time — `wails dev` compiles into that checkout's `build/bin`, and the second launch would overwrite the binary the first is running.
-
-Never weaken an assertion, skip a failed step or describe red as green. For background and runtime effects, use the specific redacted event-kind, timing or stop-reason lines that decide it; “no errors” is not evidence, and never attach complete frames. Obtain authorization before destructive or external side effects, and before substituting anything for a real dependency — `FLAVOR=fake` is a substitution, and a criterion reached through it names that in its verdict row along with what the fake does not establish.
-
-Redact before saving, and again before embedding: tokens, cookies, real credentials, and the contents of a real `~/Library/Application Support/agentre` DB.
+Redact before saving and again before embedding: tokens, cookies, device secrets, real credentials, personal paths when unnecessary, complete protocol frames, and contents of the real installed/development databases. Verification evidence must never contain sibling-repository configuration copied merely to make a run pass.
 
 ## Maintaining this route
 
-Harness facts are owned by [`../e2e/README.md`](../e2e/README.md). Follow [documentation.md](documentation.md) after path or harness changes. What this route still owns:
+After changing the launcher, driver, paths, or docs, follow [documentation.md](documentation.md) and run:
 
 ```bash
-git grep --cached -n 'e2e/scratch' -- .gitignore                     # evidence stays local
-git grep --cached -n -A2 '^verify-up:' -- Makefile                   # the launch command still exists
-git grep --cached -n 'assertIsolatedDataDir' -- e2e/lib/target.mjs   # the isolation guard still exists
-cd e2e && pnpm run test:guards                                       # and still holds
+git grep --cached -n 'e2e/scratch/' -- .gitignore
+git grep --cached -n -A2 '^verify-up:' -- Makefile
+git grep --cached -n 'assertIsolatedDataDir' -- e2e/lib/target.mjs
+cd e2e && pnpm run test:guards
 git ls-files --cached --error-unmatch e2e/drive.mjs e2e/verify.mjs docs/references/verification-report-template.md
 ```

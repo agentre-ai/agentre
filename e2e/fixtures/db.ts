@@ -96,22 +96,3 @@ export function remoteSessionByPrompt(prompt: string): RemoteSession | undefined
     prompt,
   )[0];
 }
-
-// Legacy helpers stay until task 5 removes the old committed harness paths.
-export function fakeAssistantMessageCount(): number {
-  return queryCount(
-    "SELECT COUNT(*) AS n FROM chat_messages WHERE role = 'assistant' AND blocks_json LIKE '%e2e-fake-reply:%'",
-  );
-}
-
-export function subagentSessionCount(): number {
-  return queryCount("SELECT COUNT(*) AS n FROM chat_sessions WHERE purpose = 'subagent_call'");
-}
-
-export function departmentCountByName(name: string): number {
-  return queryCount("SELECT COUNT(*) AS n FROM departments WHERE name = ?", name);
-}
-
-export function agentIdByName(name: string): number | null {
-  return query<{ id: number }>("SELECT id FROM agents WHERE name = ?", name)[0]?.id ?? null;
-}
