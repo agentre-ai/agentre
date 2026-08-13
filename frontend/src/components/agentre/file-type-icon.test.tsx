@@ -107,6 +107,30 @@ describe("classifyFileType", () => {
   });
 
   it.each([
+    ["foo.rb", "ruby"],
+    ["foo.lua", "lua"],
+    ["foo.r", "r"],
+    ["foo.pl", "perl"],
+    ["foo.psd1", "powershell"],
+    ["foo.psm1", "powershell"],
+    ["foo.dart", "dart"],
+    ["foo.scala", "scala"],
+    ["foo.sc", "scala"],
+    ["foo.clj", "clojure"],
+    ["foo.cljs", "clojure"],
+    ["foo.cljc", "clojure"],
+    ["foo.groovy", "groovy"],
+    ["foo.gradle", "groovy"],
+  ])("falls back to the Monaco language identity for %s → %s", (path, id) => {
+    expect(classifyFileType(path).id).toBe(id);
+  });
+
+  it("applies the Monaco fallback case-insensitively on Windows paths", () => {
+    expect(classifyFileType("C:\\src\\Foo.RB").id).toBe("ruby");
+    expect(classifyFileType("dir\\Sub\\Main.Dart").id).toBe("dart");
+  });
+
+  it.each([
     "",
     "/",
     "\\",

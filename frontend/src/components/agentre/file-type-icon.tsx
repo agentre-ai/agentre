@@ -45,6 +45,7 @@ import iconConfig from "@iconify-icons/tabler/settings";
 import iconTerminal from "@iconify-icons/tabler/terminal";
 import iconVideo from "@iconify-icons/tabler/video";
 
+import { monacoLanguageForPath } from "@/lib/file-preview/monaco-language";
 import { cn } from "@/lib/utils";
 
 /** 文件身份色调——语义色 token（`file-<tone>`），与代理调色板/状态色无关。 */
@@ -67,15 +68,13 @@ export interface FileTypeMeta {
   tone: FileTypeTone;
 }
 
-type FileTypeId = string;
-
 interface FileTypeEntry {
   tone: FileTypeTone;
   icon: IconifyIcon;
 }
 
 /** 身份目录：`id` → 色调 + 静态导入的 Tabler 图标数据。 */
-const CATALOG: Record<FileTypeId, FileTypeEntry> = {
+const CATALOG_ENTRIES = {
   // 编程语言 / Web
   go: { tone: "cyan", icon: iconGo },
   python: { tone: "yellow", icon: iconPython },
@@ -135,9 +134,25 @@ const CATALOG: Record<FileTypeId, FileTypeEntry> = {
   cert: { tone: "yellow", icon: iconCert },
   lock: { tone: "neutral", icon: iconLock },
 
+  // 语言识别回退（Monaco 语言表高频语言，无专用 Tabler 品牌字形）
+  lua: { tone: "blue", icon: iconCode },
+  r: { tone: "blue", icon: iconCode },
+  perl: { tone: "blue", icon: iconCode },
+  powershell: { tone: "blue", icon: iconCode },
+  dart: { tone: "cyan", icon: iconCode },
+  scala: { tone: "red", icon: iconCode },
+  clojure: { tone: "green", icon: iconCode },
+  groovy: { tone: "yellow", icon: iconCode },
+
   // 回退
   unknown: { tone: "neutral", icon: iconUnknown },
-};
+} as const satisfies Record<string, FileTypeEntry>;
+
+/** 身份 id 只能是目录中已注册的键，防止 `CATALOG[id]` 指向未定义条目。 */
+type FileTypeId = keyof typeof CATALOG_ENTRIES;
+
+/** 运行时按 `id` 查找的目录（`string` 索引便于 `FileTypeMeta.id` 直接取值）。 */
+const CATALOG: Record<string, FileTypeEntry> = CATALOG_ENTRIES;
 
 /** 完整或特定文件名（basename 小写），优先于后缀匹配。 */
 const EXACT_FILENAME: Record<string, FileTypeId> = {
@@ -285,6 +300,19 @@ const EXTENSION: Record<string, FileTypeId> = {
   lock: "lock",
 };
 
+/** Monaco 语言 id（语言识别回退层）→ 身份；只覆盖 EXTENSION 未登记的扩展名。 */
+const LANGUAGE_ID: Record<string, FileTypeId> = {
+  ruby: "ruby",
+  lua: "lua",
+  r: "r",
+  perl: "perl",
+  powershell: "powershell",
+  dart: "dart",
+  scala: "scala",
+  clojure: "clojure",
+  groovy: "groovy",
+};
+
 /** basename 同时认 POSIX `/` 与 Windows `\` 分隔符。 */
 function basenameOf(path: string): string {
   const parts = path.split(/[\\/]/);
@@ -292,7 +320,7 @@ function basenameOf(path: string): string {
 }
 
 /**
- * 匹配优先级：完整文件名 → 复合文件名/后缀 → 普通扩展名 → 未知回退。
+ * 匹配优先级：完整文件名 → 复合文件名/后缀 → 普通扩展名 → 语言识别回退 → 未知回退。
  * 全程不区分大小写；不读取文件内容、不访问文件系统。
  */
 function identify(path: string): FileTypeId {
@@ -315,6 +343,11 @@ function identify(path: string): FileTypeId {
     const id = EXTENSION[basename.slice(dot + 1)];
     if (id) return id;
   }
+  // 语言识别回退：扩展名不在本目录时，复用 Monaco 的语言映射兜底（如 rb/lua/r/
+  // pl/dart/scala/clojure/groovy 等），再经语言 id → 身份的小映射归一。
+  const language = monacoLanguageForPath(basename);
+  const fallback = LANGUAGE_ID[language];
+  if (fallback) return fallback;
   return "unknown";
 }
 
