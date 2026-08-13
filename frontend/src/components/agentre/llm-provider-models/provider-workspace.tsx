@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -41,6 +42,7 @@ import {
   endpointFor,
   formatTokens,
   providerTypeMeta,
+  totalReferences,
 } from "./index";
 
 export type WorkspaceHandlers = {
@@ -80,6 +82,7 @@ export function ProviderWorkspace({
   testingDefault,
   testingModelId,
   providerRefCounts,
+  modelRefCounts,
 }: {
   provider: Provider;
   models: Model[];
@@ -88,6 +91,7 @@ export function ProviderWorkspace({
   testingDefault: boolean;
   testingModelId: number | null;
   providerRefCounts: ReferenceCounts | null;
+  modelRefCounts: Map<string, ReferenceCounts>;
 } & WorkspaceHandlers) {
   const { t } = useTranslation();
   const [search, setSearch] = React.useState("");
@@ -405,8 +409,14 @@ export function ProviderWorkspace({
           >
             <TableHeader>
               <TableRow className="bg-secondary hover:bg-secondary">
+                <TableHead className="w-[40px] px-4">
+                  {/* 批量选择行为属于任务 3，此处仅占位列 */}
+                  <Checkbox
+                    aria-label={t("llmProviders.modelsTable.selectAll")}
+                  />
+                </TableHead>
                 <TableHead className="px-4 font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                  {t("llmProviders.modelsTable.modelId")}
+                  {t("llmProviders.modelsTable.model")}
                 </TableHead>
                 <TableHead className="w-[88px] @max-[640px]:hidden font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                   {t("llmProviders.modelsTable.context")}
@@ -414,10 +424,16 @@ export function ProviderWorkspace({
                 <TableHead className="w-[88px] @max-[640px]:hidden font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                   {t("llmProviders.modelsTable.maxOutput")}
                 </TableHead>
-                <TableHead className="w-[80px] font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                <TableHead className="w-[64px] font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  {t("llmProviders.modelsTable.references")}
+                </TableHead>
+                <TableHead className="w-[64px] font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                   {t("llmProviders.modelsTable.default")}
                 </TableHead>
-                <TableHead className="w-[60px]" />
+                <TableHead className="w-[56px] font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  {t("llmProviders.modelsTable.enableColumn")}
+                </TableHead>
+                <TableHead className="w-[88px]" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -425,11 +441,29 @@ export function ProviderWorkspace({
                 const isDefault = model.modelKey === provider.defaultModelKey;
                 const canDisable = !isDefault;
                 const canSetDefault = model.enabled && !isDefault;
+                const refCount = totalReferences(
+                  modelRefCounts.get(model.modelKey),
+                );
+                const deleteBlocked = isDefault || refCount > 0;
+                const deleteBlockedReason = isDefault
+                  ? t("llmProviders.modelsTable.deleteBlockedDefault")
+                  : refCount > 0
+                    ? t("llmProviders.modelsTable.deleteBlockedReferenced", {
+                        count: refCount,
+                      })
+                    : undefined;
                 return (
                   <TableRow
                     key={model.id}
                     className="align-top hover:bg-accent/45"
                   >
+                    <TableCell className="px-4 py-2.5">
+                      <Checkbox
+                        aria-label={t("llmProviders.modelsTable.selectModel", {
+                          model: model.modelId,
+                        })}
+                      />
+                    </TableCell>
                     <TableCell className="px-4 py-2.5">
                       <div className="flex min-w-0 items-start gap-2">
                         <LlmModelLogo
@@ -441,8 +475,8 @@ export function ProviderWorkspace({
                         />
                         <div className="flex min-w-0 flex-col gap-0.5">
                           <span className="flex min-w-0 items-center gap-1.5">
-                            <span className="truncate font-mono text-xs">
-                              {model.modelId}
+                            <span className="truncate text-xs">
+                              {model.name || model.modelId}
                             </span>
                             {isDefault ? (
                               <span className="shrink-0 rounded-sm bg-primary-soft px-1.5 py-0.5 text-2xs font-medium text-primary-text">
@@ -450,17 +484,8 @@ export function ProviderWorkspace({
                               </span>
                             ) : null}
                           </span>
-                          <span className="flex items-center gap-1.5 text-2xs text-muted-foreground">
-                            {model.modelKey}
-                            {model.enabled ? (
-                              <span className="text-status-running">
-                                {t("llmProviders.modelsTable.enabled")}
-                              </span>
-                            ) : (
-                              <span className="text-status-waiting">
-                                {t("llmProviders.modelsTable.disabled")}
-                              </span>
-                            )}
+                          <span className="truncate font-mono text-2xs text-muted-foreground">
+                            {model.modelId}
                           </span>
                         </div>
                       </div>
@@ -470,6 +495,9 @@ export function ProviderWorkspace({
                     </TableCell>
                     <TableCell className="py-2.5 @max-[640px]:hidden font-mono text-2xs text-muted-foreground">
                       {formatTokens(model.maxOutput)}
+                    </TableCell>
+                    <TableCell className="py-2.5 font-mono text-2xs text-muted-foreground">
+                      {refCount > 0 ? refCount : "—"}
                     </TableCell>
                     <TableCell className="py-2.5">
                       <RadioGroup
@@ -495,6 +523,24 @@ export function ProviderWorkspace({
                           }
                         />
                       </RadioGroup>
+                    </TableCell>
+                    <TableCell className="py-2.5">
+                      <Switch
+                        checked={model.enabled}
+                        disabled={!canDisable}
+                        onCheckedChange={() => onToggleModelEnabled(model)}
+                        size="sm"
+                        title={
+                          canDisable
+                            ? undefined
+                            : t(
+                                "llmProviders.modelsTable.disableBlockedDefault",
+                              )
+                        }
+                        aria-label={t("llmProviders.modelsTable.enableNamed", {
+                          model: model.modelId,
+                        })}
+                      />
                     </TableCell>
                     <TableCell className="px-4 py-2.5">
                       <div className="flex justify-end gap-1">
@@ -542,52 +588,46 @@ export function ProviderWorkspace({
                         >
                           <Pencil data-icon="only" aria-hidden="true" />
                         </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-xs"
-                          className="size-[26px] text-status-error"
-                          aria-label={t(
-                            "llmProviders.modelsTable.deleteModelNamed",
-                            {
-                              model: model.modelId,
-                            },
-                          )}
-                          title={
-                            isDefault
-                              ? t(
-                                  "llmProviders.modelsTable.deleteBlockedDefault",
-                                )
-                              : t("llmProviders.modelsTable.deleteTitle")
-                          }
-                          onClick={() => onDeleteModel(model)}
-                          disabled={isDefault}
-                        >
-                          <Trash2 data-icon="only" aria-hidden="true" />
-                        </Button>
-                        <label
-                          className="flex items-center"
-                          title={
-                            canDisable
-                              ? undefined
-                              : t(
-                                  "llmProviders.modelsTable.disableBlockedDefault",
-                                )
-                          }
-                        >
-                          <Switch
-                            checked={model.enabled}
-                            disabled={!canDisable}
-                            onCheckedChange={() => onToggleModelEnabled(model)}
-                            size="sm"
-                            aria-label={t(
-                              "llmProviders.modelsTable.enableNamed",
-                              {
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-xs"
+                              className="size-[26px] text-muted-foreground"
+                              aria-label={t(
+                                "llmProviders.modelsTable.moreModelNamed",
+                                {
+                                  model: model.modelId,
+                                },
+                              )}
+                              title={t(
+                                "llmProviders.modelsTable.moreModelNamed",
+                                {
+                                  model: model.modelId,
+                                },
+                              )}
+                            >
+                              <MoreHorizontal
+                                data-icon="only"
+                                aria-hidden="true"
+                              />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              variant="destructive"
+                              disabled={deleteBlocked}
+                              onSelect={() => onDeleteModel(model)}
+                              title={deleteBlockedReason}
+                            >
+                              <Trash2 className="size-3.5" aria-hidden="true" />
+                              {t("llmProviders.modelsTable.deleteModelNamed", {
                                 model: model.modelId,
-                              },
-                            )}
-                          />
-                        </label>
+                              })}
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
                     </TableCell>
                   </TableRow>

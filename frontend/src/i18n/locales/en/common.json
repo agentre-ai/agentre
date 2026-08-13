@@ -1752,11 +1752,11 @@
       "draftFailed": "Call failed",
       "draftSuccess": "Call succeeded. Sent hi and received a model response.",
       "failedTitle": "Test Failed",
-      "providerFailed": "\"{{name}}\" connection failed: {{message}}",
-      "providerSuccess": "\"{{name}}\" call succeeded. Sent hi and received a model response.",
+      "providerFailed": "\"{{name}}\" connection failed ({{duration}}): {{message}}",
+      "providerSuccess": "\"{{name}}\" call succeeded ({{duration}}). Sent hi and received a model response.",
       "successTitle": "Test Passed",
-      "rowSuccess": "Model {{model}} call succeeded. Sent hi and received a model response.",
-      "rowFailed": "Model {{model}} connection failed: {{message}}"
+      "rowSuccess": "Model {{model}} call succeeded ({{duration}}). Sent hi and received a model response.",
+      "rowFailed": "Model {{model}} connection failed ({{duration}}): {{message}}"
     },
     "toolbar": {
       "add": "New Provider",
@@ -1842,7 +1842,14 @@
       "deleteBlockedDefault": "Default model: set another default before deleting",
       "deleteTitle": "Delete (requires confirmation)",
       "disableBlockedDefault": "Default model: set another default before disabling",
-      "enableNamed": "Enable {{model}}"
+      "enableNamed": "Enable {{model}}",
+      "selectAll": "Select all models",
+      "selectModel": "Select {{model}}",
+      "model": "Model",
+      "references": "References",
+      "enableColumn": "Enable",
+      "moreModelNamed": "More actions for {{model}}",
+      "deleteBlockedReferenced": "Referenced by {{count}}, cannot be deleted"
     },
     "delete": {
       "providerTitle": "Delete provider · {{name}}",

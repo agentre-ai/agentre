@@ -1167,7 +1167,9 @@ describe("App", () => {
     expect(
       within(workspace).getAllByText("claude-sonnet-4-6").length,
     ).toBeGreaterThanOrEqual(1);
-    expect(within(workspace).getByText("mk-sonnet")).toBeInTheDocument();
+    // 模型行主行显示 display name，modelKey 已移入编辑弹窗不再出现在行内
+    expect(within(workspace).getByText("Sonnet")).toBeInTheDocument();
+    expect(within(workspace).queryByText("mk-sonnet")).not.toBeInTheDocument();
 
     expect(
       screen.getByRole("button", { name: "New Provider" }),
@@ -1202,9 +1204,7 @@ describe("App", () => {
       expect.objectContaining({ id: 1, modelKey: "" }),
     );
     expect(
-      await screen.findByText(
-        '"Production" call succeeded. Sent hi and received a model response.',
-      ),
+      await screen.findByText(/"Production" call succeeded \(\d+ms\)/),
     ).toBeInTheDocument();
   });
 

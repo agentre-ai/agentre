@@ -1752,11 +1752,11 @@
       "draftFailed": "调用失败",
       "draftSuccess": "调用成功，已发送 hi 并收到模型响应",
       "failedTitle": "测试失败",
-      "providerFailed": "\"{{name}}\" 连接失败：{{message}}",
-      "providerSuccess": "\"{{name}}\" 调用成功，已发送 hi 并收到模型响应",
+      "providerFailed": "\"{{name}}\" 连接失败（{{duration}}）：{{message}}",
+      "providerSuccess": "\"{{name}}\" 调用成功（{{duration}}），已发送 hi 并收到模型响应",
       "successTitle": "测试成功",
-      "rowSuccess": "模型 {{model}} 调用成功，已发送 hi 并收到模型响应",
-      "rowFailed": "模型 {{model}} 连接失败：{{message}}"
+      "rowSuccess": "模型 {{model}} 调用成功（{{duration}}），已发送 hi 并收到模型响应",
+      "rowFailed": "模型 {{model}} 连接失败（{{duration}}）：{{message}}"
     },
     "toolbar": {
       "add": "新增供应商",
@@ -1842,7 +1842,14 @@
       "deleteBlockedDefault": "默认模型：需先另设默认才能删除",
       "deleteTitle": "删除（需二次确认）",
       "disableBlockedDefault": "默认模型：需先另设默认才能停用",
-      "enableNamed": "启用/停用 {{model}}"
+      "enableNamed": "启用/停用 {{model}}",
+      "selectAll": "全选模型",
+      "selectModel": "选择 {{model}}",
+      "model": "模型",
+      "references": "引用",
+      "enableColumn": "启用",
+      "moreModelNamed": "{{model}} 的更多操作",
+      "deleteBlockedReferenced": "被 {{count}} 处引用，无法删除"
     },
     "delete": {
       "providerTitle": "删除供应商 · {{name}}",

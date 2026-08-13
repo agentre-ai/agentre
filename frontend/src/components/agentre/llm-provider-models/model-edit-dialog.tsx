@@ -148,11 +148,12 @@ export function ModelEditDialog({
               <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
                 {t("llmProviders.modelEdit.modelKey")}
               </span>
-              <div className="flex items-center gap-1.5 rounded-md border border-input bg-secondary/40 px-3 py-2">
-                <span className="truncate font-mono text-xs text-foreground">
-                  {model ? model.modelKey : ""}
-                </span>
-              </div>
+              <Input
+                readOnly
+                value={model ? model.modelKey : ""}
+                className="h-9 font-mono text-xs"
+                aria-label={t("llmProviders.modelEdit.modelKey")}
+              />
               <span className="text-2xs leading-relaxed text-muted-foreground">
                 {t("llmProviders.modelEdit.modelKeyHint")}
               </span>

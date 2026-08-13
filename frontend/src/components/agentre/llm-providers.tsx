@@ -18,6 +18,7 @@ import {
   CreateLLMProvider,
   ListLLMModels,
   ListLLMProviders,
+  LLMModelRefCounts,
   LLMProviderRefCounts,
   SetLLMModelEnabled,
   SetLLMProviderEnabled,
@@ -89,6 +90,9 @@ export function LlmProvidersPanel({
   );
   const [providerRefCounts, setProviderRefCounts] =
     React.useState<ReferenceCounts | null>(null);
+  const [modelRefCounts, setModelRefCounts] = React.useState<
+    Map<string, ReferenceCounts>
+  >(new Map());
 
   const selectedProvider = providers.find((p) => p.id === selectedId) ?? null;
 
@@ -209,9 +213,41 @@ export function LlmProvidersPanel({
     };
   }, [selectedProvider]);
 
+  // 模型表「引用」列：按 modelKey 逐条拉取引用计数，失败降级为 0。
+  React.useEffect(() => {
+    const keys = models.map((m) => m.modelKey);
+    if (keys.length === 0) {
+      setModelRefCounts(new Map());
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const entries = await Promise.all(
+        keys.map(async (key): Promise<[string, ReferenceCounts]> => {
+          try {
+            const resp = await LLMModelRefCounts(
+              new llm_provider_svc.ModelRefCountsRequest({ modelKey: key }),
+            );
+            return [
+              key,
+              resp.counts ?? { backends: 0, sessions: 0, routes: 0 },
+            ];
+          } catch {
+            return [key, { backends: 0, sessions: 0, routes: 0 }];
+          }
+        }),
+      );
+      if (!cancelled) setModelRefCounts(new Map(entries));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [models]);
+
   const handleTestProvider = React.useCallback(
     async (provider: Provider) => {
       setTestingDefault(true);
+      const startedAt = Date.now();
       try {
         const resp = await TestLLMProvider(
           new llm_provider_svc.TestConnectionRequest({
@@ -225,12 +261,14 @@ export function LlmProvidersPanel({
             modelId: "",
           }),
         );
+        const duration = `${Date.now() - startedAt}ms`;
         setFlash(
           resp.ok
             ? {
                 kind: "ok",
                 text: t("llmProviders.test.providerSuccess", {
                   name: provider.name,
+                  duration,
                 }),
               }
             : {
@@ -238,6 +276,7 @@ export function LlmProvidersPanel({
                 text: t("llmProviders.test.providerFailed", {
                   name: provider.name,
                   message: resp.message,
+                  duration,
                 }),
               },
         );
@@ -258,6 +297,7 @@ export function LlmProvidersPanel({
   const handleTestModel = React.useCallback(
     async (model: Model) => {
       setTestingModelId(model.id);
+      const startedAt = Date.now();
       try {
         const resp = await TestLLMProvider(
           new llm_provider_svc.TestConnectionRequest({
@@ -271,12 +311,14 @@ export function LlmProvidersPanel({
             modelId: "",
           }),
         );
+        const duration = `${Date.now() - startedAt}ms`;
         setFlash(
           resp.ok
             ? {
                 kind: "ok",
                 text: t("llmProviders.test.rowSuccess", {
                   model: model.modelId,
+                  duration,
                 }),
               }
             : {
@@ -284,6 +326,7 @@ export function LlmProvidersPanel({
                 text: t("llmProviders.test.rowFailed", {
                   model: model.modelId,
                   message: resp.message,
+                  duration,
                 }),
               },
         );
@@ -554,6 +597,7 @@ export function LlmProvidersPanel({
               testingDefault={testingDefault}
               testingModelId={testingModelId}
               providerRefCounts={providerRefCounts}
+              modelRefCounts={modelRefCounts}
               onTestProvider={handleTestProvider}
               onTestModel={handleTestModel}
               onEditConnection={() => {
@@ -645,6 +689,7 @@ function ProviderManagement({
   onDeleteProvider,
   onToggleProviderEnabled,
   providerRefCounts,
+  modelRefCounts,
 }: {
   providers: Provider[];
   selectedId: number | null;
@@ -669,6 +714,7 @@ function ProviderManagement({
   onDeleteProvider: () => void;
   onToggleProviderEnabled: (provider: Provider) => void;
   providerRefCounts: ReferenceCounts | null;
+  modelRefCounts: Map<string, ReferenceCounts>;
 }) {
   const { t } = useTranslation();
   const [navSearch, setNavSearch] = React.useState("");
@@ -811,6 +857,7 @@ function ProviderManagement({
               onToggleProviderEnabled(selectedProvider)
             }
             providerRefCounts={providerRefCounts}
+            modelRefCounts={modelRefCounts}
           />
         ) : null}
       </div>
