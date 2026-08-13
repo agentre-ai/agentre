@@ -1,4 +1,8 @@
 {
+  "markdownImage": {
+    "cannotPreview": "Cannot preview",
+    "tooLarge": "Image too large"
+  },
   "notify": {
     "app": "Agentre",
     "body": {

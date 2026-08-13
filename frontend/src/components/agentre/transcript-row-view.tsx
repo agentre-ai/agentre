@@ -576,9 +576,11 @@ function extractAssistantOutputText(
 function MessageBody({
   item,
   cwd,
+  sessionId,
 }: {
   item: Extract<TranscriptRowItem, { type: "text" }>;
   cwd?: string;
+  sessionId?: number;
 }) {
   const { text: mentionText, refs: mentionRefs } = React.useMemo(
     () => prepareMentionText(item.text),
@@ -590,7 +592,12 @@ function MessageBody({
     [mentionRefs],
   );
   return (
-    <MarkdownText cwd={cwd} text={mentionText} decorator={mentionDecorator} />
+    <MarkdownText
+      cwd={cwd}
+      sessionId={sessionId}
+      text={mentionText}
+      decorator={mentionDecorator}
+    />
   );
 }
 
@@ -618,9 +625,13 @@ function RenderItemView({
       return null;
     case "text":
       return item.streaming ? (
-        <StreamingMarkdown cwd={ctx?.cwd} text={item.text} />
+        <StreamingMarkdown
+          cwd={ctx?.cwd}
+          sessionId={ctx?.sessionId}
+          text={item.text}
+        />
       ) : (
-        <MessageBody item={item} cwd={ctx?.cwd} />
+        <MessageBody item={item} cwd={ctx?.cwd} sessionId={ctx?.sessionId} />
       );
     case "plan":
       return (

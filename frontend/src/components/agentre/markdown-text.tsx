@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { splitStreamingMarkdown } from "@/lib/streaming-markdown";
 
 import { CodeBlock } from "./code-block";
+import { MarkdownImage } from "./markdown-image";
 import { RichLink } from "./rich-link";
 
 type MarkdownElementNode = {
@@ -132,9 +133,14 @@ const SAFE_HREF_PATTERNS: RegExp[] = [
   /^[A-Za-z]:[\\/]/, // Windows 绝对
 ];
 
-function whitelistUrl(url: string): string {
+function whitelistUrl(url: string, key: string): string {
   for (const p of SAFE_HREF_PATTERNS) {
     if (p.test(url)) return url;
+  }
+  // 只对图片 src 放行相对路径(无 scheme);href 分支逐字节不变,相对/危险 scheme
+  // (data: / javascript: / 其它协议)仍剥空。
+  if (key === "src" && url !== "" && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(url)) {
+    return url;
   }
   return "";
 }
@@ -295,10 +301,12 @@ const markdownRehypePlugins: ReactMarkdownOptions["rehypePlugins"] = [
 const MarkdownInner = React.memo(function MarkdownInner({
   text,
   cwd,
+  sessionId,
   decorator,
 }: {
   text: string;
   cwd?: string;
+  sessionId?: number;
   decorator?: MarkdownInlineDecorator;
 }) {
   const components = React.useMemo<Components>(() => {
@@ -313,6 +321,9 @@ const MarkdownInner = React.memo(function MarkdownInner({
           {children}
         </RichLink>
       ),
+      img: ({ node: _node, src, alt }) => (
+        <MarkdownImage src={src} alt={alt} cwd={cwd} sessionId={sessionId} />
+      ),
     };
     if (decorator) {
       // INLINE_TOKEN_TAG 是自定义元素名,不在 JSX.IntrinsicElements 里,
@@ -324,7 +335,7 @@ const MarkdownInner = React.memo(function MarkdownInner({
       }) => (payload ? decorator.render(JSON.parse(payload)) : null);
     }
     return base;
-  }, [cwd, decorator]);
+  }, [cwd, sessionId, decorator]);
 
   const rehypePlugins = React.useMemo<
     ReactMarkdownOptions["rehypePlugins"]
@@ -355,16 +366,23 @@ const MarkdownInner = React.memo(function MarkdownInner({
 export const MarkdownText = React.memo(function MarkdownText({
   text,
   cwd,
+  sessionId,
   decorator,
 }: {
   text: string;
   cwd?: string;
+  sessionId?: number;
   /** 内联装饰器(mention / 命令 / 文件 chip)。调用方须传 useMemo 稳定引用,否则 memo 失效。 */
   decorator?: MarkdownInlineDecorator;
 }) {
   return (
     <div className="markdown-body break-words text-prose">
-      <MarkdownInner text={text} cwd={cwd} decorator={decorator} />
+      <MarkdownInner
+        text={text}
+        cwd={cwd}
+        sessionId={sessionId}
+        decorator={decorator}
+      />
     </div>
   );
 });
@@ -383,9 +401,11 @@ export const MarkdownText = React.memo(function MarkdownText({
 export const StreamingMarkdown = React.memo(function StreamingMarkdown({
   text,
   cwd,
+  sessionId,
 }: {
   text: string;
   cwd?: string;
+  sessionId?: number;
 }) {
   const { committed, tail } = React.useMemo(
     () => splitStreamingMarkdown(text),
@@ -394,9 +414,11 @@ export const StreamingMarkdown = React.memo(function StreamingMarkdown({
   return (
     <div className="markdown-body break-words text-prose">
       {committed.map((segment, i) => (
-        <MarkdownInner key={i} text={segment} cwd={cwd} />
+        <MarkdownInner key={i} text={segment} cwd={cwd} sessionId={sessionId} />
       ))}
-      {tail ? <MarkdownInner key="tail" text={tail} cwd={cwd} /> : null}
+      {tail ? (
+        <MarkdownInner key="tail" text={tail} cwd={cwd} sessionId={sessionId} />
+      ) : null}
     </div>
   );
 });
