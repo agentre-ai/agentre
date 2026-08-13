@@ -67,6 +67,9 @@ type LLMProviderRepo interface {
 	// FindModelByKey 按稳定 model_key 查（含 enabled=0 的停用模型，供 fixed-model 失效提示）。
 	FindModelByKey(ctx context.Context, modelKey string) (*llm_provider_model_entity.LLMProviderModel, error)
 	ListModels(ctx context.Context, providerID int64) ([]*llm_provider_model_entity.LLMProviderModel, error)
+	// CountModelsByProvider 按 provider 分组统计 ACTIVE 模型数（status=ACTIVE，不含软删除），
+	// 只查给定 providerIDs；空列表直接返回空 map，不发 SQL。
+	CountModelsByProvider(ctx context.Context, providerIDs []int64) (map[int64]int64, error)
 	DeleteModel(ctx context.Context, id int64) error
 
 	// ── 引用影响计数 ──
@@ -240,6 +243,31 @@ func (r *llmProviderRepo) ListModels(ctx context.Context, providerID int64) ([]*
 		return nil, err
 	}
 	return rows, nil
+}
+
+// CountModelsByProvider 按 provider 分组统计 ACTIVE 模型数（与 ListModels 同口径：
+// 只过滤 status=ACTIVE，不分 enabled），只查给定 providerIDs；空列表直接返回空 map。
+func (r *llmProviderRepo) CountModelsByProvider(ctx context.Context, providerIDs []int64) (map[int64]int64, error) {
+	out := make(map[int64]int64, len(providerIDs))
+	if len(providerIDs) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		ProviderID int64
+		Count      int64
+	}
+	if err := db.Ctx(ctx).
+		Model(&llm_provider_model_entity.LLMProviderModel{}).
+		Select("provider_id, COUNT(*) as count").
+		Where("status = ? AND provider_id IN ?", consts.ACTIVE, providerIDs).
+		Group("provider_id").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.ProviderID] = row.Count
+	}
+	return out, nil
 }
 
 func (r *llmProviderRepo) DeleteModel(ctx context.Context, id int64) error {

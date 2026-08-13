@@ -761,7 +761,10 @@ function ProviderManagement({
                           {p.name}
                         </span>
                         <span className="block truncate font-mono text-2xs text-muted-foreground">
-                          {endpointFor(p)}
+                          {endpointFor(p)} ·{" "}
+                          {t("llmProviders.nav.modelCount", {
+                            count: p.modelCount,
+                          })}
                         </span>
                       </span>
                       {p.enabled ? null : (

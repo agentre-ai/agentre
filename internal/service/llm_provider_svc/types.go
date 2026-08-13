@@ -33,6 +33,7 @@ type ProviderItem struct {
 	HasAPIKey       bool   `json:"hasApiKey"`
 	Enabled         bool   `json:"enabled"`
 	DefaultModelKey string `json:"defaultModelKey"`
+	ModelCount      int64  `json:"modelCount"`
 	Createtime      int64  `json:"createtime"`
 	Updatetime      int64  `json:"updatetime"`
 }

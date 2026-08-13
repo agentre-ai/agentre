@@ -95,8 +95,17 @@ func (s *llmProviderSvc) List(ctx context.Context, _ *ListProvidersRequest) (*Li
 		return nil, err
 	}
 	items := make([]*ProviderItem, 0, len(rows))
+	ids := make([]int64, 0, len(rows))
 	for _, row := range rows {
 		items = append(items, toItem(row))
+		ids = append(ids, row.ID)
+	}
+	counts, err := llm_provider_repo.LLMProvider().CountModelsByProvider(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		item.ModelCount = counts[item.ID]
 	}
 	return &ListProvidersResponse{Items: items}, nil
 }

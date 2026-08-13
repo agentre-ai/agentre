@@ -1778,7 +1778,8 @@
       "add": "Add Provider",
       "enabled": "Enabled",
       "disabled": "Disabled",
-      "noMatch": "No matching providers"
+      "noMatch": "No matching providers",
+      "modelCount": "{{count}} models"
     },
     "page": {
       "add": "New Provider",

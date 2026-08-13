@@ -89,6 +89,7 @@ type ProviderItem = {
   hasApiKey: boolean;
   id: number;
   maskedApiKey: string;
+  modelCount: number;
   name: string;
   providerKey: string;
   type: string;
@@ -118,6 +119,7 @@ function makeProvider(overrides: Partial<ProviderItem> = {}): ProviderItem {
     hasApiKey: true,
     enabled: true,
     defaultModelKey: "mk-default",
+    modelCount: 3,
     ...overrides,
   };
 }
@@ -225,6 +227,7 @@ describe("LlmProvidersPanel", () => {
               maskedApiKey: "sk-••••••9XQ2",
               hasApiKey: true,
               enabled: true,
+              modelCount: 3,
             }),
             makeProvider({
               id: 2,
@@ -236,6 +239,7 @@ describe("LlmProvidersPanel", () => {
               hasApiKey: false,
               enabled: false,
               defaultModelKey: "",
+              modelCount: 2,
             }),
           ],
         }),
@@ -250,15 +254,19 @@ describe("LlmProvidersPanel", () => {
       name: /Anthropic Official/,
     });
     expect(
-      within(anthropic).getByText("api.anthropic.com"),
+      within(anthropic).getByText(/api\.anthropic\.com/),
     ).toBeInTheDocument();
+    expect(within(anthropic).getByText(/3 models/)).toBeInTheDocument();
     // 启用是常态，不再标注；只有停用的供应商带停用标记
     expect(within(anthropic).queryByText("Enabled")).not.toBeInTheDocument();
 
     const deepseek = within(nav).getByRole("button", {
       name: /DeepSeek Proxy/,
     });
-    expect(within(deepseek).getByText("llm.intra.example")).toBeInTheDocument();
+    expect(
+      within(deepseek).getByText(/llm\.intra\.example/),
+    ).toBeInTheDocument();
+    expect(within(deepseek).getByText(/2 models/)).toBeInTheDocument();
     expect(within(deepseek).getByText("Disabled")).toBeInTheDocument();
 
     // 每个类型有独立分组标题

@@ -1778,7 +1778,8 @@
       "add": "添加供应商",
       "enabled": "已启用",
       "disabled": "已停用",
-      "noMatch": "没有匹配的供应商"
+      "noMatch": "没有匹配的供应商",
+      "modelCount": "{{count}} 个模型"
     },
     "page": {
       "add": "新增供应商",
