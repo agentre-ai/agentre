@@ -116,23 +116,26 @@ describe("CodePreview theme following", () => {
   it("sets the monaco theme on mount and re-themes when the app flips .dark", () => {
     document.documentElement.classList.remove("dark");
     const { monaco, editor } = createFakeMonaco();
-    let notifyClassChange: MutationCallback | undefined;
-    const observe = vi.fn();
-    const disconnect = vi.fn();
+    const observe = vi.fn<MutationObserver["observe"]>();
+    const disconnect = vi.fn<MutationObserver["disconnect"]>();
 
-    class ControlledMutationObserver {
-      constructor(callback: MutationCallback) {
-        notifyClassChange = callback;
+    class ControlledMutationObserver implements MutationObserver {
+      constructor(readonly callback: MutationCallback) {
+        mutationObservers.push(this);
       }
 
       observe = observe;
       disconnect = disconnect;
-      takeRecords = vi.fn(() => []);
+      takeRecords = vi.fn<MutationObserver["takeRecords"]>(() => []);
     }
+
+    const mutationObservers: ControlledMutationObserver[] = [];
 
     vi.stubGlobal("MutationObserver", ControlledMutationObserver);
     try {
-      render(<CodePreview value="x" path="a.go" monaco={monaco} />);
+      const { unmount } = render(
+        <CodePreview value="x" path="a.go" monaco={monaco} />,
+      );
 
       expect(editor.create).toHaveBeenCalledTimes(1);
       expect(editor.setTheme).toHaveBeenLastCalledWith("vs");
@@ -143,15 +146,18 @@ describe("CodePreview theme following", () => {
 
       act(() => {
         document.documentElement.classList.add("dark");
-        notifyClassChange?.([], {} as MutationObserver);
+        mutationObservers[0].callback([], mutationObservers[0]);
       });
       expect(editor.setTheme).toHaveBeenLastCalledWith("vs-dark");
 
       act(() => {
         document.documentElement.classList.remove("dark");
-        notifyClassChange?.([], {} as MutationObserver);
+        mutationObservers[0].callback([], mutationObservers[0]);
       });
       expect(editor.setTheme).toHaveBeenLastCalledWith("vs");
+
+      unmount();
+      expect(disconnect).toHaveBeenCalledTimes(1);
     } finally {
       document.documentElement.classList.remove("dark");
       vi.unstubAllGlobals();
