@@ -1,7 +1,9 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Copy,
   Loader2,
+  MoreHorizontal,
   Pencil,
   Plus,
   RefreshCw,
@@ -12,6 +14,13 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -28,6 +37,7 @@ import { cn } from "@/lib/utils";
 import {
   type Model,
   type Provider,
+  type ReferenceCounts,
   endpointFor,
   formatTokens,
   providerTypeMeta,
@@ -35,6 +45,7 @@ import {
 
 export type WorkspaceHandlers = {
   onAddModel: () => void;
+  onCopyProviderKey: () => void;
   onDeleteModel: (model: Model) => void;
   onDeleteProvider: () => void;
   onDiscover: () => void;
@@ -59,6 +70,7 @@ export function ProviderWorkspace({
   onDeleteProvider,
   onDiscover,
   onAddModel,
+  onCopyProviderKey,
   onSetDefault,
   onToggleModelEnabled,
   onEditModel,
@@ -67,6 +79,7 @@ export function ProviderWorkspace({
   onRetryModels,
   testingDefault,
   testingModelId,
+  providerRefCounts,
 }: {
   provider: Provider;
   models: Model[];
@@ -74,6 +87,7 @@ export function ProviderWorkspace({
   modelsLoading: boolean;
   testingDefault: boolean;
   testingModelId: number | null;
+  providerRefCounts: ReferenceCounts | null;
 } & WorkspaceHandlers) {
   const { t } = useTranslation();
   const [search, setSearch] = React.useState("");
@@ -105,6 +119,31 @@ export function ProviderWorkspace({
     ? undefined
     : t("llmProviders.workspace.cannotEnableNoDefault");
 
+  // 元信息行：当前默认模型（无则占位）与供应商被引用计数。
+  const defaultModelName = defaultModel?.modelId ?? "—";
+  const refCounts = providerRefCounts ?? {
+    backends: 0,
+    sessions: 0,
+    routes: 0,
+  };
+  const refParts: string[] = [];
+  if (refCounts.backends > 0) {
+    refParts.push(
+      t("llmProviders.workspace.refBackends", { count: refCounts.backends }),
+    );
+  }
+  if (refCounts.sessions > 0) {
+    refParts.push(
+      t("llmProviders.workspace.refSessions", { count: refCounts.sessions }),
+    );
+  }
+  if (refCounts.routes > 0) {
+    refParts.push(
+      t("llmProviders.workspace.refRoutes", { count: refCounts.routes }),
+    );
+  }
+  const refsText = refParts.join(" · ");
+
   return (
     <div
       role="region"
@@ -113,159 +152,152 @@ export function ProviderWorkspace({
       })}
       className="@container flex min-w-0 flex-col overflow-hidden"
     >
-      {/* Provider header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-3 sm:px-4">
-        <div className="flex min-w-0 items-start gap-2.5">
-          <LlmProviderLogo
-            providerType={provider.type}
-            providerName={provider.name}
-            baseUrl={provider.baseUrl}
-            className="mt-0.5 size-8 rounded-md"
-          />
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <span className="truncate text-sm font-semibold">
-              {provider.name}
-            </span>
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs text-muted-foreground">
-              <span className="rounded-sm bg-secondary px-1.5 py-0.5 font-mono">
+      {/* Provider header：身份行 + 元信息行 */}
+      <div className="border-b border-border px-3 py-3 sm:px-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <LlmProviderLogo
+              providerType={provider.type}
+              providerName={provider.name}
+              baseUrl={provider.baseUrl}
+              className="size-8 shrink-0 rounded-md"
+            />
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span className="truncate text-sm font-semibold">
+                {provider.name}
+              </span>
+              <span className="w-fit rounded-sm bg-secondary px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
                 {meta
                   ? t(`llmProviders.providerType.${provider.type}.label`)
                   : provider.type}
               </span>
-              <span className="hidden truncate font-mono lg:inline">
-                {endpoint}
-              </span>
-              <span className="hidden truncate font-mono lg:inline">
-                {provider.hasApiKey
-                  ? provider.maskedApiKey
-                  : t("llmProviders.row.noApiKey")}
-              </span>
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1 font-medium",
-                  provider.enabled
-                    ? "text-status-running"
-                    : "text-status-waiting",
-                )}
-              >
-                <span
-                  className={cn(
-                    "size-1.5 rounded-full",
-                    provider.enabled
-                      ? "bg-status-running"
-                      : "bg-status-waiting",
-                  )}
-                  aria-hidden="true"
-                />
-                {provider.enabled
-                  ? t("llmProviders.nav.enabled")
-                  : t("llmProviders.nav.disabled")}
-              </span>
             </div>
           </div>
-        </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
-          <label
-            className={cn(
-              "flex items-center gap-1.5 text-2xs text-muted-foreground",
-              !hasEnabledDefault && "cursor-not-allowed",
-            )}
-            title={enableDisabledReason}
-          >
-            <Switch
-              checked={provider.enabled}
-              disabled={!hasEnabledDefault}
-              onCheckedChange={() => onToggleProviderEnabled()}
-              size="sm"
+          <div className="flex flex-wrap items-center gap-1.5">
+            <label
+              className={cn(
+                "flex items-center gap-1.5 text-2xs text-muted-foreground",
+                !hasEnabledDefault && "cursor-not-allowed",
+              )}
               title={enableDisabledReason}
-              aria-label={t("llmProviders.workspace.enableNamed", {
+            >
+              <Switch
+                checked={provider.enabled}
+                disabled={!hasEnabledDefault}
+                onCheckedChange={() => onToggleProviderEnabled()}
+                size="sm"
+                title={enableDisabledReason}
+                aria-label={t("llmProviders.workspace.enableNamed", {
+                  name: provider.name,
+                })}
+              />
+              {provider.enabled
+                ? t("llmProviders.workspace.enabledShort")
+                : t("llmProviders.workspace.disabledShort")}
+            </label>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-[30px] gap-1.5 px-3 text-xs"
+              onClick={onTestProvider}
+              disabled={testingDefault}
+              aria-label={t("llmProviders.workspace.testNamed", {
                 name: provider.name,
               })}
-            />
-            {provider.enabled
-              ? t("llmProviders.workspace.enabledShort")
-              : t("llmProviders.workspace.disabledShort")}
-          </label>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-[30px] gap-1.5 px-3 text-xs"
-            onClick={onTestProvider}
-            disabled={testingDefault}
-            aria-label={t("llmProviders.workspace.testNamed", {
-              name: provider.name,
-            })}
-            title={t("llmProviders.workspace.testTitle")}
-          >
-            {testingDefault ? (
-              <Loader2
-                className="size-3.5 animate-spin"
-                data-icon="inline-start"
-                aria-hidden="true"
-              />
-            ) : (
-              <SendHorizontal
+              title={t("llmProviders.workspace.testTitle")}
+            >
+              {testingDefault ? (
+                <Loader2
+                  className="size-3.5 animate-spin"
+                  data-icon="inline-start"
+                  aria-hidden="true"
+                />
+              ) : (
+                <SendHorizontal
+                  className="size-3.5"
+                  data-icon="inline-start"
+                  aria-hidden="true"
+                />
+              )}
+              {t("llmProviders.workspace.testConnection")}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-[30px] gap-1.5 px-3 text-xs"
+              onClick={onDiscover}
+              aria-label={t("llmProviders.workspace.discoverNamed", {
+                name: provider.name,
+              })}
+            >
+              <RefreshCw
                 className="size-3.5"
                 data-icon="inline-start"
                 aria-hidden="true"
               />
-            )}
-            {t("llmProviders.workspace.test")}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-[30px] gap-1.5 px-3 text-xs text-status-error"
-            onClick={onDeleteProvider}
-            aria-label={t("llmProviders.workspace.deleteNamed", {
-              name: provider.name,
-            })}
-            title={t("llmProviders.workspace.deleteTitle")}
-          >
-            <Trash2
-              className="size-3.5"
-              data-icon="inline-start"
-              aria-hidden="true"
-            />
-            {t("llmProviders.workspace.delete")}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-[30px] gap-1.5 px-3 text-xs"
-            onClick={onEditConnection}
-            aria-label={t("llmProviders.workspace.editConnectionNamed", {
-              name: provider.name,
-            })}
-          >
-            <Pencil
-              className="size-3.5"
-              data-icon="inline-start"
-              aria-hidden="true"
-            />
-            {t("llmProviders.workspace.editConnection")}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-[30px] gap-1.5 px-3 text-xs"
-            onClick={onDiscover}
-            aria-label={t("llmProviders.workspace.discoverNamed", {
-              name: provider.name,
-            })}
-          >
-            <RefreshCw
-              className="size-3.5"
-              data-icon="inline-start"
-              aria-hidden="true"
-            />
-            {t("llmProviders.workspace.discover")}
-          </Button>
+              {t("llmProviders.workspace.discover")}
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label={t("llmProviders.workspace.more")}
+                  title={t("llmProviders.workspace.more")}
+                >
+                  <MoreHorizontal data-icon="only" aria-hidden="true" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={onEditConnection}>
+                  <Pencil className="size-3.5" aria-hidden="true" />
+                  {t("llmProviders.workspace.editConnectionNamed", {
+                    name: provider.name,
+                  })}
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={onCopyProviderKey}>
+                  <Copy className="size-3.5" aria-hidden="true" />
+                  {t("llmProviders.fields.copyProviderKey")}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={onDeleteProvider}
+                >
+                  <Trash2 className="size-3.5" aria-hidden="true" />
+                  {t("llmProviders.workspace.deleteNamed", {
+                    name: provider.name,
+                  })}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+
+        {/* 元信息行：endpoint / 掩码 key / 默认模型 / 被引用 */}
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-2xs text-muted-foreground">
+          <span className="truncate">{endpoint}</span>
+          <span className="truncate">
+            {provider.hasApiKey
+              ? provider.maskedApiKey
+              : t("llmProviders.row.noApiKey")}
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="text-subtle-foreground">
+              {t("llmProviders.workspace.metaDefaultModel")}
+            </span>
+            <span>{defaultModelName}</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="text-subtle-foreground">
+              {t("llmProviders.workspace.metaReferenced")}
+            </span>
+            <span>{refsText || "—"}</span>
+          </span>
         </div>
       </div>
 

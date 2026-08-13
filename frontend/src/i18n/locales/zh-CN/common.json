@@ -1780,6 +1780,10 @@
       "disabled": "已停用",
       "noMatch": "没有匹配的供应商"
     },
+    "page": {
+      "add": "新增供应商",
+      "count": "共 {{count}} 个"
+    },
     "workspace": {
       "ariaLabel": "{{name}} 模型工作区",
       "enableNamed": "启用/停用 {{name}}",
@@ -1796,6 +1800,19 @@
       "deleteNamed": "删除 {{name}}",
       "deleteTitle": "删除供应商（需二次确认）",
       "cannotEnableNoDefault": "未设置可用的启用默认模型，无法启用该供应商",
+      "testConnection": "测试连接",
+      "more": "更多",
+      "metaDefaultModel": "默认模型",
+      "metaReferenced": "被引用",
+      "refBackends": "{{count}} 个后端",
+      "refBackends_one": "{{count}} 个后端",
+      "refBackends_other": "{{count}} 个后端",
+      "refSessions": "{{count}} 个会话",
+      "refSessions_one": "{{count}} 个会话",
+      "refSessions_other": "{{count}} 个会话",
+      "refRoutes": "{{count}} 条路由",
+      "refRoutes_one": "{{count}} 条路由",
+      "refRoutes_other": "{{count}} 条路由",
       "searchPlaceholder": "筛选模型 ID…",
       "searchAria": "筛选模型",
       "modelCount": "显示 {{shown}} / {{total}}",
@@ -2784,7 +2801,7 @@
       "title": "本地 HTTP 代理"
     },
     "llmProvider": {
-      "description": "配置可用模型来源。保存后可拉取该账号下的实际可用模型，模型能力（上下文窗口、是否支持 thinking 等）由 cago agents 内置目录补全。",
+      "description": "配置可用模型来源。保存后可拉取该账号下的可用模型，并自动补全各模型的能力参数。",
       "gapBanner": {
         "description": "部分 Agent 绑定的后端还没有关联已激活的 LLM 供应商。配置好供应商后，去组织架构给这些 Agent 选上即可。",
         "goToOrg": "去组织架构",

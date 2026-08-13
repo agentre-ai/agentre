@@ -18,6 +18,7 @@ import {
   CreateLLMProvider,
   ListLLMModels,
   ListLLMProviders,
+  LLMProviderRefCounts,
   SetLLMModelEnabled,
   SetLLMProviderEnabled,
   TestLLMProvider,
@@ -46,6 +47,7 @@ import { ProviderWorkspace } from "./llm-provider-models/provider-workspace";
 import {
   type Model,
   type Provider,
+  type ReferenceCounts,
   endpointFor,
   errMessage,
   isProviderType,
@@ -85,6 +87,8 @@ export function LlmProvidersPanel({
   const [testingModelId, setTestingModelId] = React.useState<number | null>(
     null,
   );
+  const [providerRefCounts, setProviderRefCounts] =
+    React.useState<ReferenceCounts | null>(null);
 
   const selectedProvider = providers.find((p) => p.id === selectedId) ?? null;
 
@@ -174,6 +178,36 @@ export function LlmProvidersPanel({
       cancelled = true;
     };
   }, [selectedId]);
+
+  // 元信息行的「被引用」计数：切换供应商时按 providerKey 拉取，失败降级为 0。
+  React.useEffect(() => {
+    if (!selectedProvider) {
+      setProviderRefCounts(null);
+      return;
+    }
+    const providerKey = selectedProvider.providerKey;
+    let cancelled = false;
+    setProviderRefCounts(null);
+    void (async () => {
+      try {
+        const resp = await LLMProviderRefCounts(
+          new llm_provider_svc.ProviderRefCountsRequest({ providerKey }),
+        );
+        if (!cancelled) {
+          setProviderRefCounts(
+            resp.counts ?? { backends: 0, sessions: 0, routes: 0 },
+          );
+        }
+      } catch {
+        if (!cancelled) {
+          setProviderRefCounts({ backends: 0, sessions: 0, routes: 0 });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProvider]);
 
   const handleTestProvider = React.useCallback(
     async (provider: Provider) => {
@@ -336,6 +370,24 @@ export function LlmProvidersPanel({
     [refreshProviders, t],
   );
 
+  const handleCopyProviderKey = React.useCallback(
+    async (provider: Provider) => {
+      try {
+        await navigator.clipboard.writeText(provider.providerKey);
+        setFlash({
+          kind: "ok",
+          text: t("llmProviders.fields.copyProviderKeyDone"),
+        });
+      } catch {
+        setFlash({
+          kind: "err",
+          text: t("llmProviders.fields.copyProviderKeyFailed"),
+        });
+      }
+    },
+    [t],
+  );
+
   const handleFormSubmit = React.useCallback(
     async (mode: ProviderFormMode, values: ProviderFormValues) => {
       if (mode.kind === "create") {
@@ -462,74 +514,77 @@ export function LlmProvidersPanel({
         </Alert>
       ) : null}
 
-      <section className="min-w-0 overflow-hidden rounded-lg border border-border bg-card">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-3 sm:px-4">
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <span className="text-sm font-semibold">
-              {t("llmProviders.toolbar.title")}
-            </span>
-            <span className="text-2xs text-muted-foreground">
-              {t("llmProviders.toolbar.count", { count: providers.length })}
-            </span>
-          </div>
-          <Button
-            type="button"
-            size="sm"
-            className="h-[30px] gap-1.5 px-3 text-xs"
-            onClick={() => setFormMode({ kind: "create" })}
-          >
-            <Plus data-icon="inline-start" aria-hidden="true" />
-            {t("llmProviders.toolbar.add")}
-          </Button>
+      {providersLoading ? (
+        <div className="flex items-center justify-center gap-2 py-10 text-2xs text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+          {t("llmProviders.workspace.loadingModels")}
         </div>
-
-        {providersLoading ? (
-          <div className="flex items-center justify-center gap-2 py-10 text-2xs text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-            {t("llmProviders.workspace.loadingModels")}
+      ) : providers.length === 0 ? (
+        <ProvidersEmptyState
+          onCreate={() => setFormMode({ kind: "create" })}
+          onOpenAgentBackends={onOpenAgentBackends}
+        />
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-mono text-2xs text-muted-foreground">
+              {t("llmProviders.page.count", { count: providers.length })}
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              className="h-[30px] gap-1.5 px-3 text-xs"
+              onClick={() => setFormMode({ kind: "create" })}
+            >
+              <Plus data-icon="inline-start" aria-hidden="true" />
+              {t("llmProviders.page.add")}
+            </Button>
           </div>
-        ) : providers.length === 0 ? (
-          <ProvidersEmptyState
-            onCreate={() => setFormMode({ kind: "create" })}
-            onOpenAgentBackends={onOpenAgentBackends}
-          />
-        ) : (
-          <ProviderManagement
-            providers={providers}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            selectedProvider={selectedProvider}
-            models={models}
-            modelsLoading={modelsLoading}
-            modelsError={modelsError}
-            onRetryModels={() => void refreshModels()}
-            testingDefault={testingDefault}
-            testingModelId={testingModelId}
-            onTestProvider={handleTestProvider}
-            onTestModel={handleTestModel}
-            onEditConnection={() => {
-              if (selectedProvider)
-                setFormMode({ kind: "edit", provider: selectedProvider });
-            }}
-            onDiscover={() => setDiscoverProvider(selectedProvider)}
-            onAddModel={() => setAddModelProvider(selectedProvider)}
-            onDeleteProvider={() =>
-              selectedProvider
-                ? setDeleteTarget({
-                    kind: "provider",
-                    provider: selectedProvider,
-                  })
-                : undefined
-            }
-            onSetDefault={handleSetDefault}
-            onToggleModelEnabled={handleToggleModelEnabled}
-            onEditModel={setEditModel}
-            onDeleteModel={(model) => setDeleteTarget({ kind: "model", model })}
-            onToggleProviderEnabled={handleToggleProviderEnabled}
-            onAddProvider={() => setFormMode({ kind: "create" })}
-          />
-        )}
-      </section>
+
+          <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-card">
+            <ProviderManagement
+              providers={providers}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              selectedProvider={selectedProvider}
+              models={models}
+              modelsLoading={modelsLoading}
+              modelsError={modelsError}
+              onRetryModels={() => void refreshModels()}
+              testingDefault={testingDefault}
+              testingModelId={testingModelId}
+              providerRefCounts={providerRefCounts}
+              onTestProvider={handleTestProvider}
+              onTestModel={handleTestModel}
+              onEditConnection={() => {
+                if (selectedProvider)
+                  setFormMode({ kind: "edit", provider: selectedProvider });
+              }}
+              onDiscover={() => setDiscoverProvider(selectedProvider)}
+              onAddModel={() => setAddModelProvider(selectedProvider)}
+              onCopyProviderKey={() => {
+                if (selectedProvider)
+                  void handleCopyProviderKey(selectedProvider);
+              }}
+              onDeleteProvider={() =>
+                selectedProvider
+                  ? setDeleteTarget({
+                      kind: "provider",
+                      provider: selectedProvider,
+                    })
+                  : undefined
+              }
+              onSetDefault={handleSetDefault}
+              onToggleModelEnabled={handleToggleModelEnabled}
+              onEditModel={setEditModel}
+              onDeleteModel={(model) =>
+                setDeleteTarget({ kind: "model", model })
+              }
+              onToggleProviderEnabled={handleToggleProviderEnabled}
+            />
+          </div>
+        </>
+      )}
 
       <ProviderFormDialog
         mode={formMode}
@@ -582,13 +637,14 @@ function ProviderManagement({
   onEditConnection,
   onDiscover,
   onAddModel,
+  onCopyProviderKey,
   onSetDefault,
   onToggleModelEnabled,
   onEditModel,
   onDeleteModel,
   onDeleteProvider,
   onToggleProviderEnabled,
-  onAddProvider,
+  providerRefCounts,
 }: {
   providers: Provider[];
   selectedId: number | null;
@@ -605,13 +661,14 @@ function ProviderManagement({
   onEditConnection: () => void;
   onDiscover: () => void;
   onAddModel: () => void;
+  onCopyProviderKey: () => void;
   onSetDefault: (model: Model) => void;
   onToggleModelEnabled: (model: Model) => void;
   onEditModel: (model: Model) => void;
   onDeleteModel: (model: Model) => void;
   onDeleteProvider: () => void;
   onToggleProviderEnabled: (provider: Provider) => void;
-  onAddProvider: () => void;
+  providerRefCounts: ReferenceCounts | null;
 }) {
   const { t } = useTranslation();
   const [navSearch, setNavSearch] = React.useState("");
@@ -707,18 +764,11 @@ function ProviderManagement({
                           {endpointFor(p)}
                         </span>
                       </span>
-                      <span
-                        className={cn(
-                          "shrink-0 font-mono text-2xs",
-                          p.enabled
-                            ? "text-status-running"
-                            : "text-status-waiting",
-                        )}
-                      >
-                        {p.enabled
-                          ? t("llmProviders.nav.enabled")
-                          : t("llmProviders.nav.disabled")}
-                      </span>
+                      {p.enabled ? null : (
+                        <span className="shrink-0 font-mono text-2xs text-status-waiting">
+                          {t("llmProviders.nav.disabled")}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
@@ -730,22 +780,6 @@ function ProviderManagement({
               {t("llmProviders.nav.noMatch")}
             </p>
           ) : null}
-        </div>
-        <div className="border-t border-border p-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-[30px] w-full gap-1.5 text-xs"
-            onClick={onAddProvider}
-          >
-            <Plus
-              className="size-3.5"
-              data-icon="inline-start"
-              aria-hidden="true"
-            />
-            {t("llmProviders.nav.add")}
-          </Button>
         </div>
       </aside>
 
@@ -764,6 +798,7 @@ function ProviderManagement({
             onEditConnection={onEditConnection}
             onDiscover={onDiscover}
             onAddModel={onAddModel}
+            onCopyProviderKey={onCopyProviderKey}
             onSetDefault={onSetDefault}
             onToggleModelEnabled={onToggleModelEnabled}
             onEditModel={onEditModel}
@@ -772,6 +807,7 @@ function ProviderManagement({
             onToggleProviderEnabled={() =>
               onToggleProviderEnabled(selectedProvider)
             }
+            providerRefCounts={providerRefCounts}
           />
         ) : null}
       </div>

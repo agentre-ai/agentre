@@ -186,12 +186,32 @@ function installAppMock(overrides: Partial<AppMockShape> = {}) {
   return merged;
 }
 
+const originalClipboard = navigator.clipboard;
+
+function mockClipboard() {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText },
+  });
+  return writeText;
+}
+
 afterEach(() => {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: originalClipboard,
+  });
   vi.clearAllMocks();
 });
 
+// Radix DropdownMenu 在 jsdom 中需要关闭 pointerEvents 检查。
+function setupMenuUser() {
+  return userEvent.setup({ pointerEventsCheck: 0 });
+}
+
 describe("LlmProvidersPanel", () => {
-  it("Given providers of different types, When the panel loads, Then the nav groups them by type and shows connection config plus enabled/disabled status", async () => {
+  it("Given providers of different types, When the panel loads, Then the nav groups them by type, shows the endpoint, and marks only disabled providers", async () => {
     const mocks = installAppMock({
       ListLLMProviders: vi.fn(() =>
         Promise.resolve({
@@ -232,7 +252,8 @@ describe("LlmProvidersPanel", () => {
     expect(
       within(anthropic).getByText("api.anthropic.com"),
     ).toBeInTheDocument();
-    expect(within(anthropic).getByText("Enabled")).toBeInTheDocument();
+    // 启用是常态，不再标注；只有停用的供应商带停用标记
+    expect(within(anthropic).queryByText("Enabled")).not.toBeInTheDocument();
 
     const deepseek = within(nav).getByRole("button", {
       name: /DeepSeek Proxy/,
@@ -272,8 +293,8 @@ describe("LlmProvidersPanel", () => {
     });
     // 模型行由异步 ListLLMModels 渲染，等待真实模型控件出现而非 region。
     expect(
-      await within(workspace).findByText("claude-sonnet-4-5"),
-    ).toBeInTheDocument();
+      (await within(workspace).findAllByText("claude-sonnet-4-5")).length,
+    ).toBeGreaterThan(0);
     expect(within(workspace).getByText("claude-opus-4-1")).toBeInTheDocument();
     // 连接配置（endpoint + 掩码 key）在头部可见
     expect(
@@ -760,11 +781,14 @@ describe("LlmProvidersPanel", () => {
         }),
       ),
     });
-    const user = userEvent.setup();
+    const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
     await screen.findByRole("region", { name: /Anthropic models/ });
-    await user.click(screen.getByRole("button", { name: "Delete Anthropic" }));
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Delete Anthropic" }),
+    );
 
     const dialog = await screen.findByRole("dialog", {
       name: /Delete provider/,
@@ -787,11 +811,14 @@ describe("LlmProvidersPanel", () => {
       ),
       ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
     });
-    const user = userEvent.setup();
+    const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
     await screen.findByRole("region", { name: /Anthropic models/ });
-    await user.click(screen.getByRole("button", { name: "Delete Anthropic" }));
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Delete Anthropic" }),
+    );
     await user.click(
       await screen.findByRole("button", { name: "Delete provider" }),
     );
@@ -810,8 +837,10 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("button", { name: "New Provider" });
-    await user.click(screen.getByRole("button", { name: "New Provider" }));
+    await screen.findByRole("button", { name: "Add First Provider" });
+    await user.click(
+      screen.getByRole("button", { name: "Add First Provider" }),
+    );
 
     const dialog = await screen.findByRole("dialog", {
       name: "New LLM Provider",
@@ -872,12 +901,15 @@ describe("LlmProvidersPanel", () => {
       ),
       ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
     });
-    const user = userEvent.setup();
+    const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
     await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(screen.getByRole("button", { name: "More" }));
     await user.click(
-      screen.getByRole("button", { name: "Edit Anthropic connection" }),
+      await screen.findByRole("menuitem", {
+        name: "Edit Anthropic connection",
+      }),
     );
     const dialog = await screen.findByRole("dialog", {
       name: /Edit connection/,
@@ -916,6 +948,145 @@ describe("LlmProvidersPanel", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Load failed: database locked",
+    );
+  });
+
+  it("Given providers exist, When the panel loads, Then a single New Provider entry precedes the workspace and the old toolbar and nav add entry are gone", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+    });
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+
+    // 唯一新增入口（页头），不再有外层重复卡片标题与左栏底部添加入口
+    expect(
+      screen.getByRole("button", { name: "New Provider" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add Provider" })).toBeNull();
+    expect(screen.queryByText("Configured Providers")).toBeNull();
+    expect(screen.getByText("1 total")).toBeInTheDocument();
+  });
+
+  it("Given a provider is selected, When the workspace renders, Then the header splits into identity and metadata rows with the combined switch first, then Test Connection, Discover Models and More", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({
+          items: [makeProvider({ name: "Anthropic Official" })],
+        }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+      LLMProviderRefCounts: vi.fn(() =>
+        Promise.resolve({ counts: { backends: 2, sessions: 1, routes: 0 } }),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    const workspace = await screen.findByRole("region", {
+      name: /Anthropic Official models/,
+    });
+
+    // 身份行：名称 + 协议类型
+    expect(
+      within(workspace).getByText("Anthropic Official"),
+    ).toBeInTheDocument();
+    expect(
+      within(workspace).getByText("Anthropic", { selector: "span" }),
+    ).toBeInTheDocument();
+
+    // 元信息行：endpoint / 掩码 key / 默认模型 / 被引用
+    expect(
+      within(workspace).getByText("https://api.anthropic.com"),
+    ).toBeInTheDocument();
+    expect(within(workspace).getByText("sk-••••••9XQ2")).toBeInTheDocument();
+    expect(within(workspace).getByText("Default model")).toBeInTheDocument();
+    expect(
+      (await within(workspace).findAllByText("claude-sonnet-4-5")).length,
+    ).toBeGreaterThan(0);
+    expect(within(workspace).getByText("Referenced")).toBeInTheDocument();
+    expect(
+      await within(workspace).findByText("2 backends · 1 session"),
+    ).toBeInTheDocument();
+
+    // 操作区顺序：开关（含状态文字）→ 测试连接 → 发现模型 → 更多
+    const switchEl = within(workspace).getByRole("switch", {
+      name: "Enable Anthropic Official",
+    });
+    const testBtn = within(workspace).getByRole("button", {
+      name: "Test Anthropic Official",
+    });
+    const discoverBtn = within(workspace).getByRole("button", {
+      name: "Discover models",
+    });
+    const moreBtn = within(workspace).getByRole("button", { name: "More" });
+    expect(
+      switchEl.compareDocumentPosition(testBtn) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      testBtn.compareDocumentPosition(discoverBtn) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      discoverBtn.compareDocumentPosition(moreBtn) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // 启用状态与开关合成一个控件，且可见文案为 Test Connection
+    expect(switchEl.closest("label")).toHaveTextContent("Enabled");
+    expect(within(workspace).getByText("Test Connection")).toBeInTheDocument();
+  });
+
+  it("Given a provider workspace, When the More menu is opened, Then it contains Edit Connection, Copy Provider Key and Delete", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+    });
+    const user = setupMenuUser();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(screen.getByRole("button", { name: "More" }));
+
+    const menu = await screen.findByRole("menu");
+    expect(
+      within(menu).getByRole("menuitem", { name: "Edit Anthropic connection" }),
+    ).toBeInTheDocument();
+    expect(
+      within(menu).getByRole("menuitem", { name: "Copy Provider Key" }),
+    ).toBeInTheDocument();
+    expect(
+      within(menu).getByRole("menuitem", { name: "Delete Anthropic" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Given a provider workspace, When Copy Provider Key is chosen from the More menu, Then the provider key is written to the clipboard and a success flash is shown", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+    });
+    const user = setupMenuUser();
+    const writeText = mockClipboard();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(screen.getByRole("button", { name: "More" }));
+    // fireEvent 直接触发 Radix DropdownMenuItem onSelect（不产生 pointer-leave 关闭菜单）
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Copy Provider Key" }),
+    );
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("pk-1");
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Provider Key copied",
     );
   });
 });

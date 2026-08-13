@@ -1780,6 +1780,10 @@
       "disabled": "Disabled",
       "noMatch": "No matching providers"
     },
+    "page": {
+      "add": "New Provider",
+      "count": "{{count}} total"
+    },
     "workspace": {
       "ariaLabel": "{{name}} models",
       "enableNamed": "Enable {{name}}",
@@ -1796,6 +1800,19 @@
       "deleteNamed": "Delete {{name}}",
       "deleteTitle": "Delete provider (requires confirmation)",
       "cannotEnableNoDefault": "Set an enabled default model before enabling this provider",
+      "testConnection": "Test Connection",
+      "more": "More",
+      "metaDefaultModel": "Default model",
+      "metaReferenced": "Referenced",
+      "refBackends": "{{count}} backends",
+      "refBackends_one": "{{count}} backend",
+      "refBackends_other": "{{count}} backends",
+      "refSessions": "{{count}} sessions",
+      "refSessions_one": "{{count}} session",
+      "refSessions_other": "{{count}} sessions",
+      "refRoutes": "{{count}} routes",
+      "refRoutes_one": "{{count}} route",
+      "refRoutes_other": "{{count}} routes",
       "searchPlaceholder": "Filter model IDs…",
       "searchAria": "Filter models",
       "modelCount": "Showing {{shown}} / {{total}}",
@@ -2784,7 +2801,7 @@
       "title": "Local HTTP Proxy"
     },
     "llmProvider": {
-      "description": "Configure available model sources. After saving, Agentre can fetch the account's available models, while context window, thinking support, and other capabilities are filled from the built-in cago agents catalog.",
+      "description": "Configure available model sources. After saving, Agentre can fetch the models available under the account and fill in each model's capabilities automatically.",
       "gapBanner": {
         "description": "Some agents are bound to backends that have no activated LLM provider. Once you've configured a provider, go to the org chart to assign it to those agents.",
         "goToOrg": "Go to org chart",
