@@ -166,8 +166,9 @@ func TestInbound_GivenRelayReconnectAndShutdown_WhenAuthorizedPeerCallsCapabilit
 		Params: mustJSON(t, struct{}{}),
 	})
 	require.Nil(t, explicitEmptyParams.Error, "an explicit empty params object remains compatible")
-	require.NoError(t, json.Unmarshal(explicitEmptyParams.Result, &list))
-	require.Equal(t, expectedSessions, list.Sessions)
+	var explicitList wire.SessionListResult
+	require.NoError(t, json.Unmarshal(explicitEmptyParams.Result, &explicitList))
+	require.Equal(t, expectedSessions, explicitList.Sessions)
 
 	attached := relayRequest(t, ws, "desktop-peer", rpc.Frame{
 		JSONRPC: "2.0", ID: json.RawMessage(`5`), Method: wire.MethodSessionAttach,
