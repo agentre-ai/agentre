@@ -53,6 +53,7 @@ import {
   RemoteDeviceListProviders,
   RemoteDeviceSyncProvider,
   ResolveAgentBackendCLIPath,
+  ServerListDevices,
   ScanAndCreateAgentBackends,
   TestAgentBackend,
   TestOpenClawAgentBackend,
@@ -1071,6 +1072,9 @@ function BackendEditor({
   );
   const [devices, setDevices] = React.useState<DeviceView[]>([]);
   const [localFingerprint, setLocalFingerprint] = React.useState("");
+  const [accountDeviceNames, setAccountDeviceNames] = React.useState<
+    Map<string, string>
+  >(new Map());
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
   const [pendingProviderSync, setPendingProviderSync] =
@@ -1168,11 +1172,7 @@ function BackendEditor({
   // 只有 CLI 引擎带设备前缀 —— 它们才能派到远端；内置 / 网关直接用类型名。
   function defaultBackendName(bt: BackendType, dev: string): string {
     if (!isCliBackend(bt)) return t(`agentBackends.backendType.${bt}.label`);
-    const deviceName =
-      dev === ""
-        ? t("agentBackends.device.localShort")
-        : (devices.find((d) => String(d.id) === dev)?.name ??
-          t("agentBackends.device.localShort"));
+    const deviceName = deviceDisplayName(dev);
     return t("agentBackends.name.deviceDefault", {
       device: deviceName,
       name: t(`agentBackends.backendType.${bt}.shortLabel`),
@@ -1283,14 +1283,26 @@ function BackendEditor({
   // Fetch paired remote devices when the dialog opens (or re-opens).
   React.useEffect(() => {
     if (state.kind === "closed") return;
-    void Promise.all([RemoteDeviceList(), RemoteDeviceFingerprint()])
-      .then(([rows, fingerprint]) => {
+    void Promise.all([
+      RemoteDeviceList(),
+      RemoteDeviceFingerprint(),
+      ServerListDevices().catch(() => []),
+    ])
+      .then(([rows, fingerprint, accountDevices]) => {
         setDevices((rows ?? []) as unknown as DeviceView[]);
         setLocalFingerprint(fingerprint ?? "");
+        setAccountDeviceNames(
+          new Map(
+            (accountDevices ?? [])
+              .filter((device) => device.Fingerprint)
+              .map((device) => [device.Fingerprint, device.Name] as const),
+          ),
+        );
       })
       .catch(() => {
         setDevices([]);
         setLocalFingerprint("");
+        setAccountDeviceNames(new Map());
       });
   }, [state.kind]);
 
@@ -1313,6 +1325,24 @@ function BackendEditor({
     devices.some(
       (candidate) => pairedDeviceSelectValue(candidate) === selectedDeviceValue,
     );
+  const deviceDisplayName = React.useCallback(
+    (value: string) => {
+      if (
+        value === "" ||
+        (localFingerprint !== "" && value === localFingerprint)
+      ) {
+        return t("agentBackends.device.localShort");
+      }
+      return (
+        devices.find(
+          (candidate) => pairedDeviceSelectValue(candidate) === value,
+        )?.name ||
+        accountDeviceNames.get(value) ||
+        value
+      );
+    },
+    [accountDeviceNames, devices, localFingerprint, t],
+  );
   const [remoteProviders, setRemoteProviders] = React.useState<
     ProviderSummary[]
   >([]);
@@ -1891,7 +1921,7 @@ function BackendEditor({
               ))}
               {!selectedDeviceKnown && deviceId ? (
                 <SelectItem value={deviceId} disabled>
-                  📡 {editing?.deviceName || deviceId}
+                  📡 {editing?.deviceName || deviceDisplayName(deviceId)}
                 </SelectItem>
               ) : null}
             </SelectContent>
@@ -2044,12 +2074,7 @@ function BackendEditor({
 
         <EffectiveConfigSummary
           type={type}
-          deviceName={
-            deviceId === ""
-              ? t("agentBackends.device.localShort")
-              : (devices.find((item) => String(item.id) === deviceId)?.name ??
-                deviceId)
-          }
+          deviceName={deviceDisplayName(deviceId)}
           resolvedMainTarget={resolvedMainTarget}
           customModel={defaultModel}
           routes={routes}

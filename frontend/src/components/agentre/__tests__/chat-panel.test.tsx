@@ -2958,6 +2958,45 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
       deviceName: "Peer Desktop",
     };
     appMocks.PeerRunFresh.mockResolvedValue({ sessionId: 42 });
+    appMocks.RemoteDeviceList.mockResolvedValue([
+      {
+        id: 9,
+        name: "Peer Desktop",
+        daemonFingerprint: "sha256:peer-desktop",
+        online: true,
+        supportsLLMModelTarget: true,
+      },
+    ]);
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [
+        {
+          id: 21,
+          providerId: 11,
+          providerKey: "acme-anthropic",
+          modelKey: "mk-sonnet",
+          modelId: "claude-sonnet-4-5",
+          name: "Sonnet",
+          enabled: true,
+        },
+      ],
+    });
+    appMocks.RemoteDeviceListProviders.mockResolvedValue([
+      {
+        key: "acme-anthropic",
+        name: "Acme Claude",
+        type: "anthropic",
+        enabled: true,
+        defaultModelKey: "mk-sonnet",
+        models: [
+          {
+            key: "mk-sonnet",
+            modelId: "claude-sonnet-4-5",
+            name: "Sonnet",
+            enabled: true,
+          },
+        ],
+      },
+    ]);
     appMocks.ListLLMProviders.mockResolvedValue({
       items: [
         {
@@ -4943,6 +4982,45 @@ describe("ChatPanel · 新会话 tab 输入守卫（非可对话 Agent）", () =
 });
 
 describe("ChatPanel · 远端 ModelTarget Picker 门控（gap 1：ProviderPill 接收 daemon 目录/能力）", () => {
+  it("Given a new chat overrides the Agent default to another remote target, When the Composer loads, Then model gating uses the effective target", async () => {
+    resetStore();
+    mockSessionStore.session = null;
+    componentMocks.effectiveExecTarget = {
+      kind: "daemon",
+      deviceId: "sha256:target-b",
+      deviceName: "Target B",
+    };
+    appMocks.RemoteDeviceList.mockResolvedValue([
+      {
+        id: 9,
+        name: "Target B",
+        daemonFingerprint: "sha256:target-b",
+        online: true,
+        supportsLLMModelTarget: false,
+      },
+    ]);
+    appMocks.RemoteDeviceListProviders.mockResolvedValue([]);
+
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Eng",
+            agentBackendId: 1,
+            backendType: "claudecode",
+            deviceID: "sha256:target-a",
+          } as never
+        }
+      />,
+    );
+
+    await waitFor(() => {
+      expect(appMocks.RemoteDeviceListProviders).toHaveBeenCalledWith(9);
+    });
+  });
+
   it("Given 会话绑定了远端设备, When 渲染 composer, Then ProviderPill 按该设备拉取 daemon 目录/能力做远端门控", async () => {
     resetStore();
     mockSessionStore.session = makeSession({
