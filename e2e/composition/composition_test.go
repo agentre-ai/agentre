@@ -1,6 +1,8 @@
 package composition
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/agentre-ai/agentre/e2e/preflight"
@@ -57,6 +59,21 @@ func TestFromPreflightGivenNonLoopbackOrMissingIdentityRejectsComposition(t *tes
 				t.Fatal("FromPreflight error = nil, want unsafe identity rejection")
 			}
 		})
+	}
+}
+
+func TestInstallGivenFakeSetupFailureReturnsErrorToTheDedicatedEntrypoint(t *testing.T) {
+	setValidRunnerIdentity(t)
+	previous := installFakes
+	t.Cleanup(func() { installFakes = previous })
+	want := errors.New("seed failed")
+	installFakes = func(context.Context) error { return want }
+
+	err := Install(context.Background(), preflight.Config{
+		RunRoot: "/run", DataDir: "/run/data", KeychainDir: "/run/keychain",
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("Install error = %v, want %v", err, want)
 	}
 }
 

@@ -41,7 +41,7 @@ func TestGivenE2EKeychainDirWhenBootstrapInitThenSeedingSharesFileBackend(t *tes
 
 	// fakes 装配(e2e login seed / backend 播种)读到的必须是同一个 file backend:
 	// probe 写入落在隔离目录,而不是生产 system keychain。
-	install(context.Background())
+	require.NoError(t, Install(context.Background()))
 	require.Equal(t, reflect.TypeOf(keychain.NewFile(keychainDir)), reflect.TypeOf(keychain.Default()))
 	require.NoError(t, keychain.Default().Set("probe-account", "generated-test-value"))
 	got, err := os.ReadFile(filepath.Join(keychainDir, "probe-account")) //nolint:gosec // G304: path is beneath this test's private TempDir

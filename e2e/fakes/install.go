@@ -5,6 +5,7 @@ package fakes
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
@@ -13,12 +14,10 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	fakert "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/fake"
 	"github.com/agentre-ai/agentre/internal/pkg/agentskill"
-	"github.com/agentre-ai/agentre/internal/pkg/agenttool"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/service/agent_backend_svc"
 	"github.com/agentre-ai/agentre/internal/service/agent_svc"
-	"github.com/agentre-ai/agentre/internal/service/department_svc"
 )
 
 type codexSkillDiscoverer struct{}
@@ -59,16 +58,14 @@ func (claudeSkillDiscoverer) Discover(context.Context, agentskill.DiscoverQuery)
 	}, nil
 }
 
-// install:
+// Install:
 //  1. 用确定性 fake 覆盖 claudecode runtime(无子进程/无登录);
-//  2. seed 一个本地 claudecode backend 并挂到默认 CEO agent,
+//  2. seed 冒烟场景需要的最小本地 claudecode backend 并挂到默认 CEO agent,
 //     让前端"建会话→发消息→看回复"无需真实 CLI 即可跑通。
 //
 // 隔离 keychain 由 bootstrap(initKeychain,见 internal/bootstrap/keychain.go)在装配
 // Server / Remote Device 之前按 AGENTRE_KEYCHAIN_DIR 建立,这里不再覆盖。
-//
-// 失败只记日志不 panic:e2e 环境异常应让 Playwright 用例红,而不是让 app 崩。
-func install(ctx context.Context) {
+func Install(ctx context.Context) error {
 	// 先接账号:随后 seed 出来的 backend / agent 才会带着账号进出站队列(R3)。
 	installE2ELoggedInAccount(ctx)
 	agentruntime.RegisterRuntime(agent_backend_entity.TypeClaudeCode, fakert.New())
@@ -80,8 +77,7 @@ func install(ctx context.Context) {
 	const backendName = "E2E Local Backend"
 	var backendID int64
 	if existing, err := agent_backend_repo.AgentBackend().FindByName(ctx, backendName); err != nil {
-		logger.Ctx(ctx).Error("e2efakes.Install: lookup backend failed", zap.Error(err))
-		return
+		return fmt.Errorf("lookup local backend: %w", err)
 	} else if existing != nil {
 		backendID = existing.ID
 	} else {
@@ -90,107 +86,28 @@ func install(ctx context.Context) {
 			Name: backendName,
 		})
 		if err != nil {
-			logger.Ctx(ctx).Error("e2efakes.Install: create backend failed", zap.Error(err))
-			return
+			return fmt.Errorf("create local backend: %w", err)
 		}
 		backendID = resp.Item.ID
 	}
 
 	ceo, err := agent_repo.Agent().FindSystem(ctx)
 	if err != nil {
-		logger.Ctx(ctx).Error("e2efakes.Install: find system agent failed", zap.Error(err))
-		return
+		return fmt.Errorf("find system agent: %w", err)
 	}
 	if ceo == nil {
-		logger.Ctx(ctx).Error("e2efakes.Install: system agent not found (migration gap?)")
-		return
+		return fmt.Errorf("system agent not found")
 	}
 
 	if _, err := agent_svc.Agent().Update(ctx, &agent_svc.UpdateAgentRequest{
-		ID:   ceo.ID,
-		Name: ceo.Name,
-		// R15 起 Update 写的是有序执行目标列表,不再是单个 AgentBackendID。
-		ExecTargets: []agent_svc.ExecTargetInputDTO{{AgentBackendID: backendID}},
-		// 开启工具:本 Update 会整体覆写工具数组(丢掉 migration 默认),故所有 e2e 用到
-		// 的工具都要在这里显式开。让 CEO 单聊轮注入对应 MCP server:
-		//   - subagent → /mcp/subagent/(subagent-tool.spec:agent_call 委派,无审批)
-		//   - org → /mcp/org/(org-tool.spec:org_create_department 写工具审批)
-		//   - hook → /mcp/hook/(hooks MCP 创作工具:hook_create 写工具审批)
-		Tools: []department_svc.AgentToolDTO{
-			{Key: agenttool.KeySubagent, Enabled: true},
-			{Key: agenttool.KeyOrg, Enabled: true},
-			{Key: agenttool.KeyHook, Enabled: true},
-		},
-	}); err != nil {
-		logger.Ctx(ctx).Error("e2efakes.Install: attach backend to agent failed", zap.Error(err))
-		return
-	}
-
-	// seed E2E Member(挂 CEO 汇报线),供 subagent-tool.spec 的 agent_call 委派用。
-	const memberName = "E2E Member"
-	if existing, err := agent_repo.Agent().FindByName(ctx, memberName); err != nil {
-		logger.Ctx(ctx).Error("e2efakes.Install: lookup member agent failed",
-			zap.String("name", memberName), zap.Error(err))
-		return
-	} else if existing == nil {
-		if _, err := agent_svc.Agent().Create(ctx, &agent_svc.CreateAgentRequest{
-			Name:           memberName,
-			ParentAgentID:  ceo.ID,
-			AgentBackendID: backendID,
-		}); err != nil {
-			logger.Ctx(ctx).Error("e2efakes.Install: create member agent failed",
-				zap.String("name", memberName), zap.Error(err))
-			return
-		}
-	} else if _, err := agent_svc.Agent().Update(ctx, &agent_svc.UpdateAgentRequest{
-		ID: existing.ID, Name: existing.Name,
+		ID:          ceo.ID,
+		Name:        ceo.Name,
 		ExecTargets: []agent_svc.ExecTargetInputDTO{{AgentBackendID: backendID}},
 	}); err != nil {
-		logger.Ctx(ctx).Error("e2efakes.Install: update member agent failed",
-			zap.String("name", memberName), zap.Error(err))
-		return
-	}
-
-	const codexBackendName = "E2E Codex Backend"
-	var codexBackendID int64
-	if existing, err := agent_backend_repo.AgentBackend().FindByName(ctx, codexBackendName); err != nil {
-		logger.Ctx(ctx).Error("e2efakes.Install: lookup codex backend failed", zap.Error(err))
-		return
-	} else if existing != nil {
-		codexBackendID = existing.ID
-	} else {
-		resp, err := agent_backend_svc.AgentBackend().Create(ctx, &agent_backend_svc.CreateBackendRequest{
-			Type: string(agent_backend_entity.TypeCodex),
-			Name: codexBackendName,
-		})
-		if err != nil {
-			logger.Ctx(ctx).Error("e2efakes.Install: create codex backend failed", zap.Error(err))
-			return
-		}
-		codexBackendID = resp.Item.ID
-	}
-
-	const codexAgentName = "E2E Codex Agent"
-	if existing, err := agent_repo.Agent().FindByName(ctx, codexAgentName); err != nil {
-		logger.Ctx(ctx).Error("e2efakes.Install: lookup codex agent failed", zap.Error(err))
-		return
-	} else if existing == nil {
-		if _, err := agent_svc.Agent().Create(ctx, &agent_svc.CreateAgentRequest{
-			Name:           codexAgentName,
-			ParentAgentID:  ceo.ID,
-			AgentBackendID: codexBackendID,
-		}); err != nil {
-			logger.Ctx(ctx).Error("e2efakes.Install: create codex agent failed", zap.Error(err))
-			return
-		}
+		return fmt.Errorf("attach local backend to system agent: %w", err)
 	}
 
 	logger.Ctx(ctx).Info("e2efakes.Install: e2e fakes installed",
 		zap.Int64("backendID", backendID), zap.Int64("agentID", ceo.ID))
-}
-
-// Install applies deterministic E2E composition after bootstrap.
-func Install(ctx context.Context) error {
-	install(ctx)
 	return nil
 }

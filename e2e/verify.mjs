@@ -17,6 +17,7 @@ import {
   resolveTarget,
   writeSession,
 } from "./lib/target.mjs";
+import { verificationBrowserArgs } from "./lib/browser.mjs";
 import { reapOrphanVite } from "./lib/procs.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -176,16 +177,11 @@ async function startBrowser(target, flags) {
   if (!existsSync(executable)) {
     throw new Error(`Chromium is missing at ${executable}: run \`cd e2e && pnpm run setup\``);
   }
-  const args = [
-    `--remote-debugging-port=${target.cdpPort}`,
-    `--user-data-dir=${target.browserDir}`,
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--no-service-autorun",
-    "--password-store=basic",
-    "--use-mock-keychain",
-  ];
-  if (!flags.headed) args.push("--headless=new");
+  const args = verificationBrowserArgs({
+    cdpPort: target.cdpPort,
+    browserDir: target.browserDir,
+    headless: !flags.headed,
+  });
   args.push(target.baseURL);
 
   const browser = spawn(executable, args, { detached: true, stdio: "ignore" });

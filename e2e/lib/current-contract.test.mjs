@@ -33,6 +33,11 @@ const currentGuidesAndEntries = [
   "e2e/drive.mjs",
 ];
 
+const legacyBuildTagDocs = [
+  "internal/bootstrap/keychain.go",
+  "internal/bootstrap/keychain_test.go",
+];
+
 const forbiddenCurrentFacts = [
   "--flavor",
   "FLAVOR=",
@@ -55,6 +60,9 @@ test("Given the unified harness, when current entries and guides are inspected, 
     for (const fact of forbiddenCurrentFacts) {
       assert.equal(source.includes(fact), false, `${path} still contains legacy fact ${fact}`);
     }
+  }
+  for (const path of legacyBuildTagDocs) {
+    assert.equal(read(path).includes("-tags e2e"), false, `${path} still documents the deleted E2E build tag`);
   }
 });
 

@@ -9,10 +9,9 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/keychain"
 )
 
-// KeychainDirEnv 把 keychain 后端指向一个隔离的 file keychain 目录。它**不带 build tag**:
-// 本地验证既可以跑 fake runtime(-tags e2e),也可以跑真实 claude / codex CLI(默认构建),
-// 两种档位都要求 device token / fingerprint / 登录凭据落在隔离目录,而不是生产 system
-// keychain。启动脚本(e2e/lib/target.mjs)负责创建 0700 目录并注入这个变量。
+// KeychainDirEnv 把 keychain 后端指向一个隔离的 file keychain 目录。独立 E2E main
+// 与正式 main 的本地真实验证都要求 device token / fingerprint / 登录凭据落在各自隔离
+// 目录，而不是生产 system keychain。对应 launcher 负责创建 0700 目录并注入这个变量。
 const KeychainDirEnv = "AGENTRE_KEYCHAIN_DIR"
 
 // initKeychain 在 bootstrap 装配任何依赖 keychain 的服务(Server / Remote Device /

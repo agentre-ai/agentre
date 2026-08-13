@@ -5,6 +5,11 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import {
+  VERIFY_VIEWPORT,
+  applyVerificationViewport,
+  verificationBrowserArgs,
+} from "./browser.mjs";
+import {
   INSTANCE_ID,
   INSTANCE_ROOT,
   IsolationError,
@@ -54,4 +59,32 @@ test("Given a live verification target, when a URL is checked, then only its own
   assert.throws(() => assertSanctionedURL(target, "http://localhost:34115/"), IsolationError);
   assert.throws(() => assertSanctionedURL(target, "https://agentre.ai/"), IsolationError);
   assert.throws(() => assertSanctionedURL(target, "file:///etc/passwd"), IsolationError);
+});
+
+test("Given formal verification, when its browser and driven page are prepared, then evidence uses the established 1440x900 viewport in headless and headed modes", async () => {
+  const calls = [];
+  await applyVerificationViewport({
+    setViewportSize(size) {
+      calls.push(size);
+    },
+  });
+
+  assert.deepEqual(VERIFY_VIEWPORT, { width: 1440, height: 900 });
+  assert.deepEqual(calls, [{ width: 1440, height: 900 }]);
+
+  const headless = verificationBrowserArgs({
+    cdpPort: 34301,
+    browserDir: "/tmp/agentre-browser",
+    headless: true,
+  });
+  assert.ok(headless.includes("--window-size=1440,900"));
+  assert.ok(headless.includes("--headless=new"));
+
+  const headed = verificationBrowserArgs({
+    cdpPort: 34301,
+    browserDir: "/tmp/agentre-browser",
+    headless: false,
+  });
+  assert.ok(headed.includes("--window-size=1440,900"));
+  assert.ok(!headed.includes("--headless=new"));
 });

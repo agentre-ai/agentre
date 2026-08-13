@@ -14,8 +14,7 @@ import (
 )
 
 // initKeychain 是 bootstrap 在装配 Server / Remote Device 之前选择 keychain 后端的接缝。
-// 隔离 keychain 目录不带 build tag —— 本地验证既可以跑 fake runtime(-tags e2e),也可以跑
-// 真实 claude / codex CLI(默认构建),两种档位都必须落在隔离目录里,生产 system keychain
+// 独立 E2E main 与正式 main 的本地真实验证都必须落在隔离目录里,生产 system keychain
 // 永远不是 fallback。这些用例钉死这条边界:设置 AGENTRE_KEYCHAIN_DIR 时建立 file keychain;
 // 目录缺失 / 权限不安全 → 启动失败,绝不偷偷换后端。
 //

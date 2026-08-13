@@ -100,7 +100,7 @@ make verify-down                    # retain isolated state
 make verify-down VERIFY_FLAGS=--wipe
 ```
 
-`make verify-up VERIFY_FLAGS=--headed` makes the attached Chromium visible; by default Chromium is headless. The formal native window follows normal product behavior and is not hidden by the launcher or driver.
+`make verify-up VERIFY_FLAGS=--headed` makes the attached Chromium visible; by default Chromium is headless. Both modes use the established 1440×900 driven viewport so screenshots stay legible and comparable. The formal native window follows normal product behavior and is not hidden by the launcher or driver.
 
 `lib/target.mjs` derives one checkout-scoped data directory, file-keychain directory, browser directory, session file, bridge port, and CDP port. It rejects the installed app root, the development root, arbitrary directories, non-loopback origins, and the ordinary development bridge. A second worktree derives a different target. The launcher never adopts an unrecorded process already holding its port.
 

@@ -118,6 +118,8 @@ func loopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+var installFakes = fakes.Install
+
 // Install replaces only external/runtime boundaries and seeds deterministic
 // E2E state after production bootstrap has completed.
 func Install(ctx context.Context, validated preflight.Config) error {
@@ -140,8 +142,8 @@ func Install(ctx context.Context, validated preflight.Config) error {
 			return fmt.Errorf("set fake login identity: %w", err)
 		}
 	}
-	if err := fakes.Install(ctx); err != nil {
-		return err
+	if err := installFakes(ctx); err != nil {
+		return fmt.Errorf("seed local fake runtime: %w", err)
 	}
 	if err := installRemotePeer(ctx, config.Remote); err != nil {
 		return err
