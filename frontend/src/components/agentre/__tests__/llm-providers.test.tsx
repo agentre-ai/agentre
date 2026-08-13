@@ -1737,9 +1737,7 @@ describe("LlmProvidersPanel", () => {
     ).toBeDisabled();
 
     // 全选只作用于新模型：先取消一个新项使全选处于未全选态，再点全选
-    await user.click(
-      within(dialog).getByRole("checkbox", { name: "gpt-5.1" }),
-    );
+    await user.click(within(dialog).getByRole("checkbox", { name: "gpt-5.1" }));
     await user.click(
       within(dialog).getByRole("checkbox", {
         name: "Select all new models",
@@ -1774,9 +1772,7 @@ describe("LlmProvidersPanel", () => {
       ListLLMProviders: vi.fn(() =>
         Promise.resolve({ items: [makeProvider()] }),
       ),
-      ListLLMModels: vi.fn(() =>
-        Promise.resolve({ items: [makeModel()] }),
-      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
       PreviewLLMModels: vi.fn(() =>
         Promise.reject(
           new Error(
