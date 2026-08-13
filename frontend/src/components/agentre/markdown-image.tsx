@@ -14,6 +14,7 @@ const FILE_PROTOCOL = /^file:\/\//i;
 const SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 const HTTP_PROTOCOL = /^https?:/i;
 const WWW_PREFIX = /^www\./i;
+const PROTOCOL_RELATIVE = /^\/\//;
 
 function decodeLocalPath(path: string): string {
   try {
@@ -23,14 +24,27 @@ function decodeLocalPath(path: string): string {
   }
 }
 
-function fileURLToPath(href: string): string {
+function fileURLToPath(href: string): string | null {
   // file:///Users/x/a.png → /Users/x/a.png
   // file:///C:/Users/x/a.png → C:/Users/x/a.png
+  // file://localhost/Users/x/a.png → /Users/x/a.png
+  // file://server/share/a.png → null（远端主机,不是本机文件,不该当本地路径处理）
   let path = href.slice("file://".length);
-  if (path.startsWith("/") && /^[A-Za-z]:/.test(path.slice(1))) {
-    path = path.slice(1);
+  if (path.startsWith("/")) {
+    // 空主机段:path 即绝对路径;剥掉 Windows 盘符前的多余 "/"。
+    if (/^[A-Za-z]:/.test(path.slice(1))) path = path.slice(1);
+    return decodeLocalPath(path);
   }
-  return decodeLocalPath(path);
+  if (/^[A-Za-z]:[\\/]/.test(path)) {
+    // file://C:/… 这类缺斜杠的盘符形式。
+    return decodeLocalPath(path);
+  }
+  // 有主机段:host/path。仅空主机 / localhost 视为本机;远端主机不是本机路径。
+  const slash = path.indexOf("/");
+  const host = slash >= 0 ? path.slice(0, slash) : path;
+  if (host !== "" && host.toLowerCase() !== "localhost") return null;
+  const rest = slash >= 0 ? path.slice(slash) : "/";
+  return decodeLocalPath(rest);
 }
 
 function basenameOf(path: string): string {
@@ -82,7 +96,11 @@ export function classifyMarkdownImage(
 ): MarkdownImageClass {
   if (src === "") return { kind: "plain", src: undefined };
 
-  if (HTTP_PROTOCOL.test(src) || WWW_PREFIX.test(src)) {
+  if (
+    HTTP_PROTOCOL.test(src) ||
+    WWW_PREFIX.test(src) ||
+    PROTOCOL_RELATIVE.test(src)
+  ) {
     return { kind: "remote", src };
   }
 
@@ -292,6 +310,7 @@ export function MarkdownImage({
   if (cls.kind === "fetch") {
     return (
       <FetchImage
+        key={cls.relPath}
         relPath={cls.relPath}
         absolutePath={cls.absolutePath}
         basename={cls.basename}

@@ -103,6 +103,38 @@ describe("classifyMarkdownImage", () => {
     });
   });
 
+  it("resolves file://localhost to a local path", () => {
+    expect(
+      classifyMarkdownImage("file://localhost/proj/a.png", {
+        cwd: "/proj",
+        sessionId: 7,
+      }),
+    ).toEqual({
+      kind: "fetch",
+      relPath: "a.png",
+      absolutePath: "/proj/a.png",
+      basename: "a.png",
+    });
+  });
+
+  it("does not treat a file:// URL with a remote host as a local path", () => {
+    expect(
+      classifyMarkdownImage("file://server/share/a.png", {
+        cwd: "/proj",
+        sessionId: 7,
+      }),
+    ).toEqual({ kind: "plain", src: "file://server/share/a.png" });
+  });
+
+  it("classifies a protocol-relative image URL as remote", () => {
+    expect(
+      classifyMarkdownImage("//cdn.example.com/a.png", {
+        cwd: "/proj",
+        sessionId: 7,
+      }),
+    ).toEqual({ kind: "remote", src: "//cdn.example.com/a.png" });
+  });
+
   it("classifies a non-image extension as fallback (clickable inside cwd)", () => {
     expect(
       classifyMarkdownImage("notes.txt", { cwd: "/proj", sessionId: 7 }),
@@ -200,6 +232,28 @@ describe("MarkdownImage", () => {
     );
     const img = await screen.findByRole("img");
     expect(img.getAttribute("src")).toBe("data:image/png;base64,aGVsbG8=");
+  });
+
+  it("resets to loading when the image relPath changes", async () => {
+    appMocks.WorkspaceFsReadFile.mockResolvedValueOnce({
+      content: "aGVsbG8=",
+      contentType: "image/png",
+    });
+    const { rerender } = render(
+      <MarkdownImage src="a.png" cwd="/proj" sessionId={7} alt="A" />,
+    );
+    await screen.findByRole("img");
+
+    appMocks.WorkspaceFsReadFile.mockResolvedValue({
+      content: "d29ybGQ=",
+      contentType: "image/png",
+    });
+    rerender(<MarkdownImage src="b.png" cwd="/proj" sessionId={7} alt="A" />);
+    expect(screen.queryByRole("img")).toBeNull();
+    await screen.findByRole("img");
+    expect(screen.getByRole("img").getAttribute("src")).toBe(
+      "data:image/png;base64,d29ybGQ=",
+    );
   });
 
   it("renders a tooLarge result as the tooLarge chip", async () => {
