@@ -43,6 +43,8 @@ const appMocks = vi.hoisted(() => ({
   ListLLMProviders: vi.fn().mockResolvedValue({ items: [] }),
   ListLLMModels: vi.fn().mockResolvedValue({ items: [] }),
   LoadChatSession: vi.fn(),
+  PeerRunFresh: vi.fn(),
+  RemoteDeviceFingerprint: vi.fn().mockResolvedValue("sha256:local-desktop"),
   RemoteDeviceList: vi.fn().mockResolvedValue([]),
   RemoteDeviceListProviders: vi.fn().mockResolvedValue([]),
   SetChatSessionProvider: vi.fn(),
@@ -93,6 +95,11 @@ const componentMocks = vi.hoisted(() => ({
   capsSwitchableDuringTurn: true,
   capsAllowedModes: ["default", "plan", "acceptEdits", "bypassPermissions"],
   capsImageInput: true,
+  effectiveExecTarget: null as null | {
+    kind: "local" | "desktop" | "daemon";
+    deviceId: string;
+    deviceName: string;
+  },
   computeComposerContextUsage: vi.fn((..._args: unknown[]) => ({
     max: 0,
     used: 0,
@@ -235,6 +242,25 @@ vi.mock("../project-merge-dialog", () => ({
       : null,
 }));
 
+vi.mock("../session-exec-target", async () => {
+  const React = await import("react");
+  return {
+    NewSessionExecTargetLine: ({
+      onEffectiveTarget,
+    }: {
+      onEffectiveTarget?: (
+        target: typeof componentMocks.effectiveExecTarget,
+      ) => void;
+    }) => {
+      React.useEffect(() => {
+        onEffectiveTarget?.(componentMocks.effectiveExecTarget);
+      }, [onEffectiveTarget]);
+      return null;
+    },
+    SessionOfflineBanner: () => null,
+  };
+});
+
 // PermissionModePill / QueuedMessagesBar / TaskProgressBar：桩
 vi.mock("../permission-mode", async () => {
   const React = await import("react");
@@ -374,11 +400,13 @@ function resetStore() {
     "bypassPermissions",
   ];
   componentMocks.capsImageInput = true;
+  componentMocks.effectiveExecTarget = null;
   componentMocks.computeComposerContextUsage.mockClear();
   componentMocks.cycleMode.mockClear();
   componentMocks.setMode.mockClear();
   ccUsageMock.calls.length = 0;
   appMocks.SendChatMessage.mockReset();
+  appMocks.PeerRunFresh.mockReset();
   appMocks.ListLLMModels.mockReset();
   appMocks.ListLLMModels.mockResolvedValue({ items: [] });
   appMocks.RegenerateChatMessage.mockReset();
@@ -394,6 +422,8 @@ function resetStore() {
   appMocks.ResolveLocalCommandScope.mockImplementation(
     () => new Promise(() => undefined),
   );
+  appMocks.RemoteDeviceFingerprint.mockReset();
+  appMocks.RemoteDeviceFingerprint.mockResolvedValue("sha256:local-desktop");
   appMocks.RemoteDeviceList.mockReset();
   appMocks.RemoteDeviceList.mockResolvedValue([]);
   appMocks.RemoteDeviceListProviders.mockReset();
@@ -2917,6 +2947,70 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
         }),
       );
     });
+  });
+
+  it("Given a desktop peer target and a transient provider-default selection, When the first message is dispatched, Then PeerRunFresh carries the selected model target", async () => {
+    resetStore();
+    mockSessionStore.session = null;
+    componentMocks.effectiveExecTarget = {
+      kind: "desktop",
+      deviceId: "sha256:peer-desktop",
+      deviceName: "Peer Desktop",
+    };
+    appMocks.PeerRunFresh.mockResolvedValue({ sessionId: 42 });
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [
+        {
+          id: 11,
+          providerKey: "acme-anthropic",
+          name: "Acme Claude",
+          type: "anthropic",
+          enabled: true,
+          defaultModelKey: "mk-sonnet",
+          model: "claude-sonnet-4-5",
+        },
+      ],
+    });
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Eng",
+            agentBackendId: 1,
+            backendType: "claudecode",
+            llmProviderKey: "",
+          } as never
+        }
+      />,
+    );
+
+    const pill = await screen.findByTestId("provider-pill");
+    await waitFor(() => expect(pill).not.toBeDisabled());
+    const user = userEvent.setup();
+    await user.click(pill);
+    await user.click(
+      within(screen.getByRole("listbox")).getByRole("option", {
+        name: /Follow this provider's default/,
+      }),
+    );
+
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((text: string) => void)
+      | undefined;
+    act(() => submit?.("hello peer"));
+
+    await waitFor(() => {
+      expect(appMocks.PeerRunFresh).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fingerprint: "sha256:peer-desktop",
+          providerKey: "acme-anthropic",
+          modelKey: "",
+        }),
+      );
+    });
+    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
   });
 
   it("sessionId=0 + 已绑 agent 的新建会话：未选时 pill 显示 agent 绑定供应商名", async () => {

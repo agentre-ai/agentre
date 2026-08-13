@@ -69,6 +69,8 @@ type RunFreshRequest struct {
 	Title          string `json:"title,omitempty"`
 	UserText       string `json:"text"`
 	PermissionMode string `json:"permissionMode,omitempty"`
+	ProviderKey    string `json:"providerKey,omitempty"`
+	ModelKey       string `json:"modelKey,omitempty"`
 }
 
 // AttachRequest 是「接入对端一条会话并开始接收实时流」（R19 / R6）的入参。

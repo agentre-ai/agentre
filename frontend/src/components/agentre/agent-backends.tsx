@@ -48,6 +48,7 @@ import {
   GetGatewayStatus,
   ListAgentBackends,
   ListLLMProviders,
+  RemoteDeviceFingerprint,
   RemoteDeviceList,
   RemoteDeviceListProviders,
   RemoteDeviceSyncProvider,
@@ -79,6 +80,12 @@ import {
   OPENCLAW_ERROR_KEY_BY_CODE,
   openClawDraftIssue,
 } from "./openclaw-validation";
+import {
+  deviceSelectValue,
+  pairedDeviceSelectValue,
+  persistedDeviceIdForSelection,
+  resolveExecutionDevice,
+} from "./device-identity";
 
 type Backend = agent_backend_svc.BackendItem;
 type Provider = llm_provider_svc.ProviderItem;
@@ -91,6 +98,7 @@ type DeviceView = {
   id: number;
   name: string;
   online: boolean;
+  daemonFingerprint?: string;
   supportsLLMModelTarget?: boolean;
 };
 type ProviderSummary = {
@@ -246,14 +254,6 @@ const RESERVED_ENV_KEYS = new Set([
 ]);
 
 const LOCAL_DEVICE_SELECT_VALUE = "__local_device__";
-
-function deviceIdToSelectValue(deviceId: string): string {
-  return deviceId === "" ? LOCAL_DEVICE_SELECT_VALUE : deviceId;
-}
-
-function selectValueToDeviceId(value: string): string {
-  return value === LOCAL_DEVICE_SELECT_VALUE ? "" : value;
-}
 
 function matchingProviders(t: BackendType, providers: Provider[]) {
   if (t === "claudecode")
@@ -1070,6 +1070,7 @@ function BackendEditor({
     editing?.deviceId ?? "",
   );
   const [devices, setDevices] = React.useState<DeviceView[]>([]);
+  const [localFingerprint, setLocalFingerprint] = React.useState("");
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
   const [pendingProviderSync, setPendingProviderSync] =
@@ -1282,16 +1283,36 @@ function BackendEditor({
   // Fetch paired remote devices when the dialog opens (or re-opens).
   React.useEffect(() => {
     if (state.kind === "closed") return;
-    void RemoteDeviceList()
-      .then((rows) => setDevices((rows ?? []) as unknown as DeviceView[]))
-      .catch(() => setDevices([]));
+    void Promise.all([RemoteDeviceList(), RemoteDeviceFingerprint()])
+      .then(([rows, fingerprint]) => {
+        setDevices((rows ?? []) as unknown as DeviceView[]);
+        setLocalFingerprint(fingerprint ?? "");
+      })
+      .catch(() => {
+        setDevices([]);
+        setLocalFingerprint("");
+      });
   }, [state.kind]);
 
   // 远端执行时以目标 daemon 目录为可运行事实源（task 6 决策 12）：拉一次该设备的
   // Provider/Model 目录 + 能力位，传给 Picker 做远端门控（desktop 独有的行禁用、
   // 旧 daemon 禁用 fixed-model）。daemon 离线时目录为空 → 未验证的 fixed-model 无法保存。
-  const remoteDeviceID =
-    deviceId !== "" && /^\d+$/.test(deviceId) ? Number(deviceId) : 0;
+  const executionDevice = React.useMemo(
+    () => resolveExecutionDevice(deviceId, localFingerprint, devices),
+    [deviceId, devices, localFingerprint],
+  );
+  const remoteDeviceID = executionDevice.pairedDeviceId;
+  const remoteExecution = executionDevice.remote;
+  const selectedDeviceValue = deviceSelectValue(
+    deviceId,
+    localFingerprint,
+    LOCAL_DEVICE_SELECT_VALUE,
+  );
+  const selectedDeviceKnown =
+    selectedDeviceValue === LOCAL_DEVICE_SELECT_VALUE ||
+    devices.some(
+      (candidate) => pairedDeviceSelectValue(candidate) === selectedDeviceValue,
+    );
   const [remoteProviders, setRemoteProviders] = React.useState<
     ProviderSummary[]
   >([]);
@@ -1395,9 +1416,14 @@ function BackendEditor({
   async function missingRemoteProviderKeys(
     draft: BackendDraft,
   ): Promise<string[]> {
-    if (draft.deviceId === "") return [];
-    const deviceID = Number(draft.deviceId);
-    if (!Number.isFinite(deviceID) || deviceID <= 0) return [];
+    const resolved = resolveExecutionDevice(
+      draft.deviceId,
+      localFingerprint,
+      devices,
+    );
+    if (!resolved.remote) return [];
+    const deviceID = resolved.pairedDeviceId;
+    if (deviceID <= 0) return referencedProviderKeys(draft);
 
     const keys = referencedProviderKeys(draft);
     if (keys.length === 0) return [];
@@ -1620,7 +1646,12 @@ function BackendEditor({
 
   async function handleConfirmProviderSync() {
     if (!pendingProviderSync || syncingProvider) return;
-    const deviceID = Number(pendingProviderSync.draft.deviceId);
+    const deviceID = resolveExecutionDevice(
+      pendingProviderSync.draft.deviceId,
+      localFingerprint,
+      devices,
+    ).pairedDeviceId;
+    if (deviceID <= 0) return;
     const saveAfterSync = pendingProviderSync.saveAfterSync;
     setSyncingProvider(true);
     setSubmitting(saveAfterSync);
@@ -1827,8 +1858,16 @@ function BackendEditor({
             {t("agentBackends.fields.device")}
           </span>
           <Select
-            value={deviceIdToSelectValue(deviceId)}
-            onValueChange={(v) => handleDeviceChange(selectValueToDeviceId(v))}
+            value={selectedDeviceValue}
+            onValueChange={(v) =>
+              handleDeviceChange(
+                persistedDeviceIdForSelection(
+                  v,
+                  LOCAL_DEVICE_SELECT_VALUE,
+                  localFingerprint,
+                ),
+              )
+            }
             disabled={type === "builtin" || type === "openclaw"}
           >
             <SelectTrigger aria-label={t("agentBackends.fields.device")}>
@@ -1843,13 +1882,18 @@ function BackendEditor({
               {devices.map((d) => (
                 <SelectItem
                   key={d.id}
-                  value={String(d.id)}
+                  value={pairedDeviceSelectValue(d)}
                   disabled={!d.online}
                 >
                   📡 {d.name}
                   {d.online ? "" : t("agentBackends.device.offlineSuffix")}
                 </SelectItem>
               ))}
+              {!selectedDeviceKnown && deviceId ? (
+                <SelectItem value={deviceId} disabled>
+                  📡 {editing?.deviceName || deviceId}
+                </SelectItem>
+              ) : null}
             </SelectContent>
           </Select>
           {type === "builtin" ? (
@@ -1876,14 +1920,18 @@ function BackendEditor({
             catalog={targetCatalog}
             catalogLoading={catalogLoading}
             catalogError={catalogError}
-            executionLocation={deviceId}
+            executionLocation={remoteExecution ? deviceId : ""}
             supportsFixedModel={
-              remoteDeviceID > 0 ? remoteSupportsFixedModel : true
+              remoteExecution ? remoteSupportsFixedModel : true
             }
             remoteCatalog={
-              remoteDeviceID > 0 && remotePickerCatalog.length > 0
-                ? remotePickerCatalog
-                : undefined
+              !remoteExecution
+                ? undefined
+                : remoteDeviceID <= 0
+                  ? []
+                  : remotePickerCatalog.length > 0
+                    ? remotePickerCatalog
+                    : undefined
             }
             routes={routes}
             onRoutesChange={setRoutes}

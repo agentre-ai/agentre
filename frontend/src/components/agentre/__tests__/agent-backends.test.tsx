@@ -19,6 +19,7 @@ const appMocks = vi.hoisted(() => ({
   ListAgentBackends: vi.fn(),
   ListLLMModels: vi.fn(),
   ListLLMProviders: vi.fn(),
+  RemoteDeviceFingerprint: vi.fn(),
   RemoteDeviceList: vi.fn(),
   RemoteDeviceListProviders: vi.fn(),
   RemoteDeviceSyncProvider: vi.fn(),
@@ -49,6 +50,7 @@ type AppMockShape = {
   CancelTestAgentBackend?: AnyFn;
   GetGatewayStatus?: AnyFn;
   ResolveAgentBackendCLIPath?: AnyFn;
+  RemoteDeviceFingerprint?: AnyFn;
   RemoteDeviceList?: AnyFn;
   RemoteDeviceListProviders?: AnyFn;
   RemoteDeviceSyncProvider?: AnyFn;
@@ -170,6 +172,9 @@ function installAppMock(overrides: Partial<AppMockShape> = {}) {
     // 单独验证自动识别行为的用例会在 overrides 里覆盖这个 mock。
     ResolveAgentBackendCLIPath: vi.fn(() =>
       Promise.resolve({ path: "", found: false }),
+    ),
+    RemoteDeviceFingerprint: vi.fn(() =>
+      Promise.resolve("sha256:local-desktop"),
     ),
     RemoteDeviceList: vi.fn(() => Promise.resolve([])),
     RemoteDeviceListProviders: vi.fn(() => Promise.resolve([])),
@@ -1125,7 +1130,14 @@ describe("AgentBackendsPanel", () => {
     const user = userEvent.setup();
     const mocks = installAppMock({
       RemoteDeviceList: vi.fn(() =>
-        Promise.resolve([{ id: 7, name: "linux-srv", online: true }]),
+        Promise.resolve([
+          {
+            id: 7,
+            name: "linux-srv",
+            daemonFingerprint: "sha256:remote-daemon",
+            online: true,
+          },
+        ]),
       ),
       RemoteDeviceListProviders: vi.fn(() => Promise.resolve([])),
     });
@@ -1177,7 +1189,7 @@ describe("AgentBackendsPanel", () => {
         expect.objectContaining({
           type: "claudecode",
           name: "远端 claude",
-          deviceId: "7",
+          deviceId: "sha256:remote-daemon",
           llmProviderKey: "key-1",
         }),
       );
@@ -1373,7 +1385,7 @@ describe("AgentBackendsPanel", () => {
               id: 12,
               type: "claudecode",
               name: "saved remote claude",
-              deviceId: "7",
+              deviceId: "sha256:remote-daemon",
               llmProviderKey: "key-1",
               llmModelKey: "",
               llmProviderName: "Anthropic",
@@ -1391,7 +1403,14 @@ describe("AgentBackendsPanel", () => {
         }),
       ),
       RemoteDeviceList: vi.fn(() =>
-        Promise.resolve([{ id: 7, name: "linux-srv", online: true }]),
+        Promise.resolve([
+          {
+            id: 7,
+            name: "linux-srv",
+            daemonFingerprint: "sha256:remote-daemon",
+            online: true,
+          },
+        ]),
       ),
       RemoteDeviceListProviders: vi.fn(() =>
         Promise.resolve([
@@ -1419,7 +1438,10 @@ describe("AgentBackendsPanel", () => {
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
     await waitFor(() => {
       expect(mocks.UpdateAgentBackend).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 12, deviceId: "7" }),
+        expect.objectContaining({
+          id: 12,
+          deviceId: "sha256:remote-daemon",
+        }),
       );
     });
   });

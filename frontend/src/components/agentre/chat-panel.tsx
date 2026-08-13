@@ -1710,6 +1710,12 @@ function ChatPanel({
           permissionMode:
             permissionModeOverride ??
             (isModeSwitchable ? permissionMode.mode : ""),
+          ...(providerPill.providerKey
+            ? {
+                providerKey: providerPill.providerKey,
+                modelKey: providerPill.modelKey,
+              }
+            : {}),
         } as Parameters<typeof PeerRunFresh>[0]);
         onPeerSessionCreated?.({
           fingerprint: effectiveTarget.deviceId,

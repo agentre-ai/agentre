@@ -21,6 +21,7 @@ const appMocks = vi.hoisted(() => ({
   ListLLMProviders: vi.fn(),
   ListLLMModels: vi.fn().mockResolvedValue({ items: [] }),
   SetChatSessionModelTarget: vi.fn(),
+  RemoteDeviceFingerprint: vi.fn().mockResolvedValue("sha256:local-desktop"),
   RemoteDeviceList: vi.fn().mockResolvedValue([]),
   RemoteDeviceListProviders: vi.fn().mockResolvedValue([]),
   RemoteDeviceSyncProvider: vi.fn().mockResolvedValue(undefined),
@@ -46,6 +47,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   appMocks.ListLLMProviders.mockResolvedValue({ items: [] });
   appMocks.ListLLMModels.mockResolvedValue({ items: [] });
+  appMocks.RemoteDeviceFingerprint.mockResolvedValue("sha256:local-desktop");
   appMocks.RemoteDeviceList.mockResolvedValue([]);
   appMocks.RemoteDeviceListProviders.mockResolvedValue([]);
   appMocks.RemoteDeviceSyncProvider.mockResolvedValue(undefined);
@@ -906,6 +908,52 @@ describe("ProviderPill · 远端执行（gap 1：chat Picker 接收 daemon 能�
     await waitFor(() =>
       expect(appMocks.RemoteDeviceListProviders).toHaveBeenCalledTimes(2),
     );
+  });
+
+  it("Given a canonical remote fingerprint, When the Composer picker loads target capabilities, Then it resolves the local paired row and keeps remote fixed-model gating", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER],
+    });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [
+        model("mk-sonnet", "claude-sonnet-4-5"),
+        model("mk-opus", "claude-opus-4-5"),
+      ],
+    });
+    appMocks.RemoteDeviceList.mockResolvedValue([
+      device({
+        id: 7,
+        daemonFingerprint: "sha256:remote-daemon",
+        supportsLLMModelTarget: false,
+      }),
+    ]);
+    appMocks.RemoteDeviceListProviders.mockResolvedValue([
+      remoteProvider({
+        models: [
+          remoteModel("mk-sonnet", "claude-sonnet-4-5"),
+          remoteModel("mk-opus", "claude-opus-4-5"),
+        ],
+      }),
+    ]);
+    render(
+      <Harness
+        backendType="builtin"
+        executionLocation="sha256:remote-daemon"
+      />,
+    );
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+    const user = userEvent.setup();
+    await user.click(pill);
+
+    await waitFor(() =>
+      expect(appMocks.RemoteDeviceListProviders).toHaveBeenCalledWith(7),
+    );
+    const opus = within(screen.getByRole("listbox")).getByRole("option", {
+      name: /claude-opus-4-5/,
+    });
+    expect(opus).toHaveAttribute("aria-disabled", "true");
   });
 
   it("远端 daemon 无 llm-model-target-v1 能力位（旧/离线）→ 全部 fixed-model 禁用，provider-default 仍可选", async () => {

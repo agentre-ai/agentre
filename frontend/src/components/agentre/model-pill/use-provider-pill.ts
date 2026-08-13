@@ -2,6 +2,7 @@ import * as React from "react";
 
 import {
   ListLLMProviders,
+  RemoteDeviceFingerprint,
   RemoteDeviceList,
   RemoteDeviceListProviders,
   RemoteDeviceSyncProvider,
@@ -9,6 +10,7 @@ import {
 } from "../../../../wailsjs/go/app/App";
 import { llm_provider_svc } from "../../../../wailsjs/go/models";
 import i18n from "@/i18n";
+import { resolveExecutionDevice } from "../device-identity";
 
 import {
   recordRecentTarget,
@@ -23,6 +25,7 @@ type DeviceView = {
   id: number;
   name: string;
   online: boolean;
+  daemonFingerprint?: string;
   supportsLLMModelTarget?: boolean;
 };
 type ProviderSummary = {
@@ -398,48 +401,70 @@ export function useProviderPill({
   }, [boundState, catalog, invalid, modelKey, providerKey]);
 
   // ── 远端门控（gap 1）：目标执行设备是远端时，以 daemon 目录为可运行事实源。──────
-  // 只认纯数字串设备 id（与 agent-backends 同款解析）；本机 / 非数字 id → 不启用远端门控。
-  const remoteDeviceID =
-    executionLocation !== "" && /^\d+$/.test(executionLocation)
-      ? Number(executionLocation)
-      : 0;
+  // executionLocation 可以是 canonical fingerprint，也兼容遗留 paired-row 数字 ID；
+  // 只有调用本地 RemoteDevice* RPC 时才翻成本安装的 paired row。
+  const [localFingerprint, setLocalFingerprint] = React.useState("");
   const [remoteDevices, setRemoteDevices] = React.useState<DeviceView[]>([]);
   const [remoteProviders, setRemoteProviders] = React.useState<
     ProviderSummary[]
   >([]);
+  const executionDevice = React.useMemo(
+    () =>
+      resolveExecutionDevice(
+        executionLocation,
+        localFingerprint,
+        remoteDevices,
+      ),
+    [executionLocation, localFingerprint, remoteDevices],
+  );
+  const remoteDeviceID = executionDevice.pairedDeviceId;
   const fetchRemote = React.useCallback(async () => {
-    if (remoteDeviceID <= 0) {
+    if (executionLocation === "") {
+      setLocalFingerprint("");
       setRemoteDevices([]);
       setRemoteProviders([]);
       return;
     }
     try {
-      const [dvRows, provRows] = await Promise.all([
+      const [fingerprint, dvRows] = await Promise.all([
+        RemoteDeviceFingerprint(),
         RemoteDeviceList(),
-        RemoteDeviceListProviders(remoteDeviceID),
       ]);
-      setRemoteDevices((dvRows ?? []) as unknown as DeviceView[]);
+      const devices = (dvRows ?? []) as unknown as DeviceView[];
+      setLocalFingerprint(fingerprint ?? "");
+      setRemoteDevices(devices);
+      const resolved = resolveExecutionDevice(
+        executionLocation,
+        fingerprint ?? "",
+        devices,
+      );
+      if (!resolved.remote || resolved.pairedDeviceId <= 0) {
+        setRemoteProviders([]);
+        return;
+      }
+      const provRows = await RemoteDeviceListProviders(resolved.pairedDeviceId);
       setRemoteProviders((provRows ?? []) as unknown as ProviderSummary[]);
     } catch {
       // daemon 离线 / 拉取失败 → 目录视为空：未验证的 fixed-model 无法选（严格）。
       setRemoteDevices([]);
       setRemoteProviders([]);
     }
-  }, [remoteDeviceID]);
+  }, [executionLocation]);
   React.useEffect(() => {
     void fetchRemote();
   }, [fetchRemote]);
 
   const supportsFixedModel = React.useMemo(() => {
-    if (remoteDeviceID <= 0) return true; // 本机：不设能力位限制。
+    if (!executionDevice.remote) return true; // 本机：不设能力位限制。
+    if (remoteDeviceID <= 0) return false; // 未配对 fingerprint：远端能力未知，严格禁用。
     const dv = remoteDevices.find((d) => d.id === remoteDeviceID);
     // 设备离线 / 能力位未知 → false：远端 fixed-model 一律禁用（绝不静默降级）。
     return dv?.supportsLLMModelTarget ?? false;
-  }, [remoteDevices, remoteDeviceID]);
+  }, [executionDevice.remote, remoteDevices, remoteDeviceID]);
 
   // 把 daemon 目录转成 PickerProvider[]（非敏感摘要），供 Picker 远端门控。
   const remoteCatalog = React.useMemo<PickerProvider[] | undefined>(() => {
-    if (remoteDeviceID <= 0) return undefined;
+    if (!executionDevice.remote) return undefined;
     return remoteProviders.map((p) => {
       const models = (p.models ?? []).map((m) => ({
         modelKey: m.key,
@@ -461,15 +486,15 @@ export function useProviderPill({
         models,
       };
     });
-  }, [remoteDeviceID, remoteProviders]);
+  }, [executionDevice.remote, remoteProviders]);
 
   // 当前选中的 provider 在 daemon 目录里缺失 → 弹层底部 remoteMissing 提示。
   const remoteMissing = React.useMemo(() => {
-    if (remoteDeviceID <= 0 || !remoteCatalog) return false;
+    if (!executionDevice.remote || !remoteCatalog) return false;
     const key = providerKey || boundProviderKey || "";
     if (key === "") return false;
     return !remoteCatalog.some((p) => p.providerKey === key);
-  }, [remoteDeviceID, remoteCatalog, providerKey, boundProviderKey]);
+  }, [executionDevice.remote, remoteCatalog, providerKey, boundProviderKey]);
 
   const syncProvider = React.useCallback(
     async (key: string) => {
