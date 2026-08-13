@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -63,6 +63,19 @@ function viteCommand(run) {
   ];
 }
 
+function fakePeerCommand(run) {
+  return ["run", "./e2e/cmd/fake-peer", "-ready-file", run.remoteReadyPath];
+}
+
+async function waitForFile(path, { timeoutMs = 120_000, intervalMs = 100 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, intervalMs));
+  }
+  throw new Error(`timed out waiting for ${path}`);
+}
+
 function appCommand(run) {
   return [
     "dev",
@@ -82,6 +95,8 @@ async function main() {
 
   const before = await snapshotDatabaseMetadata(productionAndDevelopmentRoots());
   const run = await createRunContext();
+  run.remoteRecorderPath = join(run.logsDir, "fake-remote-recorder.json");
+  run.remoteReadyPath = join(run.runRoot, "fake-remote-ready.json");
   writeFileSync(run.protectedMetadataBefore, `${JSON.stringify(before, null, 2)}\n`, {
     mode: 0o600,
   });
@@ -131,6 +146,45 @@ async function main() {
     run.env.AGENTRE_E2E_DEVICE_FINGERPRINT = syncIdentity.deviceFingerprint;
     run.env.AGENTRE_E2E_REFRESH_TOKEN = syncIdentity.refreshToken;
 
+    const remoteIdentity = {
+      instanceUUID: `e2e-fake-peer-${run.token.slice(0, 24)}`,
+      deviceToken: `e2e-peer-token-${run.token.slice(8, 48)}`,
+      url: "",
+      controlURL: "",
+      daemonFingerprint: "",
+    };
+    run.env.AGENTRE_E2E_REMOTE_INSTANCE_UUID = remoteIdentity.instanceUUID;
+    run.env.AGENTRE_E2E_REMOTE_DEVICE_TOKEN = remoteIdentity.deviceToken;
+    run.env.AGENTRE_E2E_CONTROL_TOKEN = run.controlToken;
+    const fakePeer = supervisor.track(
+      spawnLogged("go", fakePeerCommand(run), {
+        cwd: REPO_ROOT,
+        env: appEnvironment(run),
+        logPath: join(run.logsDir, "fake-peer.log"),
+      }),
+    );
+    const fakePeerExit = childResult(fakePeer);
+    await Promise.race([
+      waitForFile(run.remoteReadyPath),
+      fakePeerExit.then((result) => {
+        throw new Error(`fake remote peer exited before readiness (code ${result.code})`);
+      }),
+    ]);
+    const remoteReady = JSON.parse(readFileSync(run.remoteReadyPath, "utf8"));
+    if (!String(remoteReady.url ?? "").startsWith("ws://127.0.0.1:") ||
+        !String(remoteReady.controlUrl ?? "").startsWith("http://127.0.0.1:") ||
+        !String(remoteReady.daemonFingerprint ?? "").startsWith("sha256:")) {
+      throw new Error("fake remote peer returned unsafe readiness data");
+    }
+    Object.assign(remoteIdentity, {
+      url: remoteReady.url,
+      controlURL: remoteReady.controlUrl,
+      daemonFingerprint: remoteReady.daemonFingerprint,
+    });
+    run.remoteIdentity = remoteIdentity;
+    run.env.AGENTRE_E2E_REMOTE_PEER_URL = remoteIdentity.url;
+    run.env.AGENTRE_E2E_REMOTE_DAEMON_FINGERPRINT = remoteIdentity.daemonFingerprint;
+
     mkdirSync(join(REPO_ROOT, "frontend", "dist"), { recursive: true });
     writeFileSync(join(REPO_ROOT, "frontend", "dist", ".keep"), "");
 
@@ -176,7 +230,11 @@ async function main() {
         {
           cwd: here,
           stdio: "inherit",
-          env: playwrightEnvironment(run),
+          env: {
+            ...playwrightEnvironment(run),
+            AGENTRE_E2E_REMOTE_PEER_CONTROL_URL: remoteIdentity.controlURL,
+            AGENTRE_E2E_REMOTE_DAEMON_FINGERPRINT: remoteIdentity.daemonFingerprint,
+          },
           detached: process.platform !== "win32",
         },
       ),
@@ -193,6 +251,20 @@ async function main() {
   } catch (error) {
     failure = error;
   } finally {
+    if (run.remoteIdentity) {
+      try {
+        const response = await fetch(`${run.remoteIdentity.controlURL}/snapshot`, {
+          headers: { authorization: `Bearer ${run.controlToken}` },
+        });
+        if (response.ok) {
+          writeFileSync(run.remoteRecorderPath, `${JSON.stringify(await response.json(), null, 2)}\n`, {
+            mode: 0o600,
+          });
+        }
+      } catch {
+        // The peer may already have been terminated by a signal/failure path.
+      }
+    }
     await supervisor.stopAll();
     if (fakeSync) {
       writeFileSync(run.syncRecorderPath, `${JSON.stringify(fakeSync.snapshot(), null, 2)}\n`, {
