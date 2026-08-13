@@ -9,15 +9,42 @@ export const e2eDataDir = () => {
 
 const databasePath = () => join(e2eDataDir(), "agentre.db");
 
-function queryCount(sql: string, ...params: Array<string | number>): number {
+function query<T>(sql: string, ...params: Array<string | number>): T[] {
   const db = new DatabaseSync(databasePath(), { readOnly: true });
   try {
     db.exec("PRAGMA busy_timeout = 5000");
-    const row = db.prepare(sql).get(...params) as { n: number };
-    return row.n;
+    return db.prepare(sql).all(...params) as T[];
   } finally {
     db.close();
   }
+}
+
+function queryCount(sql: string, ...params: Array<string | number>): number {
+  return query<{ n: number }>(sql, ...params)[0].n;
+}
+
+export type DesktopProject = {
+  id: number;
+  name: string;
+  path: string;
+  sync_id: string;
+  sync_version: number;
+  local_path_missing: number;
+  status: number;
+};
+
+export function projectByName(name: string): DesktopProject | undefined {
+  return query<DesktopProject>(
+    "SELECT id, name, path, sync_id, sync_version, local_path_missing, status FROM projects WHERE name = ? AND status = 1",
+    name,
+  )[0];
+}
+
+export function outboundQueueCountForSyncID(syncID: string): number {
+  return queryCount(
+    "SELECT COUNT(*) AS n FROM sync_outbound_queue WHERE entity_sync_id = ?",
+    syncID,
+  );
 }
 
 export function runningSessionCount(): number {
@@ -61,14 +88,5 @@ export function departmentCountByName(name: string): number {
 }
 
 export function agentIdByName(name: string): number | null {
-  const db = new DatabaseSync(databasePath(), { readOnly: true });
-  try {
-    db.exec("PRAGMA busy_timeout = 5000");
-    const row = db.prepare("SELECT id FROM agents WHERE name = ?").get(name) as
-      | { id: number }
-      | undefined;
-    return row?.id ?? null;
-  } finally {
-    db.close();
-  }
+  return query<{ id: number }>("SELECT id FROM agents WHERE name = ?", name)[0]?.id ?? null;
 }

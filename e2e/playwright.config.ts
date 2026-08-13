@@ -9,7 +9,7 @@ if (!baseURL || !outputDir || !process.env.AGENTRE_DATA_DIR) {
 
 export default defineConfig({
   testDir: "./tests",
-  testMatch: "desktop.spec.ts",
+  testMatch: ["desktop.spec.ts", "sync-client.spec.ts"],
   timeout: 60_000,
   expect: { timeout: 15_000 },
   fullyParallel: false,

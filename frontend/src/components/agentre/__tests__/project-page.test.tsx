@@ -93,6 +93,51 @@ function setupUser() {
   return userEvent.setup({ pointerEventsCheck: 0 });
 }
 
+describe("ProjectsPage refreshes account-level project changes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    useSessionReadStore.setState({ overrides: new Map() });
+    useChatAgentsStore.getState().__reset();
+    useChatTabsStore.setState({ tabs: [], activeTabId: null });
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    appMocks.ProjectGet.mockResolvedValue({
+      project: null,
+      directMembers: [],
+      inheritedMembers: [],
+    });
+    appMocks.ProjectListSessions.mockResolvedValue([]);
+    appMocks.ProjectLocationList.mockResolvedValue([]);
+    appMocks.RemoteDeviceList.mockResolvedValue([]);
+    appMocks.ProjectListTree.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        project: {
+          color: "agent-2",
+          icon: "folder",
+          id: 2,
+          name: "Remote project",
+          parentID: 0,
+          path: "",
+          localPathMissing: true,
+        },
+        children: [],
+      },
+    ]);
+  });
+
+  it("Given a remote sync applies while the projects page is mounted, When the refresh interval elapses, Then the project tree reloads without remounting", async () => {
+    renderProjectsPage();
+    await waitFor(() =>
+      expect(appMocks.ProjectListTree).toHaveBeenCalledTimes(1),
+    );
+
+    expect(
+      await screen.findByText("Remote project", {}, { timeout: 2_500 }),
+    ).toBeInTheDocument();
+    expect(appMocks.ProjectListTree).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("ProjectsPage session read state", () => {
   beforeEach(() => {
     vi.clearAllMocks();

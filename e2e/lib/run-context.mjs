@@ -87,6 +87,8 @@ export async function createRunContext({ prefix = "agentre-e2e-" } = {}) {
     vitePort,
     baseURL: `http://127.0.0.1:${port}`,
     viteURL: `http://127.0.0.1:${vitePort}`,
+    controlToken: randomBytes(32).toString("hex"),
+    syncRecorderPath: join(logsDir, "fake-sync-recorder.json"),
     appLog: join(logsDir, "app.log"),
     protectedMetadataBefore: join(runRoot, "protected-db-before.json"),
     protectedMetadataAfter: join(runRoot, "protected-db-after.json"),
@@ -129,6 +131,16 @@ export function playwrightEnvironment(run, parentEnv = process.env) {
     AGENTRE_E2E_BASE_URL: run.baseURL,
     AGENTRE_E2E_RUN_ID: basename(run.runRoot),
     AGENTRE_E2E_PLAYWRIGHT_DIR: run.playwrightDir,
+    AGENTRE_E2E_CONTROL_TOKEN: run.controlToken,
+    ...(run.syncIdentity
+      ? {
+          AGENTRE_E2E_SYNC_SERVER_URL: run.syncIdentity.serverURL,
+          AGENTRE_E2E_SYNC_USER_ID: String(run.syncIdentity.userID),
+          AGENTRE_E2E_SYNC_DEVICE_ID: String(run.syncIdentity.deviceID),
+          AGENTRE_E2E_SYNC_DEVICE_FINGERPRINT: run.syncIdentity.deviceFingerprint,
+          AGENTRE_E2E_SYNC_PEER_DEVICE_ID: String(run.syncIdentity.peerDeviceID),
+        }
+      : {}),
     TMPDIR: run.browserDir,
     TMP: run.browserDir,
     TEMP: run.browserDir,

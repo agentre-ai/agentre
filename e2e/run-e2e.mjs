@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createAppOverlay } from "./lib/app-overlay.mjs";
+import { startFakeSyncServer } from "./lib/fake-sync-server.mjs";
 import {
   ProcessSupervisor,
   REPO_ROOT,
@@ -34,7 +35,12 @@ function childResult(child) {
 async function runNodeGuards() {
   const child = spawn(
     process.execPath,
-    ["--test", "lib/run-context.test.mjs", "lib/app-overlay.test.mjs"],
+    [
+      "--test",
+      "lib/run-context.test.mjs",
+      "lib/app-overlay.test.mjs",
+      "lib/fake-sync-server.test.mjs",
+    ],
     {
       cwd: here,
       stdio: "inherit",
@@ -80,6 +86,7 @@ async function main() {
     mode: 0o600,
   });
   const supervisor = new ProcessSupervisor();
+  let fakeSync;
   let exitCode = 1;
   let failure;
   let interrupted = false;
@@ -99,6 +106,31 @@ async function main() {
   );
 
   try {
+    const syncIdentity = {
+      serverURL: "",
+      userID: 7001,
+      deviceID: 7101,
+      peerDeviceID: 7202,
+      deviceFingerprint: `sha256:${run.token}`,
+      refreshToken: `e2e-refresh-${run.token.slice(16, 48)}`,
+    };
+    fakeSync = await startFakeSyncServer({
+      controlToken: run.controlToken,
+      identity: {
+        userId: syncIdentity.userID,
+        deviceId: syncIdentity.deviceID,
+        fingerprint: syncIdentity.deviceFingerprint,
+        refreshToken: syncIdentity.refreshToken,
+      },
+    });
+    syncIdentity.serverURL = fakeSync.url;
+    run.syncIdentity = syncIdentity;
+    run.env.AGENTRE_E2E_SERVER_URL = syncIdentity.serverURL;
+    run.env.AGENTRE_E2E_SERVER_USER_ID = String(syncIdentity.userID);
+    run.env.AGENTRE_E2E_DEVICE_ID = String(syncIdentity.deviceID);
+    run.env.AGENTRE_E2E_DEVICE_FINGERPRINT = syncIdentity.deviceFingerprint;
+    run.env.AGENTRE_E2E_REFRESH_TOKEN = syncIdentity.refreshToken;
+
     mkdirSync(join(REPO_ROOT, "frontend", "dist"), { recursive: true });
     writeFileSync(join(REPO_ROOT, "frontend", "dist", ".keep"), "");
 
@@ -162,6 +194,12 @@ async function main() {
     failure = error;
   } finally {
     await supervisor.stopAll();
+    if (fakeSync) {
+      writeFileSync(run.syncRecorderPath, `${JSON.stringify(fakeSync.snapshot(), null, 2)}\n`, {
+        mode: 0o600,
+      });
+      await fakeSync.close();
+    }
     for (const [signal, handler] of handlers) process.removeListener(signal, handler);
 
     const after = await snapshotDatabaseMetadata(productionAndDevelopmentRoots());
@@ -171,9 +209,12 @@ async function main() {
     const polluted = changedDatabaseMetadata(before, after);
     if (polluted.length > 0) {
       exitCode = 1;
-      failure = new Error(
+      const isolationFailure = new Error(
         `storage isolation violation: protected SQLite metadata changed:\n${polluted.join("\n")}`,
       );
+      failure = failure
+        ? new Error(`${failure.message}\n${isolationFailure.message}`)
+        : isolationFailure;
     }
 
     if (exitCode === 0) {

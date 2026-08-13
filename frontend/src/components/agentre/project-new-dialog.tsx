@@ -184,6 +184,7 @@ function ProjectNewDialog({
           <Field label={t("projectNew.localPath")} required>
             <div className="flex items-stretch gap-2">
               <Input
+                data-testid="project-new-path"
                 value={form.path}
                 onChange={(e) =>
                   setForm((f) => ({ ...f, path: e.target.value }))
@@ -220,6 +221,7 @@ function ProjectNewDialog({
           <div className="grid grid-cols-2 gap-3">
             <Field label={t("projectSettings.basic.name")} required>
               <Input
+                data-testid="project-new-name"
                 value={form.name}
                 onChange={(e) =>
                   setForm((f) => ({ ...f, name: e.target.value }))
@@ -313,6 +315,7 @@ function ProjectNewDialog({
           </Button>
           <Button
             type="button"
+            data-testid="project-new-submit"
             disabled={!canSubmit}
             onClick={() => void handleSubmit()}
           >

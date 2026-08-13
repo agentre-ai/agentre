@@ -215,6 +215,11 @@ function ProjectsPage() {
     void refresh();
   }, [refresh]);
 
+  React.useEffect(() => {
+    const timer = window.setInterval(() => void refresh(), 1_000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+
   const totalCount = React.useMemo(() => {
     let n = 0;
     const walk = (ns: ProjectTreeNode[]) => {
@@ -477,6 +482,7 @@ function ProjectsPage() {
               type="button"
               variant="ghost"
               size="icon"
+              data-testid="project-create-trigger"
               className="size-7"
               aria-label={t("projects.actions.newProject")}
               title={t("projects.actions.newProject")}
