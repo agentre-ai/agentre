@@ -150,9 +150,9 @@ func Init(ctx context.Context) (*Runtime, error) {
 	// 启动时按持久化的开关恢复 Debug 日志级别（取代旧 AGENTRE_DEBUG 环境变量）。
 	applyDebugLoggingOnBoot(ctx)
 
-	// 在装配 Server / Remote Device 之前确立 keychain 后端:e2e 构建设置
-	// AGENTRE_E2E_KEYCHAIN_DIR 时在这里建立 file keychain,失败直接终止,绝不回退
-	// 生产 system keychain(见 keychain.go / keychain_e2e.go)。
+	// 在装配 Server / Remote Device 之前确立 keychain 后端:设置 AGENTRE_KEYCHAIN_DIR
+	// 时在这里建立 file keychain,失败直接终止,绝不回退生产 system keychain
+	// (见 keychain.go)。
 	if err := initKeychain(ctx); err != nil {
 		return nil, fmt.Errorf("init keychain: %w", err)
 	}

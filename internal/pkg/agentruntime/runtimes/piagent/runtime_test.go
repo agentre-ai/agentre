@@ -943,6 +943,36 @@ func TestRun_ProviderAPIKeyEmpty_ReturnsConfigErrorWithoutSpawning(t *testing.T)
 	})
 }
 
+func TestRun_NativeEffectiveConfig_UsesCLILoginWithoutProviderAPIKey(t *testing.T) {
+	Convey("Given 跟随 Agent 绑定解析为 native effective config", t, func() {
+		var gotEnv map[string]string
+		spawned := false
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, env map[string]string, _ string) (sessionHandle, error) {
+			spawned = true
+			gotEnv = env
+			return &fakeSession{stream: &emptyStream{}, sid: "pi-session"}, nil
+		})
+		defer restore()
+
+		Convey("When running Then Pi uses CLI login without requiring or injecting a provider API key", func() {
+			events, _, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+				Effective: &agentruntime.EffectiveLLMConfig{Mode: agentruntime.EffectiveModeNative},
+				SessionID: 1,
+				Cwd:       t.TempDir(),
+				UserText:  "hello",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+			So(spawned, ShouldBeTrue)
+			for k := range gotEnv {
+				So(strings.HasPrefix(k, "AGENTRE_PI_API_KEY_"), ShouldBeFalse)
+			}
+		})
+	})
+}
+
 func TestRun_NoProvider_NoEnvInjection(t *testing.T) {
 	Convey("Given an unbound pi-agent backend", t, func() {
 		var gotEnv map[string]string

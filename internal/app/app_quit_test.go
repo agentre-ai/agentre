@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 )
@@ -68,6 +70,108 @@ func TestShouldPreventQuit(t *testing.T) {
 			t.Fatalf("emit called %d times, want 0", emitCalls)
 		}
 	})
+}
+
+func TestConfirmQuit_GivenFinalQuitBlocks_WhenUserConfirms_ThenReturnsImmediatelyAndSchedulesQuitOnce(t *testing.T) {
+	t.Parallel()
+
+	quitStarted := make(chan struct{})
+	releaseQuit := make(chan struct{})
+	var calls atomic.Int32
+	a := NewApp()
+	a.forceExit = func(int) {}
+	a.finalQuit = func(context.Context) {
+		calls.Add(1)
+		close(quitStarted)
+		<-releaseQuit
+	}
+
+	returned := make(chan struct{})
+	go func() {
+		a.ConfirmQuit()
+		a.ConfirmQuit()
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(100 * time.Millisecond):
+		close(releaseQuit)
+		t.Fatal("confirmed quit must return immediately even while the native quit call is blocked")
+	}
+
+	select {
+	case <-quitStarted:
+	case <-time.After(time.Second):
+		close(releaseQuit)
+		t.Fatal("confirmed quit did not schedule the final native quit")
+	}
+	if got := calls.Load(); got != 1 {
+		close(releaseQuit)
+		t.Fatalf("final native quit called %d times, want exactly once", got)
+	}
+	close(releaseQuit)
+}
+
+func TestShutdown_GivenResourceCleanupBlocks_WhenAppExits_ThenShutdownReturnsWithinDeadline(t *testing.T) {
+	t.Parallel()
+
+	cleanupStarted := make(chan struct{})
+	releaseCleanup := make(chan struct{})
+	a := NewApp()
+	a.quitConfirmed.Store(true)
+	a.shutdownCleanup = func(context.Context) {
+		close(cleanupStarted)
+		<-releaseCleanup
+	}
+
+	startedAt := time.Now()
+	a.Shutdown(context.Background())
+	elapsed := time.Since(startedAt)
+
+	select {
+	case <-cleanupStarted:
+	case <-time.After(time.Second):
+		close(releaseCleanup)
+		t.Fatal("shutdown did not schedule necessary resource cleanup")
+	}
+	if elapsed > 100*time.Millisecond {
+		close(releaseCleanup)
+		t.Fatalf("shutdown took %s, want it to return within 100ms when cleanup blocks", elapsed)
+	}
+	close(releaseCleanup)
+}
+
+func TestConfirmQuit_GivenNativeQuitDoesNotTerminate_WhenGracePeriodExpires_ThenForcesProcessExit(t *testing.T) {
+	t.Parallel()
+
+	nativeQuit := make(chan struct{})
+	releaseNativeQuit := make(chan struct{})
+	forcedExit := make(chan int, 1)
+	a := NewApp()
+	a.forcedExitDelay = time.Millisecond
+	a.finalQuit = func(context.Context) {
+		close(nativeQuit)
+		<-releaseNativeQuit
+	}
+	a.forceExit = func(code int) { forcedExit <- code }
+	t.Cleanup(func() { close(releaseNativeQuit) })
+
+	a.ConfirmQuit()
+
+	select {
+	case <-nativeQuit:
+	case <-time.After(time.Second):
+		t.Fatal("confirmed quit must request the normal native quit first")
+	}
+	select {
+	case code := <-forcedExit:
+		if code != 0 {
+			t.Fatalf("forced exit code = %d, want 0", code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("confirmed quit must force process exit when native quit does not terminate")
+	}
 }
 
 // TestOnBeforeClose_NilChatServiceFailsOpen guards the race where the user quits

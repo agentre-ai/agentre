@@ -66,8 +66,8 @@ func (claudeSkillDiscoverer) Discover(context.Context, agentskill.DiscoverQuery)
 //  2. seed 一个本地 claudecode backend 并挂到默认 CEO agent,
 //     让前端"建会话→发消息→看回复"无需真实 CLI 即可跑通。
 //
-// e2e 的隔离 keychain 由 bootstrap(initKeychain,见 internal/bootstrap/
-// keychain_e2e.go)在装配 Server / Remote Device 之前建立,这里不再覆盖。
+// 隔离 keychain 由 bootstrap(initKeychain,见 internal/bootstrap/keychain.go)在装配
+// Server / Remote Device 之前按 AGENTRE_KEYCHAIN_DIR 建立,这里不再覆盖。
 //
 // 失败只记日志不 panic:e2e 环境异常应让 Playwright 用例红,而不是让 app 崩。
 func Install(ctx context.Context) {

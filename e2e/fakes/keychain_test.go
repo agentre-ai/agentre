@@ -17,10 +17,11 @@ import (
 )
 
 // e2e keychain 边界(docs/specs/2026-08-12-agentred-service-runtime-fixes.md「E2E
-// keychain 初始化与安全边界」):AGENTRE_E2E_KEYCHAIN_DIR 必须在 bootstrap 装配 Server /
+// keychain 初始化与安全边界」):AGENTRE_KEYCHAIN_DIR 必须在 bootstrap 装配 Server /
 // Remote Device 之前生效,让 Server Add、ConnPool、watcher 与 e2e seeding 共享同一个
 // file backend;失败则启动直接终止,绝不回退生产 system keychain。keychain 的选择在
-// bootstrap(internal/bootstrap/keychain_e2e.go)完成,这里验证它与 fakes 装配的整合。
+// bootstrap(internal/bootstrap/keychain.go,不带 build tag)完成,这里验证它与 fakes
+// 装配的整合。
 
 func TestGivenE2EKeychainDirWhenBootstrapInitThenSeedingSharesFileBackend(t *testing.T) {
 	dataDir := t.TempDir()
@@ -29,7 +30,7 @@ func TestGivenE2EKeychainDirWhenBootstrapInitThenSeedingSharesFileBackend(t *tes
 	require.NoError(t, os.MkdirAll(keychainDir, 0o700))
 	t.Setenv("AGENTRE_DATA_DIR", dataDir)
 	t.Setenv("AGENTRE_ENV", "test")
-	t.Setenv(bootstrap.E2EKeychainDirEnv, keychainDir)
+	t.Setenv(bootstrap.KeychainDirEnv, keychainDir)
 
 	runtime, err := bootstrap.Init(context.Background())
 	require.NoError(t, err)
@@ -56,7 +57,7 @@ func TestGivenE2EKeychainDirUnusableWhenBootstrapInitThenStartupFails(t *testing
 	t.Setenv("AGENTRE_ENV", "test")
 	// 目录缺失(e2e runner 预创建 0700 目录才启动;缺失 = 配置错),启动必须失败,
 	// 不得静默回退系统 keychain。
-	t.Setenv(bootstrap.E2EKeychainDirEnv, filepath.Join(t.TempDir(), "does-not-exist"))
+	t.Setenv(bootstrap.KeychainDirEnv, filepath.Join(t.TempDir(), "does-not-exist"))
 
 	_, err := bootstrap.Init(context.Background())
 	require.Error(t, err)

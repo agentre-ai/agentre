@@ -52,6 +52,11 @@
       "duration": "{{seconds}}s",
       "durationTitle": "本轮耗时"
     },
+    "elided": {
+      "steps": "前 {{count}} 步",
+      "steps_one": "前 {{count}} 步",
+      "steps_other": "前 {{count}} 步"
+    },
     "summary": {
       "thinking": "思考 {{count}}",
       "read": "查阅 {{count}}",

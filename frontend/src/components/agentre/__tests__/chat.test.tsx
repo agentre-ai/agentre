@@ -2502,6 +2502,52 @@ describe("ChatTranscript thinking blocks", () => {
     ).toBeTruthy();
   });
 
+  // 回归 guard:活动块后面开始流一段思考时,那一组必须**保持展开**。流式思考按
+  // 设计不进组(它是那一刻唯一的实时表面),于是它会短暂地排在活动块后面 ——
+  // 但它一结束就并回同一个块。把「后面多了一行」读成「这一组已经落定」就会自动
+  // 收起,用户看到的是「思考中整组收起、思考完又展开」的来回抖动。
+  it("keeps the activity block expanded while a thinking stream follows it", () => {
+    render(
+      <ChatTranscript
+        liveByMessageId={
+          new Map([
+            [
+              2,
+              {
+                liveThinking: "再看一下结果",
+                liveBlocks: [
+                  {
+                    toolInput: { command: "echo 1" },
+                    toolName: "Bash",
+                    toolUseId: "call_1",
+                    type: "tool_use",
+                  } as ChatBlockData,
+                  {
+                    toolInput: { command: "echo 2" },
+                    toolName: "Bash",
+                    toolUseId: "call_2",
+                    type: "tool_use",
+                  } as ChatBlockData,
+                ],
+              },
+            ],
+          ])
+        }
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[assistantMsg(2, [])]}
+        streaming
+      />,
+    );
+
+    expect(screen.getByText("Thinking…")).toBeInTheDocument();
+    expect(screen.getByTestId("activity-header")).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getAllByTestId("activity-row")).toHaveLength(2);
+  });
+
   it("liveThinking joins the activity as a done thought row when text deltas start (liveDelta non-empty)", () => {
     render(
       <ChatTranscript

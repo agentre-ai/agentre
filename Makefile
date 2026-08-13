@@ -1,4 +1,4 @@
-.PHONY: run dev build agrctl agentred agentred-package agentred-linux agentred-deploy agentred-deploy-restart agentred-deploy-local-coding agentred-local-coding generate test test-backend test-frontend test-cover test-agentred-packaging lint lint-backend lint-frontend lint-fix lint-fix-backend lint-fix-frontend mock install install-deps clean check e2e e2e-scratch
+.PHONY: run dev build agrctl agentred agentred-package agentred-linux agentred-deploy agentred-deploy-restart agentred-deploy-local-coding agentred-local-coding generate test test-backend test-frontend test-cover test-agentred-packaging lint lint-backend lint-frontend lint-fix lint-fix-backend lint-fix-frontend mock install install-deps clean check e2e e2e-scratch e2e-sync verify-up verify-status verify-down
 
 APP_NAME := Agentre
 VERSION ?= 0.1.0
@@ -173,6 +173,24 @@ e2e-scratch:
 # 需要 agentre-server 的 PostgreSQL / Redis 可达(不跑容器),不进 CI。见 e2e/README.md §10。
 e2e-sync:
 	cd e2e && pnpm run test:sync
+
+# 本地真实验证:起一次隔离 app + 一个连着它的无头浏览器,然后用 node e2e/drive.mjs 逐步驱动
+# (不写 spec)。数据目录 / keychain / gateway 端口全部隔离并按「当前 checkout 路径」派生,
+# 拒绝正式与 make dev 的数据目录;不同 worktree 可以同时跑,同一 checkout 同时只能起一个档位
+# (wails dev 共用 build/bin)。流程见 docs/verification.md,机制见 e2e/README.md。
+#   make verify-up                 # fake runtime(-tags e2e,确定性、无 CLI 子进程)
+#   make verify-up FLAVOR=real     # 真实 claude / codex CLI(不带 build tag)
+#   make verify-up VERIFY_FLAGS=--headed   # 想亲眼看时才开窗口
+FLAVOR ?= fake
+verify-up:
+	cd e2e && node verify.mjs up --flavor $(FLAVOR) $(VERIFY_FLAGS)
+
+verify-status:
+	cd e2e && node verify.mjs status --flavor $(FLAVOR)
+
+# 默认保留隔离数据目录(跑完还能查库);加 VERIFY_FLAGS=--wipe 一并删掉。
+verify-down:
+	cd e2e && node verify.mjs down --flavor $(FLAVOR) $(VERIFY_FLAGS)
 
 # 测试覆盖率
 test-cover:

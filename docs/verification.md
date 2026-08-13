@@ -1,160 +1,90 @@
-# Feature Verification and Report Discipline
+# Feature verification
 
-> **What this owns.** Confirming a change really works — or that a bug really reproduces — by
-> driving the **real running app**, and what that run has to leave behind: one `report.md` per
-> scenario, with evidence chosen by what was verified, and a verdict written honestly.
->
-> It does **not** own the harness. How the e2e harness is built, how to run it, how to write a
-> spec, and when to promote one into the committed suite all live in
-> [../e2e/README.md](../e2e/README.md) — its §6 points here for the ad-hoc verification workflow
-> and evidence discipline. Test design and the test stack are [testing.md](./testing.md)'s; Fix Discipline is [develop.md](./develop.md)'s;
-> log / SQLite investigation is [debugging.md](./debugging.md)'s.
+Confirming a change really works — or that a bug really reproduces — by driving the real running app, and what that run leaves behind. The harness itself is [`../e2e/README.md`](../e2e/README.md)'s; test design is [testing.md](testing.md)'s; log and SQLite investigation is [debugging.md](debugging.md)'s.
 
-## When This Applies
+## When to skip this route
 
-Driving the real app is the **last** check, not the first, and not every change needs it. The
-criterion: **does the behavior depend on cross-process wiring — real Wails IPC, the real service /
-repository / SQLite chain, a real CLI subprocess or gateway round-trip — that a unit test cannot
-cover?**
+Use targeted committed tests alone when they fully observe the changed logic — pure logic, parsers, reducers, `pkg/*` protocol decoding, docs, comments, types, and anything the committed suite already proves. Use this route when the behaviour depends on cross-process wiring that a unit test cannot cover: real Wails IPC, the real service → repository → SQLite chain, a real CLI subprocess or gateway round-trip. It does not replace TDD — a reproduction is the "confirm the bug exists" step of [AGENTS.md](../AGENTS.md)'s Fix Discipline and still owes the committed failing test.
 
-Skip it when the answer is no:
+## The route
 
-- Pure logic already covered by a targeted test (parsers, reducers, translators, `pkg/*` protocol
-  decoding) — **write and run that test instead**; it is faster and it stays.
-- Docs, comments, types.
-- Anything the committed suite already proves.
-
-**This is process routing, not an exemption from TDD.** A scratch reproduction is the "confirm the
-bug exists" step from [AGENTS.md](../AGENTS.md)'s Fix Discipline — it is **not** the regression test
-that rule requires. Reproduce it in scratch if you must, then still write the failing committed
-test before patching.
-
-## Clear the Cheap Signals First
-
-In proportion to what changed, not mechanically:
+**Start one app, drive it, record as you go.** You do not author a spec to look at something once.
 
 ```bash
-go test -race -run TestName "./internal/service/${domain}_svc/..."   # the tests relevant to this change
+make verify-up                       # fake runtime: deterministic, no CLI subprocess, no auth
+make verify-up FLAVOR=real           # real claude-code / codex CLIs, no e2e build tag
+export AGENTRE_VERIFY_SCENARIO=<scenario>   # every drive call records into this scenario
+
+node e2e/drive.mjs snapshot                       # what is on screen, and how to address it
+node e2e/drive.mjs click "testid=nav-settings"
+node e2e/drive.mjs shot 01-settings
+node e2e/drive.mjs sql "select status, count(*) from chat_sessions group by status"
+node e2e/drive.mjs logs 40
+
+make verify-down                     # add VERIFY_FLAGS=--wipe to drop the isolated state too
+```
+
+1. Run the targeted tests and `cd frontend && pnpm exec tsc -b --noEmit`; run `make test-backend` only when the blast radius is not confirmed local or a gate requires it.
+
+```bash
+go test -race -run TestName "./internal/service/${domain}_svc/..."
 cd frontend && pnpm test -- path/to/file.test.tsx
-cd frontend && pnpm exec tsc -b --noEmit                      # vitest does not check types
-make test-backend                                             # wide surface / shared code only
 ```
 
-**Green unit tests do not mean the feature works.** The fake runtime, real IPC, real migrations and
-real gateway ports are only exercised at real runtime — that gap is what this guide fills.
+2. Bring up the target. `make verify-up` owns the isolated data directory, keychain directory, gateway port and bridge port — a real dependency is reached through those overrides, and configuration it lacks is asked for, not arranged around. Never hand-start an app against your own data directory to verify something.
+3. Choose the cheapest form that observes the contract, and put everything it produces under gitignored `e2e/scratch/<scenario>/`:
 
-## Write the Throwaway Spec
+   | To reach and observe the target | You author |
+   |---|---|
+   | an existing command or entry point suffices, and it neither depends on nor writes your own machine state | nothing — drive it yourself and read the oracle |
+   | it needs a specific launch, isolated state or real-target configuration, and the observation is one-off | nothing — `make verify-up` is that launch; drive it with `drive.mjs` |
+   | the sequence must be replayed, or timing/concurrency is the contract | a full asserting spec |
 
-Same conventions as a committed spec — `data-testid` locators (never visible text, which is i18n'd
-and brittle), Playwright's auto-wait rather than sleeps, and the `e2e/fixtures/db.ts` oracle. The
-full list is [`../e2e/README.md`](../e2e/README.md) §5.
+   This project:
 
-- **Needs a UI hook that doesn't exist?** Add a minimal `data-testid` to the component — additive
-  and in scope for this task. No renaming sweep.
-- **Surfaced a real bug?** Fix the **producer**, per [develop.md](./develop.md)'s Fix Discipline —
-  and that fix still owes a committed regression test.
+   | Change lands in | Reach it with | You author | Oracle |
+   |---|---|---|---|
+   | CLI or daemon — `agrctl`, `agentred` | run the binary | nothing | full command, exit code, the deciding stdout/stderr lines |
+   | GUI or IPC | `make verify-up` + `node e2e/drive.mjs …` | nothing | `drive.mjs sql` against the isolated `agentre.db`, plus the screenshots and `logs/drive.log` the run wrote |
+   | real claude-code / codex behaviour | `make verify-up FLAVOR=real` + the same driver | nothing | the same, plus `drive.mjs logs` (enable Debug Logging in Settings → Version & Updates for raw frames) |
+   | replay, timing or concurrency as the contract | a scratch spec on the harness, reusing the running app (`AGENTRE_E2E_REUSE=1 make e2e-scratch TASK="scratch/<scenario>/"`) | a full spec | the `e2e-fake-reply: <prompt>` round-trip **plus** the DB oracle — e.g. `runningSessionCount()` polling to `0` |
+   | sync against a real server and a peer | `make e2e-sync` ([`../e2e/README.md`](../e2e/README.md#10-the-sync-suite-make-e2e-sync--a-real-server-and-a-simulated-peer)) | per that suite | that suite's assertions |
+   | a migration | the forward command against a DB holding real existing rows | nothing | the same query before and after, side by side; rollback command, or restore evidence plus the explicit no-down rationale |
 
-## Where the Evidence Goes
+   In every form one observation comes from a path the driven surface does not share — the DB read back independently of the app's own service layer. Asserting the UI updated is necessary but not sufficient; a failed write behind a cheerful UI is exactly what the oracle catches.
 
-One scenario, one directory under `e2e/scratch/` — **the whole directory is gitignored**
-(`.gitignore`: `e2e/scratch/*`, with only `README.md` negated), so the spec and its evidence sit
-together and neither is ever committed:
+4. Before running, create `report.md` from [references/verification-report-template.md](references/verification-report-template.md); update it as evidence arrives.
+5. Record how the target was driven, exit codes where the form produces them, deciding runtime observations, gaps and shortest user reproduction steps. `drive.mjs` already appends every action and its outcome to `e2e/scratch/<scenario>/logs/drive.log`, and writes screenshots into `screenshots/` — the report cites those, it does not restate them.
 
-```
-e2e/scratch/<task-name>/
-├── verify.spec.ts     # the throwaway spec (Playwright's testDir is recursive — it is picked up)
-├── report.md          # the human-readable record — start reading here
-├── logs/              # command output, the app log, the webServer log
-├── resources/         # DB query output, exported files, captured payloads, before/after snapshots
-└── screenshots/       # UI only
-```
+A quick look you delete in a minute does not need a scenario directory; run without `AGENTRE_VERIFY_SCENARIO` and the ledger lands in `e2e/scratch/_unscoped/`. The directory and `report.md` are required when the run is acceptance against a spec, a bug reproduction, or anything whose result you report to someone.
 
-`<task-name>` is a lowercase hyphenated slug. **When the run is wrap-up acceptance against an
-approved local spec in `docs/specs/`, `<task-name>` is that spec's own slug** (e.g.
-`2026-07-31-subagent-model-badge`) — that is what keeps one round's evidence in one place.
+For acceptance against a spec in `docs/specs/`, `<scenario>` is that spec's slug. Extract each acceptance criterion into one verdict row and evidence section. Verdict labels are `holds`, `does not hold`, `not observed`, and they live only in the Verdict table.
 
-**A directory with no `screenshots/` is not missing evidence.** A backend / daemon / migration
-scenario normally holds only `report.md`, `logs/` and `resources/`.
+For bug reproduction, state whether the reproduction asserts expected behaviour (red until fixed) or current buggy behaviour (green until fixed), then turn it into the committed failing test Fix Discipline requires. Choosing a form that authors nothing does not remove that test.
 
-Run just this scenario — same runner, same cleanup, so nothing about the harness changes:
+## What the route guarantees, and what it refuses
+
+The launcher and the driver enforce this — they are not conventions you have to remember:
+
+- **Only a throwaway app is ever driven.** Each flavor has its own temp data directory; the installed app's root and your own `make dev` root are refused by name ([`../e2e/lib/target.mjs`](../e2e/lib/target.mjs) `assertIsolatedDataDir`).
+- **Only that app's own origin is ever driven.** `drive.mjs` refuses any other URL, including the other flavor's port and `make dev`'s 34115.
+- **The isolated keychain applies to both flavors.** `AGENTRE_KEYCHAIN_DIR` is not gated on the `e2e` build tag (`internal/bootstrap/keychain.go`), so a real-runtime run cannot write to your system keychain; an unusable directory fails startup rather than falling back.
+- **The oracle is read-only.** `drive.mjs sql` accepts only `SELECT` / `WITH` / `PRAGMA` / `EXPLAIN`: a verification run observes state, it does not manufacture it.
+- **Nothing takes over your screen.** The browser is headless and the app's native window is hidden right after boot (and again after each navigation, because the frontend re-shows it on mount). `make verify-up VERIFY_FLAGS=--headed` when you want to watch.
+- **Every checkout is its own island.** Ports, data dir, keychain dir and session file are derived from the checkout's absolute path, so a second worktree can verify at the same time and neither can touch the other's state. Within one checkout only one flavor at a time — `wails dev` compiles into that checkout's `build/bin`, and the second launch would overwrite the binary the first is running.
+
+Never weaken an assertion, skip a failed step or describe red as green. For background and runtime effects, use the specific redacted event-kind, timing or stop-reason lines that decide it; “no errors” is not evidence, and never attach complete frames. Obtain authorization before destructive or external side effects, and before substituting anything for a real dependency — `FLAVOR=fake` is a substitution, and a criterion reached through it names that in its verdict row along with what the fake does not establish.
+
+Redact before saving, and again before embedding: tokens, cookies, real credentials, and the contents of a real `~/Library/Application Support/agentre` DB.
+
+## Maintaining this route
+
+Harness facts are owned by [`../e2e/README.md`](../e2e/README.md). Follow [documentation.md](documentation.md) after path or harness changes. What this route still owns:
 
 ```bash
-cd e2e && pnpm run test:scratch "scratch/${task_name}/"
-```
-
-(The run commands themselves, and what the harness guarantees, are
-[`../e2e/README.md`](../e2e/README.md)'s.)
-
-**A quick look you delete in a minute does not need a directory** — a flat
-`e2e/scratch/poke.spec.ts` is fine (that is the starter shape in
-[`e2e/scratch/README.md`](../e2e/scratch/README.md)). The directory + report is required when the
-run is **acceptance against a spec**, a **bug reproduction**, or **anything whose result you are
-going to report to someone**.
-
-### Create `report.md` Before Running
-
-Copy the block under **Use This Shape** in [references/verification-report-template.md](./references/verification-report-template.md) into the scenario directory as `report.md` **before** starting the app, and fill it in as you go. Reconstructing it afterwards from
-memory is where "I think it worked" comes from.
-
-**Redact before saving, and again before embedding** — tokens, cookies, real credentials, the
-contents of a real `~/Library/Application Support/agentre` DB.
-
-## Choose the Evidence Form by What You Verified
-
-Decisive evidence is **the smallest readable record that lets a reader re-check your conclusion**,
-not "is there a picture":
-
-| What was verified | Decisive evidence |
-| --- | --- |
-| UI / interaction | Screenshots for static state; a short recording **plus key still frames** when sequencing is the point |
-| Chat / turn behavior | The `e2e-fake-reply: <prompt>` round-trip, plus the DB oracle — e.g. `runningSessionCount()` polling to `0` |
-| Service / repository / IPC | The DB read back through `e2e/fixtures/db.ts` or a read-only query against `$AGENTRE_DATA_DIR/agentre.db` |
-| Agent-backend events | The specific redacted event-kind / timing / stop-reason lines that decide it (enable Debug Logging in Settings → Version & Updates); never attach complete frames |
-| Migration | Forward command + exit code **against a DB holding real existing rows**; rollback command when supported, otherwise restore/backup evidence plus the explicit no-down rationale; the same query before and after, side by side |
-| CLI / daemon command (`agrctl` / `agentred`) | Full command + exit code + the stdout/stderr lines that decide it |
-| Pure logic | The test run: command + exit code + assertion output |
-
-**Assert the side effect independently, not just the UI.** "The UI updated" misses a failed write —
-that is precisely the "stuck running / lost status write" class of bug. The DB oracle is
-independent of the app's own service layer, which is what makes it worth reading.
-
-## Report Honestly
-
-- **It works** → say what you ran and what you observed: the command, the assertion value, the
-  screenshot, the report path. **"No errors" is not evidence.**
-- **A failure, or a path nobody reached** → say so plainly, with the raw output. Do not soften it,
-  and do not claim a success you did not see.
-- **Reproducing a bug** → state which of the two the scratch asserts, because they look identical
-  in a pass/fail summary and mean opposite things:
-  - the **expected** behavior — stays **red**, showing the gap; or
-  - the **current buggy** contract — **green**, annotated that it must flip once fixed.
-
-  **Never describe red as green.**
-- **Never weaken an assertion or delete a check to make a scratch run pass.**
-
-Anything short of every criterion holding **cannot** be summarized as holding: `not observed` means
-nobody reached a decisive observation; `does not hold` means someone looked and saw it fail. Neither
-is something a single word absorbs.
-
-## Wrapping Up Acceptance Against a Spec
-
-When the round works from an approved local spec in `docs/specs/`, the report additionally carries
-**one verdict line per acceptance criterion** — `holds` / `does not hold` / `not observed`, each
-with how it was checked and a command the reader can run themselves.
-
-**The verdicts live in one place only** (the template's "Verdict" table). The evidence sections hold
-the *evidence*; restating the verdicts beside them creates a second copy, and the stale copy is
-always the one that gets read. A criterion exercised only against the fake runtime does not make a
-real-integration criterion `holds` — write `not observed` and say what the fake did establish.
-
-## Maintaining This File
-
-The paths and commands above are checkable; when the harness moves, bring this file in line with
-the branch (see [documentation.md](./documentation.md)):
-
-```bash
-git grep --cached -n 'e2e/scratch' -- .gitignore                 # the proposed scratch rule is staged
-git grep --cached -n 'testDir' -- e2e/playwright.scratch.config.ts   # staged config still points at ./scratch
-git grep --cached -n -A2 '^e2e-scratch:' -- Makefile             # staged run command still exists
-git ls-files --cached --error-unmatch e2e/fixtures/db.ts docs/references/verification-report-template.md
+git grep --cached -n 'e2e/scratch' -- .gitignore                     # evidence stays local
+git grep --cached -n -A2 '^verify-up:' -- Makefile                   # the launch command still exists
+git grep --cached -n 'assertIsolatedDataDir' -- e2e/lib/target.mjs   # the isolation guard still exists
+cd e2e && pnpm run test:guards                                       # and still holds
+git ls-files --cached --error-unmatch e2e/drive.mjs e2e/verify.mjs docs/references/verification-report-template.md
 ```

@@ -52,6 +52,11 @@
       "duration": "{{seconds}}s",
       "durationTitle": "Turn duration"
     },
+    "elided": {
+      "steps": "{{count}} earlier steps",
+      "steps_one": "{{count}} earlier step",
+      "steps_other": "{{count}} earlier steps"
+    },
     "summary": {
       "thinking": "Thinking {{count}}",
       "read": "Read {{count}}",
