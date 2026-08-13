@@ -2,6 +2,8 @@ import { ChevronDown, ChevronRight, Folder } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { FileTypeIcon } from "@/components/agentre/file-type-icon";
+
 import { basename } from "../../file-preview/file-meta";
 import {
   collapseDirChain,
@@ -12,7 +14,7 @@ import {
 } from "../derive";
 
 import { SidebarList } from "./sidebar-list";
-import { FileTypeIcon, SidebarRow } from "./sidebar-row";
+import { SidebarRow } from "./sidebar-row";
 
 type DirNode = Extract<FileTreeNode, { kind: "dir" }>;
 

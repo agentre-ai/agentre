@@ -803,7 +803,7 @@ describe("LlmProvidersPanel", () => {
     });
   });
 
-  it("Given the create dialog, When a name, key and a manually added model with a default are provided, Then CreateLLMProvider sends models and defaultModelId", async () => {
+  it("Given the create dialog, When a provider with a default model is submitted, Then the request is sent and success is reported", async () => {
     const mocks = installAppMock({
       ListLLMProviders: vi.fn(() => Promise.resolve({ items: [] })),
     });
@@ -863,6 +863,9 @@ describe("LlmProvidersPanel", () => {
         }),
       );
     });
+    expect(
+      await screen.findByText('Provider "My Provider" added'),
+    ).toBeInTheDocument();
   });
 
   it("Given a provider with models, When the connection is edited, Then UpdateLLMProvider preserves the saved API key when untouched", async () => {

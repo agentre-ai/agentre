@@ -90,6 +90,18 @@
   --agent-15: #64748b;
   --agent-16: #9333ea;
 
+  /* File identity — 8 semantic hues for Logo/glyph color in a transparent 17px
+     alignment slot. Light uses saturated 500-600 shades for readable marks;
+     glyph shape always provides the second, non-color cue. */
+  --file-blue: #2563eb;
+  --file-yellow: #ca8a04;
+  --file-cyan: #0891b2;
+  --file-purple: #7c3aed;
+  --file-orange: #ea580c;
+  --file-green: #16a34a;
+  --file-red: #dc2626;
+  --file-neutral: #71717a;
+
   /* macOS traffic light */
   --traffic-close: #ff5f57;
   --traffic-minimize: #febc2e;
@@ -186,6 +198,17 @@
   --agent-15: #94a3b8;
   --agent-16: #c084fc;
 
+  /* File identity glyph colors — lighter 400 shades for dark surfaces
+     (mirrors the agent palette light/dark split). */
+  --file-blue: #60a5fa;
+  --file-yellow: #facc15;
+  --file-cyan: #22d3ee;
+  --file-purple: #a78bfa;
+  --file-orange: #fb923c;
+  --file-green: #4ade80;
+  --file-red: #f87171;
+  --file-neutral: #8a8d94;
+
   /* Charts */
   --chart-1: oklch(0.488 0.243 264.376);
   --chart-2: oklch(0.696 0.17 162.48);
@@ -270,6 +293,14 @@
   --color-agent-14: var(--agent-14);
   --color-agent-15: var(--agent-15);
   --color-agent-16: var(--agent-16);
+  --color-file-blue: var(--file-blue);
+  --color-file-yellow: var(--file-yellow);
+  --color-file-cyan: var(--file-cyan);
+  --color-file-purple: var(--file-purple);
+  --color-file-orange: var(--file-orange);
+  --color-file-green: var(--file-green);
+  --color-file-red: var(--file-red);
+  --color-file-neutral: var(--file-neutral);
   --color-status-running: var(--status-running);
   --color-status-running-foreground: var(--status-running-foreground);
   --color-status-running-bg: var(--status-running-bg);

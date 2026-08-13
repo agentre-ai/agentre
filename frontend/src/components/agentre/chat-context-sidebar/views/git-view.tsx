@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { FileTypeIcon } from "@/components/agentre/file-type-icon";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -164,6 +165,7 @@ function Row({
             {meta.letter}
           </span>
           <span className="sr-only">{gitStatusLabel(t, row.status)}</span>
+          <FileTypeIcon path={row.path} />
         </>
       }
       trailing={

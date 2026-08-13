@@ -1,4 +1,4 @@
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { MonacoNS } from "@/lib/file-preview/monaco-loader";
@@ -113,21 +113,54 @@ describe("CodePreview loadMonaco seam", () => {
 });
 
 describe("CodePreview theme following", () => {
-  it("sets the monaco theme on mount and re-themes when the app flips .dark", async () => {
+  it("sets the monaco theme on mount and re-themes when the app flips .dark", () => {
     document.documentElement.classList.remove("dark");
     const { monaco, editor } = createFakeMonaco();
+    const observe = vi.fn<MutationObserver["observe"]>();
+    const disconnect = vi.fn<MutationObserver["disconnect"]>();
 
-    render(<CodePreview value="x" path="a.go" monaco={monaco} />);
-    await waitFor(() => expect(editor.create).toHaveBeenCalledTimes(1));
-    // 挂载时按当前主题涂一次（light）。
-    expect(editor.setTheme).toHaveBeenCalledWith("vs");
+    class ControlledMutationObserver implements MutationObserver {
+      constructor(readonly callback: MutationCallback) {
+        mutationObservers.push(this);
+      }
 
-    document.documentElement.classList.add("dark");
-    await waitFor(() =>
-      expect(editor.setTheme).toHaveBeenCalledWith("vs-dark"),
-    );
+      observe = observe;
+      disconnect = disconnect;
+      takeRecords = vi.fn<MutationObserver["takeRecords"]>(() => []);
+    }
 
-    document.documentElement.classList.remove("dark");
-    await waitFor(() => expect(editor.setTheme).toHaveBeenLastCalledWith("vs"));
+    const mutationObservers: ControlledMutationObserver[] = [];
+
+    vi.stubGlobal("MutationObserver", ControlledMutationObserver);
+    try {
+      const { unmount } = render(
+        <CodePreview value="x" path="a.go" monaco={monaco} />,
+      );
+
+      expect(editor.create).toHaveBeenCalledTimes(1);
+      expect(editor.setTheme).toHaveBeenLastCalledWith("vs");
+      expect(observe).toHaveBeenCalledWith(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["class"],
+      });
+
+      act(() => {
+        document.documentElement.classList.add("dark");
+        mutationObservers[0].callback([], mutationObservers[0]);
+      });
+      expect(editor.setTheme).toHaveBeenLastCalledWith("vs-dark");
+
+      act(() => {
+        document.documentElement.classList.remove("dark");
+        mutationObservers[0].callback([], mutationObservers[0]);
+      });
+      expect(editor.setTheme).toHaveBeenLastCalledWith("vs");
+
+      unmount();
+      expect(disconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      document.documentElement.classList.remove("dark");
+      vi.unstubAllGlobals();
+    }
   });
 });

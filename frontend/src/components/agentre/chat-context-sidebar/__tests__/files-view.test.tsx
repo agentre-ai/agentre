@@ -125,9 +125,12 @@ describe("FilesView", () => {
     expect(firstChild!.className).toContain("size-3.5");
     expect(firstChild!.textContent).toBe("");
     expect(firstChild!.getAttribute("aria-hidden")).toBe("true");
-    // 空槽位之后紧跟文件图标（FileCode svg），再是文件名。
-    const icon = fileRow.querySelector("svg");
+    // 空槽位之后紧跟文件身份图标（共享 FileTypeIcon），再是文件名。
+    // 图标身份经 data-file-type 稳定表达，不依赖其内部 svg 包装结构。
+    const icon = firstChild!.nextElementSibling;
     expect(icon).not.toBeNull();
+    expect(icon!.getAttribute("data-file-type")).toBe("go");
+    expect(icon!.getAttribute("aria-hidden")).toBe("true");
     expect(icon!.nextElementSibling?.textContent).toBe("chat.go");
   });
 

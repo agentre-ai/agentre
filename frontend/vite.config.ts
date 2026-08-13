@@ -35,6 +35,7 @@ export default defineConfig({
   },
   test: {
     environment: "happy-dom",
+    maxWorkers: 2,
     setupFiles: ["./src/__tests__/setup.ts"],
     alias: {
       // wailsjs/ is gitignored and only generated during `wails build`.

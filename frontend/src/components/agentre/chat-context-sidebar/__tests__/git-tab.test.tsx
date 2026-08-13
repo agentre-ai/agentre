@@ -273,6 +273,44 @@ describe("Git tab · 未提交档", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders the shared file-type icon alongside the git status letter, and a precise pdf/zip icon does not grant preview", async () => {
+    gitChangesMock.mockResolvedValue(
+      changesView([
+        { path: "internal/a.go", status: "modified" },
+        { path: "report.pdf", status: "added" },
+        { path: "archive.zip", status: "untracked" },
+      ]),
+    );
+    renderSidebar({});
+    await screen.findByText("a.go");
+
+    const goRow = gitRow("internal/a.go");
+    expect(goRow.querySelector("[data-status-letter]")).toHaveTextContent("M");
+    expect(goRow.querySelector("[data-file-type]")).toHaveAttribute(
+      "data-file-type",
+      "go",
+    );
+
+    // 精确图标不授予预览能力：不可预览的行不是按钮，不响应单击。
+    const pdfRow = gitRow("report.pdf");
+    expect(pdfRow.querySelector("[data-file-type]")).toHaveAttribute(
+      "data-file-type",
+      "pdf",
+    );
+    expect(
+      within(pdfRow).queryByRole("button", { name: /report\.pdf/ }),
+    ).toBeNull();
+
+    const zipRow = gitRow("archive.zip");
+    expect(zipRow.querySelector("[data-file-type]")).toHaveAttribute(
+      "data-file-type",
+      "archive",
+    );
+    expect(
+      within(zipRow).queryByRole("button", { name: /archive\.zip/ }),
+    ).toBeNull();
+  });
+
   it("opens the preview on row click instead of the system default app", async () => {
     gitChangesMock.mockResolvedValue(
       changesView([

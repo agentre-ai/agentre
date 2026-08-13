@@ -591,6 +591,31 @@ describe("FilesPanel directory mode", () => {
       selectActivePreviewTab(useChatSidebarStore.getState(), 7),
     ).toMatchObject({ path: "main.go", sourceMode: "directory" });
   });
+
+  it("gives PDF/ZIP precise shared icons without granting preview interaction", async () => {
+    listDirMock.mockResolvedValue(
+      listing([entry("doc.pdf"), entry("archive.zip")]),
+    );
+    renderPanel({});
+
+    await screen.findByText("doc.pdf");
+
+    const pdf = row("doc.pdf");
+    expect(pdf.querySelector("[data-file-type]")).toHaveAttribute(
+      "data-file-type",
+      "pdf",
+    );
+    expect(within(pdf).queryByRole("button", { name: /doc\.pdf/ })).toBeNull();
+
+    const zip = row("archive.zip");
+    expect(zip.querySelector("[data-file-type]")).toHaveAttribute(
+      "data-file-type",
+      "archive",
+    );
+    expect(
+      within(zip).queryByRole("button", { name: /archive\.zip/ }),
+    ).toBeNull();
+  });
 });
 
 describe("FilesPanel directory search", () => {
@@ -862,6 +887,11 @@ describe("FilesPanel directory search", () => {
     expect(chatRow).toHaveAttribute(
       "title",
       "internal/service/chat_svc/chat.go",
+    );
+    // 搜索结果行同样通过共享组件渲染文件身份图标。
+    expect(chatRow.querySelector("[data-file-type]")).toHaveAttribute(
+      "data-file-type",
+      "go",
     );
 
     // 行的点击与其他模式一致：预览。

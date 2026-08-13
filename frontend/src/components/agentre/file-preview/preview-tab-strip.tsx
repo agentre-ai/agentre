@@ -31,7 +31,8 @@ import {
   type FilePreviewTab,
 } from "@/stores/chat-sidebar-store";
 
-import { basename, PREVIEW_KIND_ICON, previewIconKind } from "./file-meta";
+import { FileTypeIcon } from "../file-type-icon";
+import { basename } from "./file-meta";
 
 type Props = {
   sessionId: number;
@@ -144,7 +145,6 @@ function PreviewTab({
   onCloseAll: () => void;
 }) {
   const { t } = useTranslation();
-  const Icon = PREVIEW_KIND_ICON[previewIconKind(tab.path)];
   const ref = React.useRef<HTMLSpanElement>(null);
 
   // 活动标签始终滚入可见区：标签条超出宽度后靠横向滚动而不是继续压缩。
@@ -182,7 +182,7 @@ function PreviewTab({
           {active ? (
             <span className="absolute left-0 top-0 h-[2px] w-full bg-primary" />
           ) : null}
-          <Icon className="size-3.5 shrink-0" aria-hidden="true" />
+          <FileTypeIcon path={tab.path} testId="preview-tab-file-icon" />
           {tab.isPinned ? (
             <Pin
               data-testid="preview-tab-pin-icon"
@@ -277,39 +277,36 @@ function PreviewTabOverflowMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={4} className="w-72 p-0">
         <div className="flex flex-col py-1">
-          {tabs.map((tab) => {
-            const Icon = PREVIEW_KIND_ICON[previewIconKind(tab.path)];
-            return (
-              <DropdownMenuItem
-                key={tab.path}
-                data-active={tab.path === activePath}
-                onSelect={() => onSelect(tab.path)}
+          {tabs.map((tab) => (
+            <DropdownMenuItem
+              key={tab.path}
+              data-active={tab.path === activePath}
+              onSelect={() => onSelect(tab.path)}
+              className={cn(
+                "h-7 gap-2 rounded-none px-3 text-xs",
+                tab.path === activePath && "bg-sidebar-active-bg",
+              )}
+            >
+              <FileTypeIcon
+                path={tab.path}
+                testId="preview-overflow-file-icon"
+              />
+              <span
                 className={cn(
-                  "h-7 gap-2 rounded-none px-3 text-xs",
-                  tab.path === activePath && "bg-sidebar-active-bg",
+                  "shrink-0 truncate font-mono",
+                  tab.isPreview && "italic",
                 )}
               >
-                <Icon
-                  className="size-3.5 shrink-0 text-muted-foreground"
-                  aria-hidden="true"
-                />
-                <span
-                  className={cn(
-                    "shrink-0 truncate font-mono",
-                    tab.isPreview && "italic",
-                  )}
-                >
-                  {basename(tab.path)}
-                </span>
-                <span
-                  dir="rtl"
-                  className="min-w-0 flex-1 truncate text-left font-mono text-[10px] text-muted-foreground"
-                >
-                  {tab.path}
-                </span>
-              </DropdownMenuItem>
-            );
-          })}
+                {basename(tab.path)}
+              </span>
+              <span
+                dir="rtl"
+                className="min-w-0 flex-1 truncate text-left font-mono text-[10px] text-muted-foreground"
+              >
+                {tab.path}
+              </span>
+            </DropdownMenuItem>
+          ))}
         </div>
       </DropdownMenuContent>
     </DropdownMenu>

@@ -27,9 +27,9 @@ vi.mock("../../wailsjs/runtime/runtime", async () => {
 });
 
 // 生成的 llm_provider_svc 命名空间在 vitest 的 SSR 变换下只保留了部分
-// Request 类（如 ModelInput 会缺失），而其它 domain 命名空间正常。这里只
-// 替换 llm_provider_svc，保持其余命名空间（chat_svc / agent_svc / ...）不变，
-// 使新 Provider 创建流程（ModelInput 构造）在 App 集成测试中可用。
+// DTO 类，而其它 domain 命名空间正常。App 层的 LLM Provider 集成场景会
+// 构造这些 DTO（例如连接测试请求），因此这里只替换 llm_provider_svc，
+// 保持其余命名空间（chat_svc / agent_svc / ...）不变。
 vi.mock("../../wailsjs/go/models", async () => {
   const actual = await vi.importActual<
     typeof import("../../wailsjs/go/models")
@@ -1201,77 +1201,6 @@ describe("App", () => {
       await screen.findByText(
         '"Production" call succeeded. Sent hi and received a model response.',
       ),
-    ).toBeInTheDocument();
-  });
-
-  it("creates an LLM provider with a default model from the create dialog", async () => {
-    const user = userEvent.setup();
-
-    mockLlmProviders();
-    render(<App />);
-
-    await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.click(screen.getByRole("button", { name: "LLM Providers" }));
-    await user.click(
-      await screen.findByRole("button", { name: "New Provider" }),
-    );
-
-    const dialog = await screen.findByRole("dialog", {
-      name: "New LLM Provider",
-    });
-    fireEvent.change(within(dialog).getByLabelText("Name"), {
-      target: { value: "Draft Anthropic" },
-    });
-    fireEvent.change(within(dialog).getByLabelText(/^API Key$/), {
-      target: { value: "sk-draft" },
-    });
-    fireEvent.change(within(dialog).getByLabelText(/^Base URL/), {
-      target: { value: "https://api.example.com" },
-    });
-
-    // 手工添加一个模型并选择为默认
-    await user.click(within(dialog).getByRole("button", { name: "Add model" }));
-    fireEvent.change(within(dialog).getByLabelText("Model ID"), {
-      target: { value: "claude-sonnet-4-6" },
-    });
-    fireEvent.change(within(dialog).getByLabelText("Context"), {
-      target: { value: "200000" },
-    });
-    fireEvent.change(within(dialog).getByLabelText("Output"), {
-      target: { value: "64000" },
-    });
-    await user.click(
-      within(dialog).getByRole("radio", {
-        name: "Set claude-sonnet-4-6 as default",
-      }),
-    );
-
-    await user.click(within(dialog).getByRole("button", { name: "Create" }));
-
-    const appBridge = (
-      window as unknown as {
-        go?: { app?: { App?: Record<string, ReturnType<typeof vi.fn>> } };
-      }
-    ).go?.app?.App;
-
-    expect(appBridge?.CreateLLMProvider).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "anthropic",
-        name: "Draft Anthropic",
-        apiKey: "sk-draft",
-        baseUrl: "https://api.example.com",
-        defaultModelId: "claude-sonnet-4-6",
-        models: expect.arrayContaining([
-          expect.objectContaining({
-            modelId: "claude-sonnet-4-6",
-            contextWindow: 200000,
-            maxOutput: 64000,
-          }),
-        ]),
-      }),
-    );
-    expect(
-      await screen.findByText('Provider "Draft Anthropic" added'),
     ).toBeInTheDocument();
   });
 
