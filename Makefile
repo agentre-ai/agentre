@@ -1,4 +1,4 @@
-.PHONY: run dev build agrctl agentred agentred-package agentred-linux agentred-deploy agentred-deploy-restart agentred-deploy-local-coding agentred-local-coding generate test test-backend test-frontend test-cover test-agentred-packaging lint lint-backend lint-frontend lint-fix lint-fix-backend lint-fix-frontend mock install install-deps clean check e2e e2e-scratch e2e-sync verify-up verify-status verify-down
+.PHONY: run dev build agrctl agentred agentred-package agentred-linux agentred-deploy agentred-deploy-restart agentred-deploy-local-coding agentred-local-coding generate test test-backend test-frontend test-cover test-agentred-packaging lint lint-backend lint-frontend lint-fix lint-fix-backend lint-fix-frontend mock install install-deps clean check e2e e2e-app e2e-scratch e2e-sync verify-up verify-status verify-down
 
 APP_NAME := Agentre
 VERSION ?= 0.1.0
@@ -20,6 +20,7 @@ LDFLAGS := -s -w -X $(VERSION_PKG).Version=$(VERSION) -X $(BUILDINFO_PKG).Commit
 FRONTEND_DIR := frontend
 BACKEND_PKGS := . ./cmd/... ./internal/... ./migrations ./pkg/...
 E2E_SPEC ?=
+E2E_APP_BINARY := build/bin/agentre-e2e$(EXE)
 
 MACOS_APP_INSTALL_DIR ?= /Applications
 PREFIX ?= /usr/local
@@ -152,11 +153,15 @@ test-backend:
 test-frontend: generate
 	cd $(FRONTEND_DIR) && pnpm test
 
-# E2E:Playwright 驱动真实 wails dev(-tags e2e 的确定性 fake runtime)跑 GUI 端到端。
-# 详见 e2e/README.md。一次性装依赖+浏览器:cd e2e && pnpm run setup(CI 在独立
-# 步骤装,故这里不重复)。编排与收尾清理(回收残留 vite、删临时目录)都在 e2e/run-e2e.mjs
-# 里用 Node 跨平台完成;配方只做 shell 无关的 cd && pnpm,cmd/sh 皆可。
-e2e:
+# Build only the dedicated E2E composition root. Production build/package targets
+# remain rooted at main.go and never import e2e/composition or fake runtimes.
+e2e-app:
+	mkdir -p "$(AGENTRED_BUILD_DIR)"
+	go build -o "$(E2E_APP_BINARY)" ./e2e/app
+
+# E2E orchestration is rebuilt by later plan tasks; this target establishes the
+# dedicated build boundary consumed by that runner.
+e2e: e2e-app
 	cd e2e && pnpm test
 
 # 临时功能验证:跑 e2e/scratch/ 里的一次性 spec(不提交)。约定/用法见 e2e/README.md §6。

@@ -1,5 +1,3 @@
-//go:build e2e
-
 package fakes
 
 import (
@@ -41,7 +39,7 @@ const (
 	e2eServerUserIDEnv = "AGENTRE_E2E_SERVER_USER_ID"
 	e2eDeviceIDEnv     = "AGENTRE_E2E_DEVICE_ID"
 	e2eDeviceFPEnv     = "AGENTRE_E2E_DEVICE_FINGERPRINT"
-	e2eRefreshTokenEnv = "AGENTRE_E2E_REFRESH_TOKEN"
+	e2eRefreshTokenEnv = "AGENTRE_E2E_REFRESH_TOKEN" //nolint:gosec // G101: environment-variable name, not a credential
 )
 
 // keychainAccountRefreshToken / keychainAccountFingerprint mirror the constants
@@ -50,7 +48,7 @@ const (
 // drift between the two would show up as "the seeded app is not logged in" on
 // the very first spec.
 const (
-	keychainAccountRefreshToken = "agentre.server.refresh_token"
+	keychainAccountRefreshToken = "agentre.server.refresh_token" //nolint:gosec // G101: keychain account identifier, not a credential
 	keychainAccountFingerprint  = "agentre-device-fingerprint"
 )
 
@@ -164,13 +162,13 @@ func exchangeRefreshToken(ctx context.Context, baseURL, refreshToken string) (ac
 	if err != nil {
 		return "", "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(baseURL, "/")+"/v1/oauth/token/refresh", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext( //nolint:gosec // G704: dedicated E2E composition trusts the runner-provided loopback fake URL
+		ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/v1/oauth/token/refresh", bytes.NewReader(body))
 	if err != nil {
 		return "", "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req) //nolint:gosec // G704: request URL is the trusted E2E endpoint above
 	if err != nil {
 		return "", "", err
 	}

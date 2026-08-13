@@ -46,11 +46,17 @@ func AppDataDir() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve user config dir: %w", err)
 	}
+	return DefaultAppDataDir(base, IsDevMode()), nil
+}
+
+// DefaultAppDataDir resolves the production or Wails-dev desktop path beneath
+// a platform config root. Isolation guards use the same canonical definition.
+func DefaultAppDataDir(base string, dev bool) string {
 	name := AppName
-	if IsDevMode() {
+	if dev {
 		name = AppNameDev
 	}
-	return filepath.Join(base, name), nil
+	return filepath.Join(base, name)
 }
 
 // AgentredDataDir 返回 agentred daemon 的本地状态根目录。

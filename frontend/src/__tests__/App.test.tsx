@@ -560,7 +560,16 @@ function mockWailsRuntime({
   return runtime;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  const info = vi.mocked((await import("../../wailsjs/go/app/App")).Info);
+  info.mockReset();
+  info.mockResolvedValue({
+    name: "agentre",
+    version: "dev",
+    commit: "dev",
+    env: "test",
+    runtimeMode: "interactive",
+  });
   // Baseline full runtime so <App/> startup (Environment/Window*) and the
   // always-mounted QuitConfirmDialog's "app:quit-blocked" subscription both
   // work; individual tests still override via mockWailsRuntime as needed.
@@ -723,11 +732,47 @@ describe("App", () => {
     );
   });
 
+  it.each(["headless", "unknown"])(
+    "disables every native window API when runtime mode is %s",
+    async (runtimeMode) => {
+      const runtime = mockWailsRuntime();
+      const info = vi.mocked((await import("../../wailsjs/go/app/App")).Info);
+      info.mockResolvedValueOnce({
+        name: "agentre",
+        version: "dev",
+        commit: "dev",
+        env: "test",
+        runtimeMode,
+      });
+
+      localStorage.setItem(
+        windowSizeStorageKey,
+        JSON.stringify({ height: 720, width: 1120 }),
+      );
+      render(<App />);
+      fireEvent(window, new Event("resize"));
+      fireEvent(window, new Event("beforeunload"));
+      fireEvent(window, new Event("pagehide"));
+
+      await waitFor(() => {
+        expect(info).toHaveBeenCalled();
+      });
+      expect(runtime.WindowSetSize).not.toHaveBeenCalled();
+      expect(runtime.WindowCenter).not.toHaveBeenCalled();
+      expect(runtime.WindowShow).not.toHaveBeenCalled();
+      expect(runtime.WindowIsFullscreen).not.toHaveBeenCalled();
+      expect(runtime.WindowGetSize).not.toHaveBeenCalled();
+    },
+  );
+
   it("stores the normal Wails window size after resize", async () => {
     const runtime = mockWailsRuntime({ size: { h: 760, w: 1180 } });
 
     render(<App />);
 
+    await waitFor(() => {
+      expect(runtime.WindowShow).toHaveBeenCalled();
+    });
     fireEvent(window, new Event("resize"));
 
     await waitFor(() => {
@@ -750,6 +795,9 @@ describe("App", () => {
 
     render(<App />);
 
+    await waitFor(() => {
+      expect(runtime.WindowShow).toHaveBeenCalled();
+    });
     fireEvent(window, new Event("resize"));
 
     await waitFor(() => {
@@ -773,6 +821,9 @@ describe("App", () => {
 
     render(<App />);
 
+    await waitFor(() => {
+      expect(runtime.WindowShow).toHaveBeenCalled();
+    });
     fireEvent(window, new Event("resize"));
 
     await waitFor(() => {

@@ -40,8 +40,19 @@ import (
 )
 
 // App is the Wails binding root. Each exported method becomes a frontend RPC.
+// RuntimeMode describes whether native window management is allowed. Unknown is
+// deliberately distinct so frontend callers can fail closed.
+type RuntimeMode string
+
+const (
+	RuntimeModeUnknown     RuntimeMode = "unknown"
+	RuntimeModeInteractive RuntimeMode = "interactive"
+	RuntimeModeHeadless    RuntimeMode = "headless"
+)
+
 type App struct {
 	ctx              context.Context
+	runtimeMode      RuntimeMode
 	hookPollerCancel context.CancelFunc
 	peerMu           sync.Mutex
 	peerCancel       context.CancelFunc
@@ -65,15 +76,22 @@ type App struct {
 
 // AppInfo contains build and runtime metadata exposed to the frontend.
 type AppInfo struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
-	Commit  string `json:"commit"`
-	Env     string `json:"env"`
+	Name        string      `json:"name"`
+	Version     string      `json:"version"`
+	Commit      string      `json:"commit"`
+	Env         string      `json:"env"`
+	RuntimeMode RuntimeMode `json:"runtimeMode"`
 }
 
-// NewApp creates a new App application struct.
-func NewApp() *App {
+// NewApp creates a new App application struct. Omitted or invalid modes remain
+// unknown so native window management stays fail-closed.
+func NewApp(modes ...RuntimeMode) *App {
+	mode := RuntimeModeUnknown
+	if len(modes) == 1 && (modes[0] == RuntimeModeInteractive || modes[0] == RuntimeModeHeadless) {
+		mode = modes[0]
+	}
 	a := &App{
+		runtimeMode: mode,
 		finalQuit: func(ctx context.Context) {
 			wailsruntime.Quit(ctx)
 		},
@@ -328,10 +346,11 @@ func (a *App) Greet(name string) string {
 // Info returns app build and runtime metadata.
 func (a *App) Info() AppInfo {
 	info := AppInfo{
-		Name:    "agentre",
-		Version: configs.Version,
-		Commit:  buildinfo.ShortCommitID(),
-		Env:     string(configs.DEV),
+		Name:        "agentre",
+		Version:     configs.Version,
+		Commit:      buildinfo.ShortCommitID(),
+		Env:         string(configs.DEV),
+		RuntimeMode: a.runtimeMode,
 	}
 
 	if runtime := bootstrap.Default(); runtime != nil && runtime.Config() != nil {

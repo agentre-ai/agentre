@@ -1,6 +1,4 @@
-//go:build e2e
-
-// Package fakes 提供 e2e 构建(`-tags e2e`)专用的确定性 fake 装配。
+// Package fakes provides deterministic composition reachable only from the dedicated E2E main.
 // 它和 e2e/ 下的 Playwright 工程同处一个目录树,但单独成包,避免 Go 源码与
 // TS/Playwright 工具链在同一目录里混在一起。
 package fakes
@@ -61,7 +59,7 @@ func (claudeSkillDiscoverer) Discover(context.Context, agentskill.DiscoverQuery)
 	}, nil
 }
 
-// Install 仅在 `-tags e2e` 构建中编译:
+// install:
 //  1. 用确定性 fake 覆盖 claudecode runtime(无子进程/无登录);
 //  2. seed 一个本地 claudecode backend 并挂到默认 CEO agent,
 //     让前端"建会话→发消息→看回复"无需真实 CLI 即可跑通。
@@ -70,7 +68,7 @@ func (claudeSkillDiscoverer) Discover(context.Context, agentskill.DiscoverQuery)
 // Server / Remote Device 之前按 AGENTRE_KEYCHAIN_DIR 建立,这里不再覆盖。
 //
 // 失败只记日志不 panic:e2e 环境异常应让 Playwright 用例红,而不是让 app 崩。
-func Install(ctx context.Context) {
+func install(ctx context.Context) {
 	// 先接账号:随后 seed 出来的 backend / agent 才会带着账号进出站队列(R3)。
 	installE2ELoggedInAccount(ctx)
 	agentruntime.RegisterRuntime(agent_backend_entity.TypeClaudeCode, fakert.New())
@@ -195,15 +193,8 @@ func Install(ctx context.Context) {
 		zap.Int64("backendID", backendID), zap.Int64("agentID", ceo.ID))
 }
 
-// InstallAgentred 在 agentred(daemon)的 e2e 构建里注册确定性 fake runtime,让
-// web 端到端对 agentred 的 runtime.run 得到字节稳定的回复(见 fake 包注释)。
-//
-// 它与 Install 分开:Install 播的是桌面侧那一套(backend / agent / 工具表,表在
-// agentre.db),agentred 的 SQLite 没有那些表;daemon 的 runtime 选择按 wire
-// RunParams 里的 backend.type 走 agentruntime.RuntimeFor,这里只注册就够。失败只
-// 记日志不 panic —— e2e 环境异常应让 Playwright 用例红,而不是让 daemon 崩。
-func InstallAgentred(ctx context.Context) {
-	agentruntime.RegisterRuntime(agent_backend_entity.TypeClaudeCode, fakert.New())
-	agentskill.RegisterDiscoverer(agent_backend_entity.TypeClaudeCode, claudeSkillDiscoverer{})
-	logger.Ctx(ctx).Info("e2efakes.InstallAgentred: e2e fake runtime installed for agentred")
+// Install applies deterministic E2E composition after bootstrap.
+func Install(ctx context.Context) error {
+	install(ctx)
+	return nil
 }

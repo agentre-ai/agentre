@@ -126,6 +126,8 @@ type StoredWindowSize = {
   width: number;
 };
 
+type RuntimeMode = "interactive" | "headless" | "unknown";
+
 type AppOutletContext = {
   effectiveTheme: AppTheme;
   onThemePreferenceChange: (themePreference: AppThemePreference) => void;
@@ -547,9 +549,9 @@ function useAutoHideScrollbars() {
   }, []);
 }
 
-function usePersistedWindowSize() {
+function usePersistedWindowSize(runtimeMode: RuntimeMode) {
   useLayoutEffect(() => {
-    if (!hasWailsRuntime()) {
+    if (runtimeMode !== "interactive" || !hasWailsRuntime()) {
       return;
     }
 
@@ -631,7 +633,7 @@ function usePersistedWindowSize() {
       window.removeEventListener("beforeunload", flushSave);
       window.removeEventListener("pagehide", flushSave);
     };
-  }, []);
+  }, [runtimeMode]);
 }
 
 function AppLayout() {
@@ -644,12 +646,13 @@ function AppLayout() {
     getInitialThemePreference,
   );
   const [appVersion, setAppVersion] = useState<string>("dev");
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>("unknown");
   const location = useLocation();
   const navigate = useNavigate();
   const effectiveTheme = resolveThemePreference(themePreference, systemTheme);
 
   usePreventGlobalSelectAll(platform);
-  usePersistedWindowSize();
+  usePersistedWindowSize(runtimeMode);
   useAutoHideScrollbars();
 
   useLayoutEffect(() => {
@@ -722,9 +725,12 @@ function AppLayout() {
       try {
         const info = await FetchAppInfo();
         if (!mounted) return;
+        const mode = info?.runtimeMode;
+        setRuntimeMode(
+          mode === "interactive" || mode === "headless" ? mode : "unknown",
+        );
         const ver = info?.version?.trim();
-        if (!ver) return;
-        setAppVersion(ver);
+        if (ver) setAppVersion(ver);
       } catch {
         // 浏览器预览模式下 Wails 绑定不存在；保留 dev 兜底。
       }

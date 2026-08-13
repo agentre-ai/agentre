@@ -56,6 +56,7 @@ export const Info = vi.fn(() =>
     version: "dev",
     commit: "dev",
     builtAt: "",
+    runtimeMode: "interactive",
   }),
 );
 
