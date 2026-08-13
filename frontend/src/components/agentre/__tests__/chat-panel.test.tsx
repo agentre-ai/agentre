@@ -907,7 +907,7 @@ describe("ChatPanel · 跳转控件按转录行计数 (R14 修复轮)", () => {
     }
   }
 
-  it("Given a two-minute outage while one long reply streamed, When the catch-up replays 1206 notifications that land in three new transcript rows, Then the control says three", () => {
+  it("Given a two-minute outage while one long reply streamed, When the catch-up replays 1212 notifications that land in two new transcript rows, Then the control says two", () => {
     resetStore();
     streamingSession([]);
     const view = render(
@@ -921,13 +921,15 @@ describe("ChatPanel · 跳转控件按转录行计数 (R14 修复轮)", () => {
     act(() => {
       replayDeltas(1_200);
       replayToolRoundTrips(["t1", "t2", "t3"]);
+      replayDeltas(6);
     });
     act(() => {
-      recordCatchUp(42, 1_206, 0); // 补齐落定那一发
+      recordCatchUp(42, 1_212, 0); // 补齐落定那一发
     });
 
-    // 转录区多出的是「一段文字 + 三张工具卡」,占位行被文字行顶掉 —— 净增三行。
-    expect(digitsIn(screen.getByTestId("jump-to-latest-button"))).toBe("3");
+    // 转录区多出的是「一段文字 + 一个活动块(三次连续调用聚合成一行) + 一段
+    // 文字」,占位行被第一段文字顶掉 —— 净增两行。1212 条通知不是那个数字。
+    expect(digitsIn(screen.getByTestId("jump-to-latest-button"))).toBe("2");
   });
 
   // 补齐可以只是把内容追加进**已经存在**的那一行(还在流的助手消息吃掉全部 delta)。

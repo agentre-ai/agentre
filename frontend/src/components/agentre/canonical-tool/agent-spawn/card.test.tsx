@@ -97,7 +97,11 @@ describe("AgentSpawnCard", () => {
       },
     } as unknown as ChatBlockData;
     const { container } = render(<AgentSpawnCard toolBlock={block} />);
-    expect(screen.getByText(/DONE/)).toBeDefined();
+    // 成功态没有状态胶囊(spec 决策 10),合并进来的运行时态改由头部次级信息作证。
+    expect(screen.queryByTestId("agent-spawn-status-pill")).toBeNull();
+    expect(screen.getByTestId("agent-spawn-outcome")).toHaveTextContent(
+      "12.0s",
+    );
     // R8: 完整的工具数/tokens/耗时下沉到展开区 meta 行,不再出现在头部;
     // 展开卡片、把查询限定在展开容器内,证明它们确实进了那个区域。
     const details = expandCard(container);
@@ -112,7 +116,7 @@ describe("AgentSpawnCard", () => {
     ).toContain("12.0s");
   });
 
-  it("shows DONE when completed", () => {
+  it("settles without any status marker when completed", () => {
     const block = {
       type: "tool_use",
       toolName: "Task",
@@ -128,8 +132,12 @@ describe("AgentSpawnCard", () => {
       type: "tool_result",
       text: "summary text",
     } as unknown as ChatBlockData;
-    render(<AgentSpawnCard toolBlock={block} resultBlock={result} />);
-    expect(screen.getByText("DONE")).toBeDefined();
+    const { container } = render(
+      <AgentSpawnCard toolBlock={block} resultBlock={result} />,
+    );
+    // 「没有标记 = 成功」:胶囊不再出现,也不能靠 spinner 或错误色顶替。
+    expect(screen.queryByTestId("agent-spawn-status-pill")).toBeNull();
+    expect(container.querySelector(".animate-spin")).toBeNull();
   });
 
   it("renders an outlined model badge from the tool-input alias (A1)", () => {
@@ -664,7 +672,8 @@ describe("AgentSpawnCard normalized runs", () => {
     });
     render(<AgentSpawnCard toolBlock={block} />);
 
-    expect(screen.getByText("DONE")).toBeInTheDocument();
+    // 落定 = 没有任何状态标记(成功态无胶囊),而不是继续 spin 在 RUNNING。
+    expect(screen.queryByTestId("agent-spawn-status-pill")).toBeNull();
     expect(screen.queryByText("RUNNING")).toBeNull();
     expect(
       screen.getByTestId("agent-spawn-card").querySelector(".animate-spin"),
@@ -695,7 +704,7 @@ describe("AgentSpawnCard normalized runs", () => {
     expect(within(details).queryByText("No summary")).toBeNull();
   });
 
-  it("Given an unmatched child call in a terminal normalized single run, When rendered, Then the step stops spinning as UNKNOWN without a synthetic result", () => {
+  it("Given an unmatched child call in a terminal normalized single run, When rendered, Then the step settles as an unknown-result marker without spinning", () => {
     const block = normalizedSpawnBlock({
       mode: "single",
       status: "completed",
@@ -723,14 +732,20 @@ describe("AgentSpawnCard normalized runs", () => {
     );
 
     const details = expandCard(container);
-    expect(
-      within(details).getByTestId("agent-spawn-step-status"),
-    ).toHaveTextContent("UNKNOWN");
+    // 步骤区是活动块的一行:成功态无标记,但这一步并没有成功 —— run 已终结而它
+    // 始终没配到结果,归属不明,必须与「跑完了」区分开(且不再转 spinner)。
+    expect(within(details).getByTestId("activity-name")).toHaveTextContent(
+      "Bash",
+    );
+    expect(within(details).getByTestId("activity-pending")).toHaveTextContent(
+      "unknown result",
+    );
     expect(details.querySelector(".animate-spin")).toBeNull();
     fireEvent.click(within(details).getByRole("button", { name: /Bash/i }));
+    // 结果段不编造内容:没有 tool_result 就报「等待返回」,而不是伪造一段空结果。
     expect(
-      within(details).getByTestId("agent-spawn-step-result"),
-    ).toHaveTextContent("");
+      within(details).getByTestId("activity-row-body"),
+    ).not.toHaveTextContent("(empty result)");
   });
 
   it("Given partial and unknown normalized statuses, When rendered, Then their icons are warning and neutral rather than success checks", () => {
@@ -879,13 +894,11 @@ describe("AgentSpawnCard normalized runs", () => {
     const fallback = within(details).getByTestId("agent-spawn-fallback-steps");
     expect(within(fallback).getByText("Glob")).toBeInTheDocument();
     expect(within(fallback).getByText("Grep")).toBeInTheDocument();
-    expect(
-      within(fallback).getAllByTestId("agent-spawn-step-status"),
-    ).toHaveLength(2);
-    for (const fallbackStatus of within(fallback).getAllByTestId(
-      "agent-spawn-step-status",
-    )) {
-      expect(fallbackStatus).toHaveTextContent("UNKNOWN");
+    // 归属不明的子调用仍单独成区,内部同样是活动块的两行(不再各自一张 step 卡),
+    // 每一行都报「结果未知」—— 它们既没成功也不在跑。
+    expect(within(fallback).getAllByTestId("activity-row")).toHaveLength(2);
+    for (const marker of within(fallback).getAllByTestId("activity-pending")) {
+      expect(marker).toHaveTextContent("unknown result");
     }
     expect(fallback.querySelector(".animate-spin")).toBeNull();
   });
@@ -939,13 +952,13 @@ describe("AgentSpawnCard normalized runs", () => {
   });
 
   it.each([
-    ["failed", "FAILED"],
-    ["canceled", "STOPPED"],
-    ["completed", "UNKNOWN"],
-    ["unknown", "UNKNOWN"],
+    ["failed", "FAILED", "failed"],
+    ["canceled", "STOPPED", "canceled"],
+    ["completed", "DONE", "unknown result"],
+    ["unknown", "UNKNOWN", "unknown result"],
   ])(
-    "Given an unmatched child call in a %s run, When rendered, Then it settles as %s without invented result text",
-    (runStatus, expectedStepStatus) => {
+    "Given an unmatched child call in a %s run, When rendered, Then the run settles as %s, its step reports %s and no result text is invented",
+    (runStatus, expectedRunStatus, expectedStepMarker) => {
       const block = normalizedSpawnBlock({
         status: runStatus,
         runs: [
@@ -972,18 +985,21 @@ describe("AgentSpawnCard normalized runs", () => {
       );
       const details = expandCard(container);
       const group = within(details).getByTestId("agent-spawn-run-group");
-      expect(
-        within(group).getByTestId("agent-spawn-step-status"),
-      ).toHaveTextContent(expectedStepStatus);
+      // run 分组的状态胶囊不变(它是 run 分组的一部分,不受成功态去胶囊影响)。
+      expect(within(group).getByText(expectedRunStatus)).toBeInTheDocument();
       expect(group.querySelector(".animate-spin")).toBeNull();
       const runToggle = within(group).getByRole("button", { name: /worker/i });
       if (runToggle.getAttribute("aria-expanded") === "false") {
         fireEvent.click(runToggle);
       }
+      // 这一步按 run 的终态归属:失败 / 取消照报,其余一律「结果未知」——
+      // 它没有结果,不能和跑完的一步长得一模一样。
+      expect(within(group).getByTestId("activity-pending")).toHaveTextContent(
+        expectedStepMarker,
+      );
       fireEvent.click(within(group).getByRole("button", { name: /Bash/i }));
-      const stepResult = within(group).getByTestId("agent-spawn-step-result");
-      expect(stepResult).toHaveTextContent("");
-      expect(stepResult).not.toHaveTextContent("(empty result)");
+      const stepBody = within(group).getByTestId("activity-row-body");
+      expect(stepBody).not.toHaveTextContent("(empty result)");
     },
   );
 
@@ -1017,9 +1033,9 @@ describe("AgentSpawnCard normalized runs", () => {
     const group = within(details).getByTestId("agent-spawn-run-group");
     fireEvent.click(within(group).getByRole("button", { name: /worker/i }));
     fireEvent.click(within(group).getByRole("button", { name: /Read/i }));
-    expect(
-      within(group).getByTestId("agent-spawn-step-result"),
-    ).toHaveTextContent("(empty result)");
+    expect(within(group).getByTestId("activity-row-body")).toHaveTextContent(
+      "(empty result)",
+    );
   });
 
   it("Given untouched and manually collapsed run toggles, When progress arrives, Then only untouched activity auto-opens and controls remain keyboard accessible", async () => {
@@ -1165,12 +1181,15 @@ describe("progress accessibility label i18n (canonical.agentSpawn.progressAria)"
 });
 
 // ─── step 列表懒挂载回归测试 ────────────────────────────────────────────────
-// 性能修复的契约:折叠的 AgentSpawnCard 不 mount 任何 step 卡 / step 结果文本。
+// 性能修复的契约:折叠的 AgentSpawnCard 不 mount 任何步骤 / 步骤结果文本。
 // 大 subagent(150-200 个嵌套工具调用)折叠时若把整列表 + 结果文本挂进 DOM,
 // transcript 在会话打开 / tab 切换 / 滚动时卡顿(实测单消息 3000+ 节点、1.7MB
-// 隐藏文本)。下面钉死:折叠 → 零 step 节点;展开卡片 → step 出现;step 结果
-// 文本仅在展开该条 step 时 mount。
+// 隐藏文本)。下面钉死:折叠 → 零步骤节点;展开卡片 → 组头出现(超阈值时步骤
+// 仍不 mount,展开组头才逐条挂);步骤结果文本仅在展开该条步骤时 mount。
 describe("AgentSpawnCard step-list laziness (perf regression)", () => {
+  // 真实的工具结果是多行的(read/grep 的大文件输出),折叠的活动行对多行结果
+  // 只报规模(「N 行」)。单行结果按 spec 会在行尾留一段截断预览 —— 那是设计
+  // 上的实义信息,不是懒挂载漏网,所以这里用多行样本来量「隐藏文本」。
   const manyChildSteps = (count: number): ChatBlockData[] => {
     const all: ChatBlockData[] = [];
     for (let i = 0; i < count; i++) {
@@ -1182,13 +1201,13 @@ describe("AgentSpawnCard step-list laziness (perf regression)", () => {
       all.push({
         type: "tool_result",
         toolUseId: `call-${i}`,
-        text: "x".repeat(10_000),
+        text: `${"x".repeat(100)}\n`.repeat(100),
       } as ChatBlockData);
     }
     return all;
   };
 
-  it("Given a single-spawn card with many child steps, When collapsed, Then no step card or result text is mounted", () => {
+  it("Given a single-spawn card with many child steps, When collapsed, Then no step row or result text is mounted", () => {
     const block = normalizedSpawnBlock({
       mode: "single",
       status: "completed",
@@ -1201,17 +1220,18 @@ describe("AgentSpawnCard step-list laziness (perf regression)", () => {
       />,
     );
 
-    // 折叠态:150 条 step 一条都不进 DOM(没有 step 状态 pill,更没有 60KB 结果文本)。
+    // 折叠态:150 条 step 一条都不进 DOM —— 连活动块的组头都不 mount,
+    // 更没有 60KB 结果文本。
     expect(
-      container.querySelectorAll('[data-testid="agent-spawn-step-status"]'),
+      container.querySelectorAll('[data-testid="activity-block"]'),
     ).toHaveLength(0);
     expect(
-      container.querySelectorAll('[data-testid="agent-spawn-step-result"]'),
+      container.querySelectorAll('[data-testid="activity-row"]'),
     ).toHaveLength(0);
     expect(container.textContent).not.toContain("xxxxx");
   });
 
-  it("Given the same card, When expanded, Then all steps mount", () => {
+  it("Given the same card with more than 20 steps, When expanded, Then only the group header mounts until it is opened", () => {
     const block = normalizedSpawnBlock({
       mode: "single",
       status: "completed",
@@ -1224,9 +1244,15 @@ describe("AgentSpawnCard step-list laziness (perf regression)", () => {
       />,
     );
 
-    expandCard(container);
+    const details = expandCard(container);
     expect(
-      container.querySelectorAll('[data-testid="agent-spawn-step-status"]'),
+      container.querySelectorAll('[data-testid="activity-row"]'),
+    ).toHaveLength(0);
+    expect(container.textContent).not.toContain("xxxxx");
+
+    fireEvent.click(within(details).getByTestId("activity-header"));
+    expect(
+      container.querySelectorAll('[data-testid="activity-row"]'),
     ).toHaveLength(150);
   });
 
@@ -1247,21 +1273,220 @@ describe("AgentSpawnCard step-list laziness (perf regression)", () => {
     const details = container.querySelector(
       '[data-slot="agent-spawn-details"]',
     ) as HTMLElement;
-    // step 折叠:头部在,结果文本不在 DOM。
-    expect(
-      within(details).getByTestId("agent-spawn-step-status"),
-    ).toBeInTheDocument();
-    expect(within(details).queryByTestId("agent-spawn-step-result")).toBeNull();
-    expect(within(details).queryByTestId("agent-spawn-step-params")).toBeNull();
+    // step 折叠:活动行在,参数 / 结果文本不在 DOM。
+    expect(within(details).getByTestId("activity-row")).toBeInTheDocument();
+    expect(within(details).queryByTestId("activity-row-body")).toBeNull();
+    expect(details.textContent).not.toContain("xxxxx");
 
     fireEvent.click(within(details).getByRole("button", { name: /Read/i }));
-    expect(
-      within(details).getByTestId("agent-spawn-step-result"),
-    ).toHaveTextContent("xxxxx");
+    expect(within(details).getByTestId("activity-row-body")).toHaveTextContent(
+      "xxxxx",
+    );
   });
 });
 
-describe("AgentSpawnStepCard params section", () => {
+// ─── 步骤区 = 转录里的同一个活动块(spec 决策 9 / 子代理 §1-2) ───────────────
+// 子代理内部递归同一形态:同一个组头、同一套活动行、同一套展开体,不再套一层
+// 带边框 + 状态胶囊的 step 卡(Problem 6 的卡片墙套娃)。组头汇总必须来自
+// transcript-rows 的 summarizeActivity —— 自建一个子代理专用汇总会在这里显形。
+describe("AgentSpawnCard steps region as an activity block", () => {
+  const singleSpawn = (status = "completed") =>
+    normalizedSpawnBlock({
+      mode: "single",
+      status,
+      runs: [{ id: "run-one", index: 0, agent: "worker", status }],
+    });
+
+  const readSteps = (count: number) =>
+    groupedChildren(
+      Array.from({ length: count }, (_, i) => ({
+        runId: "run-one",
+        toolName: "Read",
+        toolUseId: `call-${i}`,
+        toolInput: { path: `./f${i}.ts` },
+        result: "content",
+      })),
+    );
+
+  it("Given a completed dispatch with child steps, When expanded, Then the STEPS region is one activity block carrying the shared group summary instead of per-step cards", () => {
+    const { container } = render(
+      <AgentSpawnCard
+        toolBlock={singleSpawn()}
+        childBlocks={groupedChildren([
+          {
+            runId: "run-one",
+            toolName: "Read",
+            toolUseId: "c1",
+            toolInput: { path: "./a.ts" },
+            result: "a",
+          },
+          {
+            runId: "run-one",
+            toolName: "Read",
+            toolUseId: "c2",
+            toolInput: { path: "./b.ts" },
+            result: "b",
+          },
+          {
+            runId: "run-one",
+            toolName: "Bash",
+            toolUseId: "c3",
+            toolInput: { command: "go test ./..." },
+            result: "ok",
+          },
+        ])}
+      />,
+    );
+
+    const details = expandCard(container);
+    const block = within(details).getByTestId("activity-block");
+    expect(within(block).getByTestId("activity-header")).toHaveTextContent(
+      "3 steps",
+    );
+    // 类目汇总的措辞与顺序由 summarizeActivity 独家决定(转录组头同一实现)。
+    const summary = within(block).getByTestId("activity-summary");
+    expect(summary).toHaveTextContent("Read 2");
+    expect(summary).toHaveTextContent("Commands 1");
+    expect(within(block).getAllByTestId("activity-row")).toHaveLength(3);
+    // 旧的 step 卡(边框 + 每步一个状态胶囊)不复存在。
+    expect(within(details).queryByTestId("agent-spawn-step-status")).toBeNull();
+  });
+
+  it("Given 20 child steps, When the card is expanded, Then the activity rows are expanded by default", () => {
+    const { container } = render(
+      <AgentSpawnCard toolBlock={singleSpawn()} childBlocks={readSteps(20)} />,
+    );
+    const details = expandCard(container);
+    expect(within(details).getAllByTestId("activity-row")).toHaveLength(20);
+  });
+
+  it("Given more than 20 child steps, When the card is expanded, Then only the group header mounts until the group is opened", () => {
+    const { container } = render(
+      <AgentSpawnCard toolBlock={singleSpawn()} childBlocks={readSteps(21)} />,
+    );
+    const details = expandCard(container);
+    expect(within(details).getByTestId("activity-header")).toHaveTextContent(
+      "21 steps",
+    );
+    expect(within(details).queryAllByTestId("activity-row")).toHaveLength(0);
+
+    fireEvent.click(within(details).getByTestId("activity-header"));
+    expect(within(details).getAllByTestId("activity-row")).toHaveLength(21);
+  });
+
+  it("Given a completed dispatch, When rendered, Then the header drops the green success pill for secondary steps · tokens · duration", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "Task",
+      canonical: {
+        kind: "agent.spawn",
+        agentSpawn: { taskId: "1", taskDescription: "review PR" },
+      },
+      subagent: {
+        status: "completed",
+        toolUses: 5,
+        totalTokens: 2400,
+        durationMs: 12000,
+      },
+    } as unknown as ChatBlockData;
+    render(<AgentSpawnCard toolBlock={block} />);
+
+    // 成功态不再有任何状态胶囊 —— 「没有标记 = 成功」(spec 决策 10)。
+    expect(screen.queryByTestId("agent-spawn-status-pill")).toBeNull();
+    expect(screen.queryByText(/DONE/)).toBeNull();
+    const outcome = screen.getByTestId("agent-spawn-outcome");
+    expect(outcome.textContent).toBe("5 steps · 2.4K tok · 12.0s");
+    // 次级信息:不占用状态色,也不占用品牌色。
+    expect(outcome.className).toContain("text-subtle-foreground");
+  });
+
+  it("Given any dispatch state, When rendered, Then the subagent name and icon are neutral rather than brand-colored and non-success keeps its pill", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "Task",
+      canonical: {
+        kind: "agent.spawn",
+        agentSpawn: { taskId: "1", status: "running" },
+      },
+    } as unknown as ChatBlockData;
+    const { container } = render(<AgentSpawnCard toolBlock={block} />);
+    const name = screen.getByText("Agent");
+    expect(name.className).not.toContain("text-primary-text");
+    const icon = container.querySelector(".lucide-users");
+    expect(icon).not.toBeNull();
+    expect(icon?.getAttribute("class")).not.toContain("text-primary-text");
+    // 非成功态的标记不受影响。
+    expect(screen.getByTestId("agent-spawn-status-pill")).toHaveTextContent(
+      "RUNNING",
+    );
+    expect(screen.queryByTestId("agent-spawn-outcome")).toBeNull();
+  });
+
+  it("Given a completed grouped dispatch, When rendered, Then its card header follows the same success rule", () => {
+    const block = normalizedSpawnBlock({
+      status: "completed",
+      runs: [
+        { id: "a", index: 0, agent: "one", task: "One", status: "completed" },
+        { id: "b", index: 1, agent: "two", task: "Two", status: "completed" },
+      ],
+    });
+    const { container } = render(<AgentSpawnCard toolBlock={block} />);
+    // 卡头的成功胶囊消失;run 分组内部每个 run 的状态胶囊照旧(那是 run 分组的一部分)。
+    expect(screen.queryByTestId("agent-spawn-status-pill")).toBeNull();
+    expect(
+      container.querySelector(".lucide-users")?.getAttribute("class"),
+    ).not.toContain("text-primary-text");
+    const details = expandCard(container);
+    expect(
+      within(details).getAllByTestId("agent-spawn-run-group"),
+    ).toHaveLength(2);
+  });
+
+  // 组头是折叠态唯一的信息出口。一个已经失败终结的 run 里,没配到 tool_result 的
+  // 步骤在展开态是红色失败行(pendingOutcome=failed),组头必须报出同样的数量 ——
+  // 否则 21 步以上默认折叠的那一组会宣称「一个失败都没有」。
+  it("Given a failed run whose steps never got a result, When the step group stays collapsed, Then its header still reports them as failures", () => {
+    const { container } = render(
+      <AgentSpawnCard
+        toolBlock={singleSpawn("failed")}
+        childBlocks={groupedChildren(
+          Array.from({ length: 21 }, (_, i) => ({
+            runId: "run-one",
+            toolName: "Read",
+            toolUseId: `call-${i}`,
+            toolInput: { path: `./f${i}.ts` },
+            // 最后两步没有 result —— run 已经失败终结,它们永远等不到了。
+            ...(i < 19 ? { result: "content" } : {}),
+          })),
+        )}
+      />,
+    );
+
+    const details = expandCard(container);
+    const header = within(details).getByTestId("activity-header");
+    expect(header).toHaveTextContent("21 steps");
+    expect(within(details).queryAllByTestId("activity-row")).toHaveLength(0);
+    expect(within(details).getByTestId("activity-failures")).toHaveTextContent(
+      "2 failed",
+    );
+
+    // 展开后确实是那两行红的 —— 组头与行是同一判据。
+    fireEvent.click(header);
+    expect(
+      within(details)
+        .getAllByTestId("activity-row")
+        .filter((row) => row.getAttribute("data-failed") === "true"),
+    ).toHaveLength(2);
+  });
+
+  it("Given the new header copy, Then both locales carry it", () => {
+    expect(enCommon.canonical.agentSpawn.outcome.steps_one).toBeTruthy();
+    expect(enCommon.canonical.agentSpawn.outcome.steps_other).toBeTruthy();
+    expect(zhCommon.canonical.agentSpawn.outcome.steps).toBeTruthy();
+  });
+});
+
+describe("Subagent step params section", () => {
   it("Given an expanded step with tool input, When expanded, Then its params are listed above the result", () => {
     const block = normalizedSpawnBlock({
       mode: "single",
@@ -1284,11 +1509,17 @@ describe("AgentSpawnStepCard params section", () => {
     );
     const details = expandCard(container);
     fireEvent.click(within(details).getByRole("button", { name: /Read/i }));
-    const params = within(details).getByTestId("agent-spawn-step-params");
-    expect(within(params).getByText("file_path")).toBeInTheDocument();
-    expect(within(params).getByText("./a.ts")).toBeInTheDocument();
-    expect(within(params).getByText("offset")).toBeInTheDocument();
-    expect(within(params).getByText("10")).toBeInTheDocument();
+    const body = within(details).getByTestId("activity-row-body");
+    expect(within(body).getByText("file_path")).toBeInTheDocument();
+    expect(within(body).getByText("./a.ts")).toBeInTheDocument();
+    expect(within(body).getByText("offset")).toBeInTheDocument();
+    expect(within(body).getByText("10")).toBeInTheDocument();
+    // 参数在结果之前:展开体两段的次序不因换成活动行而颠倒。
+    const sections = within(body).getAllByText(/PARAMS|RESULT/);
+    expect(sections.map((node) => node.textContent)).toEqual([
+      "PARAMS",
+      "RESULT",
+    ]);
   });
 
   it("Given a step with a long param value, When expanded, Then the value scrolls without an expand control", () => {

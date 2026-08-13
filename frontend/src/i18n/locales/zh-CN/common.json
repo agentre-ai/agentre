@@ -41,6 +41,46 @@
     "needsAttention": "审批",
     "unread": "未读"
   },
+  "activity": {
+    "header": {
+      "steps": "{{count}} 步",
+      "steps_one": "{{count}} 步",
+      "steps_other": "{{count}} 步",
+      "running": "正在执行 · 已 {{count}} 步",
+      "running_one": "正在执行 · 已 {{count}} 步",
+      "running_other": "正在执行 · 已 {{count}} 步",
+      "duration": "{{seconds}}s",
+      "durationTitle": "本轮耗时"
+    },
+    "summary": {
+      "thinking": "思考 {{count}}",
+      "read": "查阅 {{count}}",
+      "edit": "改 {{count}} 个文件",
+      "edit_one": "改 {{count}} 个文件",
+      "edit_other": "改 {{count}} 个文件",
+      "write": "写入 {{count}}",
+      "command": "命令 {{count}}",
+      "other": "其它 {{count}}",
+      "failures": "{{count}} 失败"
+    },
+    "row": {
+      "thinking": "思考",
+      "thinkingMeta": "{{count}} 字",
+      "exit": "exit {{code}}",
+      "failed": "失败",
+      "running": "运行中",
+      "canceled": "已取消",
+      "unknown": "结果未知",
+      "lines": "{{count}} 行",
+      "lines_one": "{{count}} 行",
+      "lines_other": "{{count}} 行",
+      "sections": {
+        "params": "参数",
+        "result": "结果",
+        "content": "内容"
+      }
+    }
+  },
   "agentBackends": {
     "actions": {
       "cancelTest": "取消测试",
@@ -319,7 +359,6 @@
       "defaultName": "Agent",
       "groupedName": "多个 Agent",
       "runToggle": "展开或收起第 {{index}} 个运行：{{name}}",
-      "stepToggle": "展开或收起 {{tool}} 步骤详情",
       "stop": "停止",
       "emptyPrompt": "无 prompt",
       "emptyResult": "(empty result)",
@@ -348,10 +387,13 @@
         "tools_other": "{{count}} 个工具",
         "tokens": "{{value}} tokens"
       },
+      "outcome": {
+        "steps": "{{count}} 步",
+        "steps_one": "{{count}} 步",
+        "steps_other": "{{count}} 步"
+      },
       "sections": {
         "prompt": "TASK PROMPT",
-        "params": "PARAMS",
-        "result": "RESULT",
         "tasks": "TASKS",
         "steps": "STEPS",
         "output": "OUTPUT",
@@ -360,11 +402,9 @@
       "status": {
         "done": "DONE",
         "error": "ERROR",
-        "fail": "FAIL",
         "failed": "FAILED",
         "partial": "PARTIAL",
         "running": "RUNNING",
-        "runningLower": "running",
         "waiting": "WAITING",
         "skipped": "SKIPPED",
         "unknown": "UNKNOWN",
@@ -380,7 +420,6 @@
       "paramCount": "{{count}} 个参数"
     },
     "fileEdit": {
-      "aria": "{{tool}} 工具调用",
       "badge": {
         "deleted": "DELETED",
         "new": "NEW"
@@ -390,13 +429,10 @@
       "truncated": "部分行已截断 · 完整 diff 共 {{count}} 行(展示前 {{shown}} 行)"
     },
     "fileWrite": {
-      "aria": "写文件工具调用",
       "copyDone": "已复制完整内容",
       "copyFailed": "复制完整内容失败",
       "copyFull": "复制完整内容",
       "empty": "新建空文件",
-      "newBadge": "NEW",
-      "title": "写入",
       "truncated": "内容已截断 · 显示前 {{lines}} 行"
     },
     "plan": {

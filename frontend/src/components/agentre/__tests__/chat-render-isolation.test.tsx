@@ -1,21 +1,21 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-// 重渲隔离探针:把 CanonicalToolRouter 换成渲染计数器,验证流式 chunk 期间
-// persisted 消息的 tool 行不重渲 —— 这是本次性能修复的另一半(行级 memo +
-// WeakMap 行缓存 + TranscriptRenderContext 稳定值)。若 context value 或行对象
-// 在 chunk 间失稳,memo 被击穿,这里立刻红。
+// 重渲隔离探针:把 ActivityBlock(工具步骤如今的渲染出口)换成渲染计数器,
+// 验证流式 chunk 期间 persisted 消息的工具行不重渲 —— 这是本次性能修复的另一半
+// (行级 memo + WeakMap 行缓存 + TranscriptRenderContext 稳定值)。若 context
+// value 或行对象在 chunk 间失稳,memo 被击穿,这里立刻红。
 const probe = vi.hoisted(() => ({
   renders: new Map<string, number>(),
 }));
 
-vi.mock("@/components/agentre/canonical-tool/registry", () => ({
-  CanonicalToolRouter: ({
-    toolBlock,
+vi.mock("@/components/agentre/activity-block/block", () => ({
+  ActivityBlock: ({
+    steps,
   }: {
-    toolBlock?: { toolUseId?: string };
+    steps: { toolBlock?: { toolUseId?: string } }[];
   }) => {
-    const key = toolBlock?.toolUseId ?? "?";
+    const key = steps[0]?.toolBlock?.toolUseId ?? "?";
     probe.renders.set(key, (probe.renders.get(key) ?? 0) + 1);
     return <div data-testid="probe-tool-card" data-tool={key} />;
   },
@@ -59,8 +59,11 @@ function toolPair(toolUseId: string): ChatBlockData[] {
 
 describe("ChatTranscript live re-render isolation", () => {
   it("Given persisted tool rows, When live chunks stream in, Then only the live message re-renders", () => {
+    // 两次调用之间隔一句正文:正文打断活动块聚合,于是这两次调用各自成行
+    // (单条不成组),探针才数得到「持久化行有没有被流式 chunk 带着重渲」。
     const persisted = message(1, "assistant", [
       ...toolPair("toolu-old-1"),
+      { text: "then", type: "text" } as ChatBlockData,
       ...toolPair("toolu-old-2"),
     ]);
     const live = message(2, "assistant", []);

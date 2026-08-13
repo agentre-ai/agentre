@@ -27,6 +27,11 @@ import {
 } from "../../transcript-card";
 import { statusConfig, type AgentStatus } from "../../types";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
+import {
+  commandResultOf,
+  isFailedCommandResult,
+  type CommandResult,
+} from "../command-result";
 import type { CanonicalCardProps } from "../props";
 
 import { summarizeRawTool } from "./summary";
@@ -69,16 +74,10 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
   );
 
   const commandResult = React.useMemo(
-    () => parseCommandExecutionResult(resultBlock?.text),
-    [resultBlock?.text],
+    () => commandResultOf(resultBlock),
+    [resultBlock],
   );
-  const commandFailed =
-    commandResult !== null &&
-    ((typeof commandResult.exitCode === "number" &&
-      commandResult.exitCode !== 0) ||
-      commandResult.status === "failed" ||
-      commandResult.status === "error" ||
-      commandResult.status === "interrupted");
+  const commandFailed = isFailedCommandResult(commandResult);
 
   const hasResult = !!resultBlock;
   const isError = !!resultBlock?.isError || commandFailed;
@@ -313,47 +312,7 @@ function Section({
   );
 }
 
-type CommandExecutionResult = {
-  exitCode?: number;
-  output: string;
-  status?: string;
-};
-
-// command_execution 工具返回 JSON {exitCode, output, status};其它工具的 result
-// 直接是 plain text。**靠 result shape 判定**,不靠 toolName。
-function parseCommandExecutionResult(
-  text?: string,
-): CommandExecutionResult | null {
-  if (typeof text !== "string") return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== "object") return null;
-  const data = parsed as Record<string, unknown>;
-  if (!("output" in data) && !("exitCode" in data) && !("status" in data)) {
-    return null;
-  }
-  return {
-    exitCode: typeof data.exitCode === "number" ? data.exitCode : undefined,
-    output: commandOutput(data.output),
-    status: typeof data.status === "string" ? data.status : undefined,
-  };
-}
-
-function commandOutput(output: unknown): string {
-  if (output == null) return "";
-  if (typeof output === "string") return output;
-  try {
-    return JSON.stringify(output, null, 2);
-  } catch {
-    return String(output);
-  }
-}
-
-function formatCommandMeta(result: CommandExecutionResult): string {
+function formatCommandMeta(result: CommandResult): string {
   const parts: string[] = [];
   if (typeof result.exitCode === "number")
     parts.push(`exit ${result.exitCode}`);

@@ -11,8 +11,11 @@ import {
   isLastRowOfMessage,
   ROW_END_PADDING_DELTA,
   ROW_MID_PADDING_DELTA,
+  summarizeActivity,
   type TranscriptRow,
   type TranscriptRowItem,
+  type VisibleActivityItem,
+  type VisibleRenderItem,
 } from "@/components/agentre/transcript-rows";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
 import type { LocalCommandEntry } from "@/stores/local-commands-store";
@@ -62,14 +65,16 @@ describe("buildRenderItems", () => {
 
     expect(items).toHaveLength(2);
     expect(items[0]).toMatchObject({ type: "text", text: "Hello world" });
-    expect(items[1]).toMatchObject({
+    // 落单的一次调用是只有一步的活动项(壳由渲染层按「单条不成组」省掉)。
+    const paired = activityAt(items, 1).steps[0];
+    expect(paired).toMatchObject({
       type: "tool",
       toolBlock: { toolUseId: "toolu-1" },
       resultBlock: { text: "paired" },
     });
     // uiStateKey 字面量:格式 message:${id}:${type}:${identity},identity 优先 toolUseId。
     // TranscriptUIStateContext 里所有已展开卡片的状态都挂在这个键上,字节级不能漂。
-    expect(items[1].uiStateKey).toBe("message:5:tool:tool:toolu-1");
+    expect(paired.uiStateKey).toBe("message:5:tool:tool:toolu-1");
   });
 
   it("tool_use 在 persisted blocks、tool_result 在 liveBlocks 时仍配对到同一 item", () => {
@@ -80,7 +85,7 @@ describe("buildRenderItems", () => {
     });
 
     expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({
+    expect(activityAt(items, 0).steps[0]).toMatchObject({
       type: "tool",
       toolBlock: { toolUseId: "toolu-x" },
       resultBlock: { text: "late result" },
@@ -98,18 +103,21 @@ describe("buildRenderItems", () => {
       ],
     });
 
-    expect(items).toHaveLength(2);
+    // 两个连续工具折进一个活动块,配对结果仍挂在各自的步骤上。
+    expect(items).toHaveLength(1);
+    const steps = activityAt(items, 0).steps;
+    expect(steps).toHaveLength(2);
     // LIFO:匿名 result 配给最后一个匿名 tool_use,第一个保持未配对。
-    expect(items[0].type === "tool" && items[0].resultBlock).toBeUndefined();
-    expect(items[1]).toMatchObject({
+    expect(steps[0].type === "tool" && steps[0].resultBlock).toBeUndefined();
+    expect(steps[1]).toMatchObject({
       type: "tool",
       toolBlock: { toolName: "Read" },
       resultBlock: { text: "lifo-paired" },
     });
     // 孤儿 result 不产生幽灵 tool 卡。
     expect(
-      items.some(
-        (item) => item.type === "tool" && item.resultBlock?.text === "orphan",
+      steps.some(
+        (step) => step.type === "tool" && step.resultBlock?.text === "orphan",
       ),
     ).toBe(false);
   });
@@ -161,9 +169,11 @@ describe("buildRenderItems", () => {
     expect(items[0].uiStateKey).toBe(
       "message:5:permission:permission:req-denied",
     );
-    expect(items[1]).toMatchObject({
+    // 被消费掉的是那条 allowed 审批：它不再单独成项，工具本身照常进活动块。
+    // （审批信息由工具块上的 toolPermission 承载，不再往 RenderItem 上挂一份。）
+    expect(activityAt(items, 1).steps[0]).toMatchObject({
       type: "tool",
-      permissionBlock: { toolPermission: { requestId: "req-allowed" } },
+      toolBlock: { toolName: "Bash" },
     });
   });
 
@@ -314,13 +324,22 @@ describe("buildRenderItems", () => {
       liveTail: " tail",
       liveBlocks: [toolUse("toolu-live")],
     });
+    // 已结束的思考(streaming=false)与它前面的工具是同一段活动,折进一个活动块;
+    // 段内顺序仍是「工具 → 思考」。
     expect(withTool.map((item) => item.type)).toEqual([
       "text",
-      "tool",
-      "thinking",
+      "activity",
       "text",
     ]);
-    expect(withTool[2]).toMatchObject({ type: "thinking", streaming: false });
+    const withToolSteps = activityAt(withTool, 1).steps;
+    expect(withToolSteps.map((step) => step.type)).toEqual([
+      "tool",
+      "thinking",
+    ]);
+    expect(withToolSteps[1]).toMatchObject({
+      type: "thinking",
+      streaming: false,
+    });
 
     // case B:纯思考阶段(liveBlocks 空、liveTail 空)→ 仍排在最前,streaming=true。
     const thinkingOnly = buildRenderItems({
@@ -346,7 +365,7 @@ describe("buildRenderItems", () => {
       ],
     });
     expect(round2Thinking.map((item) => item.type)).toEqual([
-      "tool",
+      "activity",
       "thinking",
     ]);
     expect(round2Thinking[1]).toMatchObject({
@@ -374,14 +393,17 @@ describe("buildRenderItems", () => {
         toolUse("toolu-2"),
       ],
     });
-    const flat = items.map((item) =>
+    // 活动块摊平成它的步骤 —— 聚合只改变「谁和谁同处一行」,不改变时间顺序。
+    const label = (item: { type: string } & Record<string, unknown>): string =>
       item.type === "thinking"
-        ? `thinking:${(item as { block: ChatBlockData }).block.text}`
+        ? `thinking:${(item as unknown as { block: ChatBlockData }).block.text}`
         : item.type === "tool"
-          ? `tool:${item.toolBlock?.toolName}`
+          ? `tool:${(item as unknown as { toolBlock?: ChatBlockData }).toolBlock?.toolName}`
           : item.type === "text"
-            ? `text:${(item as { text: string }).text}`
-            : item.type,
+            ? `text:${(item as unknown as { text: string }).text}`
+            : item.type;
+    const flat = items.flatMap((item) =>
+      item.type === "activity" ? item.steps.map(label) : label(item),
     );
     // round1 思考 → text1 → tool1 → round2 思考 → text2 → tool2(时间顺序)
     expect(flat).toEqual([
@@ -412,11 +434,17 @@ describe("buildRenderItems", () => {
   it("无身份的 item(如 thinking)uiStateKey 回退到 visible 下标", () => {
     const items = buildRenderItems({
       messageId: 5,
-      blocks: [{ type: "thinking", text: "chain" } as ChatBlockData],
+      blocks: [
+        { type: "thinking", text: "chain" } as ChatBlockData,
+        text("说完了"),
+      ],
     });
 
-    expect(items).toHaveLength(1);
-    expect(items[0].uiStateKey).toBe("message:5:thinking:0");
+    expect(items).toHaveLength(2);
+    // 已完成的思考进活动块,块内那一步的 key 仍是它单独成行时的字节形态。
+    expect(activityAt(items, 0).steps[0].uiStateKey).toBe(
+      "message:5:thinking:0",
+    );
   });
 
   it("plan.update 只有 actionable(带 actions)才渲染,纯进度块丢弃", () => {
@@ -616,8 +644,8 @@ describe("buildTranscriptRows", () => {
     ).toEqual([
       [1, "text", true, true],
       [2, "text", true, false],
-      [2, "tool", false, false],
-      [2, "tool", false, true],
+      // 连续两次工具调用折成一个活动块 = 一个渲染项 = 一个虚拟行。
+      [2, "activity", false, true],
     ]);
     expect(firstRowIndexByMessageId.get(1)).toBe(0);
     expect(firstRowIndexByMessageId.get(2)).toBe(1);
@@ -726,7 +754,7 @@ describe("buildTranscriptRows", () => {
     );
   });
 
-  it("流式推进 append-only:liveBlocks 追加 tool 后旧行 key 不变,只在尾部增行", () => {
+  it("流式推进 append-only:liveBlocks 追加正文后旧行 key 不变,只在尾部增行", () => {
     const base = {
       displayMessages: [message(2, "assistant", [])],
       autonomousIds: new Set<number>(),
@@ -734,7 +762,12 @@ describe("buildTranscriptRows", () => {
     const before = buildTranscriptRows({
       ...base,
       liveByMessageId: new Map([
-        [2, { liveBlocks: [text("intro"), toolUse("toolu-1")] }],
+        [
+          2,
+          {
+            liveBlocks: [text("intro"), toolUse("toolu-1"), toolUse("toolu-2")],
+          },
+        ],
       ]),
     });
     const after = buildTranscriptRows({
@@ -746,8 +779,9 @@ describe("buildTranscriptRows", () => {
             liveBlocks: [
               text("intro"),
               toolUse("toolu-1"),
-              toolResult("toolu-1"),
               toolUse("toolu-2"),
+              toolResult("toolu-2"),
+              text("conclusion"),
             ],
           },
         ],
@@ -1224,5 +1258,474 @@ describe("buildSettledTranscriptRows + applyLiveTranscriptRows (M3 split)", () =
       "iPhone",
     );
     expect(overlaid.rows.find((r) => r.messageId === 2)?.autonomous).toBe(true);
+  });
+});
+
+// ─── 活动块聚合(对话流密度)──────────────────────────────────────────────────
+// 数据层只回答两件事:哪些连续步骤折进同一个活动块,以及折叠态组头必须说什么。
+// 渲染 / 样式 / i18n 全在上层 —— 这里的断言都是纯数据形状。
+//
+// 判据来源不在本文件:每一步落哪一档 / 哪个类目由 canonical-tool/tier.ts 算
+// (canonical.kind → input shape → 中性兜底,全程不查工具名表)。
+
+function thinkingBlock(t: string): ChatBlockData {
+  return { type: "thinking", text: t } as ChatBlockData;
+}
+
+function readUse(id: string, path = "a.ts"): ChatBlockData {
+  return toolUse(id, "Read", { toolInput: { path } });
+}
+
+function editUse(
+  id: string,
+  files: { path: string; plus: number; minus: number }[],
+): ChatBlockData {
+  return toolUse(id, "Edit", {
+    canonical: {
+      kind: "file.edit",
+      fileEdit: {
+        files: files.map((f) => ({ ...f, hunks: [], kind: "modified" })),
+      },
+    },
+    toolInput: { file_path: files[0]?.path },
+  } as unknown as Partial<ChatBlockData>);
+}
+
+function writeUse(id: string, path = "new.ts"): ChatBlockData {
+  return toolUse(id, "Write", {
+    canonical: {
+      kind: "file.write",
+      fileWrite: { bytes: 1, content: "x", lines: 1, path },
+    },
+    toolInput: { content: "x", file_path: path },
+  } as unknown as Partial<ChatBlockData>);
+}
+
+function otherUse(id: string): ChatBlockData {
+  return toolUse(id, "mcp__acme__execute", { toolInput: { foo: "bar" } });
+}
+
+function spawnUse(id: string): ChatBlockData {
+  return toolUse(id, "Agent", {
+    canonical: { kind: "agent.spawn", agentSpawn: { taskId: id } },
+  } as unknown as Partial<ChatBlockData>);
+}
+
+function failedResult(id: string): ChatBlockData {
+  return toolResult(id, "boom", { isError: true });
+}
+
+function activityAt(
+  items: VisibleRenderItem[],
+  idx: number,
+): VisibleActivityItem {
+  const item = items[idx];
+  if (item.type !== "activity") {
+    throw new Error(`items[${idx}] expected activity, got ${item.type}`);
+  }
+  return item;
+}
+
+function stepLabels(activity: VisibleActivityItem): string[] {
+  return activity.steps.map((step) =>
+    step.type === "thinking"
+      ? `thinking:${step.block.text}`
+      : `tool:${step.toolBlock?.toolName}`,
+  );
+}
+
+describe("活动块聚合", () => {
+  it("连续的思考与工具折成一个活动块,步骤保持发生顺序", () => {
+    const items = buildRenderItems({
+      messageId: 5,
+      blocks: [
+        thinkingBlock("t1"),
+        readUse("toolu-1"),
+        toolResult("toolu-1", "ok"),
+        toolUse("toolu-2"),
+        toolResult("toolu-2", "ok"),
+      ],
+    });
+
+    expect(items.map((i) => i.type)).toEqual(["activity"]);
+    const activity = activityAt(items, 0);
+    expect(stepLabels(activity)).toEqual([
+      "thinking:t1",
+      "tool:Read",
+      "tool:Bash",
+    ]);
+    // 步骤仍带着自己的 tool_use / tool_result 配对结果 —— 展开后能看到参数与结果。
+    expect(activity.steps[1]).toMatchObject({
+      type: "tool",
+      toolBlock: { toolUseId: "toolu-1" },
+      resultBlock: { text: "ok" },
+    });
+    expect(activity.summary.steps).toBe(3);
+  });
+
+  it("组头汇总按固定顺序输出,超过 4 类时截断并置 truncated", () => {
+    const items = buildRenderItems({
+      messageId: 1,
+      // 故意打乱发生顺序:组头顺序是固定的,不跟随出现次序。
+      blocks: [
+        toolUse("toolu-cmd1"),
+        otherUse("toolu-other"),
+        failedResult("toolu-other"),
+        thinkingBlock("a"),
+        thinkingBlock("b"),
+        readUse("toolu-read"),
+        editUse("toolu-edit", [
+          { minus: 1, path: "a.ts", plus: 3 },
+          { minus: 2, path: "b.ts", plus: 2 },
+        ]),
+        writeUse("toolu-write"),
+        toolUse("toolu-cmd2"),
+      ],
+    });
+
+    const { summary } = activityAt(items, 0);
+    expect(summary.parts).toEqual([
+      { category: "thinking", count: 2 },
+      { category: "read", count: 1 },
+      { category: "edit", count: 1, files: 2, minus: 3, plus: 5 },
+      { category: "write", count: 1 },
+    ]);
+    expect(summary.truncated).toBe(true);
+    // 8 步:失败的那条 tool_result 配对进它的 tool_use,不另算一步。
+    expect(summary.steps).toBe(8);
+    // 失败计数不参与截断 —— 组头是折叠态唯一的信息出口。
+    expect(summary.failures).toBe(1);
+  });
+
+  it("失败与类目正交:失败的 Read 仍计一次查阅,且四类以内不截断", () => {
+    const items = buildRenderItems({
+      messageId: 1,
+      blocks: [
+        readUse("toolu-1"),
+        failedResult("toolu-1"),
+        readUse("toolu-2"),
+        toolResult("toolu-2", "ok"),
+        toolUse("toolu-3"),
+        failedResult("toolu-3"),
+      ],
+    });
+
+    const { summary } = activityAt(items, 0);
+    expect(summary.parts).toEqual([
+      { category: "read", count: 2 },
+      { category: "command", count: 1 },
+    ]);
+    expect(summary.truncated).toBe(false);
+    expect(summary.failures).toBe(2);
+  });
+
+  // 组头失败计数与活动行的红色标记必须是同一判据。活动行把「本轮已经失败终结、
+  // 这一步却始终没配到 tool_result」也算失败(facts.ts 的 stepFacts),组头漏算就
+  // 会出现「展开是三行红的、折叠说一个失败都没有」—— 折叠是收起,不是让发生过
+  // 的事消失。
+  it("本轮已失败终结时,没配到结果的一步也计进组头失败数", () => {
+    const items = buildRenderItems({
+      messageId: 1,
+      blocks: [
+        readUse("toolu-1"),
+        toolResult("toolu-1", "ok"),
+        toolUse("toolu-2"),
+        toolUse("toolu-3"),
+      ],
+    });
+    const { steps } = activityAt(items, 0);
+
+    // 转录里的一轮永远按「运行中」处理 —— 没有结果不等于失败,计数不变。
+    expect(summarizeActivity(steps).failures).toBe(0);
+    // 调用方(子代理那层)声明这一轮以失败终结时,那两步归属失败。
+    expect(summarizeActivity(steps, true).failures).toBe(2);
+  });
+
+  // 命令类结果把失败写在结果 JSON 里(exitCode / status),isError 只在 item 自身
+  // 失败时才置位 —— 一条 exit 1 的命令 isError 是 false。组头只看 isError 就会
+  // 宣称「零失败」,而同一条结果在 RawToolCard 里一直是按错误渲染的。
+  it("命令以非零退出码结束但结果没标 isError 时,仍计进组头失败数", () => {
+    const items = buildRenderItems({
+      messageId: 1,
+      blocks: [
+        toolUse("toolu-1"),
+        toolResult(
+          "toolu-1",
+          '{"exitCode":1,"output":"boom","status":"completed"}',
+        ),
+        toolUse("toolu-2"),
+        toolResult(
+          "toolu-2",
+          '{"exitCode":0,"output":"ok","status":"completed"}',
+        ),
+        toolUse("toolu-3"),
+        toolResult("toolu-3", '{"output":"gone","status":"interrupted"}'),
+      ],
+    });
+
+    expect(activityAt(items, 0).summary.failures).toBe(2);
+  });
+
+  it("同一文件改两次算一个文件,增删行累加", () => {
+    const items = buildRenderItems({
+      messageId: 1,
+      blocks: [
+        editUse("toolu-1", [{ minus: 1, path: "same.ts", plus: 2 }]),
+        editUse("toolu-2", [{ minus: 3, path: "same.ts", plus: 4 }]),
+      ],
+    });
+
+    expect(activityAt(items, 0).summary.parts).toEqual([
+      { category: "edit", count: 2, files: 1, minus: 4, plus: 6 },
+    ]);
+  });
+
+  it("正文打断聚合,前后各自成块且不重排", () => {
+    const items = buildRenderItems({
+      messageId: 1,
+      blocks: [
+        readUse("toolu-1"),
+        readUse("toolu-2"),
+        text("中间的结论"),
+        toolUse("toolu-3"),
+        toolUse("toolu-4"),
+      ],
+    });
+
+    expect(items.map((i) => i.type)).toEqual(["activity", "text", "activity"]);
+    expect(stepLabels(activityAt(items, 0))).toEqual([
+      "tool:Read",
+      "tool:Read",
+    ]);
+    expect(stepLabels(activityAt(items, 2))).toEqual([
+      "tool:Bash",
+      "tool:Bash",
+    ]);
+  });
+
+  it("出组项(子代理 / 未决审批 / 提问)打断聚合并保持独立可见", () => {
+    const pendingPerm = {
+      type: "tool_permission_request",
+      toolPermission: { requestId: "req-1", toolName: "Bash" },
+    } as unknown as ChatBlockData;
+    const askBlock = { type: "ask_user_question" } as ChatBlockData;
+
+    const items = buildRenderItems({
+      messageId: 1,
+      blocks: [
+        readUse("toolu-1"),
+        readUse("toolu-2"),
+        spawnUse("toolu-spawn"),
+        readUse("toolu-3"),
+        readUse("toolu-4"),
+        pendingPerm,
+        readUse("toolu-5"),
+        readUse("toolu-6"),
+        askBlock,
+        readUse("toolu-7"),
+        readUse("toolu-8"),
+      ],
+    });
+
+    expect(items.map((i) => i.type)).toEqual([
+      "activity",
+      "tool", // 子代理卡
+      "activity",
+      "tool_permission_request",
+      "activity",
+      "tool", // 提问卡
+      "activity",
+    ]);
+    expect(items[1]).toMatchObject({
+      type: "tool",
+      toolBlock: { toolUseId: "toolu-spawn" },
+    });
+    // canonical 缺失的 ask_user_question 也不许进组(阻塞用户的卡片永不进组)。
+    expect(items[5]).toMatchObject({
+      type: "tool",
+      toolBlock: { type: "ask_user_question" },
+    });
+  });
+
+  it("内置写工具审批与计划卡同样打断聚合(阻塞用户的卡片永不进组)", () => {
+    const approvalBlock = {
+      type: "tool_approval",
+      toolApproval: {
+        requestId: "org-1",
+        status: "pending",
+        toolKey: "org",
+        toolName: "org_create_department",
+      },
+    } as unknown as ChatBlockData;
+    const planBlock = {
+      type: "plan",
+      canonical: {
+        kind: "plan.update",
+        planUpdate: { actions: [{ kind: "approve" }], steps: [], text: "" },
+      },
+    } as unknown as ChatBlockData;
+
+    const items = buildRenderItems({
+      messageId: 1,
+      blocks: [
+        readUse("toolu-1"),
+        readUse("toolu-2"),
+        approvalBlock,
+        readUse("toolu-3"),
+        readUse("toolu-4"),
+        planBlock,
+        readUse("toolu-5"),
+        readUse("toolu-6"),
+      ],
+    });
+
+    expect(items.map((i) => i.type)).toEqual([
+      "activity",
+      "tool_approval",
+      "activity",
+      "plan",
+      "activity",
+    ]);
+  });
+
+  it("单条不成组:一段活动只有一步时也是活动项(壳由渲染层省掉),不再退回整卡", () => {
+    const items = buildRenderItems({
+      messageId: 5,
+      blocks: [
+        text("前言"),
+        readUse("toolu-1"),
+        toolResult("toolu-1", "ok"),
+        text("中间"),
+        thinkingBlock("独立思考"),
+        text("结论"),
+      ],
+    });
+
+    // 一条 assistant 消息只由「正文 / 活动块 / 出组卡片 / 脚注」四种东西组成 ——
+    // 落单的一次工具调用与一段已完成的思考都不再是各自一张整卡。
+    expect(items.map((i) => i.type)).toEqual([
+      "text",
+      "activity",
+      "text",
+      "activity",
+      "text",
+    ]);
+    const lone = activityAt(items, 1);
+    expect(stepLabels(lone)).toEqual(["tool:Read"]);
+    // 组内那一步的 key 与「它单独成行」时字节一致 —— 已持久化的展开态零迁移。
+    expect(lone.steps[0].uiStateKey).toBe("message:5:tool:tool:toolu-1");
+    // 活动项自身的 key 与多步块同构:一段从 1 步长到 N 步时行 key 不漂移。
+    expect(lone.uiStateKey).toBe("message:5:activity:tool:toolu-1");
+    expect(stepLabels(activityAt(items, 3))).toEqual(["thinking:独立思考"]);
+  });
+
+  it("claudecode 的 Read(file_path 形状)计入「查阅」而不是「其它」", () => {
+    const items = buildRenderItems({
+      messageId: 1,
+      blocks: [
+        toolUse("toolu-1", "Read", { toolInput: { file_path: "/repo/a.ts" } }),
+        toolUse("toolu-2", "Read", { toolInput: { file_path: "/repo/b.ts" } }),
+      ],
+    });
+
+    expect(activityAt(items, 0).summary.parts).toEqual([
+      { category: "read", count: 2 },
+    ]);
+  });
+
+  it("流式思考不进组(它仍是承载 live tail 的整卡)", () => {
+    const items = buildRenderItems({
+      messageId: 1,
+      liveBlocks: [readUse("toolu-1"), readUse("toolu-2")],
+      liveThinking: "still thinking…",
+    });
+
+    expect(items.map((i) => i.type)).toEqual(["activity", "thinking"]);
+    expect(items[1]).toMatchObject({ type: "thinking", streaming: true });
+  });
+
+  it("活动块 uiStateKey 取首步身份,组内步骤保留各自原有的 key", () => {
+    const items = buildRenderItems({
+      messageId: 5,
+      blocks: [readUse("toolu-1"), readUse("toolu-2")],
+    });
+
+    const activity = activityAt(items, 0);
+    expect(activity.uiStateKey).toBe("message:5:activity:tool:toolu-1");
+    // 步骤 key 与「这一步单独成行」时字节一致 —— 已持久化的展开态零迁移。
+    expect(activity.steps.map((s) => s.uiStateKey)).toEqual([
+      "message:5:tool:tool:toolu-1",
+      "message:5:tool:tool:toolu-2",
+    ]);
+  });
+
+  it("首步无身份(思考)时活动块 uiStateKey 回退到可见下标", () => {
+    const items = buildRenderItems({
+      messageId: 5,
+      blocks: [text("前言"), thinkingBlock("t"), readUse("toolu-1")],
+    });
+
+    expect(activityAt(items, 1).uiStateKey).toBe("message:5:activity:1");
+  });
+
+  it("流式生长:活动块成组后追加步骤,组头 key 不漂移", () => {
+    const base = {
+      displayMessages: [message(2, "assistant", [])],
+      autonomousIds: new Set<number>(),
+    };
+    const before = buildTranscriptRows({
+      ...base,
+      liveByMessageId: new Map([
+        [2, { liveBlocks: [text("intro"), readUse("toolu-1"), toolUse("t2")] }],
+      ]),
+    });
+    const after = buildTranscriptRows({
+      ...base,
+      liveByMessageId: new Map([
+        [
+          2,
+          {
+            liveBlocks: [
+              text("intro"),
+              readUse("toolu-1"),
+              toolUse("t2"),
+              toolResult("t2", "ok"),
+              readUse("toolu-3"),
+            ],
+          },
+        ],
+      ]),
+    });
+
+    // 一个活动块 = 一个虚拟行:追加步骤不增行,组头 key 也不变。
+    expect(before.rows.map((r) => r.key)).toEqual([
+      "message:2:text:0",
+      "message:2:activity:tool:toolu-1",
+    ]);
+    expect(after.rows.map((r) => r.key)).toEqual(before.rows.map((r) => r.key));
+  });
+
+  it("estimateRowSize 覆盖 activity(不落卡片兜底档)", () => {
+    const activityRow: TranscriptRow = {
+      autonomous: false,
+      isFirstOfMessage: true,
+      isLastOfMessage: true,
+      item: {
+        steps: [],
+        summary: { failures: 0, parts: [], steps: 0, truncated: false },
+        type: "activity",
+        uiStateKey: "k",
+      },
+      key: "k",
+      messageId: 1,
+    };
+    const cardRow: TranscriptRow = {
+      ...activityRow,
+      item: { type: "tool", uiStateKey: "k" },
+    };
+
+    // 折叠态组头是单行,与折叠态 thinking 同档,比整张卡片矮。
+    expect(estimateRowSize(activityRow)).toBe(45);
+    expect(estimateRowSize(activityRow)).toBeLessThan(estimateRowSize(cardRow));
   });
 });

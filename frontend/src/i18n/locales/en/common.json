@@ -41,6 +41,46 @@
     "needsAttention": "Approval",
     "unread": "Unread"
   },
+  "activity": {
+    "header": {
+      "steps": "{{count}} steps",
+      "steps_one": "{{count}} step",
+      "steps_other": "{{count}} steps",
+      "running": "Running · {{count}} steps",
+      "running_one": "Running · {{count}} step",
+      "running_other": "Running · {{count}} steps",
+      "duration": "{{seconds}}s",
+      "durationTitle": "Turn duration"
+    },
+    "summary": {
+      "thinking": "Thinking {{count}}",
+      "read": "Read {{count}}",
+      "edit": "Edited {{count}} files",
+      "edit_one": "Edited {{count}} file",
+      "edit_other": "Edited {{count}} files",
+      "write": "Wrote {{count}}",
+      "command": "Commands {{count}}",
+      "other": "Other {{count}}",
+      "failures": "{{count}} failed"
+    },
+    "row": {
+      "thinking": "Thought",
+      "thinkingMeta": "{{count}} chars",
+      "exit": "exit {{code}}",
+      "failed": "failed",
+      "running": "running",
+      "canceled": "canceled",
+      "unknown": "unknown result",
+      "lines": "{{count}} lines",
+      "lines_one": "{{count}} line",
+      "lines_other": "{{count}} lines",
+      "sections": {
+        "params": "PARAMS",
+        "result": "RESULT",
+        "content": "CONTENT"
+      }
+    }
+  },
   "agentBackends": {
     "actions": {
       "cancelTest": "Cancel Test",
@@ -319,7 +359,6 @@
       "defaultName": "Agent",
       "groupedName": "Agents",
       "runToggle": "Toggle run {{index}}: {{name}}",
-      "stepToggle": "Toggle {{tool}} step details",
       "stop": "Stop",
       "emptyPrompt": "No prompt",
       "emptyResult": "(empty result)",
@@ -348,10 +387,13 @@
         "tools_other": "{{count}} tools",
         "tokens": "{{value}} tokens"
       },
+      "outcome": {
+        "steps": "{{count}} steps",
+        "steps_one": "{{count}} step",
+        "steps_other": "{{count}} steps"
+      },
       "sections": {
         "prompt": "TASK PROMPT",
-        "params": "PARAMS",
-        "result": "RESULT",
         "tasks": "TASKS",
         "steps": "STEPS",
         "output": "OUTPUT",
@@ -360,11 +402,9 @@
       "status": {
         "done": "DONE",
         "error": "ERROR",
-        "fail": "FAIL",
         "failed": "FAILED",
         "partial": "PARTIAL",
         "running": "RUNNING",
-        "runningLower": "running",
         "waiting": "WAITING",
         "skipped": "SKIPPED",
         "unknown": "UNKNOWN",
@@ -380,7 +420,6 @@
       "paramCount": "{{count}} params"
     },
     "fileEdit": {
-      "aria": "{{tool}} tool call",
       "badge": {
         "deleted": "DELETED",
         "new": "NEW"
@@ -390,13 +429,10 @@
       "truncated": "Some lines are truncated · full diff has {{count}} lines (showing first {{shown}})"
     },
     "fileWrite": {
-      "aria": "Write tool call",
       "copyDone": "Full content copied",
       "copyFailed": "Failed to copy full content",
       "copyFull": "Copy Full Content",
       "empty": "Created empty file",
-      "newBadge": "NEW",
-      "title": "Write",
       "truncated": "Content truncated · showing first {{lines}} lines"
     },
     "plan": {
