@@ -27,9 +27,9 @@ vi.mock("../../wailsjs/runtime/runtime", async () => {
 });
 
 // 生成的 llm_provider_svc 命名空间在 vitest 的 SSR 变换下只保留了部分
-// Request 类（如 ModelInput 会缺失），而其它 domain 命名空间正常。这里只
-// 替换 llm_provider_svc，保持其余命名空间（chat_svc / agent_svc / ...）不变，
-// 使新 Provider 创建流程（ModelInput 构造）在 App 集成测试中可用。
+// DTO 类，而其它 domain 命名空间正常。App 层的 LLM Provider 集成场景会
+// 构造这些 DTO（例如连接测试请求），因此这里只替换 llm_provider_svc，
+// 保持其余命名空间（chat_svc / agent_svc / ...）不变。
 vi.mock("../../wailsjs/go/models", async () => {
   const actual = await vi.importActual<
     typeof import("../../wailsjs/go/models")
