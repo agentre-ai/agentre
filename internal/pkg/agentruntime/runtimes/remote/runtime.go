@@ -579,7 +579,28 @@ func buildRunParams(req agentruntime.RunRequest) (wire.RunParams, error) {
 		MCPServers:        req.MCPServers,
 		EnabledPlugins:    req.EnabledPlugins,
 		LLMProviderKey:    req.LLMProviderKey,
+		LLMModelKey:       remoteModelKey(req),
 	}, nil
+}
+
+// remoteModelKey 返回本轮远端执行目标的稳定 ModelKey（决策 11）：直接透传执行侧
+// 解析结果（EffectiveLLMConfig v1 seam）的 ModelKey，绝不自行派生 backend 主绑定的
+// 固定模型。
+//
+// 会话是否钉住 provider 只有桌面端知道：chat_svc 的 remoteKeysOnlyEffective 已把
+// 「会话钉了 provider → 用会话 ModelKey（空 = provider-default）；未钉 → 用 backend
+// 固定模型」这一口径解析好。空 ModelKey 是**有意义的 provider-default**，不是「未
+// 提供」——若在这里回落到 backend 固定模型，会话钉 provider-default 就会被 backend
+// 固定模型带偏（spec 决策 1），与本地路径 sessionModelKeyFor 的语义分叉。仅当执行侧
+// 结果完全缺失（防御）时才回落 backend 绑定。
+func remoteModelKey(req agentruntime.RunRequest) string {
+	if req.Effective != nil {
+		return strings.TrimSpace(req.Effective.ModelKey)
+	}
+	if req.Backend != nil {
+		return strings.TrimSpace(req.Backend.LLMModelKey)
+	}
+	return ""
 }
 
 func encodeHistory(in []agentruntime.HistoryMessage) ([]wire.HistoryMessageWire, error) {
@@ -1045,7 +1066,36 @@ func (r *Runtime) goalParams(req agentruntime.GoalRequest) (wire.GoalParams, err
 		Objective:         req.Objective,
 		Status:            req.Status,
 		TokenBudget:       req.TokenBudget,
+		LLMProviderKey:    remoteGoalProviderKey(req),
+		LLMModelKey:       remoteGoalModelKey(req),
 	}, nil
+}
+
+// remoteGoalProviderKey 返回 goal 的执行侧 ProviderKey（决策 11）：优先取执行侧
+// 解析结果，缺省回落 backend 主绑定 —— 与 Run 的 effectiveProviderKey 同口径，
+// 保证 goal 与 turn 共用同一个 CLI 会话池时启动期比对键不翻转。
+func remoteGoalProviderKey(req agentruntime.GoalRequest) string {
+	if req.Effective != nil {
+		if pk := strings.TrimSpace(req.Effective.ProviderKey); pk != "" {
+			return pk
+		}
+	}
+	if req.Backend != nil {
+		return strings.TrimSpace(req.Backend.LLMProviderKey)
+	}
+	return ""
+}
+
+// remoteGoalModelKey 返回 goal 的执行侧 ModelKey（决策 11），语义同 remoteModelKey：
+// 直接透传执行侧结果，空 ModelKey（provider-default）不被 backend 固定模型带偏。
+func remoteGoalModelKey(req agentruntime.GoalRequest) string {
+	if req.Effective != nil {
+		return strings.TrimSpace(req.Effective.ModelKey)
+	}
+	if req.Backend != nil {
+		return strings.TrimSpace(req.Backend.LLMModelKey)
+	}
+	return ""
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────

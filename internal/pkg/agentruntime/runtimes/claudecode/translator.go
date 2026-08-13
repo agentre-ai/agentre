@@ -142,7 +142,7 @@ func translate(ev claudecode.Event) (events []agentruntime.Event, usage *provide
 		// system.init 帧带 model:Claude Code SDK 协议本身不报上下文窗口大小,
 		// 这里查 cago llmcatalog 兜底,emit ContextWindowUpdated 让前端 turn 内
 		// 就能看到窗口总量,不必等 EventDone 才显示进度条。catalog miss → 不 emit,
-		// chat_svc resolveContextWindow* 仍会用 provider.ContextWindow / provider.Model
+		// chat_svc resolveContextWindow* 仍会用解析出的 ContextWindow / ModelID
 		// 兜底,不依赖本事件存在。
 		if ev.Model != "" {
 			if info, ok := llmcatalog.Lookup(ev.Model); ok && info.ContextWindow > 0 {

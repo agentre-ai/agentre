@@ -22,11 +22,16 @@ func TestGuardPayload_RejectsLocalAutoIncrementIDs(t *testing.T) {
 }
 
 // TestGuardPayload_AllowsStringReferences 跨机引用一律是字符串：同步标识、指纹、
-// provider_key，它们照常放行。
+// provider_key、model_key，它们照常放行。model_key 是 2026-08-11 LLM Provider
+// 多模型契约新增的稳定模型引用（Provider / Models 与 API Key 均不进入账号同步，
+// 业务对象只携带 provider_key / model_key 字符串），归一化后是 modelkey，不落进
+// apikey / provider / *id 任何一条守卫。
 func TestGuardPayload_AllowsStringReferences(t *testing.T) {
 	for _, payload := range []string{
 		`{"name":"x","parent_sync_id":"01ARZ3ND"}`,
 		`{"provider_key":"anthropic-main"}`,
+		`{"provider_key":"anthropic-main","model_key":"anthropic-opus-01"}`,
+		`{"modelKey":"anthropic-opus-01"}`,
 		`{"agent_sync_id":"a","backend_sync_id":"b","sort_order":2}`,
 		`{}`,
 		``,

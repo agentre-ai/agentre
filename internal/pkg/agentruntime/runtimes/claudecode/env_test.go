@@ -16,7 +16,7 @@ import (
 func TestBuildClaudeCodeEnv_DelegatesToAgentruntime(t *testing.T) {
 	b := &agent_backend_entity.AgentBackend{
 		LLMProviderKey: "key-11",
-		ModelRoutes:    `{"OPUS": "key-2"}`,
+		ModelRoutes:    `{"OPUS":{"providerKey":"key-2"}}`,
 	}
 	env, err := BuildClaudeCodeEnv(b, CLIDeps{Token: "tok-abc", GatewayURL: "http://gateway.local", ProviderKey: "key-11"})
 	require.NoError(t, err)

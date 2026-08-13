@@ -150,12 +150,41 @@ func CodeForSentinel(err error) (int, bool) {
 
 // ── RPC types ───────────────────────────────────────────────────────────────
 
+// CapLLMModelTargetV1 是 daemon 在 health.ping 里公布的能力位：本 daemon 支持
+// 按 ModelKey 解析 fixed-model（决策 11）。桌面端据此在 Picker 里禁用不支持
+// fixed-model 的旧 daemon 上的固定模型选项 —— 旧 daemon 即使收到 ModelKey 也会
+// 静默按 provider-default 执行，正是规格禁止的降级，所以必须先查能力位再允许选择。
+const CapLLMModelTargetV1 = "llm-model-target-v1"
+
+// HasCapability 判断 capability 列表是否包含指定能力位。
+func HasCapability(caps []string, name string) bool {
+	for _, c := range caps {
+		if c == name {
+			return true
+		}
+	}
+	return false
+}
+
+// ModelSummary describes a single model configured for a daemon provider.
+// Non-sensitive：只含稳定 key / 实际 model id / 展示名 / 启用态，绝不含凭证。
+type ModelSummary struct {
+	Key     string `json:"key"`
+	ModelID string `json:"modelId"`
+	Name    string `json:"name,omitempty"`
+	Enabled bool   `json:"enabled"`
+}
+
 // ProviderSummary describes a single LLM provider configured in the daemon
 // state. Returned by health.ping so desktop watcher can render sync status.
+// 只含非敏感字段：Provider/Model 的稳定 key + 展示名 + 实际 model id；
+// APIKey / BaseURL 永不进这条目录（凭证执行侧本地化）。
 type ProviderSummary struct {
-	Key  string `json:"key"`
-	Name string `json:"name"`
-	Type string `json:"type"`
+	Key             string         `json:"key"`
+	Name            string         `json:"name"`
+	Type            string         `json:"type"`
+	DefaultModelKey string         `json:"defaultModelKey,omitempty"`
+	Models          []ModelSummary `json:"models,omitempty"`
 }
 
 // OK 大部分 mutating 方法 (Steer / Abort / SetPermissionMode / SubmitAnswer /
@@ -173,6 +202,11 @@ type GoalParams struct {
 	Objective         *string         `json:"objective,omitempty"`
 	Status            *string         `json:"status,omitempty"`
 	TokenBudget       *int            `json:"tokenBudget,omitempty"`
+	// LLMProviderKey / LLMModelKey 与 RunParams 同形（决策 11）：goal 与 turn 共用
+	// 同一个 CLI 会话池，两边解析不一致会让启动期比对键反复翻转。daemon 按这组
+	// key 从自家目录解析，wire 永不携带 APIKey / BaseURL / Provider 行正文。
+	LLMProviderKey string `json:"llmProviderKey,omitempty"`
+	LLMModelKey    string `json:"llmModelKey,omitempty"`
 }
 
 type GoalResult struct {
@@ -256,6 +290,10 @@ type RunParams struct {
 	// daemon 用它做 ProviderLookup（FindByKey），不需要 desktop 越线传 APIKey。
 	// 决策 9 后它携带 effectiveProviderKey（会话 provider_key 优先），daemon 自解。
 	LLMProviderKey string `json:"llmProviderKey,omitempty"`
+	// LLMModelKey 是执行侧目标的稳定 ModelKey（决策 11）：空 = provider-default
+	// （daemon 解析该 Provider 当前默认模型），非空 = fixed-model（daemon 精确解析
+	// 该模型，缺失/停用/旧 daemon 一律严格拒绝，绝不静默降级为默认模型）。
+	LLMModelKey string `json:"llmModelKey,omitempty"`
 	// SourceDevice / SourceDeviceName 是「开新一轮」发起方的设备身份（R18/R19）。
 	// 浏览器**每轮**随 runtime.run 声明自己的设备指纹与显示名（如「Chrome · macOS」）：
 	// 握手（auth.account）只带指纹、不带显示名，而 R19 要的是「人能认出的名字」，所以

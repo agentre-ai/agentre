@@ -440,6 +440,8 @@ describe("AIChatInput command mode", () => {
       editor.commands.insertContent("!git");
       editor.commands.focus("end");
     });
+    // commands.focus 通过 requestAnimationFrame 聚焦，等待焦点落定后再断言/导航。
+    await vi.waitFor(() => expect(screen.getByRole("combobox")).toHaveFocus());
 
     const listbox = await screen.findByRole("listbox", {
       name: "Shell command history",
@@ -1142,6 +1144,7 @@ describe("AIChatInput command mode", () => {
       editor.commands.insertContent("!git");
       editor.commands.focus("end");
     });
+    await vi.waitFor(() => expect(screen.getByRole("combobox")).toHaveFocus());
     await screen.findByRole("option", { name: "git status" });
     const clearButton = screen.getByRole("button", {
       name: "Clear history for current directory",
@@ -1205,6 +1208,9 @@ describe("AIChatInput command mode", () => {
         editor.commands.insertContent("!git");
         editor.commands.focus("end");
       });
+      await vi.waitFor(() =>
+        expect(screen.getByRole("combobox")).toHaveFocus(),
+      );
       await screen.findByRole("option", { name: "git status" });
       const clearButton = screen.getByRole("button", {
         name: "Clear history for current directory",
@@ -1261,6 +1267,7 @@ describe("AIChatInput command mode", () => {
       editor.commands.insertContent("!git");
       editor.commands.focus("end");
     });
+    await vi.waitFor(() => expect(screen.getByRole("combobox")).toHaveFocus());
     await screen.findByRole("listbox", { name: "Shell command history" });
 
     const firstOption = screen.getByRole("option", { name: "git status" });

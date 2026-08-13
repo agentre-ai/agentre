@@ -36,7 +36,9 @@ func TestProviderLookup_FindByKey_HappyPath(t *testing.T) {
 	assert.Equal(t, "fixture-ant-key", p.APIKey)
 	assert.Equal(t, "https://api.anthropic.com", p.BaseURL)
 	assert.Equal(t, "anthropic-main", p.Name)
-	assert.Equal(t, "claude-sonnet-4-6", p.Model)
+	// daemon 尚无 Models 目录（task 6 才迁移），单模型 meta.Model 不能冒充 DefaultModelKey：
+	// 实体不再携带 Model 字段，也不凭空填 default_model_key。
+	assert.Empty(t, p.DefaultModelKey)
 	assert.True(t, p.IsActive())
 	assert.Equal(t, llm_provider_entity.TypeAnthropic, llm_provider_entity.ProviderType(p.Type))
 }
@@ -62,4 +64,115 @@ func TestProviderLookup_FindByKey_APIKeyMiss(t *testing.T) {
 	_, err := lookup.FindByKey(context.Background(), key)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "apiKey not configured")
+}
+
+// TestProviderLookup_ResolveModel 钉死决策 11 的 daemon 侧模型解析（task 6 多模型目录）：
+// fixed-model 精确匹配（缺失/停用拒绝）；provider-default 必须解析出当前启用的默认模型，
+// Provider 存在但无合法启用默认模型（无默认 / 默认缺失 / 默认停用）一律按配置损坏严格阻止，
+// 绝不回落到旧单模型字段或空值静默执行。只有 Provider 本身缺失/停用才走 resolveTarget 的
+// 回退语义（见 runtime_test）。
+func TestProviderLookup_ResolveModel(t *testing.T) {
+	const key = "prov-uuid-1"
+	st, _ := state.Load(t.TempDir())
+	st.Mutate(func(s *state.State) {
+		s.LLMProviders[key] = state.LLMProviderMeta{ //nolint:gosec // credential-shaped API key is a test fixture.
+			Name:            "anthropic-main",
+			Type:            "anthropic",
+			APIKey:          "fixture-ant-key",
+			Model:           "claude-sonnet-legacy", // 旧单模型字段
+			DefaultModelKey: "model-default",
+			Models: []state.LLMModelMeta{
+				{ModelKey: "model-default", ModelID: "claude-sonnet-4-6", Enabled: true},
+				{ModelKey: "model-opus", ModelID: "claude-opus-4-5", Enabled: true},
+				{ModelKey: "model-disabled", ModelID: "claude-haiku-gone", Enabled: false},
+			},
+		}
+	})
+	lookup := NewProviderLookup(st)
+	ctx := context.Background()
+
+	t.Run("fixed-model resolves exact model", func(t *testing.T) {
+		eff, err := lookup.ResolveModel(ctx, key, "model-opus")
+		require.NoError(t, err)
+		assert.Equal(t, "model-opus", eff.ModelKey)
+		assert.Equal(t, "claude-opus-4-5", eff.ModelID)
+	})
+
+	t.Run("fixed-model missing rejects", func(t *testing.T) {
+		_, err := lookup.ResolveModel(ctx, key, "model-gone")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "model-gone")
+	})
+
+	t.Run("fixed-model disabled rejects (no silent downgrade)", func(t *testing.T) {
+		_, err := lookup.ResolveModel(ctx, key, "model-disabled")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "disabled")
+	})
+
+	t.Run("provider-default resolves DefaultModelKey", func(t *testing.T) {
+		eff, err := lookup.ResolveModel(ctx, key, "")
+		require.NoError(t, err)
+		assert.Equal(t, "model-default", eff.ModelKey)
+		assert.Equal(t, "claude-sonnet-4-6", eff.ModelID)
+	})
+
+	t.Run("provider-default legacy single-model-only state blocks (config corruption)", func(t *testing.T) {
+		legacyKey := "prov-legacy"
+		st.Mutate(func(s *state.State) {
+			s.LLMProviders[legacyKey] = state.LLMProviderMeta{
+				Name: "old", Type: "anthropic", APIKey: "k", Model: "claude-opus-4",
+			}
+		})
+		_, err := lookup.ResolveModel(ctx, legacyKey, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no legal enabled default model")
+	})
+
+	t.Run("provider-default no model at all blocks (config corruption)", func(t *testing.T) {
+		bareKey := "prov-bare"
+		st.Mutate(func(s *state.State) {
+			s.LLMProviders[bareKey] = state.LLMProviderMeta{Name: "bare", Type: "anthropic", APIKey: "k"}
+		})
+		_, err := lookup.ResolveModel(ctx, bareKey, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no legal enabled default model")
+	})
+
+	t.Run("provider-default default model missing blocks (config corruption)", func(t *testing.T) {
+		corruptKey := "prov-corrupt"
+		st.Mutate(func(s *state.State) {
+			s.LLMProviders[corruptKey] = state.LLMProviderMeta{
+				Name: "corrupt", Type: "anthropic", APIKey: "k",
+				DefaultModelKey: "model-gone-default",
+				Models: []state.LLMModelMeta{
+					{ModelKey: "model-other", ModelID: "claude-sonnet-4-6", Enabled: true},
+				},
+			}
+		})
+		_, err := lookup.ResolveModel(ctx, corruptKey, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no legal enabled default model")
+	})
+
+	t.Run("provider-default default model disabled blocks (config corruption)", func(t *testing.T) {
+		disabledKey := "prov-disabled-default"
+		st.Mutate(func(s *state.State) {
+			s.LLMProviders[disabledKey] = state.LLMProviderMeta{
+				Name: "disabled-default", Type: "anthropic", APIKey: "k",
+				DefaultModelKey: "model-disabled-default",
+				Models: []state.LLMModelMeta{
+					{ModelKey: "model-disabled-default", ModelID: "claude-haiku-gone", Enabled: false},
+				},
+			}
+		})
+		_, err := lookup.ResolveModel(ctx, disabledKey, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no legal enabled default model")
+	})
+
+	t.Run("unknown provider rejects", func(t *testing.T) {
+		_, err := lookup.ResolveModel(ctx, "prov-nope", "")
+		require.Error(t, err)
+	})
 }

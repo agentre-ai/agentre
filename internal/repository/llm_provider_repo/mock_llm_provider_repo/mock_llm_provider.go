@@ -14,6 +14,8 @@ import (
 	reflect "reflect"
 
 	llm_provider_entity "github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	llm_provider_model_entity "github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
+	llm_provider_repo "github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -56,6 +58,36 @@ func (mr *MockLLMProviderRepoMockRecorder) BatchFindByKey(ctx, keys any) *gomock
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BatchFindByKey", reflect.TypeOf((*MockLLMProviderRepo)(nil).BatchFindByKey), ctx, keys)
 }
 
+// CountModelReferences mocks base method.
+func (m *MockLLMProviderRepo) CountModelReferences(ctx context.Context, modelKey string) (llm_provider_repo.ModelRefCounts, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CountModelReferences", ctx, modelKey)
+	ret0, _ := ret[0].(llm_provider_repo.ModelRefCounts)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CountModelReferences indicates an expected call of CountModelReferences.
+func (mr *MockLLMProviderRepoMockRecorder) CountModelReferences(ctx, modelKey any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountModelReferences", reflect.TypeOf((*MockLLMProviderRepo)(nil).CountModelReferences), ctx, modelKey)
+}
+
+// CountProviderReferences mocks base method.
+func (m *MockLLMProviderRepo) CountProviderReferences(ctx context.Context, providerKey string) (llm_provider_repo.ProviderRefCounts, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CountProviderReferences", ctx, providerKey)
+	ret0, _ := ret[0].(llm_provider_repo.ProviderRefCounts)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CountProviderReferences indicates an expected call of CountProviderReferences.
+func (mr *MockLLMProviderRepoMockRecorder) CountProviderReferences(ctx, providerKey any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountProviderReferences", reflect.TypeOf((*MockLLMProviderRepo)(nil).CountProviderReferences), ctx, providerKey)
+}
+
 // Create mocks base method.
 func (m *MockLLMProviderRepo) Create(ctx context.Context, p *llm_provider_entity.LLMProvider) error {
 	m.ctrl.T.Helper()
@@ -70,18 +102,60 @@ func (mr *MockLLMProviderRepoMockRecorder) Create(ctx, p any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockLLMProviderRepo)(nil).Create), ctx, p)
 }
 
-// Delete mocks base method.
-func (m *MockLLMProviderRepo) Delete(ctx context.Context, id int64) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Delete", ctx, id)
+// CreateModel mocks base method.
+func (m_2 *MockLLMProviderRepo) CreateModel(ctx context.Context, m *llm_provider_model_entity.LLMProviderModel) error {
+	m_2.ctrl.T.Helper()
+	ret := m_2.ctrl.Call(m_2, "CreateModel", ctx, m)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// Delete indicates an expected call of Delete.
-func (mr *MockLLMProviderRepoMockRecorder) Delete(ctx, id any) *gomock.Call {
+// CreateModel indicates an expected call of CreateModel.
+func (mr *MockLLMProviderRepoMockRecorder) CreateModel(ctx, m any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Delete", reflect.TypeOf((*MockLLMProviderRepo)(nil).Delete), ctx, id)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateModel", reflect.TypeOf((*MockLLMProviderRepo)(nil).CreateModel), ctx, m)
+}
+
+// CreateWithModels mocks base method.
+func (m *MockLLMProviderRepo) CreateWithModels(ctx context.Context, p *llm_provider_entity.LLMProvider, models []*llm_provider_model_entity.LLMProviderModel, defaultModelKey string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CreateWithModels", ctx, p, models, defaultModelKey)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// CreateWithModels indicates an expected call of CreateWithModels.
+func (mr *MockLLMProviderRepoMockRecorder) CreateWithModels(ctx, p, models, defaultModelKey any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateWithModels", reflect.TypeOf((*MockLLMProviderRepo)(nil).CreateWithModels), ctx, p, models, defaultModelKey)
+}
+
+// DeleteModel mocks base method.
+func (m *MockLLMProviderRepo) DeleteModel(ctx context.Context, id int64) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteModel", ctx, id)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteModel indicates an expected call of DeleteModel.
+func (mr *MockLLMProviderRepoMockRecorder) DeleteModel(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteModel", reflect.TypeOf((*MockLLMProviderRepo)(nil).DeleteModel), ctx, id)
+}
+
+// DeleteWithModels mocks base method.
+func (m *MockLLMProviderRepo) DeleteWithModels(ctx context.Context, id int64) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteWithModels", ctx, id)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteWithModels indicates an expected call of DeleteWithModels.
+func (mr *MockLLMProviderRepoMockRecorder) DeleteWithModels(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteWithModels", reflect.TypeOf((*MockLLMProviderRepo)(nil).DeleteWithModels), ctx, id)
 }
 
 // Find mocks base method.
@@ -129,6 +203,50 @@ func (mr *MockLLMProviderRepoMockRecorder) FindByName(ctx, name any) *gomock.Cal
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindByName", reflect.TypeOf((*MockLLMProviderRepo)(nil).FindByName), ctx, name)
 }
 
+// FindModel mocks base method.
+func (m *MockLLMProviderRepo) FindModel(ctx context.Context, id int64) (*llm_provider_model_entity.LLMProviderModel, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FindModel", ctx, id)
+	ret0, _ := ret[0].(*llm_provider_model_entity.LLMProviderModel)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FindModel indicates an expected call of FindModel.
+func (mr *MockLLMProviderRepoMockRecorder) FindModel(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindModel", reflect.TypeOf((*MockLLMProviderRepo)(nil).FindModel), ctx, id)
+}
+
+// FindModelByKey mocks base method.
+func (m *MockLLMProviderRepo) FindModelByKey(ctx context.Context, modelKey string) (*llm_provider_model_entity.LLMProviderModel, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FindModelByKey", ctx, modelKey)
+	ret0, _ := ret[0].(*llm_provider_model_entity.LLMProviderModel)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FindModelByKey indicates an expected call of FindModelByKey.
+func (mr *MockLLMProviderRepoMockRecorder) FindModelByKey(ctx, modelKey any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindModelByKey", reflect.TypeOf((*MockLLMProviderRepo)(nil).FindModelByKey), ctx, modelKey)
+}
+
+// ImportModels mocks base method.
+func (m *MockLLMProviderRepo) ImportModels(ctx context.Context, updates, inserts []*llm_provider_model_entity.LLMProviderModel) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ImportModels", ctx, updates, inserts)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ImportModels indicates an expected call of ImportModels.
+func (mr *MockLLMProviderRepoMockRecorder) ImportModels(ctx, updates, inserts any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ImportModels", reflect.TypeOf((*MockLLMProviderRepo)(nil).ImportModels), ctx, updates, inserts)
+}
+
 // List mocks base method.
 func (m *MockLLMProviderRepo) List(ctx context.Context) ([]*llm_provider_entity.LLMProvider, error) {
 	m.ctrl.T.Helper()
@@ -144,6 +262,21 @@ func (mr *MockLLMProviderRepoMockRecorder) List(ctx any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockLLMProviderRepo)(nil).List), ctx)
 }
 
+// ListModels mocks base method.
+func (m *MockLLMProviderRepo) ListModels(ctx context.Context, providerID int64) ([]*llm_provider_model_entity.LLMProviderModel, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListModels", ctx, providerID)
+	ret0, _ := ret[0].([]*llm_provider_model_entity.LLMProviderModel)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListModels indicates an expected call of ListModels.
+func (mr *MockLLMProviderRepoMockRecorder) ListModels(ctx, providerID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListModels", reflect.TypeOf((*MockLLMProviderRepo)(nil).ListModels), ctx, providerID)
+}
+
 // Update mocks base method.
 func (m *MockLLMProviderRepo) Update(ctx context.Context, p *llm_provider_entity.LLMProvider) error {
 	m.ctrl.T.Helper()
@@ -156,4 +289,18 @@ func (m *MockLLMProviderRepo) Update(ctx context.Context, p *llm_provider_entity
 func (mr *MockLLMProviderRepoMockRecorder) Update(ctx, p any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Update", reflect.TypeOf((*MockLLMProviderRepo)(nil).Update), ctx, p)
+}
+
+// UpdateModel mocks base method.
+func (m_2 *MockLLMProviderRepo) UpdateModel(ctx context.Context, m *llm_provider_model_entity.LLMProviderModel) error {
+	m_2.ctrl.T.Helper()
+	ret := m_2.ctrl.Call(m_2, "UpdateModel", ctx, m)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateModel indicates an expected call of UpdateModel.
+func (mr *MockLLMProviderRepoMockRecorder) UpdateModel(ctx, m any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateModel", reflect.TypeOf((*MockLLMProviderRepo)(nil).UpdateModel), ctx, m)
 }

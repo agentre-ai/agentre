@@ -8,10 +8,21 @@ import (
 
 // ProviderSummary describes a single LLM provider configured on a remote daemon.
 // Populated from health.ping responses; wire types are translated at the watcher layer.
+// 非敏感：只含稳定 key + 展示名 + 类型 + 默认模型 key + 模型摘要，绝不含凭证。
 type ProviderSummary struct {
-	Key  string `json:"key"`
-	Name string `json:"name"`
-	Type string `json:"type"`
+	Key             string         `json:"key"`
+	Name            string         `json:"name"`
+	Type            string         `json:"type"`
+	DefaultModelKey string         `json:"defaultModelKey,omitempty"`
+	Models          []ModelSummary `json:"models,omitempty"`
+}
+
+// ModelSummary 是 daemon 目录里一条模型的非敏感摘要（task 6 多模型）。
+type ModelSummary struct {
+	Key     string `json:"key"`
+	ModelID string `json:"modelId"`
+	Name    string `json:"name,omitempty"`
+	Enabled bool   `json:"enabled"`
 }
 
 // AddRequest 是 Add 的入参。DisplayName 可空，svc 自动派生。
@@ -40,6 +51,10 @@ type DeviceView struct {
 	// 所以断连会直接结束当前这一轮(R18)。由桌面端连上后的能力探测得出,不落库 ——
 	// 它描述的是**当前这个 daemon 进程**,重启桌面后重新探。
 	DaemonOutdated bool `json:"daemonOutdated"`
+	// SupportsLLMModelTarget 说明这台 daemon 是否公布 llm-model-target-v1 能力位
+	// （决策 11）：不支持时远端 Picker 必须禁用 fixed-model，避免旧 daemon 静默降级。
+	// 来自 watcher 最近一次 health.ping 的能力位,进程内缓存,不落库。
+	SupportsLLMModelTarget bool `json:"supportsLLMModelTarget,omitempty"`
 }
 
 // RemoteDeviceSvc 单例接口。
@@ -67,6 +82,12 @@ type RemoteDeviceSvc interface {
 	// ListDeviceProviders returns the cached provider list for deviceID.
 	// Returns nil if no data has been recorded yet. Safe for concurrent use.
 	ListDeviceProviders(deviceID int64) []ProviderSummary
+	// RecordDeviceCapabilities overwrites the in-memory daemon capability list for
+	// deviceID（决策 11）。Called by the watcher on each successful health.ping.
+	RecordDeviceCapabilities(deviceID int64, caps []string)
+	// SupportsLLMModelTarget reports whether deviceID's daemon advertises the
+	// llm-model-target-v1 capability（fixed-model 可被安全选择）。未探过 → false。
+	SupportsLLMModelTarget(deviceID int64) bool
 	// RecordDaemonOutdated 记下 R18 能力探测的结论:这台设备上的 daemon 认不认会话
 	// 持久化那组 RPC。结论随后出现在该设备的 DeviceView.DaemonOutdated 上。
 	// 由 chat_svc 在探测结论翻转时调用。

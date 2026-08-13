@@ -86,3 +86,42 @@ func TestHealth_Ping_IncludesProviders(t *testing.T) {
 		})
 	})
 }
+
+// TestHealth_Ping_AdvertisesModelTargetCapabilityAndCatalog 钉死决策 11 的目录契约：
+// health.ping 公布 llm-model-target-v1 能力位 + 非敏感 Provider/Model 摘要（稳定 key /
+// 实际 model id / 启用态），APIKey 与 BaseURL 绝不出现在应答里。
+func TestHealth_Ping_AdvertisesModelTargetCapabilityAndCatalog(t *testing.T) {
+	Convey("Ping 公布能力位 + 非敏感目录", t, func() {
+		st := state.NewDefault("test-instance")
+		st.Mutate(func(s *state.State) {
+			s.LLMProviders["prov-1"] = state.LLMProviderMeta{ //nolint:gosec // credential-shaped API key is a test fixture.
+				Name:            "Anthropic Prod",
+				Type:            "anthropic",
+				APIKey:          "sk-ant-secret",
+				BaseURL:         "https://api.anthropic.com",
+				DefaultModelKey: "model-1",
+				Models: []state.LLMModelMeta{
+					{ModelKey: "model-1", ModelID: "claude-sonnet-4-6", Enabled: true},
+					{ModelKey: "model-2", ModelID: "claude-opus-4-5", Enabled: false},
+				},
+			}
+		})
+		h := handlers.NewHealthHandlers("test-instance", st, nil)
+		res, err := h.Ping(context.Background())
+		So(err, ShouldBeNil)
+		So(res.Capabilities, ShouldContain, wire.CapLLMModelTargetV1)
+		So(res.Providers, ShouldHaveLength, 1)
+		p := res.Providers[0]
+		So(p.Key, ShouldEqual, "prov-1")
+		So(p.DefaultModelKey, ShouldEqual, "model-1")
+		So(p.Models, ShouldHaveLength, 2)
+		So(p.Models[0].ModelID, ShouldEqual, "claude-sonnet-4-6")
+		So(p.Models[0].Enabled, ShouldBeTrue)
+		So(p.Models[1].Enabled, ShouldBeFalse)
+
+		raw, marshalErr := json.Marshal(res)
+		So(marshalErr, ShouldBeNil)
+		So(string(raw), ShouldNotContainSubstring, "sk-ant-secret")
+		So(string(raw), ShouldNotContainSubstring, "api.anthropic.com")
+	})
+}

@@ -156,11 +156,14 @@ func TestValidateApprovalEnum(t *testing.T) {
 	}
 }
 
-func TestParseModelRoutes_StringValues(t *testing.T) {
-	t.Run("正常 UUID 值", func(t *testing.T) {
-		got, err := ParseModelRoutes(`{"OPUS":"4f8c-1234","SONNET":"a2bc"}`)
+func TestParseModelRoutes_TypedTargets(t *testing.T) {
+	t.Run("结构化 target：provider-default（modelKey 空）", func(t *testing.T) {
+		got, err := ParseModelRoutes(`{"OPUS":{"providerKey":"4f8c-1234"},"SONNET":{"providerKey":"a2bc","modelKey":"mk-sonnet"}}`)
 		require.NoError(t, err)
-		assert.Equal(t, map[string]string{"OPUS": "4f8c-1234", "SONNET": "a2bc"}, got)
+		assert.Equal(t, map[string]ModelRouteTarget{
+			"OPUS":   {ProviderKey: "4f8c-1234"},
+			"SONNET": {ProviderKey: "a2bc", ModelKey: "mk-sonnet"},
+		}, got)
 	})
 	t.Run("空对象", func(t *testing.T) {
 		got, err := ParseModelRoutes(`{}`)
@@ -168,13 +171,53 @@ func TestParseModelRoutes_StringValues(t *testing.T) {
 		assert.Empty(t, got)
 	})
 	t.Run("小写别名自动 ToUpper", func(t *testing.T) {
-		got, err := ParseModelRoutes(`{"opus":"4f8c","sonnet":"a2bc"}`)
+		got, err := ParseModelRoutes(`{"opus":{"providerKey":"4f8c"},"sonnet":{"providerKey":"a2bc"}}`)
 		require.NoError(t, err)
-		assert.Equal(t, map[string]string{"OPUS": "4f8c", "SONNET": "a2bc"}, got)
+		assert.Equal(t, map[string]ModelRouteTarget{
+			"OPUS":   {ProviderKey: "4f8c"},
+			"SONNET": {ProviderKey: "a2bc"},
+		}, got)
 	})
-	t.Run("空 value 被拒绝", func(t *testing.T) {
-		_, err := ParseModelRoutes(`{"OPUS":""}`)
-		assert.Error(t, err, "空 value 应该被拒绝")
+	t.Run("空 providerKey 被拒绝", func(t *testing.T) {
+		_, err := ParseModelRoutes(`{"OPUS":{"providerKey":""}}`)
+		assert.Error(t, err, "空 providerKey 应该被拒绝")
+	})
+	t.Run("旧字符串格式被拒绝（生产 parser 只接受新对象形状）", func(t *testing.T) {
+		_, err := ParseModelRoutes(`{"OPUS":"4f8c-1234"}`)
+		assert.Error(t, err, "旧 string value 已由迁移转换，运行时不再保留旧 parser")
+	})
+	t.Run("非对象值被拒绝", func(t *testing.T) {
+		_, err := ParseModelRoutes(`{"OPUS":42}`)
+		assert.Error(t, err)
+	})
+}
+
+func TestMarshalModelRoutes_RoundTrip(t *testing.T) {
+	t.Run("空 map 序列化为空对象", func(t *testing.T) {
+		s, err := MarshalModelRoutes(nil)
+		require.NoError(t, err)
+		assert.Equal(t, "{}", s)
+	})
+	t.Run("结构化 target 序列化后能解析回来", func(t *testing.T) {
+		s, err := MarshalModelRoutes(map[string]ModelRouteTarget{
+			"OPUS":  {ProviderKey: "p1"},
+			"HAIKU": {ProviderKey: "p2", ModelKey: "mk-h"},
+		})
+		require.NoError(t, err)
+		got, err := ParseModelRoutes(s)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]ModelRouteTarget{
+			"OPUS":  {ProviderKey: "p1"},
+			"HAIKU": {ProviderKey: "p2", ModelKey: "mk-h"},
+		}, got)
+	})
+	t.Run("小写 alias 序列化时统一 ToUpper", func(t *testing.T) {
+		s, err := MarshalModelRoutes(map[string]ModelRouteTarget{"opus": {ProviderKey: "p1"}})
+		require.NoError(t, err)
+		got, err := ParseModelRoutes(s)
+		require.NoError(t, err)
+		_, ok := got["OPUS"]
+		assert.True(t, ok)
 	})
 }
 

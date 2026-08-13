@@ -124,11 +124,11 @@ func (r *Runtime) PrepareRun(ctx context.Context, req agentruntime.RunRequest) (
 	}
 	// 绑定供应商：APIKey 空视为配置错误（消息只含 provider key，不含密钥）；
 	// 否则把 AGENTRE_PI_API_KEY_* 注入本次子进程 env（密钥永不落盘）。
-	if req.Provider != nil {
-		if strings.TrimSpace(req.Provider.APIKey) == "" {
-			return nil, fmt.Errorf("piagent runtime: provider %q has empty APIKey", req.Provider.ProviderKey)
+	if req.Effective != nil {
+		if strings.TrimSpace(req.Effective.APIKey) == "" {
+			return nil, fmt.Errorf("piagent runtime: provider %q has empty APIKey", req.Effective.ProviderKey)
 		}
-		env = agentruntime.BuildPiAgentProviderEnv(env, req.Provider)
+		env = agentruntime.BuildPiAgentProviderEnv(env, req.Effective)
 	}
 	sess, err := sessionFactory(req, env, cwd)
 	if err != nil {
@@ -587,8 +587,8 @@ func logPiFailureDiagnostics(ctx context.Context, req agentruntime.RunRequest, s
 }
 
 func providerKeyField(req agentruntime.RunRequest) zap.Field {
-	if req.Provider != nil {
-		return zap.String("providerKey", req.Provider.ProviderKey)
+	if req.Effective != nil {
+		return zap.String("providerKey", req.Effective.ProviderKey)
 	}
 	return zap.Skip()
 }

@@ -279,5 +279,82 @@ func TestParams_FieldShape(t *testing.T) {
 // 编译时确认 *jsonrpc.Error 满足 error,这样 ToJSONRPCError 返回的可以直接 return。
 var _ error = (*jsonrpc.Error)(nil)
 
+// TestRunParams_LLMTargetKeysRoundTrip 钉死决策 11:RunParams 同时携带
+// LLMProviderKey 与 LLMModelKey,且空值因 omitempty 不落字节流。
+func TestRunParams_LLMTargetKeysRoundTrip(t *testing.T) {
+	in := RunParams{SessionID: 42, LLMProviderKey: "prov-1", LLMModelKey: "model-7"}
+	b, err := json.Marshal(in)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"llmProviderKey":"prov-1"`)
+	assert.Contains(t, string(b), `"llmModelKey":"model-7"`)
+
+	var out RunParams
+	require.NoError(t, json.Unmarshal(b, &out))
+	assert.Equal(t, "prov-1", out.LLMProviderKey)
+	assert.Equal(t, "model-7", out.LLMModelKey)
+
+	// provider-default:model key 空 → 字段不出现在字节流,旧 daemon 解码不受影响。
+	none, err := json.Marshal(RunParams{SessionID: 1, LLMProviderKey: "prov-1"})
+	require.NoError(t, err)
+	assert.NotContains(t, string(none), "llmModelKey")
+}
+
+// TestGoalParams_LLMTargetKeysRoundTrip 钉死决策 11:GoalParams 补齐了
+// LLMProviderKey + LLMModelKey(与 RunParams 同形),goal 与 turn 不再各自解析。
+func TestGoalParams_LLMTargetKeysRoundTrip(t *testing.T) {
+	in := GoalParams{
+		SessionID: 42, ProviderSessionID: "thread-1",
+		Backend:        json.RawMessage(`{"Type":"codex"}`),
+		LLMProviderKey: "prov-1", LLMModelKey: "model-7",
+	}
+	b, err := json.Marshal(in)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"llmProviderKey":"prov-1"`)
+	assert.Contains(t, string(b), `"llmModelKey":"model-7"`)
+
+	var out GoalParams
+	require.NoError(t, json.Unmarshal(b, &out))
+	assert.Equal(t, "prov-1", out.LLMProviderKey)
+	assert.Equal(t, "model-7", out.LLMModelKey)
+}
+
+// TestCapLLMModelTargetV1_Stable 钉死决策 11 的能力位常量与辅助函数。
+func TestCapLLMModelTargetV1_Stable(t *testing.T) {
+	assert.Equal(t, "llm-model-target-v1", CapLLMModelTargetV1)
+	assert.True(t, HasCapability([]string{"a", CapLLMModelTargetV1}, CapLLMModelTargetV1))
+	assert.False(t, HasCapability([]string{"a"}, CapLLMModelTargetV1))
+	assert.False(t, HasCapability(nil, CapLLMModelTargetV1))
+}
+
+// TestProviderSummary_ModelSummaries 钉死「远端目录只含非敏感摘要」:Provider/Model
+// 稳定 key + 实际 model id + 启用态可过线,但 wire 形状里不存在 APIKey / BaseURL 字段。
+func TestProviderSummary_ModelSummaries(t *testing.T) {
+	typ := reflect.TypeOf(ProviderSummary{})
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		searchable := strings.ToLower(field.Name + " " + field.Tag.Get("json"))
+		assert.NotContains(t, searchable, "apikey", "ProviderSummary must never carry API keys")
+		assert.NotContains(t, searchable, "baseurl", "ProviderSummary must never carry base URLs")
+	}
+
+	in := ProviderSummary{
+		Key: "prov-1", Name: "Anthropic Prod", Type: "anthropic",
+		DefaultModelKey: "model-1",
+		Models: []ModelSummary{
+			{Key: "model-1", ModelID: "claude-opus-4", Name: "Opus", Enabled: true},
+			{Key: "model-2", ModelID: "claude-sonnet-4", Enabled: false},
+		},
+	}
+	b, err := json.Marshal(in)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"defaultModelKey":"model-1"`)
+	assert.Contains(t, string(b), `"modelId":"claude-opus-4"`)
+	assert.Contains(t, string(b), `"enabled":false`)
+
+	var out ProviderSummary
+	require.NoError(t, json.Unmarshal(b, &out))
+	assert.Equal(t, in, out)
+}
+
 func ptrString(v string) *string { return &v }
 func ptrInt(v int) *int          { return &v }

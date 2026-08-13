@@ -156,18 +156,25 @@ type JournalReaderPort interface {
 // 当前由 cli.* handler 使用；chat.* 走 Runner 内部直拿 *httpgateway.Gateway 没经此端口。
 // 具体实现 *httpgateway.Gateway 自然满足本接口（方法签名一致）。
 //
-// IssueTokenFor / SetTokenProvider 是会话级供应商切换用的两件（spec 决策 3/12）：
-// 按 wire 传来的 effective provider 签发、以及在**不换 token 字符串**的前提下改既有
+// IssueTokenFor / SetTokenTarget 是会话级 ModelTarget 切换用的两件（spec 决策 3/9/12）：
+// 按 wire 传来的 effective target 签发、以及在**不换 token 字符串**的前提下改既有
 // token 的路由目标 —— token 首轮就烤进 daemon 本机 spawn 的 CLI 子进程 env，重签会让
 // 它立刻 401。
 type GatewayPort interface {
 	URL() string
 	IssueToken(ctx context.Context, b *agent_backend_entity.AgentBackend, ttl time.Duration) (string, error)
 	IssueTokenFor(
-		ctx context.Context, b *agent_backend_entity.AgentBackend, providerKey string, ttl time.Duration,
+		ctx context.Context, b *agent_backend_entity.AgentBackend, providerKey, modelKey string, ttl time.Duration,
 	) (string, error)
-	SetTokenProvider(token, providerKey string) (previous string, ok bool)
+	SetTokenTarget(token, providerKey, modelKey string) (previous string, ok bool)
 	RevokeToken(token string)
+}
+
+// EffectiveModel 是 daemon 侧解析出的执行模型（决策 11）：固定模型或当前默认模型。
+// ModelKey 稳定，ModelID 是实际发给上游的模型 id。
+type EffectiveModel struct {
+	ModelKey string
+	ModelID  string
 }
 
 // LLMProviderLookupPort daemon-side LLM provider 查询端口：按稳定 UUID key 解出
@@ -179,4 +186,11 @@ type GatewayPort interface {
 // internal/pkg/httpgateway。
 type LLMProviderLookupPort interface {
 	FindByKey(ctx context.Context, key string) (*llm_provider_entity.LLMProvider, error)
+	// ResolveModel 从 daemon 自家目录解析 Provider 的执行模型（决策 11）：
+	//   - modelKey 空 → provider-default：Provider 当前默认模型（DefaultModelKey 精确命中
+	//     Models 且启用）。Provider 存在但无合法启用默认模型（无默认 / 默认缺失 / 默认停用）
+	//     → error（配置损坏，严格阻止），绝不回落旧单模型字段或空值静默执行；
+	//   - modelKey 非空 → fixed-model：精确查 Models 中启用模型。模型缺失或停用 → error，
+	//     调用方严格阻止本轮，绝不静默降级为默认模型。
+	ResolveModel(ctx context.Context, providerKey, modelKey string) (EffectiveModel, error)
 }

@@ -10,6 +10,14 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 )
 
+// RouteTarget 是 Claude Tier Route 的结构化目标（spec 决策 14）。
+// 与 agent_backend_entity.ModelRouteTarget 同形；前端只读类型化 target，不读原始 JSON。
+// ModelKey 空 = provider-default；alias 缺失 = inherit-main。
+type RouteTarget struct {
+	ProviderKey string `json:"providerKey"`
+	ModelKey    string `json:"modelKey"`
+}
+
 // BackendItem 单条 Agent 后端配置（已 join LLM Provider 摘要）。
 type BackendItem struct {
 	ID                int64  `json:"id"`
@@ -20,12 +28,15 @@ type BackendItem struct {
 	LLMProviderType   string `json:"llmProviderType"`
 	LLMProviderModel  string `json:"llmProviderModel"`
 	LLMProviderActive bool   `json:"llmProviderActive"`
-	CLIPath           string `json:"cliPath"`
-	ModelRoutes       string `json:"modelRoutes"`
-	Sandbox           string `json:"sandbox"`
-	Approval          string `json:"approval"`
-	EnvJSON           string `json:"envJson"`
-	ReasoningEffort   string `json:"reasoningEffort"`
+	// LLMModelKey 主绑定目标的稳定 ModelKey（空 = provider-default）。
+	LLMModelKey string `json:"llmModelKey"`
+	CLIPath     string `json:"cliPath"`
+	// ModelRoutes 类型化的 Claude Tier Route target（key = OPUS/SONNET/HAIKU）。
+	ModelRoutes     map[string]RouteTarget `json:"modelRoutes"`
+	Sandbox         string                 `json:"sandbox"`
+	Approval        string                 `json:"approval"`
+	EnvJSON         string                 `json:"envJson"`
+	ReasoningEffort string                 `json:"reasoningEffort"`
 	// DefaultPermissionMode 仅 claudecode 使用；新会话起手 mode；
 	// '' / default / acceptEdits / plan / bypassPermissions。
 	DefaultPermissionMode string `json:"defaultPermissionMode"`
@@ -61,22 +72,23 @@ type ListBackendsResponse struct {
 
 // CreateBackendRequest 新建后端。不同 Type 的字段约束由 agent_backend_entity.BackendKind 校验。
 type CreateBackendRequest struct {
-	Type                  string `json:"type" binding:"required"`
-	Name                  string `json:"name" binding:"required"`
-	LLMProviderKey        string `json:"llmProviderKey"`
-	CLIPath               string `json:"cliPath"`
-	ModelRoutes           string `json:"modelRoutes"`
-	Sandbox               string `json:"sandbox"`
-	Approval              string `json:"approval"`
-	EnvJSON               string `json:"envJson"`
-	ReasoningEffort       string `json:"reasoningEffort"`
-	DefaultPermissionMode string `json:"defaultPermissionMode"`
-	DefaultModel          string `json:"defaultModel"`
-	OpenClawGatewayURL    string `json:"openClawGatewayUrl"`
-	OpenClawAgentID       string `json:"openClawAgentId"`
-	OpenClawDefaultModel  string `json:"openClawDefaultModel"`
-	OpenClawSessionMode   string `json:"openClawSessionMode"`
-	DeviceID              string `json:"deviceId"`
+	Type                  string                 `json:"type" binding:"required"`
+	Name                  string                 `json:"name" binding:"required"`
+	LLMProviderKey        string                 `json:"llmProviderKey"`
+	LLMModelKey           string                 `json:"llmModelKey"`
+	CLIPath               string                 `json:"cliPath"`
+	ModelRoutes           map[string]RouteTarget `json:"modelRoutes"`
+	Sandbox               string                 `json:"sandbox"`
+	Approval              string                 `json:"approval"`
+	EnvJSON               string                 `json:"envJson"`
+	ReasoningEffort       string                 `json:"reasoningEffort"`
+	DefaultPermissionMode string                 `json:"defaultPermissionMode"`
+	DefaultModel          string                 `json:"defaultModel"`
+	OpenClawGatewayURL    string                 `json:"openClawGatewayUrl"`
+	OpenClawAgentID       string                 `json:"openClawAgentId"`
+	OpenClawDefaultModel  string                 `json:"openClawDefaultModel"`
+	OpenClawSessionMode   string                 `json:"openClawSessionMode"`
+	DeviceID              string                 `json:"deviceId"`
 }
 
 // CreateBackendResponse 返回创建后的实体。
@@ -86,22 +98,23 @@ type CreateBackendResponse struct {
 
 // UpdateBackendRequest 更新后端。Type 不可变。
 type UpdateBackendRequest struct {
-	ID                    int64  `json:"id" binding:"required"`
-	Name                  string `json:"name" binding:"required"`
-	LLMProviderKey        string `json:"llmProviderKey"`
-	CLIPath               string `json:"cliPath"`
-	ModelRoutes           string `json:"modelRoutes"`
-	Sandbox               string `json:"sandbox"`
-	Approval              string `json:"approval"`
-	EnvJSON               string `json:"envJson"`
-	ReasoningEffort       string `json:"reasoningEffort"`
-	DefaultPermissionMode string `json:"defaultPermissionMode"`
-	DefaultModel          string `json:"defaultModel"`
-	OpenClawGatewayURL    string `json:"openClawGatewayUrl"`
-	OpenClawAgentID       string `json:"openClawAgentId"`
-	OpenClawDefaultModel  string `json:"openClawDefaultModel"`
-	OpenClawSessionMode   string `json:"openClawSessionMode"`
-	DeviceID              string `json:"deviceId"`
+	ID                    int64                  `json:"id" binding:"required"`
+	Name                  string                 `json:"name" binding:"required"`
+	LLMProviderKey        string                 `json:"llmProviderKey"`
+	LLMModelKey           string                 `json:"llmModelKey"`
+	CLIPath               string                 `json:"cliPath"`
+	ModelRoutes           map[string]RouteTarget `json:"modelRoutes"`
+	Sandbox               string                 `json:"sandbox"`
+	Approval              string                 `json:"approval"`
+	EnvJSON               string                 `json:"envJson"`
+	ReasoningEffort       string                 `json:"reasoningEffort"`
+	DefaultPermissionMode string                 `json:"defaultPermissionMode"`
+	DefaultModel          string                 `json:"defaultModel"`
+	OpenClawGatewayURL    string                 `json:"openClawGatewayUrl"`
+	OpenClawAgentID       string                 `json:"openClawAgentId"`
+	OpenClawDefaultModel  string                 `json:"openClawDefaultModel"`
+	OpenClawSessionMode   string                 `json:"openClawSessionMode"`
+	DeviceID              string                 `json:"deviceId"`
 }
 
 // UpdateBackendResponse 返回更新后的实体。
@@ -125,24 +138,25 @@ type DeleteBackendResponse struct{}
 // RequestID 由前端生成（uuid），用于在测试还在跑时通过 CancelTest 主动中断。
 // 留空 → 不可中断（兼容旧路径 / 自动化调用）。
 type TestBackendRequest struct {
-	ID                    int64  `json:"id"`
-	UseDraft              bool   `json:"useDraft"`
-	Type                  string `json:"type"`
-	Name                  string `json:"name"`
-	LLMProviderKey        string `json:"llmProviderKey"`
-	CLIPath               string `json:"cliPath"`
-	ModelRoutes           string `json:"modelRoutes"`
-	Sandbox               string `json:"sandbox"`
-	Approval              string `json:"approval"`
-	EnvJSON               string `json:"envJson"`
-	ReasoningEffort       string `json:"reasoningEffort"`
-	DefaultPermissionMode string `json:"defaultPermissionMode"`
-	DefaultModel          string `json:"defaultModel"`
-	OpenClawGatewayURL    string `json:"openClawGatewayUrl"`
-	OpenClawAgentID       string `json:"openClawAgentId"`
-	OpenClawDefaultModel  string `json:"openClawDefaultModel"`
-	OpenClawSessionMode   string `json:"openClawSessionMode"`
-	RequestID             string `json:"requestId"`
+	ID                    int64                  `json:"id"`
+	UseDraft              bool                   `json:"useDraft"`
+	Type                  string                 `json:"type"`
+	Name                  string                 `json:"name"`
+	LLMProviderKey        string                 `json:"llmProviderKey"`
+	LLMModelKey           string                 `json:"llmModelKey"`
+	CLIPath               string                 `json:"cliPath"`
+	ModelRoutes           map[string]RouteTarget `json:"modelRoutes"`
+	Sandbox               string                 `json:"sandbox"`
+	Approval              string                 `json:"approval"`
+	EnvJSON               string                 `json:"envJson"`
+	ReasoningEffort       string                 `json:"reasoningEffort"`
+	DefaultPermissionMode string                 `json:"defaultPermissionMode"`
+	DefaultModel          string                 `json:"defaultModel"`
+	OpenClawGatewayURL    string                 `json:"openClawGatewayUrl"`
+	OpenClawAgentID       string                 `json:"openClawAgentId"`
+	OpenClawDefaultModel  string                 `json:"openClawDefaultModel"`
+	OpenClawSessionMode   string                 `json:"openClawSessionMode"`
+	RequestID             string                 `json:"requestId"`
 }
 
 // TestBackendResponse 返回测试结果。

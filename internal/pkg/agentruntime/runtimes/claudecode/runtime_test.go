@@ -13,7 +13,6 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
-	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
 	"github.com/agentre-ai/agentre/pkg/claudecode"
@@ -21,9 +20,9 @@ import (
 
 // TestRun_ModelChangeEvictsAndRespawns 锁住 claudecode 的模型 evict 语义:--model 是
 // 启动期 flag(WithModel 绑定在 Client 创建时),CLI 子进程又会被 LRU 缓存跨轮复用 ——
-// effectiveModel(provider.Model → backend.DefaultModel)变化必须 evict + 重 spawn,
+// effectiveModel(解析出的 ModelID → backend.DefaultModel)变化必须 evict + 重 spawn,
 // 否则下一轮复用旧模型进程,新模型不生效(镜像 codex runtime 的 modelChanged 先例)。
-// #26 会话级 override 已移除,模型变化只看 provider.Model / backend.DefaultModel。
+// #26 会话级 override 已移除,模型变化只看解析出的 ModelID / backend.DefaultModel。
 func TestRun_ModelChangeEvictsAndRespawns(t *testing.T) {
 	Convey("Given 一个带 usage 的假 claude 子进程", t, func() {
 		var spawnCount int32
@@ -51,7 +50,8 @@ func TestRun_ModelChangeEvictsAndRespawns(t *testing.T) {
 				SessionID: 77,
 				Cwd:       t.TempDir(),
 				UserText:  "hi",
-				Provider:  &llm_provider_entity.LLMProvider{Model: providerModel},
+				// effective 配置（EffectiveLLMConfig v1 seam）：模型变化走这里。
+				Effective: &agentruntime.EffectiveLLMConfig{ProviderKey: "pk", ProviderType: "anthropic", ModelID: providerModel},
 			})
 			So(err, ShouldBeNil)
 			for range events { //nolint:revive // drain
@@ -109,7 +109,9 @@ func TestRun_ProviderChangeEvictsAndRespawns(t *testing.T) {
 				SessionID: 88,
 				Cwd:       t.TempDir(),
 				UserText:  "hi",
-				Provider:  &llm_provider_entity.LLMProvider{ProviderKey: providerKey, Model: "same-model"},
+				// effective 配置（EffectiveLLMConfig v1 seam）：供应商 key 变化走这里，
+				// 模型 id 相同但供应商不同也必须 evict。
+				Effective: &agentruntime.EffectiveLLMConfig{ProviderKey: providerKey, ProviderType: "anthropic", ModelID: "same-model"},
 			})
 			So(err, ShouldBeNil)
 			for range events { //nolint:revive // drain
@@ -127,6 +129,52 @@ func TestRun_ProviderChangeEvictsAndRespawns(t *testing.T) {
 			run("provider-b")
 			So(atomic.LoadInt32(&spawnCount), ShouldEqual, 2)
 		})
+	})
+}
+
+// TestRun_ModelKeyChangeEvictsAndResumes locks the approved launch identity:
+// ProviderKey + ModelKey + resolved ModelID. Stable ProviderKey/ModelID do not
+// permit reuse when the persisted fixed-model identity changed; the rebuilt
+// process must receive the existing native session ID for context continuity.
+func TestRun_ModelKeyChangeEvictsAndResumes(t *testing.T) {
+	Convey("Given the same Claude ProviderKey and ModelID with a different ModelKey", t, func() {
+		var (
+			spawnCount int32
+			resumeIDs  []string
+		)
+		restore := SetSessionFactoryForTest(func(spec ccLaunchSpec) (ccSessionHandle, error) {
+			atomic.AddInt32(&spawnCount, 1)
+			resumeIDs = append(resumeIDs, spec.Req.ProviderSessionID)
+			return &fakeCCHandle{
+				id: "native-claude-session",
+				stream: &eventCCStream{events: []claudecode.Event{
+					{Kind: claudecode.EventUsage, Usage: provider.Usage{PromptTokens: 1}},
+					{Kind: claudecode.EventDone},
+				}},
+			}, nil
+		})
+		defer restore()
+
+		r := New()
+		run := func(modelKey, providerSessionID string) {
+			events, _, err := r.Run(context.Background(), agentruntime.RunRequest{
+				Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+				Effective:         &agentruntime.EffectiveLLMConfig{ProviderKey: "provider-a", ModelKey: modelKey, ProviderType: "anthropic", ModelID: "same-model"},
+				SessionID:         89,
+				ProviderSessionID: providerSessionID,
+				Cwd:               t.TempDir(),
+				UserText:          "hi",
+			})
+			So(err, ShouldBeNil)
+			for range events { //nolint:revive // drain
+			}
+		}
+
+		run("model-a", "")
+		run("model-b", "native-claude-session")
+
+		So(atomic.LoadInt32(&spawnCount), ShouldEqual, 2)
+		So(resumeIDs, ShouldResemble, []string{"", "native-claude-session"})
 	})
 }
 

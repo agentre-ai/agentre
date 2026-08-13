@@ -775,8 +775,9 @@ func TestRuntime_GoalWithProviderUsesDaemonProviderAndGateway(t *testing.T) {
 	lookup.EXPECT().FindByKey(ctx, "provider-key").Return(&llm_provider_entity.LLMProvider{
 		ProviderKey: "provider-key",
 		Type:        string(llm_provider_entity.TypeOpenAIResponse),
-		Model:       "gpt-5-codex",
+		Status:      consts.ACTIVE,
 	}, nil)
+	lookup.EXPECT().ResolveModel(ctx, "provider-key", "").Return(handlers.EffectiveModel{ModelKey: "", ModelID: "gpt-5-codex"}, nil)
 	gw.EXPECT().URL().Return("http://127.0.0.1:12345")
 	gw.EXPECT().IssueToken(ctx, gomock.Any(), time.Hour).DoAndReturn(
 		func(_ context.Context, got *agent_backend_entity.AgentBackend, _ time.Duration) (string, error) {
@@ -797,7 +798,8 @@ func TestRuntime_GoalWithProviderUsesDaemonProviderAndGateway(t *testing.T) {
 	req := rt.getGoalCalls[0].req
 	require.NotNil(t, req.Provider)
 	assert.Equal(t, "provider-key", req.Provider.ProviderKey)
-	assert.Equal(t, "gpt-5-codex", req.Provider.Model)
+	require.NotNil(t, req.Effective)
+	assert.Equal(t, "gpt-5-codex", req.Effective.ModelID)
 	assert.Equal(t, "http://127.0.0.1:12345", req.GatewayURL)
 	assert.Equal(t, "goal-token", req.GatewayToken)
 }
@@ -1190,9 +1192,10 @@ func TestRuntime_Run_EffectiveKeyPreferredOverAgentBinding(t *testing.T) {
 	}
 	// 会话所选供应商在 daemon 上也存在 → 用它,不用 agent 绑定。
 	lookup.EXPECT().FindByKey(ctx, "session-key").Return(&llm_provider_entity.LLMProvider{
-		ProviderKey: "session-key", Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-x",
+		ProviderKey: "session-key", Type: string(llm_provider_entity.TypeAnthropic),
 		Status: consts.ACTIVE,
 	}, nil)
+	lookup.EXPECT().ResolveModel(ctx, "session-key", "").Return(handlers.EffectiveModel{ModelKey: "", ModelID: "claude-x"}, nil)
 	gw.EXPECT().URL().Return("").AnyTimes()
 
 	_, err := h.Run(ctx, wire.RunParams{
@@ -1223,9 +1226,10 @@ func TestRuntime_Run_EffectiveKeyMissing_FallsBackToAgentBinding(t *testing.T) {
 	// 会话所选供应商在 daemon 缺失 → 查 agent 绑定。
 	lookup.EXPECT().FindByKey(ctx, "session-key").Return(nil, errors.New("provider session-key not configured"))
 	lookup.EXPECT().FindByKey(ctx, "agent-bound-key").Return(&llm_provider_entity.LLMProvider{
-		ProviderKey: "agent-bound-key", Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-x",
+		ProviderKey: "agent-bound-key", Type: string(llm_provider_entity.TypeAnthropic),
 		Status: consts.ACTIVE,
 	}, nil)
+	lookup.EXPECT().ResolveModel(ctx, "agent-bound-key", "").Return(handlers.EffectiveModel{ModelKey: "", ModelID: "claude-x"}, nil)
 	gw.EXPECT().URL().Return("").AnyTimes()
 
 	ack, err := h.Run(ctx, wire.RunParams{
@@ -1256,13 +1260,14 @@ func TestRuntime_Run_EffectiveKeyInactive_FallsBackToAgentBinding(t *testing.T) 
 	}
 	// 会话所选供应商已停用(Status=0) → 回退 agent 绑定。
 	lookup.EXPECT().FindByKey(ctx, "session-key").Return(&llm_provider_entity.LLMProvider{
-		ProviderKey: "session-key", Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-x",
+		ProviderKey: "session-key", Type: string(llm_provider_entity.TypeAnthropic),
 		Status: 0,
 	}, nil)
 	lookup.EXPECT().FindByKey(ctx, "agent-bound-key").Return(&llm_provider_entity.LLMProvider{
-		ProviderKey: "agent-bound-key", Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-x",
+		ProviderKey: "agent-bound-key", Type: string(llm_provider_entity.TypeAnthropic),
 		Status: consts.ACTIVE,
 	}, nil)
+	lookup.EXPECT().ResolveModel(ctx, "agent-bound-key", "").Return(handlers.EffectiveModel{ModelKey: "", ModelID: "claude-x"}, nil)
 	gw.EXPECT().URL().Return("").AnyTimes()
 
 	ack, err := h.Run(ctx, wire.RunParams{
@@ -1354,15 +1359,16 @@ func TestRuntime_Run_WithProvider_ReusesPermanentTokenAcrossTurns(t *testing.T) 
 		LLMProviderKey: "pk",
 	}
 	lookup.EXPECT().FindByKey(ctx, "pk").Return(&llm_provider_entity.LLMProvider{
-		ProviderKey: "pk", Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-x",
+		ProviderKey: "pk", Type: string(llm_provider_entity.TypeAnthropic),
 		Status: consts.ACTIVE,
 	}, nil).Times(2)
+	lookup.EXPECT().ResolveModel(ctx, "pk", "").Return(handlers.EffectiveModel{ModelKey: "", ModelID: "claude-x"}, nil).Times(2)
 	gw.EXPECT().URL().Return("http://gw").AnyTimes()
 	// ttl=0 (permanent), minted exactly once; NO RevokeToken EXPECT → gomock
 	// fails if anything revokes it (e.g. a leftover turn-end revoke).
-	gw.EXPECT().IssueTokenFor(ctx, gomock.Any(), "pk", time.Duration(0)).Return("sess-token", nil).Times(1)
+	gw.EXPECT().IssueTokenFor(ctx, gomock.Any(), "pk", "", time.Duration(0)).Return("sess-token", nil).Times(1)
 	// 后续轮只把既有 token 的路由目标对齐到同一家（没换供应商 → 原地不动）。
-	gw.EXPECT().SetTokenProvider("sess-token", "pk").Return("pk", true).Times(1)
+	gw.EXPECT().SetTokenTarget("sess-token", "pk", "").Return("pk", true).Times(1)
 
 	runOnce := func() {
 		_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 42, UserText: "hi"})
@@ -1401,17 +1407,19 @@ func TestRuntime_Run_SessionTokenFollowsEffectiveProvider(t *testing.T) {
 	}
 	activeProvider := func(key string) *llm_provider_entity.LLMProvider {
 		return &llm_provider_entity.LLMProvider{
-			ProviderKey: key, Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-x",
+			ProviderKey: key, Type: string(llm_provider_entity.TypeAnthropic),
 			Status: consts.ACTIVE,
 		}
 	}
 	lookup.EXPECT().FindByKey(ctx, "first-key").Return(activeProvider("first-key"), nil)
 	lookup.EXPECT().FindByKey(ctx, "switched-key").Return(activeProvider("switched-key"), nil)
+	lookup.EXPECT().ResolveModel(ctx, "first-key", "").Return(handlers.EffectiveModel{ModelKey: "", ModelID: "claude-x"}, nil)
+	lookup.EXPECT().ResolveModel(ctx, "switched-key", "").Return(handlers.EffectiveModel{ModelKey: "", ModelID: "claude-x"}, nil)
 	gw.EXPECT().URL().Return("http://gw").AnyTimes()
 	// 首轮按 effective key 签一个永久 token；换供应商后**不得**再签第二个。
-	gw.EXPECT().IssueTokenFor(ctx, gomock.Any(), "first-key", time.Duration(0)).
+	gw.EXPECT().IssueTokenFor(ctx, gomock.Any(), "first-key", "", time.Duration(0)).
 		Return("sess-token", nil).Times(1)
-	gw.EXPECT().SetTokenProvider("sess-token", "switched-key").Return("first-key", true).Times(1)
+	gw.EXPECT().SetTokenTarget("sess-token", "switched-key", "").Return("first-key", true).Times(1)
 
 	runOnce := func(providerKey string) {
 		_, err := h.Run(ctx, wire.RunParams{
@@ -3508,3 +3516,251 @@ func (*scriptedPreparedPiRT) Run(context.Context, agentruntime.RunRequest) (<-ch
 }
 
 func (*blockingTerminalNotifier) Request(context.Context, string, any, any) error { return nil }
+
+// ── fixed-model（决策 11）────────────────────────────────────────────────────
+
+// TestRuntime_Run_FixedModel_ResolvesSpecificModel 钉死决策 11 的 Run 侧 fixed-model：
+// wire 同时携带 LLMProviderKey + LLMModelKey，daemon 必须精确解析该模型并装进
+// req.Effective（ModelID = 指定模型的 model id），而不是回落 Provider 默认模型。
+func TestRuntime_Run_FixedModel_ResolvesSpecificModel(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event)
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	ctx, _, gw, lookup, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{
+		Type:           string(agent_backend_entity.TypeClaudeCode),
+		LLMProviderKey: "pk",
+	}
+	lookup.EXPECT().FindByKey(ctx, "pk").Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: "pk", Type: string(llm_provider_entity.TypeAnthropic),
+		DefaultModelKey: "model-default", Status: consts.ACTIVE,
+	}, nil)
+	lookup.EXPECT().ResolveModel(ctx, "pk", "model-fixed").Return(
+		handlers.EffectiveModel{ModelKey: "model-fixed", ModelID: "claude-opus-4-5"}, nil)
+	gw.EXPECT().URL().Return("").AnyTimes()
+
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend:        backendJSON(t, be),
+		SessionID:      42,
+		LLMProviderKey: "pk",
+		LLMModelKey:    "model-fixed",
+	})
+	require.NoError(t, err)
+	require.Len(t, rt.runReqs, 1)
+	req := rt.runReqs[0].req
+	require.NotNil(t, req.Effective, "fixed-model 必须产出执行侧配置")
+	assert.Equal(t, agentruntime.EffectiveModeFixedModel, req.Effective.Mode)
+	assert.Equal(t, "model-fixed", req.Effective.ModelKey)
+	assert.Equal(t, "claude-opus-4-5", req.Effective.ModelID)
+	assert.Equal(t, "pk", req.Effective.ProviderKey)
+}
+
+// TestRuntime_Run_FixedModel_BackendPinned 钉死 backend 固定模型在远端生效：inherit-agent
+// 会话（未钉 provider）时，桌面端把 backend 固定模型作为执行侧 ModelKey 透传过来
+// （remoteKeysOnlyEffective → be.LLMModelKey），daemon 按 wire 的 model key 精确解析。
+func TestRuntime_Run_FixedModel_BackendPinned(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event)
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	ctx, _, gw, lookup, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{
+		Type:           string(agent_backend_entity.TypeClaudeCode),
+		LLMProviderKey: "pk",
+		LLMModelKey:    "model-fixed",
+	}
+	lookup.EXPECT().FindByKey(ctx, "pk").Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: "pk", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
+	}, nil)
+	lookup.EXPECT().ResolveModel(ctx, "pk", "model-fixed").Return(
+		handlers.EffectiveModel{ModelKey: "model-fixed", ModelID: "claude-opus-4-5"}, nil)
+	gw.EXPECT().URL().Return("").AnyTimes()
+
+	// 未钉会话：桌面端透传 backend 固定模型作为 wire model key。
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend:        backendJSON(t, be),
+		SessionID:      42,
+		LLMProviderKey: "pk",
+		LLMModelKey:    "model-fixed",
+	})
+	require.NoError(t, err)
+	require.Len(t, rt.runReqs, 1)
+	req := rt.runReqs[0].req
+	require.NotNil(t, req.Effective)
+	assert.Equal(t, "model-fixed", req.Effective.ModelKey)
+	assert.Equal(t, "claude-opus-4-5", req.Effective.ModelID)
+}
+
+// TestRuntime_Run_FixedModel_ModelMissing_Blocks 钉死「fixed-model 缺失/停用 → 下一轮
+// 严格阻止，绝不静默降级为 Provider 默认模型」（决策 7/11）。
+func TestRuntime_Run_FixedModel_ModelMissing_Blocks(t *testing.T) {
+	rt := &fullRT{}
+	ctx, _, _, lookup, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{
+		Type:           string(agent_backend_entity.TypeClaudeCode),
+		LLMProviderKey: "pk",
+	}
+	lookup.EXPECT().FindByKey(ctx, "pk").Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: "pk", Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE,
+	}, nil)
+	lookup.EXPECT().ResolveModel(ctx, "pk", "model-gone").Return(
+		handlers.EffectiveModel{}, errors.New("model model-gone not configured on provider pk"))
+
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend:        backendJSON(t, be),
+		SessionID:      42,
+		LLMProviderKey: "pk",
+		LLMModelKey:    "model-gone",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "model-gone", "必须点出缺失的模型，而不是静默换默认")
+	require.Len(t, rt.runReqs, 0, "被阻止的轮次不得触碰 runtime")
+}
+
+// TestRuntime_Run_FixedModel_ProviderMissing_Blocks 钉死 fixed-model 的 Provider
+// 缺失 → 严格阻止（不回退 agent 绑定、不降级）。与 provider-default 的 #39 回退形成
+// 对比：固定目标承载能力/成本/合规预期，静默换 Provider 同样危险。
+func TestRuntime_Run_FixedModel_ProviderMissing_Blocks(t *testing.T) {
+	rt := &fullRT{}
+	ctx, _, _, lookup, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{
+		Type:           string(agent_backend_entity.TypeClaudeCode),
+		LLMProviderKey: "agent-bound-key",
+	}
+	// 会话钉的 provider 在 daemon 缺失，且带 fixed model → 阻止，不回退。
+	lookup.EXPECT().FindByKey(ctx, "session-key").Return(nil, errors.New("provider session-key not configured"))
+
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend:        backendJSON(t, be),
+		SessionID:      42,
+		LLMProviderKey: "session-key",
+		LLMModelKey:    "model-fixed",
+	})
+	require.Error(t, err)
+	var rpcErr *rpc.Error
+	require.ErrorAs(t, err, &rpcErr)
+	assert.Equal(t, rpc.ErrProviderMissing.Code, rpcErr.Code)
+	require.Len(t, rt.runReqs, 0)
+}
+
+// TestRuntime_Goal_FixedModel_Resolves 钉死 Goal 侧 fixed-model：GoalParams 携带
+// ProviderKey + ModelKey，daemon 精确解析并装进 req.Effective。
+func TestRuntime_Goal_FixedModel_Resolves(t *testing.T) {
+	rt := &fullRT{}
+	ctx, _, gw, lookup, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{
+		ID:             3,
+		Type:           string(agent_backend_entity.TypeCodex),
+		Name:           "codex",
+		LLMProviderKey: "provider-key",
+	}
+	lookup.EXPECT().FindByKey(ctx, "provider-key").Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: "provider-key",
+		Type:        string(llm_provider_entity.TypeOpenAIResponse),
+		Status:      consts.ACTIVE,
+	}, nil)
+	lookup.EXPECT().ResolveModel(ctx, "provider-key", "model-fixed").Return(
+		handlers.EffectiveModel{ModelKey: "model-fixed", ModelID: "gpt-5-codex"}, nil)
+	gw.EXPECT().URL().Return("http://127.0.0.1:12345")
+	gw.EXPECT().IssueToken(ctx, gomock.Any(), time.Hour).Return("goal-token", nil)
+	gw.EXPECT().RevokeToken("goal-token")
+
+	_, err := h.GetGoal(ctx, wire.GoalParams{
+		SessionID:         42,
+		AgentID:           7,
+		ProviderSessionID: "thread-goal",
+		Backend:           backendJSON(t, be),
+		LLMProviderKey:    "provider-key",
+		LLMModelKey:       "model-fixed",
+	})
+	require.NoError(t, err)
+	require.Len(t, rt.getGoalCalls, 1)
+	req := rt.getGoalCalls[0].req
+	require.NotNil(t, req.Effective)
+	assert.Equal(t, agentruntime.EffectiveModeFixedModel, req.Effective.Mode)
+	assert.Equal(t, "model-fixed", req.Effective.ModelKey)
+	assert.Equal(t, "gpt-5-codex", req.Effective.ModelID)
+}
+
+// TestRuntime_Run_PinnedProviderDefault_NotDraggedByBackendFixedModel 钉死 spec 决策 1
+// 的远端半边：会话钉了 Provider 且选 provider-default（wire model key 为空）时，即使
+// backend 主绑定同家并固定了模型（be.LLMModelKey 非空），daemon 也必须解析 Provider
+// 当前默认模型（provider-default），绝不能被 backend 固定模型带偏成 fixed-model。
+// 会话是否钉住只有桌面端知道，wire 的 model key 已是解析结果，daemon 不得再自行派生。
+func TestRuntime_Run_PinnedProviderDefault_NotDraggedByBackendFixedModel(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event)
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	ctx, _, gw, lookup, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{
+		Type:           string(agent_backend_entity.TypeClaudeCode),
+		LLMProviderKey: "pk",
+		LLMModelKey:    "model-fixed",
+	}
+	lookup.EXPECT().FindByKey(ctx, "pk").Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: "pk", Type: string(llm_provider_entity.TypeAnthropic),
+		DefaultModelKey: "model-default", Status: consts.ACTIVE,
+	}, nil)
+	// 必须按 provider-default（空 model key）解析，而不是 be.LLMModelKey="model-fixed"。
+	lookup.EXPECT().ResolveModel(ctx, "pk", "").Return(
+		handlers.EffectiveModel{ModelKey: "model-default", ModelID: "claude-sonnet-4-6"}, nil)
+	gw.EXPECT().URL().Return("").AnyTimes()
+
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend:        backendJSON(t, be),
+		SessionID:      42,
+		LLMProviderKey: "pk",
+	})
+	require.NoError(t, err)
+	require.Len(t, rt.runReqs, 1)
+	req := rt.runReqs[0].req
+	require.NotNil(t, req.Effective)
+	assert.Equal(t, agentruntime.EffectiveModeProviderDefault, req.Effective.Mode)
+	assert.Equal(t, "model-default", req.Effective.ModelKey)
+	assert.Equal(t, "claude-sonnet-4-6", req.Effective.ModelID)
+}
+
+// TestRuntime_Run_ProviderDefault_ResolvesDefaultModel 钉死 provider-default 在 daemon
+// 侧解析当前默认模型并装进 req.Effective（决策 8/11）：wire 不带 model key → 用
+// Provider 的 DefaultModelKey 解析出默认模型 id。
+func TestRuntime_Run_ProviderDefault_ResolvesDefaultModel(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event)
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	ctx, _, gw, lookup, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{
+		Type:           string(agent_backend_entity.TypeClaudeCode),
+		LLMProviderKey: "pk",
+	}
+	lookup.EXPECT().FindByKey(ctx, "pk").Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: "pk", Type: string(llm_provider_entity.TypeAnthropic),
+		DefaultModelKey: "model-default", Status: consts.ACTIVE,
+	}, nil)
+	lookup.EXPECT().ResolveModel(ctx, "pk", "").Return(
+		handlers.EffectiveModel{ModelKey: "model-default", ModelID: "claude-sonnet-4-6"}, nil)
+	gw.EXPECT().URL().Return("").AnyTimes()
+
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend:        backendJSON(t, be),
+		SessionID:      42,
+		LLMProviderKey: "pk",
+	})
+	require.NoError(t, err)
+	require.Len(t, rt.runReqs, 1)
+	req := rt.runReqs[0].req
+	require.NotNil(t, req.Effective)
+	assert.Equal(t, agentruntime.EffectiveModeProviderDefault, req.Effective.Mode)
+	assert.Equal(t, "model-default", req.Effective.ModelKey)
+	assert.Equal(t, "claude-sonnet-4-6", req.Effective.ModelID)
+}

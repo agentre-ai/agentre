@@ -52,12 +52,20 @@ type AgentBackend struct {
 	Type           string `gorm:"column:type;type:text;not null"`
 	Name           string `gorm:"column:name;type:text;not null"`
 	LLMProviderKey string `gorm:"column:llm_provider_key;type:text;not null;default:''"`
+	// LLMModelKey 主绑定目标（ModelTarget）的稳定 ModelKey。
+	// 与 LLMProviderKey 组合决定目标模式：
+	//   - 两个都空 = native（CLI 自身登录态）；
+	//   - ProviderKey 非空且 ModelKey 空 = provider-default（每轮解析当前默认模型）；
+	//   - 两个都非空 = fixed-model（解析指定 Model 记录）。
+	// 模型存在 / 启用 / 归属校验由 service 层跨 repo 完成（entity 不碰 DB）。
+	LLMModelKey string `gorm:"column:model_key;type:text;not null;default:''"`
 	// DeviceID 关联的远端设备 ID（paired_agents.id 的字符串形式）。
 	// 空串表示本地运行；非空表示用户意图绑定远端，服务层按 DeviceIDInt() 派发。
 	DeviceID string `gorm:"column:device_id;type:text;not null;default:''"`
 	CLIPath  string `gorm:"column:cli_path;type:text;not null;default:''"`
-	// ModelRoutes 仅 claudecode 使用：`{"OPUS":"<provider-key>","SONNET":"<provider-key>","HAIKU":"<provider-key>"}` 子集，
-	// 任意 alias 缺省时回落到主 LLMProviderKey。
+	// ModelRoutes 仅 claudecode 使用：`{"OPUS":{"providerKey":"..","modelKey":".."},...}` 子集，
+	// 任意 alias 缺省时回落主 LLMProviderKey/LLMModelKey（inherit-main）。
+	// 解析 / 序列化分别用 ParseModelRoutes / MarshalModelRoutes（见 kinds.go）。
 	ModelRoutes string `gorm:"column:model_routes;type:text;not null;default:'{}'"`
 	// Sandbox 仅 codex 使用：read-only / workspace-write / danger-full-access；空 = CLI 默认。
 	Sandbox string `gorm:"column:sandbox;type:text;not null;default:''"`
@@ -73,9 +81,9 @@ type AgentBackend struct {
 	// 其它后端类型必须保持空串，否则 entity.Check 报 InvalidParameter。
 	DefaultPermissionMode string `gorm:"column:default_permission_mode;type:text;not null;default:''"`
 	// DefaultModel 仅 claudecode 使用：spawn claude 子进程时下发的 --model 值。
-	// 走 CLI 登录态（未绑 provider）时用它指定自定义模型（如 claude-fable-5）；
-	// 绑了 provider 时 provider.Model 优先，本字段仅在 provider.Model 为空时兜底。
-	// 空串 = 不下发 --model，走 CLI 默认。其它后端类型必须保持空串。
+	// 只属于 CLI-native（未绑 provider）场景，是独立自由文本（spec 决策 13）。
+	// 切换到 Agentre Provider 后保留但忽略该值（执行由 ModelTarget 决定），
+	// 切回 native 后恢复使用。空串 = 不下发 --model，走 CLI 默认。其它后端类型必须保持空串。
 	DefaultModel string `gorm:"column:default_model;type:text;not null;default:''"`
 	// OpenClawGatewayURL 是 OpenClaw Gateway WebSocket 地址。loopback 可使用 ws；
 	// 非 loopback 必须使用 wss。认证信息不得出现在 URL 中。
@@ -172,6 +180,12 @@ func (b *AgentBackend) Check(ctx context.Context) error {
 		return i18n.NewError(ctx, code.InvalidParameter)
 	}
 
+	// ModelTarget 自洽性：fixed-model（ModelKey 非空）必须同时钉住 ProviderKey。
+	// provider-default / native 的 ModelKey 必须为空。
+	if strings.TrimSpace(b.LLMModelKey) != "" && strings.TrimSpace(b.LLMProviderKey) == "" {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+
 	// env_json：反序列化 + 保留键白名单。
 	envMap, err := ParseEnvJSON(b.EnvJSON)
 	if err != nil {
@@ -197,11 +211,11 @@ func (b *AgentBackend) Check(ctx context.Context) error {
 		for _, a := range known {
 			allowed[a] = struct{}{}
 		}
-		for alias, providerKey := range routes {
+		for alias, route := range routes {
 			if _, ok := allowed[alias]; !ok {
 				return i18n.NewError(ctx, code.AgentBackendUnknownAlias)
 			}
-			if strings.TrimSpace(providerKey) == "" {
+			if strings.TrimSpace(route.ProviderKey) == "" {
 				return i18n.NewError(ctx, code.AgentBackendAliasProviderInvalid)
 			}
 		}

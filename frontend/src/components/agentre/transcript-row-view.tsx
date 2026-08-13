@@ -732,15 +732,24 @@ function RenderItemView({
       // 因为切换回「跟随 agent 绑定」时 providerKey 本就是空串。
       // providerName 非空就优先显示它（2026-08-10 显示缺陷修复决策 1/2）,为空
       // （供应商已删,后端查不到实体）则回退到裸 providerKey,文案本身不变。
+      // fixed-model 切换时负载还带 modelKey/modelName（spec 2026-08-11 决策 1），
+      // transcript 要能读出「固定到哪个模型」而不是只剩供应商名。
       const providerKey = item.block.providerKey;
       const providerLabel = item.block.providerName || providerKey;
+      const modelKey = item.block.modelKey;
+      const modelLabel = item.block.modelName || modelKey;
       const noticeKind = item.block.noticeKind;
       const content =
         noticeKind === "switch"
           ? providerKey
-            ? t("chat.notice.providerSwitch.sentence", {
-                provider: providerLabel,
-              })
+            ? modelKey
+              ? t("chat.notice.providerSwitch.fixedModel", {
+                  provider: providerLabel,
+                  model: modelLabel,
+                })
+              : t("chat.notice.providerSwitch.sentence", {
+                  provider: providerLabel,
+                })
             : t("chat.notice.providerSwitch.followAgentBinding")
           : providerKey
             ? t("chat.notice.providerFallback.sentence", {

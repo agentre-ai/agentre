@@ -57,9 +57,22 @@ type providerRecorderAdapter struct {
 func (a *providerRecorderAdapter) RecordDeviceProviders(deviceID int64, ps []watcher.ProviderSummary) {
 	translated := make([]remote_device_svc.ProviderSummary, len(ps))
 	for i, p := range ps {
-		translated[i] = remote_device_svc.ProviderSummary{Key: p.Key, Name: p.Name, Type: p.Type}
+		models := make([]remote_device_svc.ModelSummary, 0, len(p.Models))
+		for _, m := range p.Models {
+			models = append(models, remote_device_svc.ModelSummary{
+				Key: m.Key, ModelID: m.ModelID, Name: m.Name, Enabled: m.Enabled,
+			})
+		}
+		translated[i] = remote_device_svc.ProviderSummary{
+			Key: p.Key, Name: p.Name, Type: p.Type,
+			DefaultModelKey: p.DefaultModelKey, Models: models,
+		}
 	}
 	a.inner.RecordDeviceProviders(deviceID, translated)
+}
+
+func (a *providerRecorderAdapter) RecordDeviceCapabilities(deviceID int64, caps []string) {
+	a.inner.RecordDeviceCapabilities(deviceID, caps)
 }
 
 // InitRemoteDeviceWatcher 必须在 InitRemoteDevice 之后调。注入 watcher,

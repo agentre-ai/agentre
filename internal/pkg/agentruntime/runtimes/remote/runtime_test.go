@@ -1917,3 +1917,96 @@ func TestRun_DirectForkTurnAcceptsChangedProviderSessionID(t *testing.T) {
 	}
 	assert.Equal(t, "forked-session", runResult.ProviderSessionID)
 }
+
+// TestBuildRunParams_ForwardsLLMModelKey 钉死决策 11 的 wire 契约:RunParams 必须
+// 携带 LLMModelKey。优先取执行侧解析结果的 ModelKey（chat_svc 对远端只透传目标
+// key），未提供时回落 backend 主绑定固定模型；两者皆空 = provider-default。
+func TestBuildRunParams_ForwardsLLMModelKey(t *testing.T) {
+	t.Run("from effective config", func(t *testing.T) {
+		params, err := buildRunParams(agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{LLMModelKey: "backend-model"},
+			SessionID: 9,
+			Effective: &agentruntime.EffectiveLLMConfig{
+				Mode:     agentruntime.EffectiveModeFixedModel,
+				ModelKey: "session-model",
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "session-model", params.LLMModelKey, "执行侧 ModelKey 优先于 backend 绑定")
+	})
+
+	t.Run("fallback to backend fixed model", func(t *testing.T) {
+		params, err := buildRunParams(agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{LLMModelKey: "backend-model"},
+			SessionID: 9,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "backend-model", params.LLMModelKey, "无执行侧结果时回落 backend 固定模型")
+	})
+
+	t.Run("provider-default stays empty", func(t *testing.T) {
+		params, err := buildRunParams(agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{LLMProviderKey: "pk"},
+			SessionID: 9,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "", params.LLMModelKey, "provider-default 的 model key 为空")
+	})
+
+	t.Run("pinned provider-default beats backend fixed model", func(t *testing.T) {
+		// spec 决策 1：会话钉了 Provider 且选 provider-default（ModelKey 空）时，即使
+		// backend 主绑定同家并固定了模型，wire 也必须保持空 model key（provider-default），
+		// 不能被 backend 的固定模型带偏 —— 远端与本地同一解析语义（sessionModelKeyFor）。
+		params, err := buildRunParams(agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{LLMProviderKey: "pk", LLMModelKey: "backend-model"},
+			SessionID: 9,
+			Effective: &agentruntime.EffectiveLLMConfig{
+				Mode:        agentruntime.EffectiveModeProviderDefault,
+				ProviderKey: "pk",
+				ModelKey:    "",
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "", params.LLMModelKey, "会话钉 provider-default 必须保持空 model key，不能被 backend 固定模型带偏")
+	})
+}
+
+// TestGoalParams_ForwardsLLMTargetKeys 钉死决策 11 的 Goal 侧 wire 契约:GoalParams
+// 补齐了 LLMProviderKey + LLMModelKey（与 Run 同形），goal 与 turn 共用同一会话池，
+// 两边解析必须同源。
+func TestGoalParams_ForwardsLLMTargetKeys(t *testing.T) {
+	_, cli, _, rt := setupRemote(t)
+	req := agentruntime.GoalRequest{
+		SessionID: 42,
+		Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeCodex), Name: "codex"},
+		Effective: &agentruntime.EffectiveLLMConfig{
+			Mode:        agentruntime.EffectiveModeFixedModel,
+			ProviderKey: "session-provider",
+			ModelKey:    "session-model",
+		},
+	}
+	cli.EXPECT().Call(gomock.Any(), wire.MethodSetGoal, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, params any, result any) error {
+			gp, ok := params.(wire.GoalParams)
+			require.True(t, ok)
+			assert.Equal(t, "session-provider", gp.LLMProviderKey)
+			assert.Equal(t, "session-model", gp.LLMModelKey)
+			*(result.(*wire.GoalResult)) = wire.GoalResult{Goal: &agentruntime.Goal{ThreadID: "t"}}
+			return nil
+		})
+	_, err := rt.SetGoal(context.Background(), req)
+	require.NoError(t, err)
+
+	// 未提供执行侧结果时回落 backend 绑定。
+	cli.EXPECT().Call(gomock.Any(), wire.MethodGetGoal, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, params any, result any) error {
+			gp, ok := params.(wire.GoalParams)
+			require.True(t, ok)
+			assert.Equal(t, "", gp.LLMProviderKey)
+			assert.Equal(t, "", gp.LLMModelKey)
+			*(result.(*wire.GoalResult)) = wire.GoalResult{}
+			return nil
+		})
+	_, err = rt.GetGoal(context.Background(), agentruntime.GoalRequest{SessionID: 42, Backend: &agent_backend_entity.AgentBackend{Type: "codex"}})
+	require.NoError(t, err)
+}

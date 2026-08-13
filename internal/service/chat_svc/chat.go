@@ -33,6 +33,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/project_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
@@ -110,9 +111,9 @@ type ChatSvc interface {
 	Stop(ctx context.Context, req *StopRequest) (*StopResponse, error)
 	StopBackgroundTask(ctx context.Context, req *StopBackgroundTaskRequest) (*StopBackgroundTaskResponse, error)
 	SetPermissionMode(ctx context.Context, req *SetPermissionModeRequest) (*SetPermissionModeResponse, error)
-	// SetChatSessionProvider 切换已有会话的 LLM 供应商（空串 = 跟随 agent 绑定）。
-	// 只写 provider_key 一列，自下一轮生效，不打断正在进行的轮。
-	SetChatSessionProvider(ctx context.Context, req *SetSessionProviderRequest) (*SetSessionProviderResponse, error)
+	// SetChatSessionModelTarget 切换已有会话的 LLM ModelTarget（空串 = 跟随 agent 绑定）。
+	// 原子写 provider_key + model_key 两列，自下一轮生效，不打断正在进行的轮。
+	SetChatSessionModelTarget(ctx context.Context, req *SetChatSessionModelTargetRequest) (*SetChatSessionModelTargetResponse, error)
 	Regenerate(ctx context.Context, req *RegenerateRequest) (*SendResponse, error)
 	Edit(ctx context.Context, req *EditRequest) (*SendResponse, error)
 	Rename(ctx context.Context, req *RenameRequest) (*RenameResponse, error)
@@ -586,6 +587,7 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 			PermissionMode:         sess.PermissionMode,
 			PermissionModeAtLaunch: sess.PermissionModeAtLaunch,
 			ProviderKey:            sess.ProviderKey,
+			ModelKey:               sess.ModelKey,
 			ProjectID:              sess.ProjectID,
 		},
 		Messages: make([]ChatMessage, 0, len(msgs)),
@@ -619,8 +621,8 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		resp.Session.AgentAvatarDataURL = a.AvatarDataURL
 		// BackendType 给前端判断「复制启动命令」这类仅 CLI 后端有效的菜单是否显示。
 		// 上下文窗口走统一优先级 resolveContextWindowWithRuntime：
-		//   runtime 上报（session.ContextWindow）> 用户配置（provider.ContextWindow）
-		//   > latestAssistantModel catalog > provider.Model catalog。
+		//   runtime 上报（session.ContextWindow）> 解析出的 ContextWindow
+		//   > latestAssistantModel catalog > 解析出的 ModelID catalog。
 		// backend 不存在或无 provider 时仍尝试用 latestAssistantModel 兜底；都没有 → 0。
 		// 查询失败一律不阻塞加载会话本身。
 		var prov *llm_provider_entity.LLMProvider
@@ -641,6 +643,7 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 				// 一并回传，供 composer 的供应商 pill 渲染「跟随绑定」时的标签。
 				prov, _ = s.resolveEffectiveProvider(ctx, sess, be)
 				resp.Session.AgentProviderKey = be.LLMProviderKey
+				resp.Session.AgentModelKey = be.LLMModelKey
 			}
 		}
 		// ExecTargetCount 给前端聊天头 chip 守卫用（R15 / R20）：多档 Agent 的会话
@@ -651,7 +654,13 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		if prov != nil {
 			resp.Session.LLMProviderType = prov.Type
 		}
-		resp.Session.ContextWindow = resolveContextWindowWithRuntime(sess, prov, msgs)
+		// 展示侧使用同一解析规则（EffectiveLLMConfig v1 seam）：上下文窗口 / 模型目录
+		// 走解析出的模型，不直接读 Provider 行。查询失败不阻塞加载会话本身（与 prov
+		// 同一容忍度）。modelKey 与 turn 同一口径（sessionModelKeyFor）：会话钉了
+		// fixed-model 时展示会话那个模型，而不是 backend 的绑定（spec「Effective
+		// configuration」：展示与执行同一解析结果）。
+		cfg, _ := s.effectiveLLMForTurn(ctx, prov, sessionModelKeyFor(sess, be, prov))
+		resp.Session.ContextWindow = resolveContextWindowWithRuntime(sess, cfg, msgs)
 
 		// Device + cwd 信息: 给前端 chat header 渲染"远端运行 · /home/me/proj"小字使用。
 		// be 解析失败 / device 离线 / cwd 查询失败时容忍降级 (字段留空,不让 LoadSession 整体失败);
@@ -746,6 +755,14 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	if err != nil {
 		return nil, operationFailedWithCause(ctx, err)
 	}
+	// 执行侧配置（EffectiveLLMConfig v1 seam）：--model 用解析出的 ModelID，
+	// 不再读 Provider 旧单模型字段。modelKey 与 turn 同一口径（sessionModelKeyFor），
+	// 保证复制出去的启动命令与这条会话实际执行用的模型一致（spec 2026-08-11
+	// 「Effective configuration」：复制启动命令与执行同一解析结果）。
+	cfg, err := s.effectiveLLMForTurn(ctx, prov, sessionModelKeyFor(sess, be, prov))
+	if err != nil {
+		return nil, operationFailedWithCause(ctx, err)
+	}
 
 	// 关联 provider 时拼 gateway URL 并签一个"进程内永久"的 token 内联进命令；
 	// CLI 自身 login 模式则什么也不传，BuildLaunchCommand 不会写 BASE_URL/API_KEY。
@@ -755,8 +772,9 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	gatewayURL, gatewayToken := "", ""
 	if prov != nil && s.gateway != nil {
 		gatewayURL = s.gateway.URL()
-		// 按 effective provider 签：复制出去的命令要打到这条会话实际用的那家。
-		if tok, terr := s.gateway.IssueTokenFor(ctx, be, prov.ProviderKey, 0); terr == nil {
+		// 按 effective target 签：复制出去的命令要打到这条会话实际用的那家 +
+		// 模型（spec 2026-08-11 决策 9：token 路由目标 = ProviderKey+ModelKey）。
+		if tok, terr := s.gateway.IssueTokenFor(ctx, be, prov.ProviderKey, sessionModelKeyFor(sess, be, prov), 0); terr == nil {
 			gatewayToken = tok
 		}
 	}
@@ -767,7 +785,7 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	}
 	cmd, err := agentruntime.BuildLaunchCommand(agentruntime.LaunchCommandSpec{
 		Backend:           be,
-		Provider:          prov,
+		Effective:         cfg,
 		AgentID:           a.ID,
 		SessionID:         sess.ID,
 		Cwd:               cwd,
@@ -781,25 +799,29 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	return &LaunchCommandResponse{Command: cmd, BackendType: be.Type}, nil
 }
 
-// providerNoticePayload 是供应商相关的持久 notice 写进 blocks.NoticeBlock.Text 的小 JSON。
+// providerNoticePayload 是供应商/模型相关的持久 notice 写进 blocks.NoticeBlock.Text 的
+// 小 JSON。
 // NoticeBlock 是 cago 库的 UI-only 块,只有 Level/Text 两个字段(库类型,不能加字段),所以
 // 把结构化信息编码进 Text;前端投影(noticeBlockToChatBlock)解回 ChatBlock 的
-// ProviderKey / ProviderName / NoticeKind 再用 t() 渲染。该块从不发给 LLM。
+// ProviderKey / ProviderName / ModelKey / ModelName / NoticeKind 再用 t() 渲染。该块
+// 从不发给 LLM。
 // 旧数据 / 非结构化文本的 NoticeBlock 走 Text 原样渲染兜底。
 //
 // 两种 kind:
 //   - ""（无 kind 字段,含全部旧数据）= 供应商回退提示(2026-08-09 决策 8):会话所选
 //     供应商缺失/停用/不兼容,本轮回退 agent 绑定,ProviderKey 是被回退掉的那个 key;
-//   - "switch" = 用户在会话里切换了供应商(2026-08-10 决策 9):ProviderKey 是切换后的
-//     会话级 key,**空串表示改回跟随 agent 绑定 / CLI 登录态** —— 所以这一种不能靠
-//     "ProviderKey 非空" 判定负载有效,kind 字段本身才是判据。
+//   - "switch" = 用户在会话里切换了 ModelTarget(2026-08-10 决策 9 / 2026-08-11 决策 1):
+//     ProviderKey 是切换后的会话级 key,**空串表示改回跟随 agent 绑定 / CLI 登录态** ——
+//     所以这一种不能靠 "ProviderKey 非空" 判定负载有效,kind 字段本身才是判据。
 //
-// ProviderName 是展示名(2026-08-10 显示缺陷修复决策 1/2):后端按当前解析到的供应商
-// 实体填入,查不到(供应商已删)时留空 —— 前端优先渲染它,为空则回退到 key。名字只有
+// ProviderName / ModelName 是展示名(2026-08-10 显示缺陷修复决策 1/2):后端按当前解析到
+// 的实体填入,查不到(供应商已删)时留空 —— 前端优先渲染它,为空则回退到 key。名字只有
 // 产出 notice 的后端手里有,不能让前端按 key 反查(供应商列表可能未拉/已缺项)。
 type providerNoticePayload struct {
 	ProviderKey  string `json:"providerKey,omitempty"`
 	ProviderName string `json:"providerName,omitempty"`
+	ModelKey     string `json:"modelKey,omitempty"`
+	ModelName    string `json:"modelName,omitempty"`
 	Kind         string `json:"kind,omitempty"`
 }
 
@@ -817,16 +839,28 @@ func providerDisplayName(prov *llm_provider_entity.LLMProvider) string {
 	return prov.Name
 }
 
+// modelDisplayName 取模型展示名。model 为 nil（未解析 / 非 fixed-model）时返回空串。
+func modelDisplayName(model *llm_provider_model_entity.LLMProviderModel) string {
+	if model == nil {
+		return ""
+	}
+	return model.Name
+}
+
 func encodeProviderFallback(providerKey, providerName string) string {
 	b, _ := json.Marshal(providerNoticePayload{ProviderKey: providerKey, ProviderName: providerName})
 	return string(b)
 }
 
-// encodeProviderSwitch 编码「本会话自此改用某供应商」的持久 notice(2026-08-10 决策 9)。
-// providerKey 为空 = 改回跟随 agent 绑定,此时 providerName 恒为空。
-func encodeProviderSwitch(providerKey, providerName string) string {
+// encodeProviderSwitch 编码「本会话自此改用某 ModelTarget」的持久 notice(2026-08-10
+// 决策 9 / 2026-08-11 决策 1)。providerKey 为空 = 改回跟随 agent 绑定,此时 providerName
+// 恒为空；modelKey 为空 = provider-default,modelName 恒为空。仍用 kind=switch,仅扩展
+// 负载。
+func encodeProviderSwitch(providerKey, modelKey, providerName, modelName string) string {
 	b, _ := json.Marshal(providerNoticePayload{
-		ProviderKey: providerKey, ProviderName: providerName, Kind: providerNoticeKindSwitch,
+		ProviderKey: providerKey, ProviderName: providerName,
+		ModelKey: modelKey, ModelName: modelName,
+		Kind: providerNoticeKindSwitch,
 	})
 	return string(b)
 }
@@ -866,6 +900,8 @@ func noticeBlockToChatBlock(tb blocks.NoticeBlock) ChatBlock {
 			Level:        tb.Level,
 			ProviderKey:  p.ProviderKey,
 			ProviderName: p.ProviderName,
+			ModelKey:     p.ModelKey,
+			ModelName:    p.ModelName,
 			NoticeKind:   p.Kind,
 		}
 	}
@@ -1159,10 +1195,14 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 	// 会话 provider_key 优先于 agent 绑定解析（决策 3），与 send / Regenerate / Edit
 	// 同源：Compact 也是本地 turn 入口，#26 时代经 prepareTurnRun 的 ModelOverride 走
 	// 会话级模型覆盖，override 移除后这里必须补上同款解析，否则带 provider_key 的会话
-	// 在 compact 轮会悄悄退回 agent 绑定。所选供应商缺失/停用/不兼容 → 回退 agent 绑定
-	// 并追加一条持久 notice（决策 8，随 turnExtras 携带）。远端 backend 不走这里——
-	// 会话 provider 随 wire 透传由 daemon 自解（决策 9）。
-	prov, providerFallbackNotice := s.resolveSessionProvider(ctx, sess, be, prov)
+	// 在 compact 轮会悄悄退回 agent 绑定。provider-default 所选供应商缺失/停用/禁用/不兼容
+	// → 回退 agent 绑定并追加一条持久 notice（决策 8，随 turnExtras 携带）；fixed-model
+	// 目标失效 → 严格阻止本轮（决策 7）。远端 backend 不走这里——会话 provider 随 wire
+	// 透传由 daemon 自解（决策 9）。
+	prov, providerFallbackNotice, err := s.resolveSessionProvider(ctx, sess, be, prov)
+	if err != nil {
+		return nil, err
+	}
 	gate, err := s.acquireTurnGate(ctx, sess, be)
 	if err != nil {
 		return nil, err
@@ -1352,8 +1392,11 @@ func (s *chatSvc) goalSessionContext(ctx context.Context, sessionID int64) (*cha
 	// 的启动期比对键(effectiveModel + effectiveProviderKey,决策 4)在 goal 与 turn 之间
 	// 反复翻转 —— 一次 /goal 就把这条会话正在用的 app-server evict 掉重 spawn,而且这次
 	// goal 本身打在用户没选的那家上游。回退 notice 丢弃:goal 不写 transcript,回退提示
-	// 由真正跑轮的那条路径产出。
-	prov, _ = s.resolveSessionProvider(ctx, sess, be, prov)
+	// 由真正跑轮的那条路径产出。fixed-model 目标失效 → 严格阻止（决策 7）。
+	prov, _, err = s.resolveSessionProvider(ctx, sess, be, prov)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
 	return sess, a, be, prov, nil
 }
 
@@ -1400,11 +1443,19 @@ func (s *chatSvc) goalControllerForSession(ctx context.Context, sess *chat_entit
 	if err != nil {
 		return nil, agentruntime.GoalRequest{}, release, err
 	}
+	// goal 与 turn 共用同一执行侧配置（EffectiveLLMConfig v1 seam）：codex goal 会话池
+	// 与 turn 同源解析，避免启动期比对键在 goal 与 turn 之间反复翻转。远端由 daemon
+	// 自家解析，desktop 不解析、不发本地结果。
+	cfg, err := s.effectiveLLMForNonRemoteTurn(ctx, sess, be, prov)
+	if err != nil {
+		return nil, agentruntime.GoalRequest{}, release, err
+	}
 	return controller, agentruntime.GoalRequest{
 		SessionID:         sess.ID,
 		ProviderSessionID: sess.ProviderSessionID,
 		Backend:           be,
 		Provider:          prov,
+		Effective:         cfg,
 		Cwd:               cwd,
 		AgentID:           a.ID,
 	}, release, nil
@@ -1531,11 +1582,14 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 	}
 
 	if req.SessionID == 0 {
-		// 新建会话所选 LLM 供应商（可选，决策 2）：非空时校验供应商存在/active/与后端
-		// kind 兼容，校验通过后与 Session 一起 Create 落库；空串 = 跟随 agent 绑定。
+		// 新建会话所选 LLM ModelTarget（可选，决策 2）：非空时校验供应商/模型存在、启用、
+		// 归属与后端 kind 兼容，校验通过后与 Session 一起 Create 落库（spec 2026-08-11
+		// 「新建与已有会话流程」：新会话选择保持瞬态，首条 Send 创建 Session 时与
+		// ProviderKey/ModelKey 一起持久化）；双空 = 跟随 agent 绑定。
 		providerKey := strings.TrimSpace(req.ProviderKey)
-		if providerKey != "" {
-			sessionProv, perr := s.validateNewSessionProvider(ctx, be, providerKey)
+		modelKey := strings.TrimSpace(req.ModelKey)
+		if providerKey != "" || modelKey != "" {
+			sessionProv, _, perr := s.validateSessionModelTarget(ctx, be, providerKey, modelKey)
 			if perr != nil {
 				return nil, perr
 			}
@@ -1559,6 +1613,7 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 			// runtime 后续仍按 resolveLaunchMode 结果幂等覆盖,处理后端默认值回落。
 			PermissionModeAtLaunch: permissionMode,
 			ProviderKey:            providerKey,
+			ModelKey:               modelKey,
 			Title:                  sessionTitleFromFirstMessage(text),
 			// idle 落库;running 由 startTurn 事务内的 Update 原子翻转 —— 事务失败
 			// 时不残留 running(否则空会话永久卡 running,还会 block 退出)。
@@ -1584,7 +1639,11 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 	// 远端 backend 不走这里：会话 provider 随 wire 透传由 daemon 自解（决策 9, task 2）。
 	var providerFallbackNotice *blocks.NoticeBlock
 	if req.SessionID > 0 {
-		prov, providerFallbackNotice = s.resolveSessionProvider(ctx, sess, be, prov)
+		var err error
+		prov, providerFallbackNotice, err = s.resolveSessionProvider(ctx, sess, be, prov)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var prelocked *trylockMutex
@@ -1871,42 +1930,49 @@ func (s *chatSvc) validateNewSessionProvider(ctx context.Context, be *agent_back
 }
 
 // resolveSessionProvider 把「会话 provider_key > agent 绑定」应用到已有会话的 turn 入口
-// （send / Regenerate / Edit，决策 3）：本地后端按会话 provider_key 解析 prov，所选
-// 供应商缺失/停用/不兼容时回退 agent 绑定并返回一条持久 notice（决策 8）。远端后端不
-// 走这里——会话 provider 随 wire 透传给 daemon 自解（决策 9，prepareTurnRun 里按
-// effectiveProviderKey 取 key），本地 provider 表反映不了 daemon 配置，不得据此发 notice。
+// （send / Regenerate / Edit / Compact，决策 3）：本地后端按会话 provider_key 解析 prov，
+// provider-default 的所选供应商缺失/停用/禁用/不兼容时回退 agent 绑定并返回一条持久
+// notice（决策 8）；fixed-model 目标失效时返回 error，由调用方严格阻止本轮（决策 7，绝不
+// 回退）。远端后端不走这里——会话 provider 随 wire 透传给 daemon 自解（决策 9，
+// prepareTurnRun 里按 effectiveProviderKey 取 key），本地 provider 表反映不了 daemon 配置，
+// 不得据此发 notice。
 func (s *chatSvc) resolveSessionProvider(
 	ctx context.Context,
 	sess *chat_entity.Session,
 	be *agent_backend_entity.AgentBackend,
 	prov *llm_provider_entity.LLMProvider,
-) (*llm_provider_entity.LLMProvider, *blocks.NoticeBlock) {
-	if sess == nil || sess.ProviderKey == "" || be == nil || be.IsRemote() {
-		return prov, nil
+) (*llm_provider_entity.LLMProvider, *blocks.NoticeBlock, error) {
+	if sess == nil || strings.TrimSpace(sess.ProviderKey) == "" || be == nil || be.IsRemote() {
+		return prov, nil, nil
 	}
-	return s.sessionProviderOverride(ctx, be, sess.ProviderKey, prov)
+	return s.sessionProviderOverride(ctx, be, sess.ProviderKey, sess.ModelKey, prov)
 }
 
 // sessionProviderOverride 应用「会话 provider_key > agent 绑定」的供应商优先级
-// （spec 决策 3）。sessKey 为空时原样返回 baseProv（无会话覆盖）。
-// 会话所选供应商缺失 / 停用 / 与后端 kind 不兼容 → 回退 agent 绑定（baseProv）并返回
-// 一条持久 notice（spec 决策 8），供 runTurn 追加进 transcript；provider_key 不清除，
-// 供应商恢复后自动回到会话所选。
+// （spec 决策 3 + 2026-08-11 决策 7 的失败语义）。sessKey 为空时原样返回 baseProv（无会话
+// 覆盖）。sessModelKey 用于区分 provider-default 与 fixed-model：
+//
+//   - provider-default（sessModelKey 空）：会话所选供应商缺失 / 停用（enabled=0）/
+//     软删除 / 与后端 kind 不兼容 → 回退 agent 绑定（baseProv）并返回一条持久 notice
+//     （决策 8），provider_key 不清除，供应商恢复后自动回到会话所选。
+//   - fixed-model（sessModelKey 非空）：Provider 或 Model 缺失 / 停用 / 禁用 / 类型
+//     不兼容 → 返回 error（spec 决策 7「fixed-model 失效严格阻止下一轮」），绝不回退
+//     Agent、不改用 Provider 默认、不清除 key —— 系统保留原 target，Picker 显示失效。
 func (s *chatSvc) sessionProviderOverride(
 	ctx context.Context,
 	be *agent_backend_entity.AgentBackend,
-	sessKey string,
+	sessKey, sessModelKey string,
 	baseProv *llm_provider_entity.LLMProvider,
-) (*llm_provider_entity.LLMProvider, *blocks.NoticeBlock) {
+) (*llm_provider_entity.LLMProvider, *blocks.NoticeBlock, error) {
 	key := strings.TrimSpace(sessKey)
 	if key == "" {
-		return baseProv, nil
+		return baseProv, nil, nil
 	}
 	prov, err := llm_provider_repo.LLMProvider().FindByKey(ctx, key)
 	kind := be.Kind()
-	if err == nil && prov != nil && prov.IsActive() && kind != nil &&
+	if err == nil && prov != nil && prov.IsActive() && prov.IsEnabled() && kind != nil &&
 		kind.ProviderTypeMatch(llm_provider_entity.ProviderType(prov.Type)) {
-		return prov, nil
+		return prov, nil, nil
 	}
 	// 展示名(决策 2):实体查到了(只是停用/类型不兼容)就带上它的名字;查询失败或
 	// 实体本身不存在(供应商已删)则 providerDisplayName 返回空串,notice 保持只显示 key。
@@ -1914,10 +1980,14 @@ func (s *chatSvc) sessionProviderOverride(
 	if err == nil {
 		name = providerDisplayName(prov)
 	}
+	// fixed-model：严格阻止下一轮，绝不回退（spec 2026-08-11 决策 7 / Failure）。
+	if strings.TrimSpace(sessModelKey) != "" {
+		return nil, nil, i18n.NewError(ctx, code.LLMProviderModelTargetInvalid)
+	}
 	return baseProv, &blocks.NoticeBlock{
 		Level: "info",
 		Text:  encodeProviderFallback(key, name),
-	}
+	}, nil
 }
 
 // AgentBackendHasCapability 报告某 agent 的后端 runtime 是否声明指定能力(领域无关探针)。
@@ -2730,9 +2800,13 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 		replacement = newTranscriptReplacementLifecycle(sess.ID, anchorSeq, req.MessageID)
 		preTx = nil
 	}
-	// 会话 provider_key 优先于 agent 绑定解析（决策 3），与 send 同源；所选供应商
-	// 缺失/停用/不兼容 → 回退 agent 绑定并追加一条持久 notice（决策 8）。
-	prov, providerFallbackNotice := s.resolveSessionProvider(ctx, sess, be, prov)
+	// 会话 provider_key 优先于 agent 绑定解析（决策 3），与 send 同源；provider-default
+	// 所选供应商缺失/停用/禁用/不兼容 → 回退 agent 绑定并追加一条持久 notice（决策 8）；
+	// fixed-model 目标失效 → 严格阻止本轮（决策 7）。
+	prov, providerFallbackNotice, err := s.resolveSessionProvider(ctx, sess, be, prov)
+	if err != nil {
+		return nil, err
+	}
 	gateOwned = false
 	return s.startTurn(ctx, sess, a, be, prov, userBlocks, preTx, replacement, forkAnchor, turnExtras{
 		providerFallbackNotice: providerFallbackNotice,
@@ -2830,9 +2904,13 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 		replacement = newTranscriptReplacementLifecycle(sess.ID, anchorSeq, req.MessageID)
 		preTx = nil
 	}
-	// 会话 provider_key 优先于 agent 绑定解析（决策 3），与 send 同源；所选供应商
-	// 缺失/停用/不兼容 → 回退 agent 绑定并追加一条持久 notice（决策 8）。
-	prov, providerFallbackNotice := s.resolveSessionProvider(ctx, sess, be, prov)
+	// 会话 provider_key 优先于 agent 绑定解析（决策 3），与 send 同源；provider-default
+	// 所选供应商缺失/停用/禁用/不兼容 → 回退 agent 绑定并追加一条持久 notice（决策 8）；
+	// fixed-model 目标失效 → 严格阻止本轮（决策 7）。
+	prov, providerFallbackNotice, err := s.resolveSessionProvider(ctx, sess, be, prov)
+	if err != nil {
+		return nil, err
+	}
 	gateOwned = false
 	return s.startTurn(
 		ctx,
@@ -3323,9 +3401,18 @@ func (s *chatSvc) startTurn(
 	userMsg := &chat_entity.Message{SessionID: sess.ID, Role: "user", DeviceID: be.DeviceID}
 	_ = userMsg.SetBlocks(userBlocks)
 
+	// 解析本轮执行侧配置（EffectiveLLMConfig v1 seam）：provider-default 在 turn 入口
+	// 解析 Provider 当前默认模型，assistantMsg.Model 用解析出的 ModelID 占位（真正执行
+	// 后由 result.Model 覆盖）。远端 backend 由 daemon 自家解析，desktop 不解析、不发
+	// 本地结果（effectiveLLMForNonRemoteTurn 返回 nil）。
+	cfg, err := s.effectiveLLMForNonRemoteTurn(ctx, sess, be, prov)
+	if err != nil {
+		lock.Unlock()
+		return nil, err
+	}
 	model := ""
-	if prov != nil {
-		model = prov.Model
+	if cfg != nil {
+		model = cfg.ModelID
 	}
 	assistantMsg := &chat_entity.Message{
 		SessionID:  sess.ID,
@@ -3581,9 +3668,16 @@ func (s *chatSvc) startCompactTurn(
 		lock = gate.lock
 	}
 
+	// 解析本轮执行侧配置（EffectiveLLMConfig v1 seam）：compact 也是执行入口，
+	// assistantMsg.Model 用解析出的 ModelID 占位（真正执行后由 result.Model 覆盖）。
+	cfg, err := s.effectiveLLMForNonRemoteTurn(ctx, sess, be, prov)
+	if err != nil {
+		lock.Unlock()
+		return nil, err
+	}
 	model := ""
-	if prov != nil {
-		model = prov.Model
+	if cfg != nil {
+		model = cfg.ModelID
 	}
 	assistantMsg := &chat_entity.Message{
 		SessionID:  sess.ID,
@@ -3820,9 +3914,17 @@ func (s *chatSvc) prepareTurnRun(
 	if err != nil {
 		return fail(err)
 	}
+	// 解析本轮执行侧配置（EffectiveLLMConfig v1 seam）：provider-default 在每轮准备时
+	// 解析 Provider 当前默认模型；远端 backend 由 daemon 自家解析，desktop 不发本地结果。
+	// 解析失败（配置损坏）阻止本轮，不静默降级。
+	cfg, err := s.effectiveLLMForNonRemoteTurn(ctx, sess, be, prov)
+	if err != nil {
+		return fail(err)
+	}
 	req := agentruntime.RunRequest{
 		Backend:           be,
 		Provider:          prov,
+		Effective:         cfg,
 		AgentID:           a.ID,
 		SessionID:         sess.ID,
 		Cwd:               cwd,
@@ -3874,8 +3976,11 @@ func (s *chatSvc) prepareTurnRun(
 		//
 		// 按 prov 路由而不是 be.LLMProviderKey：prov 是 turn 入口按会话 provider_key
 		// 覆盖解析出来的那家（缺失/停用已回退过），也正是本轮 `--model` 用的那家 ——
-		// 会话换了供应商，token 的上游随之改变，字符串不变（决策 3）。
-		req.GatewayURL, req.GatewayToken = s.signChatTokenFor(ctx, be, sess.ID, providerKeyOf(prov))
+		// 会话换了供应商，token 的上游随之改变，字符串不变（决策 3）。modelKey 与
+		// effectiveLLMForNonRemoteTurn 同一口径（sessionModelKeyFor）：会话固定模型时带
+		// ModelKey（fixed-model 路由到指定模型），provider-default 时为空串（Gateway
+		// 每轮解析 Provider 当前默认，决策 9）。
+		req.GatewayURL, req.GatewayToken = s.signChatTokenFor(ctx, be, sess.ID, providerKeyOf(prov), sessionModelKeyFor(sess, be, prov))
 		// 本轮有 effective provider 却拿不到网关(未注入/未运行)：LLM 本该经本机网关转发
 		// 到所选供应商,此时装不上 ANTHROPIC_* / codex model_provider,子进程会**静默**
 		// 退回 CLI 自身登录态,把这段对话打到用户没选的那家上游。与 resolveAgentBackend
@@ -4199,7 +4304,7 @@ func (s *chatSvc) runTurn(
 			assistantMsg.ReasoningTokens = result.Usage.ReasoningTokens
 		}
 		// runner 上报的实际模型 id 覆盖创建时的占位值：
-		//   - builtin: 与原值相同（都来自 prov.Model）→ 不变
+		//   - builtin: 与原值相同（都来自解析出的 ModelID）→ 不变
 		//   - claudecode CLI login: 创建时 model="" → 这里被填上 system.init.model 真值
 		//   - codex CLI login: 同上，填上 Agentre 的 codex 默认模型
 		// LoadSession 后续就能用这个字段查 cago catalog 解析 contextWindow。
@@ -4775,11 +4880,11 @@ func remoteProviderNotConfiguredError(ctx context.Context, providerKey string) e
 // session 删除时由 Delete→revokeChatToken 撤销。
 //
 // providerKey 是**本轮真正要跑的那家供应商**(turn 入口按会话 provider_key 覆盖解析后的
-// prov;回退过的话就是回退目标),token 按它路由。会话中途换了供应商时,下一轮走
-// SetTokenProvider 改既有 token 的路由目标而**不重签** —— 见上面那条不变量,重签等于
+// prov;回退过的话就是回退目标),token 按它路由。会话中途换了 target 时,下一轮走
+// SetTokenTarget 改既有 token 的路由目标而**不重签** —— 见上面那条不变量,重签等于
 // 让在跑的子进程手里那个立刻失效。空串 = CLI 自身登录态(token 只用于 hook inbox)。
 func (s *chatSvc) signChatTokenFor(
-	ctx context.Context, be *agent_backend_entity.AgentBackend, sessionID int64, providerKey string,
+	ctx context.Context, be *agent_backend_entity.AgentBackend, sessionID int64, providerKey, modelKey string,
 ) (string, string) {
 	if be == nil || s.gateway == nil {
 		return "", ""
@@ -4790,11 +4895,11 @@ func (s *chatSvc) signChatTokenFor(
 	if sessionID > 0 {
 		if v, ok := s.chatTokens.Load(sessionID); ok {
 			tok := v.(string)
-			s.routeChatTokenTo(ctx, sessionID, tok, providerKey)
+			s.routeChatTokenTo(ctx, sessionID, tok, providerKey, modelKey)
 			return s.gateway.URL(), tok
 		}
 	}
-	tok, err := s.gateway.IssueTokenFor(ctx, be, providerKey, 0)
+	tok, err := s.gateway.IssueTokenFor(ctx, be, providerKey, modelKey, 0)
 	if err != nil {
 		return "", ""
 	}
@@ -4808,12 +4913,12 @@ func (s *chatSvc) signChatTokenFor(
 	return s.gateway.URL(), tok
 }
 
-// routeChatTokenTo 把会话常驻 token 的路由目标对齐到本轮的供应商(决策 3)。
+// routeChatTokenTo 把会话常驻 token 的路由目标对齐到本轮的 ModelTarget(决策 3/9)。
 // token 字符串不变,所以已经烤进子进程 env 的那份继续可用;真的换了才记一条日志。
 // 找不到 entry = gateway 重启过(token 表只在内存里),此时子进程手里那个也已失效,
 // 记 warn 供排查,不在这里重签 —— 重签也救不回已 spawn 的子进程。
-func (s *chatSvc) routeChatTokenTo(ctx context.Context, sessionID int64, token, providerKey string) {
-	previous, ok := s.gateway.SetTokenProvider(token, providerKey)
+func (s *chatSvc) routeChatTokenTo(ctx context.Context, sessionID int64, token, providerKey, modelKey string) {
+	previous, ok := s.gateway.SetTokenTarget(token, providerKey, modelKey)
 	if !ok {
 		logger.Ctx(ctx).Warn("chat_svc.routeChatTokenTo: session token missing from gateway",
 			zap.Int64("sessionId", sessionID),
@@ -5157,28 +5262,27 @@ func latestAssistantModel(msgs []*chat_entity.Message) string {
 // 优先级（高 → 低）：
 //  1. session.ContextWindow > 0：runner 上轮上报的 modelContextWindow（codex
 //     app-server 推送），最权威——用户在 CLI 内 /model 切换后立刻生效；
-//  2. provider.ContextWindow > 0：用户在 LLMProvider 显式配置——某些 vendor
-//     给非标准窗口、或绑精简号时表达 UI 上限的明确意图；
+//  2. cfg.ContextWindow > 0：解析出模型的 ContextWindow（用户在 LLMProvider 显式
+//     配置——某些 vendor 给非标准窗口、或绑精简号时表达 UI 上限的明确意图）；
 //  3. latestAssistantModel → llmcatalog.Lookup：从历史 assistant message
 //     的 Model 字段查表（claudecode CLI login / 显式 --model 都能命中）；
-//  4. provider.Model → llmcatalog.Lookup：新会话还没 assistant message 时的兜底。
+//  4. cfg.ModelID → llmcatalog.Lookup：新会话还没 assistant message 时的兜底。
 //
-// 与之前 resolveContextWindow* 两套函数的合并：所有 backend 都走这一条路径，
-// 仅靠优先级 1 / 2 之间的相对顺序自动表达"runtime 实测优先于静态配置"。
-func resolveContextWindowWithRuntime(sess *chat_entity.Session, p *llm_provider_entity.LLMProvider, msgs []*chat_entity.Message) int {
+// cfg 是执行侧解析结果（EffectiveLLMConfig v1 seam），不再直接读 Provider 行。
+func resolveContextWindowWithRuntime(sess *chat_entity.Session, cfg *agentruntime.EffectiveLLMConfig, msgs []*chat_entity.Message) int {
 	if sess != nil && sess.ContextWindow > 0 {
 		return sess.ContextWindow
 	}
-	if p != nil && p.ContextWindow > 0 {
-		return p.ContextWindow
+	if cfg != nil && cfg.ContextWindow > 0 {
+		return cfg.ContextWindow
 	}
 	if model := latestAssistantModel(msgs); model != "" {
 		if info, ok := llmcatalog.Lookup(model); ok {
 			return info.ContextWindow
 		}
 	}
-	if p != nil {
-		if info, ok := llmcatalog.Lookup(p.Model); ok {
+	if cfg != nil {
+		if info, ok := llmcatalog.Lookup(cfg.ModelID); ok {
 			return info.ContextWindow
 		}
 	}

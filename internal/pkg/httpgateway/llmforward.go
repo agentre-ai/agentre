@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -11,12 +12,23 @@ import (
 	"strings"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_model_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/llmurl"
 )
 
 // ProviderLookup 抽象 llm_provider 仓储依赖，方便单测注入 mock。
 type ProviderLookup interface {
 	FindByKey(ctx context.Context, key string) (*llm_provider_entity.LLMProvider, error)
+}
+
+// ModelLookup 是 ProviderLookup 的可选扩展：能按稳定 model_key 解析真实 Model 记录。
+//
+// 桌面端注入的 llm_provider_repo.LLMProvider() 天然实现它，因此本地网关能在请求时
+// 解析 provider-default 的当前默认模型 / fixed-model 的指定模型（决策 8/9：provider-default
+// 必须本轮解析当前默认）。旧实现（daemon 侧 state-backed lookup）未实现时，网关退化为
+// 不重写 body —— 由 CLI 侧 --model 已带解析结果兜底；daemon 的模型解析能力由远端任务补齐。
+type ModelLookup interface {
+	FindModelByKey(ctx context.Context, modelKey string) (*llm_provider_model_entity.LLMProviderModel, error)
 }
 
 // Forwarder 单实例承担三条路由的 HTTP 转发；类型在 mux 装配阶段绑死，避免每次请求重判。
@@ -72,9 +84,9 @@ func (f *Forwarder) handle(expected llm_provider_entity.ProviderType) http.Handl
 		}
 
 		modelField := extractModelField(body)
-		providerKey, _ := entry.ResolveModel(modelField)
+		rt, _ := entry.ResolveModel(modelField)
 
-		provider, err := f.lookup.FindByKey(r.Context(), providerKey)
+		provider, err := f.lookup.FindByKey(r.Context(), rt.ProviderKey)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "lookup provider: "+err.Error())
 			return
@@ -88,7 +100,12 @@ func (f *Forwarder) handle(expected llm_provider_entity.ProviderType) http.Handl
 			return
 		}
 
-		rewritten, err := rewriteModelField(body, provider.Model)
+		modelID, err := f.resolveModelID(r.Context(), provider, rt)
+		if err != nil {
+			writeJSONError(w, http.StatusBadGateway, "resolve model: "+err.Error())
+			return
+		}
+		rewritten, err := rewriteModelField(body, modelID)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "rewrite model: "+err.Error())
 			return
@@ -119,6 +136,39 @@ func (f *Forwarder) handle(expected llm_provider_entity.ProviderType) http.Handl
 		}
 		proxy.ServeHTTP(w, r)
 	}
+}
+
+// resolveModelID 解析 token target 对应的真实 ModelID（供 body 模型改写）。
+//
+//   - target.ModelKey 非空（fixed-model）：按指定 model_key 解析；
+//   - target.ModelKey 空（provider-default）：按 Provider 当前默认模型解析（决策 9：
+//     必须本轮解析当前默认，不能沿用旧快照）；
+//   - 解析不到/模型停用 → error（网关 502，不静默降级）。
+//
+// 无 ModelLookup 能力的 lookup（旧 daemon）返回空串（不重写 body，由 CLI --model 兜底）。
+func (f *Forwarder) resolveModelID(ctx context.Context, provider *llm_provider_entity.LLMProvider, target TokenTarget) (string, error) {
+	ml, ok := f.lookup.(ModelLookup)
+	if !ok {
+		return "", nil
+	}
+	modelKey := target.ModelKey
+	if strings.TrimSpace(modelKey) == "" {
+		modelKey = provider.DefaultModelKey
+	}
+	if strings.TrimSpace(modelKey) == "" {
+		return "", fmt.Errorf("provider %q has no default model", provider.ProviderKey)
+	}
+	m, err := ml.FindModelByKey(ctx, modelKey)
+	if err != nil {
+		return "", err
+	}
+	if m == nil {
+		return "", fmt.Errorf("model %q not found", modelKey)
+	}
+	if !m.IsEnabled() {
+		return "", fmt.Errorf("model %q disabled", modelKey)
+	}
+	return strings.TrimSpace(m.ModelID), nil
 }
 
 // extractBearerOrAPIKey 兼容 OpenAI（Authorization: Bearer xxx）与 Anthropic（x-api-key: xxx）两种鉴权头。

@@ -230,11 +230,13 @@ func resolveLaunchMode(perTurn, backendDefault string) string {
 // 会下发 --model」这条不变量(spec §B token contract;Bug 1 防回归)。
 // binary 由 caller 决定:真路径走 ccSessionFactory 解析,测试可以传 stub 串。
 // claudeEffectiveModel 统一模型解析规则:#26 会话级模型覆盖已移除,effectiveModel =
-// firstNonEmpty(provider.Model, backend.DefaultModel),TrimSpace 后返回。
-// claudecode 的 backend 默认是 DefaultModel(仅 claudecode 使用,CLI 登录态自定义模型)。
+// firstNonEmpty(解析出的 ModelID, backend.DefaultModel),TrimSpace 后返回。
+// 绑了 Agentre 供应商时取执行侧解析结果(EffectiveLLMConfig v1 seam)的 ModelID；
+// CLI 登录态(无供应商)回退 backend.DefaultModel —— Claude 的 DefaultModel 是
+// native 模式的独立自由文本 CLI 字段,只在 native 时生效(决策 13)。
 func claudeEffectiveModel(req agentruntime.RunRequest) string {
-	if req.Provider != nil {
-		if pm := strings.TrimSpace(req.Provider.Model); pm != "" {
+	if req.Effective != nil {
+		if pm := strings.TrimSpace(req.Effective.ModelID); pm != "" {
 			return pm
 		}
 	}
@@ -268,8 +270,8 @@ func ccBuildClientOpts(spec ccLaunchSpec, binary string) []claudecode.Option {
 		claudecode.WithPermissionPromptTool("stdio"),
 		claudecode.WithRawSink(ccRawFrameSink(spec.Req.SessionID, spec.SessionUUID)),
 	}
-	// --model 取值优先级(provider.Model → backend.DefaultModel,见
-	// claudeEffectiveModel):provider.Model 是绑了 LLM provider(如 GLM / openrouter
+	// --model 取值优先级(解析出的 ModelID → backend.DefaultModel,见
+	// claudeEffectiveModel):解析出的 ModelID 是绑了 LLM provider(如 GLM / openrouter
 	// 等非 Anthropic 直连场景,必须下发才能让 CLI 在 system.init 帧报真实模型 id);
 	// backend.DefaultModel 兜底 CLI 登录态、未绑 provider 时的自定义模型(如
 	// claude-fable-5)。两者全空 → 不下发,CLI 落到本地登录态默认 model。绑 provider

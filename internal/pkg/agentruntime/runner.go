@@ -388,7 +388,12 @@ type MCPServerSpec struct {
 type RunRequest struct {
 	Backend  *agent_backend_entity.AgentBackend
 	Provider *llm_provider_entity.LLMProvider // 可为 nil（CLI 后端走自身 login）
-	AgentID  int64                            // Agent 工作目录 key：<AppDataDir>/agents/<agentID>
+	// Effective 是本轮执行侧唯一解析结果（EffectiveLLMConfig v1 seam）。
+	// chat_svc 通过 ResolveTarget 解析产生；runtime 读取它决定实际 ModelID，
+	// 不再各自从 Provider 旧单模型字段取值。native（无供应商）时为 nil 或
+	// Mode=native 的配置。
+	Effective *EffectiveLLMConfig
+	AgentID   int64 // Agent 工作目录 key：<AppDataDir>/agents/<agentID>
 	// SessionID 是这一轮在**本进程内**的会话身份：runner 的会话表（子进程缓存 /
 	// waiter / 自主续轮通道）全按它索引，控制类接口（Steerer / Aborter /
 	// ToolPermissionSink / WaiterLister …）收到的 sessionID 也是它。
@@ -465,18 +470,30 @@ type RunRequest struct {
 	LLMProviderKey string
 }
 
-// EffectiveProviderKey 返回本轮 Provider 的 key：Provider==nil（CLI 自身登录态,
-// 无任何 effective provider）返回空串,否则返回 Provider.ProviderKey。
+// EffectiveProviderKey 返回本轮 Provider 的 key：无 effective provider（CLI 自身
+// 登录态）返回空串,否则返回解析结果的 ProviderKey。
 //
 // 这是 chat_svc.providerKeyOf(prov) 在 runtime 层的同源取值 —— turn 入口已把
-// 「会话 provider_key > agent 绑定」的解析结果（含缺失/停用回退）装进 req.Provider,
+// 「会话 provider_key > agent 绑定」的解析结果（含缺失/停用回退）装进 req.Effective,
 // claudecode / codex 的 CLI env/config 网关门控与 evict 比对键（spec 2026-08-10
 // 决策 4/6）都应读这同一个值,不各自解析一遍导致漂移。
 func (req RunRequest) EffectiveProviderKey() string {
-	if req.Provider == nil {
+	if req.Effective != nil {
+		return req.Effective.ProviderKey
+	}
+	if req.Provider != nil {
+		return req.Provider.ProviderKey
+	}
+	return ""
+}
+
+// EffectiveModelID 返回本轮解析出的实际模型 id（provider-default 每轮解析当前默认）；
+// native（无供应商）时返回空串。runtime 用它替代旧 req.Provider.Model。
+func (req RunRequest) EffectiveModelID() string {
+	if req.Effective == nil {
 		return ""
 	}
-	return req.Provider.ProviderKey
+	return req.Effective.ModelID
 }
 
 // RunResult 由 runner 在事件流 close 后填充；chat_svc 在 drain 完 channel 后读。
@@ -500,7 +517,7 @@ type RunResult struct {
 	UserAnchor string
 
 	// Model 本轮实际调用的模型 id：
-	//   - builtin：req.Provider.Model（chat_svc 已写过 message.Model，runner 不必再填）；
+	//   - builtin：解析出的 ModelID（chat_svc 已写过 message.Model，runner 不必再填）；
 	//   - claudecode：从 system.init.model 抓，CLI login / 显式 --model 两条路径都走得通；
 	//   - codex：取启动时的 spec.model，CLI 自身 login 时回退 Agentre 的默认模型。
 	// 空字符串表示 runner 没办法可靠探到模型，调用方按自己的回退策略处理。
@@ -514,7 +531,7 @@ type RunResult struct {
 	//     复用公共模型名时误套 llmcatalog 元数据；
 	//   - claudecode：通过 ContextWindowUpdated 事件实时上报，RunResult 通常留 0；
 	//   - builtin：不报。
-	// 0 表示 runner 没探到，chat_svc 用 provider.ContextWindow > cago catalog 兜底。
+	// 0 表示 runner 没探到，chat_svc 用解析出的 ContextWindow > cago catalog 兜底。
 	// 非 0 时是这一层最权威的优先级（用户实际跑出来的窗口）。
 	ContextWindow int
 

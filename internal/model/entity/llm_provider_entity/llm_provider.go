@@ -1,8 +1,11 @@
 // Package llm_provider_entity 维护 LLM 供应商的充血实体。
 //
 // 一个 LLMProvider = 一次"我可以调谁家的 API"的凭证 + 配置：
-//   - Type    决定走哪个 cago agents/provider 实现（anthropic / openai-chat / openai-response）；
+//   - Type        决定走哪个 cago agents/provider 实现（anthropic / openai-chat / openai-response）；
 //   - APIKey  / BaseURL 是请求 LLM 实际需要的凭证；BaseURL 留空时由 service 层填默认值。
+//
+// 模型从 Provider 行拆到独立的 llm_provider_model_entity（1 → N）。Provider 只保存
+// 连接配置、独立可运行状态 enabled 与指向启用默认模型的 default_model_key。
 package llm_provider_entity
 
 import (
@@ -30,25 +33,29 @@ const (
 	TypeOpenAIResponse ProviderType = "openai-response"
 )
 
+const (
+	// EnabledOff / EnabledOn 是 Provider 独立的可运行状态（与 status 软删除解耦）。
+	// enabled=0 的 Provider 仍可见、可编辑、可重新启用，但不能被新选择或用于执行。
+	EnabledOff = 0
+	EnabledOn  = 1
+)
+
 // LLMProvider 一条供应商配置记录。
 //
-// Model / MaxOutput / ContextWindow 是用户为该 provider 选择的默认模型与采样上限：
-//   - Model         默认调用的模型 id，可留空（让上层每次显式指定）；
-//   - MaxOutput     单次响应最大输出 token 数，0 表示沿用 cago 内置 catalog 默认；
-//   - ContextWindow 上下文窗口 token 数，0 表示沿用 cago 内置 catalog 默认。
+// Enabled 独立于 Status（软删除）表示可运行状态；DefaultModelKey 指向属于本 Provider
+// 的一个启用 Model（llm_provider_model_entity.LLMProviderModel.ModelKey）。
 type LLMProvider struct {
-	ID            int64  `gorm:"column:id;primaryKey;autoIncrement"`
-	ProviderKey   string `gorm:"column:provider_key;type:text;not null;uniqueIndex:uniq_llm_providers_provider_key;default:''" json:"providerKey"`
-	Type          string `gorm:"column:type;type:text;not null"`
-	Name          string `gorm:"column:name;type:text;not null"`
-	APIKey        string `gorm:"column:api_key;type:text;not null;default:''"`
-	BaseURL       string `gorm:"column:base_url;type:text;not null;default:''"`
-	Model         string `gorm:"column:model;type:text;not null;default:''"`
-	MaxOutput     int    `gorm:"column:max_output;type:int;not null;default:0"`
-	ContextWindow int    `gorm:"column:context_window;type:int;not null;default:0"`
-	Status        int    `gorm:"column:status;type:int;not null;default:1"`
-	Createtime    int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
-	Updatetime    int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
+	ID              int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	ProviderKey     string `gorm:"column:provider_key;type:text;not null;uniqueIndex:uniq_llm_providers_provider_key;default:''" json:"providerKey"`
+	Type            string `gorm:"column:type;type:text;not null"`
+	Name            string `gorm:"column:name;type:text;not null"`
+	APIKey          string `gorm:"column:api_key;type:text;not null;default:''"`
+	BaseURL         string `gorm:"column:base_url;type:text;not null;default:''"`
+	Enabled         int    `gorm:"column:enabled;type:int;not null;default:1"`
+	DefaultModelKey string `gorm:"column:default_model_key;type:text;not null;default:''"`
+	Status          int    `gorm:"column:status;type:int;not null;default:1"`
+	Createtime      int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
+	Updatetime      int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
 }
 
 // TableName 绑定表名。
@@ -56,6 +63,12 @@ func (*LLMProvider) TableName() string { return "llm_providers" }
 
 // IsActive 是否处于启用态（未被软删除）。
 func (p *LLMProvider) IsActive() bool { return p != nil && p.Status == consts.ACTIVE }
+
+// IsEnabled 是否可被新选择 / 用于执行（独立于软删除状态）。
+func (p *LLMProvider) IsEnabled() bool { return p != nil && p.Enabled == EnabledOn }
+
+// HasDefaultModel 是否已指定默认模型（default_model_key 非空）。
+func (p *LLMProvider) HasDefaultModel() bool { return p != nil && p.DefaultModelKey != "" }
 
 // Check 校验关键字段。空 Name / 不支持的 Type 直接返回业务错误。
 func (p *LLMProvider) Check(ctx context.Context) error {

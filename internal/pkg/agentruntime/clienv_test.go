@@ -13,7 +13,7 @@ import (
 // 这里挡的是包级位置漂移：函数搬到 agentruntime 后仍按预期工作。
 func TestBuildClaudeCodeEnv_Basic(t *testing.T) {
 	t.Run("有 gateway + effective provider 时同时注入 ANTHROPIC_* 和 AGENTRE_GATEWAY_*", func(t *testing.T) {
-		b := &agent_backend_entity.AgentBackend{LLMProviderKey: "key-7", ModelRoutes: `{"SONNET":"key-1"}`, EnvJSON: `{"X":"y"}`}
+		b := &agent_backend_entity.AgentBackend{LLMProviderKey: "key-7", ModelRoutes: `{"SONNET":{"providerKey":"key-1"}}`, EnvJSON: `{"X":"y"}`}
 		env, err := BuildClaudeCodeEnv(b, CLIDeps{Token: "tok", GatewayURL: "http://127.0.0.1:60080", ProviderKey: "key-7"})
 		require.NoError(t, err)
 		assert.Equal(t, "http://127.0.0.1:60080", env["ANTHROPIC_BASE_URL"])

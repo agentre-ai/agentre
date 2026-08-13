@@ -32,10 +32,11 @@ func init() {
 }
 
 // builtinEffectiveModel 统一模型解析规则(builtin 版):#26 会话级模型覆盖已移除,
-// effectiveModel 直接回落供应商默认(provider.Model)。builtin 强制要求绑 provider
-// (Run 里 nil 检查),且 backend 无默认模型字段(DefaultModel 仅 claudecode 用)。
+// effectiveModel 取执行侧解析结果(EffectiveLLMConfig v1 seam)的 ModelID。builtin
+// 强制要求绑 provider (Run 里 nil 检查),且 backend 无默认模型字段(DefaultModel
+// 仅 claudecode 用)。
 func builtinEffectiveModel(req agentruntime.RunRequest) string {
-	return strings.TrimSpace(req.Provider.Model)
+	return req.EffectiveModelID()
 }
 
 // builtinProviderBuilder 是 agentprovider.Build 的间接引用;测试时换成 fake provider,
@@ -204,7 +205,7 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		logger.Ctx(ctx).Error("builtin runtime: provider builder failed",
 			zap.Int64("sessionID", req.SessionID),
 			zap.String("providerType", req.Provider.Type),
-			zap.String("model", req.Provider.Model), zap.Error(err))
+			zap.String("model", req.EffectiveModelID()), zap.Error(err))
 		return nil, nil, err
 	}
 

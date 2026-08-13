@@ -225,6 +225,18 @@ func (m *MockProviderRecorder) EXPECT() *MockProviderRecorderMockRecorder {
 	return m.recorder
 }
 
+// RecordDeviceCapabilities mocks base method.
+func (m *MockProviderRecorder) RecordDeviceCapabilities(deviceID int64, caps []string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "RecordDeviceCapabilities", deviceID, caps)
+}
+
+// RecordDeviceCapabilities indicates an expected call of RecordDeviceCapabilities.
+func (mr *MockProviderRecorderMockRecorder) RecordDeviceCapabilities(deviceID, caps any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RecordDeviceCapabilities", reflect.TypeOf((*MockProviderRecorder)(nil).RecordDeviceCapabilities), deviceID, caps)
+}
+
 // RecordDeviceProviders mocks base method.
 func (m *MockProviderRecorder) RecordDeviceProviders(deviceID int64, ps []remote_device_watcher_svc.ProviderSummary) {
 	m.ctrl.T.Helper()

@@ -17,6 +17,7 @@ const appMocks = vi.hoisted(() => ({
   DeleteAgentBackend: vi.fn(),
   GetGatewayStatus: vi.fn(),
   ListAgentBackends: vi.fn(),
+  ListLLMModels: vi.fn(),
   ListLLMProviders: vi.fn(),
   RemoteDeviceList: vi.fn(),
   RemoteDeviceListProviders: vi.fn(),
@@ -37,6 +38,7 @@ type AnyFn = (...args: unknown[]) => unknown;
 type AppMockShape = {
   ListAgentBackends: AnyFn;
   ListLLMProviders: AnyFn;
+  ListLLMModels: AnyFn;
   CreateAgentBackend?: AnyFn;
   CreateOpenClawAgentBackend?: AnyFn;
   UpdateAgentBackend?: AnyFn;
@@ -51,6 +53,32 @@ type AppMockShape = {
   RemoteDeviceListProviders?: AnyFn;
   RemoteDeviceSyncProvider?: AnyFn;
 };
+
+// mockModel 构造一条启用模型记录（modelKey 稳定，modelId 可展示）。
+function mockModel(providerId: number, modelKey: string, modelId: string) {
+  return {
+    id: providerId * 100,
+    providerId,
+    providerKey: `key-${providerId}`,
+    modelKey,
+    modelId,
+    name: "",
+    contextWindow: 0,
+    maxOutput: 0,
+    enabled: true,
+    isDefault: false,
+    createtime: 0,
+    updatetime: 0,
+  };
+}
+
+// modelsById 默认给每个 provider 返回一条启用模型（默认模型）。
+function defaultModelsById(id: number) {
+  if (id === 1) return [mockModel(1, "mk-1", "claude-sonnet-4-6")];
+  if (id === 2) return [mockModel(2, "mk-2", "gpt-5")];
+  if (id === 3) return [mockModel(3, "mk-3", "gpt-5-codex")];
+  return [];
+}
 
 function installAppMock(overrides: Partial<AppMockShape> = {}) {
   const base: AppMockShape = {
@@ -85,15 +113,19 @@ function installAppMock(overrides: Partial<AppMockShape> = {}) {
             baseUrl: "",
             maskedApiKey: "sk-•••",
             hasApiKey: true,
-            model: "claude-sonnet-4-6",
-            maxOutput: 0,
-            contextWindow: 0,
+            enabled: true,
+            defaultModelKey: "mk-1",
             createtime: 0,
             updatetime: 0,
           },
         ],
       }),
     ),
+    // 默认每个 provider 返回一条启用默认模型（Picker 目录需要）。
+    ListLLMModels: vi.fn((...args: unknown[]) => {
+      const req = args[0] as { id?: number } | undefined;
+      return Promise.resolve({ items: defaultModelsById(Number(req?.id)) });
+    }),
     CreateAgentBackend: vi.fn(() => Promise.resolve({ item: { id: 2 } })),
     CreateOpenClawAgentBackend: vi.fn(() =>
       Promise.resolve({ item: { id: 3 } }),
@@ -542,9 +574,7 @@ describe("AgentBackendsPanel", () => {
       expect(
         within(dialog).queryByText(/original LLM provider is disabled/),
       ).not.toBeInTheDocument();
-      expect(
-        within(dialog).getByText(/No link \(use CLI login\)/),
-      ).toBeInTheDocument();
+      expect(within(dialog).getByText(/CLI login state/)).toBeInTheDocument();
     },
   );
 
@@ -575,7 +605,7 @@ describe("AgentBackendsPanel", () => {
     await waitFor(() => expect(input.value).toBe("/opt/homebrew/bin/pi"));
     // piagent 现在显示可选的 provider 选择器（默认未关联走 CLI 自身登录）。
     expect(
-      within(dialog).getByRole("combobox", { name: "LLM Provider" }),
+      within(dialog).getByRole("button", { name: "LLM Provider" }),
     ).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
@@ -606,9 +636,8 @@ describe("AgentBackendsPanel", () => {
               baseUrl: "",
               maskedApiKey: "sk-•••",
               hasApiKey: true,
-              model: "claude-sonnet-4-6",
-              maxOutput: 0,
-              contextWindow: 0,
+              enabled: true,
+              defaultModelKey: "mk-anthropic",
               createtime: 0,
               updatetime: 0,
             },
@@ -620,9 +649,8 @@ describe("AgentBackendsPanel", () => {
               baseUrl: "",
               maskedApiKey: "sk-•••",
               hasApiKey: true,
-              model: "gpt-5",
-              maxOutput: 0,
-              contextWindow: 0,
+              enabled: true,
+              defaultModelKey: "mk-chat",
               createtime: 0,
               updatetime: 0,
             },
@@ -634,15 +662,23 @@ describe("AgentBackendsPanel", () => {
               baseUrl: "",
               maskedApiKey: "sk-•••",
               hasApiKey: true,
-              model: "gpt-5-codex",
-              maxOutput: 0,
-              contextWindow: 0,
+              enabled: true,
+              defaultModelKey: "mk-response",
               createtime: 0,
               updatetime: 0,
             },
           ],
         }),
       ),
+      ListLLMModels: vi.fn((...args: unknown[]) => {
+        const req = args[0] as { id?: number } | undefined;
+        const byId: Record<number, unknown[]> = {
+          1: [mockModel(1, "mk-anthropic", "claude-sonnet-4-6")],
+          2: [mockModel(2, "mk-chat", "gpt-5")],
+          3: [mockModel(3, "mk-response", "gpt-5-codex")],
+        };
+        return Promise.resolve({ items: byId[Number(req?.id)] ?? [] });
+      }),
     });
     render(<AgentBackendsPanel />);
 
@@ -659,19 +695,15 @@ describe("AgentBackendsPanel", () => {
     );
 
     await user.click(
-      within(dialog).getByRole("combobox", { name: "LLM Provider" }),
+      within(dialog).getByRole("button", { name: "LLM Provider" }),
     );
     // piagent 三类全收：anthropic / openai-chat / openai-response 都要列出来。
-    const anthropicOption = screen.getByRole("option", { name: /Anthropic/ });
+    const anthropicOption = await screen.findByRole("option", {
+      name: /Anthropic/,
+    });
     expect(anthropicOption).toBeInTheDocument();
     expect(
-      anthropicOption.querySelector('[data-brand="anthropic"]'),
-    ).toBeInTheDocument();
-    expect(
-      anthropicOption.querySelector('[data-brand="claude"]'),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("option", { name: /OpenAI Chat/ }),
+      await screen.findByRole("option", { name: /OpenAI Chat/ }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("option", { name: /OpenAI Response/ }),
@@ -705,15 +737,16 @@ describe("AgentBackendsPanel", () => {
               baseUrl: "",
               maskedApiKey: "sk-•••",
               hasApiKey: true,
-              model: "",
-              maxOutput: 0,
-              contextWindow: 0,
+              enabled: true,
+              defaultModelKey: "mk-missing",
               createtime: 0,
               updatetime: 0,
             },
           ],
         }),
       ),
+      // 目录里没有该 provider 的模型 → provider-default 解析不出默认模型。
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [] })),
     });
     render(<AgentBackendsPanel />);
 
@@ -729,7 +762,7 @@ describe("AgentBackendsPanel", () => {
       within(dialog).getByRole("radio", { name: /Pi Agent CLI/ }),
     );
     await user.click(
-      within(dialog).getByRole("combobox", { name: "LLM Provider" }),
+      within(dialog).getByRole("button", { name: "LLM Provider" }),
     );
     await user.click(screen.getByRole("option", { name: /Anthropic/ }));
 
@@ -835,7 +868,7 @@ describe("AgentBackendsPanel", () => {
     await user.click(screen.getByRole("option", { name: /linux-srv/ }));
 
     await user.click(
-      within(dialog).getByRole("combobox", { name: "LLM Provider" }),
+      within(dialog).getByRole("button", { name: "LLM Provider" }),
     );
     await user.click(screen.getByRole("option", { name: /Anthropic/ }));
 
@@ -845,7 +878,9 @@ describe("AgentBackendsPanel", () => {
       name: /Sync Remote LLM Provider/,
     });
     expect(
-      within(syncDialog).getByText(/API key to the remote agentred state file/),
+      within(syncDialog).getByText(
+        /API key, default model and model catalog to the remote agentred state file/,
+      ),
     ).toBeInTheDocument();
     expect(mocks.CreateAgentBackend).not.toHaveBeenCalled();
 
@@ -891,7 +926,7 @@ describe("AgentBackendsPanel", () => {
     );
     await user.click(screen.getByRole("option", { name: /linux-srv/ }));
     await user.click(
-      within(editorDialog).getByRole("combobox", { name: "LLM Provider" }),
+      within(editorDialog).getByRole("button", { name: "LLM Provider" }),
     );
     await user.click(screen.getByRole("option", { name: /Anthropic/ }));
 
@@ -945,7 +980,7 @@ describe("AgentBackendsPanel", () => {
     );
     await user.click(screen.getByRole("option", { name: /linux-srv/ }));
     await user.click(
-      within(editorDialog).getByRole("combobox", { name: "LLM Provider" }),
+      within(editorDialog).getByRole("button", { name: "LLM Provider" }),
     );
     await user.click(screen.getByRole("option", { name: /Anthropic/ }));
     await user.click(
@@ -1002,7 +1037,7 @@ describe("AgentBackendsPanel", () => {
     );
     await user.click(screen.getByRole("option", { name: /linux-srv/ }));
     await user.click(
-      within(editorDialog).getByRole("combobox", { name: "LLM Provider" }),
+      within(editorDialog).getByRole("button", { name: "LLM Provider" }),
     );
     await user.click(screen.getByRole("option", { name: /Anthropic/ }));
     await user.click(
@@ -1039,6 +1074,67 @@ describe("AgentBackendsPanel", () => {
     ).toHaveLength(1);
   });
 
+  it("Given a saved remote backend DTO, When it is edited and saved, Then its deviceId stays selected and remote Provider sync remains available", async () => {
+    const user = userEvent.setup();
+    const mocks = installAppMock({
+      ListAgentBackends: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 12,
+              type: "claudecode",
+              name: "saved remote claude",
+              deviceId: "7",
+              llmProviderKey: "key-1",
+              llmModelKey: "",
+              llmProviderName: "Anthropic",
+              llmProviderType: "anthropic",
+              llmProviderModel: "claude-sonnet-4-6",
+              llmProviderActive: true,
+              cliPath: "claude",
+              modelRoutes: {},
+              envJson: "{}",
+              agentCount: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+      RemoteDeviceList: vi.fn(() =>
+        Promise.resolve([{ id: 7, name: "linux-srv", online: true }]),
+      ),
+      RemoteDeviceListProviders: vi.fn(() =>
+        Promise.resolve([
+          { key: "key-1", name: "Anthropic", type: "anthropic" },
+        ]),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+
+    const row = (await screen.findByText("saved remote claude")).closest(
+      '[role="listitem"]',
+    ) as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /Edit/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() => {
+      expect(
+        within(dialog).getByRole("combobox", { name: "Runtime Device" }),
+      ).toHaveTextContent("linux-srv");
+      expect(
+        within(dialog).getByText("Remote Provider Sync"),
+      ).toBeInTheDocument();
+    });
+
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(mocks.UpdateAgentBackend).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 12, deviceId: "7" }),
+      );
+    });
+  });
+
   it("保存远端 claudecode 且 provider 已在远端时直接保存，不弹同步提示", async () => {
     const user = userEvent.setup();
     const mocks = installAppMock({
@@ -1069,7 +1165,7 @@ describe("AgentBackendsPanel", () => {
     );
     await user.click(screen.getByRole("option", { name: /linux-srv/ }));
     await user.click(
-      within(dialog).getByRole("combobox", { name: "LLM Provider" }),
+      within(dialog).getByRole("button", { name: "LLM Provider" }),
     );
     await user.click(screen.getByRole("option", { name: /Anthropic/ }));
 
@@ -1122,8 +1218,12 @@ describe("AgentBackendsPanel", () => {
     await user.click(within(row).getByRole("button", { name: /Edit/ }));
 
     const dialog = await screen.findByRole("dialog");
+    // 通过 Picker 顶部特殊项（CLI 自身登录态）清除 provider 关联。
     await user.click(
-      within(dialog).getByRole("button", { name: /Clear provider link/ }),
+      within(dialog).getByRole("button", { name: "LLM Provider" }),
+    );
+    await user.click(
+      await screen.findByRole("option", { name: /CLI login state/ }),
     );
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
 

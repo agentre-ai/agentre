@@ -77,8 +77,11 @@ func expectSteerSegmentationTurn(t *testing.T, m *chatMocks) {
 		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
 	}, nil)
 	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
-	}, nil)
+		ID: 21, ProviderKey: "key-21", Type: string(llm_provider_entity.TypeAnthropic),
+		Status: consts.ACTIVE, Enabled: llm_provider_entity.EnabledOn,
+		DefaultModelKey: "mk-key-21",
+	}, nil).AnyTimes()
+	expectProviderResolvable(m, "key-21")
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	createIDs := []int64{1000, 1001, 1002, 1003}
