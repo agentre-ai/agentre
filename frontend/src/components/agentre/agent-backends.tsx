@@ -31,10 +31,7 @@ import i18n from "@/i18n";
 import { cn } from "@/lib/utils";
 
 import { truncateFlashText } from "./agent-backends-utils";
-import {
-  AgentBackendLogo,
-  LlmModelLogo,
-} from "./ai-brand-logo";
+import { AgentBackendLogo, LlmModelLogo } from "./ai-brand-logo";
 import {
   CancelTestAgentBackend,
   CreateAgentBackend,
@@ -292,7 +289,9 @@ function probeCLIPath(t: BackendType, deviceId: string) {
 }
 
 // parseRoutes 把后端 DTO 的类型化 modelRoutes 解析成三档 Record。
-function parseRoutes(raw: Record<string, RouteTarget> | undefined): Record<ClaudeTier, RouteTarget> {
+function parseRoutes(
+  raw: Record<string, RouteTarget> | undefined,
+): Record<ClaudeTier, RouteTarget> {
   const next = emptyRoutes();
   for (const tier of CLAUDE_TIERS) {
     const v = raw?.[tier];
@@ -326,7 +325,11 @@ function serializeEnv(entries: EnvEntry[]): string {
 }
 
 function emptyRoutes(): Record<ClaudeTier, RouteTarget> {
-  return { OPUS: { providerKey: "", modelKey: "" }, SONNET: { providerKey: "", modelKey: "" }, HAIKU: { providerKey: "", modelKey: "" } };
+  return {
+    OPUS: { providerKey: "", modelKey: "" },
+    SONNET: { providerKey: "", modelKey: "" },
+    HAIKU: { providerKey: "", modelKey: "" },
+  };
 }
 
 // routeTargets 把非空的 tier route 收进提交用的 map（继承主绑定的空 target 不提交）。
@@ -337,7 +340,10 @@ function routeTargetsForRequest(
   for (const tier of CLAUDE_TIERS) {
     const r = routes[tier];
     if (r && r.providerKey.trim() !== "") {
-      out[tier] = { providerKey: r.providerKey.trim(), modelKey: r.modelKey.trim() };
+      out[tier] = {
+        providerKey: r.providerKey.trim(),
+        modelKey: r.modelKey.trim(),
+      };
     }
   }
   return out;
@@ -958,8 +964,11 @@ function BackendEditor({
   const [routes, setRoutes] = React.useState<Record<ClaudeTier, RouteTarget>>(
     () =>
       parseRoutes(
-        (editing as unknown as { modelRoutes?: Record<string, RouteTarget> } | null)
-          ?.modelRoutes,
+        (
+          editing as unknown as {
+            modelRoutes?: Record<string, RouteTarget>;
+          } | null
+        )?.modelRoutes,
       ),
   );
   const [sandbox, setSandbox] = React.useState<SandboxValue>(
@@ -1303,8 +1312,7 @@ function BackendEditor({
       // openclaw 不绑定 Agentre ProviderModel（spec 决策 4/22）。
       llmModelKey: type === "openclaw" ? "" : llmModelKey.trim(),
       cliPath: isCliBackend(type) ? cliPath.trim() : "",
-      modelRoutes:
-        type === "claudecode" ? routeTargetsForRequest(routes) : {},
+      modelRoutes: type === "claudecode" ? routeTargetsForRequest(routes) : {},
       sandbox: type === "codex" ? sandbox : "",
       approval: type === "codex" ? approval : "",
       envJson: isCliBackend(type) ? serializeEnv(envEntries) : "{}",

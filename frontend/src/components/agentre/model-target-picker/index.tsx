@@ -239,7 +239,9 @@ export function ModelTargetPicker({
             (rm) => rm.modelKey === m.modelKey && rm.enabled,
           );
         const fixedUnsupported =
-          remoteByKey != null && executionLocation !== "" && !supportsFixedModel;
+          remoteByKey != null &&
+          executionLocation !== "" &&
+          !supportsFixedModel;
         const fixedSyncNeeded =
           remoteByKey != null &&
           executionLocation !== "" &&
@@ -253,7 +255,9 @@ export function ModelTargetPicker({
           sublabel: m.modelId,
           target: { providerKey: p.providerKey, modelKey: m.modelKey },
           disabled:
-            !p.enabled || !m.enabled || providerSyncNeeded ||
+            !p.enabled ||
+            !m.enabled ||
+            providerSyncNeeded ||
             fixedUnsupported ||
             fixedSyncNeeded,
           disabledHint: fixedUnsupported
@@ -550,7 +554,8 @@ export function ModelTargetPicker({
             {t("modelTargetPicker.invalidHint")}
           </div>
         ) : null}
-        {remoteByKey != null && executionLocation !== "" &&
+        {remoteByKey != null &&
+        executionLocation !== "" &&
         catalogOptions.some((o) => o.disabledHint) ? (
           <div className="border-t border-border bg-secondary px-3 py-2 text-2xs text-muted-foreground">
             {t("modelTargetPicker.remoteGateHint")}

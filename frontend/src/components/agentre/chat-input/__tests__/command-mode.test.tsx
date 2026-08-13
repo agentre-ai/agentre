@@ -1208,7 +1208,9 @@ describe("AIChatInput command mode", () => {
         editor.commands.insertContent("!git");
         editor.commands.focus("end");
       });
-      await vi.waitFor(() => expect(screen.getByRole("combobox")).toHaveFocus());
+      await vi.waitFor(() =>
+        expect(screen.getByRole("combobox")).toHaveFocus(),
+      );
       await screen.findByRole("option", { name: "git status" });
       const clearButton = screen.getByRole("button", {
         name: "Clear history for current directory",

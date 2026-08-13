@@ -19,12 +19,14 @@ export function buildPickerCatalog(
   modelsByProvider: Map<number, ModelItem[]>,
 ): PickerProvider[] {
   return providers.map((p) => {
-    const models: PickerModel[] = (modelsByProvider.get(p.id) ?? []).map((m) => ({
-      modelKey: m.modelKey,
-      modelId: m.modelId,
-      name: m.name,
-      enabled: m.enabled,
-    }));
+    const models: PickerModel[] = (modelsByProvider.get(p.id) ?? []).map(
+      (m) => ({
+        modelKey: m.modelKey,
+        modelId: m.modelId,
+        name: m.name,
+        enabled: m.enabled,
+      }),
+    );
     let defaultModel: PickerModel | null = null;
     if (p.defaultModelKey) {
       defaultModel =

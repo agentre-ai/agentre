@@ -574,9 +574,7 @@ describe("AgentBackendsPanel", () => {
       expect(
         within(dialog).queryByText(/original LLM provider is disabled/),
       ).not.toBeInTheDocument();
-      expect(
-        within(dialog).getByText(/CLI login state/),
-      ).toBeInTheDocument();
+      expect(within(dialog).getByText(/CLI login state/)).toBeInTheDocument();
     },
   );
 
@@ -710,9 +708,7 @@ describe("AgentBackendsPanel", () => {
     expect(
       screen.getByRole("option", { name: /OpenAI Response/ }),
     ).toBeInTheDocument();
-    await user.click(
-      screen.getByRole("option", { name: /OpenAI Response/ }),
-    );
+    await user.click(screen.getByRole("option", { name: /OpenAI Response/ }));
 
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
