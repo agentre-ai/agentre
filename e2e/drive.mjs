@@ -13,6 +13,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statS
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { applyVerificationViewport } from "./lib/browser.mjs";
 import {
   IsolationError,
   assertSanctionedURL,
@@ -126,6 +127,7 @@ async function attach(session) {
   const pages = context.pages();
   const page =
     pages.find((p) => p.url().startsWith(target.baseURL)) || pages[0] || (await context.newPage());
+  await applyVerificationViewport(page);
   return { browser, page, target };
 }
 

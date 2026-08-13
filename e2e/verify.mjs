@@ -27,6 +27,7 @@ import {
   resolveTarget,
   writeSession,
 } from "./lib/target.mjs";
+import { applyVerificationViewport, verificationBrowserArgs } from "./lib/browser.mjs";
 import { reapOrphanVite } from "./lib/procs.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -264,18 +265,13 @@ async function startBrowser(target, flags) {
   if (!existsSync(executable)) {
     throw new Error(`Chromium is missing at ${executable}: run \`cd e2e && pnpm run setup\``);
   }
-  const args = [
-    `--remote-debugging-port=${target.cdpPort}`,
-    `--user-data-dir=${target.browserDir}`,
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--no-service-autorun",
-    "--password-store=basic",
-    "--use-mock-keychain",
-  ];
-  // Headless by default: a verification run should not take over the screen or steal focus.
-  // `--headed` is for when you want to watch it.
-  if (!flags.headed) args.push("--headless=new");
+  // A fixed large viewport keeps screenshots legible and complete instead of inheriting
+  // Chromium's small platform-dependent default. `--headed` only changes visibility.
+  const args = verificationBrowserArgs({
+    cdpPort: target.cdpPort,
+    browserDir: target.browserDir,
+    headless: !flags.headed,
+  });
   args.push(target.baseURL);
 
   const browser = spawn(executable, args, { detached: true, stdio: "ignore" });
@@ -302,6 +298,7 @@ export async function hideNativeWindow(session) {
       const page = browser.contexts()[0]?.pages()[0];
       if (!page) return false;
       await page.waitForLoadState("domcontentloaded", { timeout: 5000 });
+      await applyVerificationViewport(page);
       await page.evaluate(() => window.runtime?.WindowHide?.());
       return true;
     } finally {
