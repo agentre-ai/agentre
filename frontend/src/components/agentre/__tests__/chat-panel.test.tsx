@@ -2997,22 +2997,24 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
         },
       ],
     });
-    appMocks.ListLLMModels.mockResolvedValue({
-      items: [
-        {
-          modelKey: "mk-default",
-          modelId: "claude-haiku-4-5",
-          name: "claude-haiku-4-5",
-          enabled: true,
-        },
-        {
-          modelKey: "mk-fixed",
-          modelId: "claude-sonnet-4-5",
-          name: "claude-sonnet-4-5",
-          enabled: true,
-        },
-      ],
-    });
+    appMocks.ListLLMModels.mockImplementation(() =>
+      Promise.resolve({
+        items: [
+          {
+            modelKey: "mk-default",
+            modelId: "claude-haiku-4-5",
+            name: "claude-haiku-4-5",
+            enabled: true,
+          },
+          {
+            modelKey: "mk-fixed",
+            modelId: "claude-sonnet-4-5",
+            name: "claude-sonnet-4-5",
+            enabled: true,
+          },
+        ],
+      }),
+    );
     mockSessionStore.session = makeSession({
       backendType: "claudecode",
       providerKey: "",
@@ -3023,7 +3025,11 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
     render(<ChatPanel sessionId={42} newSessionAgent={null} />);
 
     const pill = await screen.findByTestId("provider-pill");
-    await waitFor(() => expect(pill).not.toBeDisabled());
+    await waitFor(() => {
+      expect(pill).not.toBeDisabled();
+      expect(appMocks.ListLLMModels).toHaveBeenCalled();
+      expect(pill).toHaveTextContent("Acme · claude-sonnet-4-5");
+    });
     expect(pill).toHaveTextContent("Follow agent binding");
     expect(pill).toHaveTextContent("Acme · claude-sonnet-4-5");
     expect(pill).not.toHaveTextContent("claude-haiku-4-5");

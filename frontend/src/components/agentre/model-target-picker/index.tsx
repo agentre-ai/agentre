@@ -300,7 +300,8 @@ export function ModelTargetPicker({
       });
       // fixed-model 列表。
       for (const m of p.models) {
-        if (m.modelKey === defaultModel?.modelKey) continue;
+        // 当前默认模型仍需作为 fixed-model 候选保留：provider-default 表达动态跟随，
+        // 而选择这里的同一 ModelKey 表达锁定当前模型、以后不随 Provider 默认变化。
         // 远端门控：模型在 daemon 上不存在 / 停用 → 需同步；daemon 不支持
         // fixed-model（旧协议）→ 一律禁用，绝不静默降级。
         const remoteModelOk =

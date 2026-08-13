@@ -261,15 +261,44 @@ describe("ModelTargetPicker", () => {
     expect(
       within(options[1] as HTMLElement).getByTestId("provider-default-icon"),
     ).toBeInTheDocument();
-    // fixed-model 紧随其后。
-    expect(options[2]).toHaveTextContent("claude-opus-4-8");
+    // fixed-model 紧随其后（包括当前默认模型的固定目标）。
+    expect(options[2]).toHaveTextContent("claude-sonnet-4-6");
+    expect(options[3]).toHaveTextContent("claude-opus-4-8");
     // 停用模型不可选。
-    expect(options[3]).toHaveAttribute("aria-disabled", "true");
+    expect(options[4]).toHaveAttribute("aria-disabled", "true");
 
-    await user.click(options[2]);
+    await user.click(options[3]);
     expect(onChange).toHaveBeenCalledWith({
       providerKey: "k-anthropic",
       modelKey: "mk-opus",
+    });
+  });
+
+  it("默认模型也作为 fixed-model 候选保留，让用户可以锁定当前默认而不随以后默认变化", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <ModelTargetPicker
+        scenario="backend"
+        aria-label="LLM Provider"
+        backendType="claudecode"
+        selected={null}
+        onChange={onChange}
+        catalog={catalog()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "LLM Provider" }));
+    const list = await screen.findByRole("listbox", { name: "LLM Provider" });
+    const fixedDefault = within(list).getByRole("option", {
+      name: /Sonnet claude-sonnet-4-6/,
+    });
+    expect(fixedDefault).toHaveAttribute("data-kind", "fixed");
+
+    await user.click(fixedDefault);
+    expect(onChange).toHaveBeenCalledWith({
+      providerKey: "k-anthropic",
+      modelKey: "mk-1",
     });
   });
 
@@ -307,7 +336,7 @@ describe("ModelTargetPicker", () => {
     await user.click(screen.getByRole("button", { name: "LLM Provider" }));
     const list = await screen.findByRole("listbox", { name: "LLM Provider" });
     const options = within(list).getAllByRole("option");
-    const opus = options[2];
+    const opus = options[3];
     expect(opus).toHaveTextContent("Opus");
     expect(opus).toHaveTextContent("claude-opus-4-8");
     expect(opus).not.toHaveTextContent("Anthropic");
@@ -678,11 +707,12 @@ describe("ModelTargetPicker remote gating (task 6)", () => {
     await user.click(screen.getByRole("button", { name: "LLM Provider" }));
     const list = await screen.findByRole("listbox", { name: "LLM Provider" });
     const options = within(list).getAllByRole("option");
-    // provider-default（Anthropic）可选；fixed-model（claude-opus-4-8）被禁用。
+    // provider-default（Anthropic）可选；所有 fixed-model（包括当前默认模型）被禁用。
     expect(options[1]).not.toHaveAttribute("aria-disabled", "true");
     expect(options[2]).toHaveAttribute("aria-disabled", "true");
-    expect(options[2]).toHaveAttribute("title");
-    expect(options[2]).toHaveTextContent(
+    expect(options[3]).toHaveAttribute("aria-disabled", "true");
+    expect(options[3]).toHaveAttribute("title");
+    expect(options[3]).toHaveTextContent(
       "This device does not support fixed models",
     );
   });
@@ -708,8 +738,10 @@ describe("ModelTargetPicker remote gating (task 6)", () => {
     const options = within(list).getAllByRole("option");
     // daemon 上存在 k-anthropic 的默认模型，但没有 mk-opus → 该 fixed-model 需同步。
     expect(options[1]).not.toHaveAttribute("aria-disabled", "true");
-    expect(options[2]).toHaveAttribute("aria-disabled", "true");
-    expect(options[2]).toHaveTextContent(
+    // 当前默认模型在 daemon 上存在，可固定；mk-opus 缺失，需先同步。
+    expect(options[2]).not.toHaveAttribute("aria-disabled", "true");
+    expect(options[3]).toHaveAttribute("aria-disabled", "true");
+    expect(options[3]).toHaveTextContent(
       "Local only — sync to this device first",
     );
     // 远端门控提示行出现。
@@ -735,8 +767,8 @@ describe("ModelTargetPicker remote gating (task 6)", () => {
     await user.click(screen.getByRole("button", { name: "LLM Provider" }));
     const list = await screen.findByRole("listbox", { name: "LLM Provider" });
     const options = within(list).getAllByRole("option");
-    expect(options[2]).not.toHaveAttribute("aria-disabled", "true");
-    await user.click(options[2]);
+    expect(options[3]).not.toHaveAttribute("aria-disabled", "true");
+    await user.click(options[3]);
     expect(onChange).toHaveBeenCalledWith({
       providerKey: "k-anthropic",
       modelKey: "mk-opus",
