@@ -151,6 +151,23 @@ Sixteen fixed hues give concurrent agents distinct, stable identities. Light use
 
 Default fallback color is `agent-1`. `agentColorOrder` is the canonical 1→16 sequence for round-robin assignment.
 
+### 3.6a File identity (8 semantic hues)
+
+The 17px file-type badge uses eight semantic identity hues (`--file-*`), assigned by the unified path classifier in [`components/agentre/file-type-icon.tsx`](../frontend/src/components/agentre/file-type-icon.tsx). Like the agent palette, light uses saturated 500–600 shades (a white glyph holds up) and dark uses lighter 400 shades. The glyph shape always carries a second, non-color cue; these tokens only aid scanning.
+
+| Token / class | Light | Dark | Typical identities |
+| --- | --- | --- | --- |
+| `file-blue` | `#2563eb` | `#60a5fa` | TypeScript, React TS, C/C++, CSS, SQL, Markdown, config, Docker, Word |
+| `file-yellow` | `#ca8a04` | `#facc15` | Python, JavaScript, React JS, JSON, key / cert |
+| `file-cyan` | `#0891b2` | `#22d3ee` | Go |
+| `file-purple` | `#7c3aed` | `#a78bfa` | Kotlin, C#, Sass, PHP, image, audio |
+| `file-orange` | `#ea580c` | `#fb923c` | Rust, Java, HTML, Swift, XML, Git, PowerPoint, SVG, archive |
+| `file-green` | `#16a34a` | `#4ade80` | shell, Makefile/CMake, Excel, CSV, font, database |
+| `file-red` | `#dc2626` | `#f87171` | YAML, Ruby, npm, PDF, video, binary |
+| `file-neutral` | `#71717a` | `#8a8d94` | plain text / log, TOML, `*.lock`, unknown fallback |
+
+Use `bg-file-<tone>` (exposed via `--color-file-*` in the `@theme inline` block); never write the hex directly. The badge itself is decorative (`aria-hidden`) — file names, Git status and actions keep carrying the semantics.
+
 ### 3.7 Sidebar
 
 A dedicated family so the navigation rail and context sidebars theme independently of the page surfaces.
