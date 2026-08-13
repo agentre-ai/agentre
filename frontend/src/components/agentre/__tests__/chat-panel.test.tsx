@@ -2896,7 +2896,7 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
     await user.click(pill);
     await user.click(
       within(screen.getByRole("listbox")).getByRole("option", {
-        name: /Acme Claude/,
+        name: /Follow this provider's default/,
       }),
     );
 
@@ -3061,7 +3061,9 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
     const user = userEvent.setup();
     await user.click(pill);
     await user.click(
-      within(screen.getByRole("listbox")).getByRole("option", { name: /Acme/ }),
+      within(screen.getByRole("listbox")).getByRole("option", {
+        name: /Follow this provider's default/,
+      }),
     );
 
     await waitFor(() => {
