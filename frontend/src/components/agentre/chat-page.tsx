@@ -1,12 +1,5 @@
 import * as React from "react";
-import {
-  Check,
-  Plus,
-  Search,
-  SlidersHorizontal,
-  UserPlus,
-  X,
-} from "lucide-react";
+import { Plus, Search, UserPlus, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import type { TFunction } from "i18next";
@@ -21,10 +14,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useChatAgents, type ChatAgentItem } from "@/hooks/use-chat-agents";
 import { useChatAgentsStore } from "@/stores/chat-agents-store";
 import { NEW_CHAT_INITIAL_QUERY } from "@/components/agentre/shortcuts/registry";
@@ -40,6 +36,7 @@ import {
 } from "@/stores/attention-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useCommandPaletteStore } from "@/stores/command-palette-store";
+import { reloadSidebarSources } from "@/stores/sidebar-reload";
 import { requestNewAgentDialog } from "@/stores/new-agent-intent-store";
 import { useSessionMetaStore } from "@/stores/session-meta-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
@@ -50,7 +47,9 @@ import type { AgentSession } from "./agent-list";
 import { ResizableSidebar } from "./resizable-sidebar";
 import { SessionsPopover } from "./sessions-popover";
 import {
+  DeleteChatSession,
   ListChatAgentSessions,
+  RenameChatSession,
   SetAgentPinned,
 } from "../../../wailsjs/go/app/App";
 import type { AgentColor, AgentStatus } from "./types";
@@ -210,6 +209,9 @@ type AgentGroupRowProps = {
   openSessionInNewTab: (sid: number) => void;
   openNewSession: (projectId: number, agentId: number, title: string) => void;
   openNotChattableDialog: (agent: ChatAgentItem) => void;
+  // 会话行右键菜单 handler（可选）→ 透传给 SessionGroup / SessionRow。
+  onRenameSession: (sessionId: number, title: string) => void;
+  onDeleteSession: (sessionId: number) => void;
 };
 
 function AgentGroupRow({
@@ -220,6 +222,8 @@ function AgentGroupRow({
   openSessionInNewTab,
   openNewSession,
   openNotChattableDialog,
+  onRenameSession,
+  onDeleteSession,
 }: AgentGroupRowProps) {
   const { t } = useTranslation();
   const sessions = useBuildSessions(a);
@@ -279,6 +283,9 @@ function AgentGroupRow({
         if (opts?.newTab) openSessionInNewTab(Number(sid));
         else openSession(Number(sid));
       }}
+      onOpenInNewTab={openSessionInNewTab}
+      onRenameSession={onRenameSession}
+      onDeleteSession={onDeleteSession}
       renderSessionsPopover={(close) => (
         <SessionsPopover
           header={{
@@ -364,7 +371,7 @@ function agentMatchesStatuses(
 
 function ChatPage() {
   const { t } = useTranslation();
-  const { agents } = useChatAgents();
+  const { agents, loading } = useChatAgents();
   const metas = useSessionMetaStore((s) => s.metas);
   // 选中态完全派生自 chat-tabs-store(single source of truth):
   // - kind:"session" → selectedSessionId = meta.sessionId,
@@ -393,18 +400,35 @@ function ChatPage() {
   const openCommandPalette = useCommandPaletteStore((s) => s.openWith);
   const navigate = useNavigate();
   const [agentFilter, setAgentFilter] = React.useState("");
+  // 状态筛选 chips：单选。空集合 = 全部；非空时集合里就是当前唯一选中的状态。
   const [filterStatuses, setFilterStatuses] = React.useState<
     ReadonlySet<ChatSidebarStatus>
   >(() => new Set());
-  const toggleStatus = React.useCallback((status: ChatSidebarStatus) => {
+  const activeStatusFilter = React.useMemo<ChatSidebarStatus | null>(() => {
+    if (filterStatuses.size !== 1) return null;
+    return [...filterStatuses][0];
+  }, [filterStatuses]);
+  const selectStatusFilter = React.useCallback(
+    (status: ChatSidebarStatus | null) => {
+      setFilterStatuses(status ? new Set([status]) : new Set());
+    },
+    [],
+  );
+  const toggleStatusFilter = React.useCallback((status: ChatSidebarStatus) => {
+    // 单选：再次点击已选中的 chip → 清空（回到「全部」）。
     setFilterStatuses((prev) => {
-      const next = new Set(prev);
-      if (next.has(status)) next.delete(status);
-      else next.add(status);
-      return next;
+      if (prev.has(status) && prev.size === 1) return new Set();
+      return new Set([status]);
     });
   }, []);
-  const [filterPopoverOpen, setFilterPopoverOpen] = React.useState(false);
+  // 会话行右键菜单的改名 / 删除对话框状态（镜像 chat-panel.tsx 的模式）。
+  const [pendingRename, setPendingRename] = React.useState<{
+    id: number;
+    draft: string;
+  } | null>(null);
+  const [pendingDeleteId, setPendingDeleteId] = React.useState<number | null>(
+    null,
+  );
   const [notChattableAgent, setNotChattableAgent] =
     React.useState<ChatAgentItem | null>(null);
 
@@ -436,7 +460,7 @@ function ChatPage() {
       ),
     [agents, filterValue, filterStatuses, attentionReasons],
   );
-  // 列表：agent 按最近活跃倒序;pinned（系统 agent + 用户置顶的 agent）浮顶。
+  // 列表：agent 按最近活跃倒序；pinned（DB 置顶的 agent）浮顶。
   // agent 活跃度取 sessionIds 在 meta-store 的 max(lastMessageAt)，确保 turn
   // 结束后实时反映。无活跃的项 ts=0 沉到底部。
   const agentRows = React.useMemo<AgentRow[]>(() => {
@@ -465,27 +489,50 @@ function ChatPage() {
   );
 
   const filterIsActive = filterValue.length > 0;
-  const filtersActive = filterStatuses.size > 0;
   const hasResults = visibleAgents.length > 0;
-  // 一条扁平竖向列表（mockup §2.1：无分区标题/分隔线）；status=多选 toggle（点击增删）。
-  const filterOptions: Array<{
-    value: ChatSidebarStatus;
-    label: string;
-    dotClassName: string;
-    badge?: number;
-  }> = [
-    {
-      value: "running",
-      label: t("chatPage.filter.options.running"),
-      dotClassName: "bg-status-running",
+
+  // ── 会话行右键菜单：改名 / 删除 ──────────────────────────────────────────
+  // 对话框 state 放在 ChatPage（镜像 chat-panel.tsx：pendingRename / pendingDeleteId）。
+  const handleRenameSession = React.useCallback(
+    (sessionId: number, title: string) => {
+      setPendingRename({ id: sessionId, draft: title });
     },
-    {
-      value: "unread",
-      label: t("chatPage.filter.options.unread"),
-      dotClassName: "bg-status-waiting",
-      badge: unreadCount,
-    },
-  ];
+    [],
+  );
+  const handleDeleteSession = React.useCallback((sessionId: number) => {
+    setPendingDeleteId(sessionId);
+  }, []);
+
+  async function confirmRename() {
+    if (!pendingRename) return;
+    const next = pendingRename.draft.trim();
+    if (!next) {
+      setPendingRename(null);
+      return;
+    }
+    const id = pendingRename.id;
+    setPendingRename(null);
+    await RenameChatSession({ sessionId: id, title: next });
+    reloadSidebarSources();
+  }
+
+  async function confirmDelete() {
+    const id = pendingDeleteId;
+    if (id == null) return;
+    setPendingDeleteId(null);
+    await DeleteChatSession({ sessionId: id });
+    // 与 ChatPanel 删除后关闭对应 tab 的行为保持一致。
+    const openTabIds = useChatTabsStore
+      .getState()
+      .tabs.filter(
+        (tab) => tab.meta.kind === "session" && tab.meta.sessionId === id,
+      )
+      .map((tab) => tab.id);
+    for (const tabId of openTabIds) {
+      useChatTabsStore.getState().closeTab(tabId);
+    }
+    reloadSidebarSources();
+  }
 
   const renderRow = (row: AgentRow) => (
     <AgentGroupRow
@@ -497,6 +544,8 @@ function ChatPage() {
       openSessionInNewTab={openSessionInNewTab}
       openNewSession={openNewSession}
       openNotChattableDialog={setNotChattableAgent}
+      onRenameSession={handleRenameSession}
+      onDeleteSession={handleDeleteSession}
     />
   );
 
@@ -512,78 +561,98 @@ function ChatPage() {
         />
       ) : null}
 
+      {/* 会话行右键菜单的删除确认对话框（镜像 chat-panel.tsx） */}
+      <Dialog
+        open={pendingDeleteId !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeleteId(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("chatPanel.deleteDialog.title")}</DialogTitle>
+          </DialogHeader>
+          <DialogBody>
+            <p className="text-sm text-muted-foreground">
+              {t("chatPanel.deleteDialog.description")}
+            </p>
+          </DialogBody>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPendingDeleteId(null)}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => void confirmDelete()}
+            >
+              {t("common.delete")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* 会话行右键菜单的改名对话框（镜像 chat-panel.tsx） */}
+      <Dialog
+        open={pendingRename !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingRename(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("chatPanel.renameDialog.title")}</DialogTitle>
+          </DialogHeader>
+          <DialogBody>
+            <form
+              id="sidebar-rename-session-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void confirmRename();
+              }}
+            >
+              <Input
+                autoFocus
+                value={pendingRename?.draft ?? ""}
+                onChange={(e) =>
+                  setPendingRename((prev) =>
+                    prev ? { ...prev, draft: e.target.value } : prev,
+                  )
+                }
+                placeholder={t("chatPanel.renameDialog.placeholder")}
+                aria-label={t("chatPanel.renameDialog.nameAria")}
+              />
+            </form>
+          </DialogBody>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPendingRename(null)}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              type="submit"
+              form="sidebar-rename-session-form"
+              size="sm"
+              disabled={
+                !pendingRename || pendingRename.draft.trim().length === 0
+              }
+            >
+              {t("common.save")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* ── Left sidebar ── */}
       <ResizableSidebar persistenceKey="chat" ariaLabel={t("chatPage.sidebar")}>
         <div className="border-b border-border px-4 py-3">
           <div className="flex items-center gap-2">
-            <Popover
-              open={filterPopoverOpen}
-              onOpenChange={setFilterPopoverOpen}
-            >
-              <PopoverTrigger asChild>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon-sm"
-                  aria-label={t("chatPage.filter.open")}
-                  title={t("chatPage.filter.open")}
-                  className={cn(
-                    "relative size-[30px] bg-sidebar",
-                    filtersActive && "border-ring text-primary-text",
-                  )}
-                >
-                  <SlidersHorizontal data-icon="only" aria-hidden="true" />
-                  {filtersActive ? (
-                    <span className="absolute right-1 top-1 size-1.5 rounded-full bg-destructive" />
-                  ) : null}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-[182px] p-1" align="start">
-                <div className="flex flex-col gap-0.5">
-                  {filterOptions.map((option) => {
-                    // 状态=多选(选中=在集合里)。
-                    const pressed = filterStatuses.has(option.value);
-                    return (
-                      <button
-                        key={option.value}
-                        type="button"
-                        aria-pressed={pressed}
-                        className={cn(
-                          "flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-foreground outline-none transition-colors hover:bg-sidebar-active-bg focus-visible:ring-[3px] focus-visible:ring-ring/50",
-                          pressed && "bg-sidebar-active-bg font-semibold",
-                        )}
-                        onClick={() => {
-                          // 保持下拉打开,让用户连续组合多个状态。
-                          toggleStatus(option.value);
-                        }}
-                      >
-                        <span
-                          aria-hidden="true"
-                          className={cn(
-                            "size-1.5 rounded-full",
-                            option.dotClassName,
-                          )}
-                        />
-                        <span className="min-w-0 flex-1 truncate">
-                          {option.label}
-                        </span>
-                        {option.badge ? (
-                          <span className="rounded-full bg-destructive px-1.5 font-mono text-2xs font-semibold text-destructive-foreground">
-                            {option.badge}
-                          </span>
-                        ) : null}
-                        {pressed ? (
-                          <Check
-                            className="size-3.5 text-primary-text"
-                            aria-hidden="true"
-                          />
-                        ) : null}
-                      </button>
-                    );
-                  })}
-                </div>
-              </PopoverContent>
-            </Popover>
             <div className="relative min-w-0 flex-1">
               <Search
                 className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
@@ -648,6 +717,56 @@ function ChatPage() {
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
+          {/* 状态筛选 chips：全部 / 运行中 / 未读 N —— 单选，替换原 SlidersHorizontal 下拉 */}
+          <div className="mt-2 flex items-center gap-1.5">
+            <button
+              type="button"
+              data-testid="filter-chip-all"
+              aria-pressed={activeStatusFilter === null}
+              className={cn(
+                "inline-flex cursor-pointer items-center gap-1 rounded-full px-2.5 py-1 text-2xs outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                activeStatusFilter === null
+                  ? "bg-primary-soft font-medium text-primary-text"
+                  : "bg-sidebar-active-bg text-muted-foreground hover:text-foreground",
+              )}
+              onClick={() => selectStatusFilter(null)}
+            >
+              {t("chatPage.filter.chips.all")}
+            </button>
+            <button
+              type="button"
+              data-testid="filter-chip-running"
+              aria-pressed={activeStatusFilter === "running"}
+              className={cn(
+                "inline-flex cursor-pointer items-center gap-1 rounded-full px-2.5 py-1 text-2xs outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                activeStatusFilter === "running"
+                  ? "bg-primary-soft font-medium text-primary-text"
+                  : "bg-sidebar-active-bg text-muted-foreground hover:text-foreground",
+              )}
+              onClick={() => toggleStatusFilter("running")}
+            >
+              {t("chatPage.filter.chips.running")}
+            </button>
+            <button
+              type="button"
+              data-testid="filter-chip-unread"
+              aria-pressed={activeStatusFilter === "unread"}
+              className={cn(
+                "inline-flex cursor-pointer items-center gap-1 rounded-full px-2.5 py-1 text-2xs outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                activeStatusFilter === "unread"
+                  ? "bg-primary-soft font-medium text-primary-text"
+                  : "bg-sidebar-active-bg text-muted-foreground hover:text-foreground",
+              )}
+              onClick={() => toggleStatusFilter("unread")}
+            >
+              {t("chatPage.filter.chips.unread")}
+              {unreadCount > 0 ? (
+                <span className="rounded-full bg-destructive px-1.5 font-mono text-2xs font-semibold text-destructive-foreground">
+                  {unreadCount}
+                </span>
+              ) : null}
+            </button>
+          </div>
         </div>
 
         <div className="min-h-0 flex-1 overflow-auto px-2 py-3">
@@ -661,7 +780,26 @@ function ChatPage() {
             </>
           ) : null}
           {otherRows.map(renderRow)}
-          {filterIsActive && !hasResults ? (
+          {agents.length === 0 && !loading ? (
+            <div className="flex flex-col items-center gap-2 px-4 py-10 text-center">
+              <div className="text-sm font-semibold text-foreground">
+                {t("chatPage.empty.title")}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {t("chatPage.empty.description")}
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => {
+                  requestNewAgentDialog();
+                  navigate("/org");
+                }}
+              >
+                {t("chatPage.empty.cta")}
+              </Button>
+            </div>
+          ) : filterIsActive && !hasResults ? (
             <div className="px-2 py-6 text-center text-2xs text-muted-foreground">
               {t("chatPage.search.noMatches", {
                 query: agentFilter.trim(),

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { createPortal } from "react-dom";
 
 import { cn } from "@/lib/utils";
 
@@ -57,7 +58,7 @@ export function SuggestionPopover({
   );
 
   if (!footer) {
-    return (
+    return createPortal(
       <div
         id={listboxId}
         data-testid={testId}
@@ -67,11 +68,12 @@ export function SuggestionPopover({
         className={cn(popoverClassName, "overflow-y-auto overscroll-contain")}
       >
         {children(activeRef)}
-      </div>
+      </div>,
+      document.body,
     );
   }
 
-  return (
+  return createPortal(
     <div
       data-testid={testId}
       style={style}
@@ -86,6 +88,7 @@ export function SuggestionPopover({
         {children(activeRef)}
       </div>
       {footer}
-    </div>
+    </div>,
+    document.body,
   );
 }

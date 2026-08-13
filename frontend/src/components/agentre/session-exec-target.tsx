@@ -192,6 +192,10 @@ export type NewSessionExecTargetLineProps = {
   projectId: number;
   overrideBackendId: number | null;
   onOverride: (agentBackendId: number | null) => void;
+  /** 把改选后实际生效档的 backend type 报给父级（改选场景非空）。父级据此推导
+      permission mode caps —— 空会话态改选到另一个类型的后端后，mode 的 allowed
+      集合/默认值必须跟随实际后端，否则首发会带上旧类型才合法的 mode。 */
+  onOverrideBackendType?: (backendType: string | null) => void;
 };
 
 export function NewSessionExecTargetLine(props: NewSessionExecTargetLineProps) {
@@ -200,6 +204,10 @@ export function NewSessionExecTargetLine(props: NewSessionExecTargetLineProps) {
     props.agentId,
     props.projectId,
   );
+
+  // 改选浮层的开合状态由本组件持有：选中某一档后立即关闭（用户点完即可直接发问，
+  // 不用再点外部/Escape）。Radix Popover 默认不受控，内容里的点击不会自动收起。
+  const [pickerOpen, setPickerOpen] = React.useState(false);
 
   const defaultCandidate = candidates.find((c) => c.available);
   const overrideCandidate = props.overrideBackendId
@@ -219,6 +227,15 @@ export function NewSessionExecTargetLine(props: NewSessionExecTargetLineProps) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, props.overrideBackendId, overrideCandidate]);
+
+  // 把「改选后实际生效档的 backend type」报给父级：父级据此推导 permission mode
+  // caps / pill。改选到另一个类型的后端时（如 claudecode 主后端 → codex 后端），
+  // 不跟随的话首发会带上旧类型才合法的 mode（acceptEdits/bypassPermissions）被后端
+  // 拒绝；跟随后 pill 只显示新后端的 mode 集合，Send payload 也带合法值。
+  React.useEffect(() => {
+    props.onOverrideBackendType?.(overrideCandidate?.backendType ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.onOverrideBackendType, overrideCandidate?.backendType]);
 
   if (candidates.length <= 1) return null;
 
@@ -277,7 +294,7 @@ export function NewSessionExecTargetLine(props: NewSessionExecTargetLineProps) {
           远端档把设备名以弱化小字缀在后头（不再用"× 设备名"）。chip 的配色/图
           标仍按机器归属走，与命令面板/聊天头/成员页保持同一套视觉；掉档的加重
           由整行底色 + 措辞 + 原因承担。 */}
-      <Popover>
+      <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
         <PopoverTrigger asChild>
           <ExecTargetChipButton
             candidate={effective}
@@ -291,7 +308,10 @@ export function NewSessionExecTargetLine(props: NewSessionExecTargetLineProps) {
             agentId={props.agentId}
             candidates={candidates}
             selectedId={effective.agentBackendId}
-            onPick={props.onOverride}
+            onPick={(id) => {
+              props.onOverride(id);
+              setPickerOpen(false);
+            }}
           />
         </PopoverContent>
       </Popover>

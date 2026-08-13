@@ -10,25 +10,21 @@ export type ProviderType = "anthropic" | "openai-chat" | "openai-response";
 export type ProviderTypeMeta = {
   badge: string;
   defaultBaseUrl: string;
-  tone: "dark" | "green" | "blue";
 };
 
 export const providerTypeMeta: Record<ProviderType, ProviderTypeMeta> = {
   anthropic: {
     badge: "A",
     defaultBaseUrl: "https://api.anthropic.com",
-    tone: "dark",
   },
   "openai-chat": {
     // 两个 openai 变体首字母都是 O，用 OC/OR 区分。
     badge: "OC",
     defaultBaseUrl: "https://api.openai.com/v1",
-    tone: "green",
   },
   "openai-response": {
     badge: "OR",
     defaultBaseUrl: "https://api.openai.com/v1",
-    tone: "blue",
   },
 };
 
@@ -40,18 +36,6 @@ export const providerTypeOrder: ProviderType[] = [
 
 export function isProviderType(value: string): value is ProviderType {
   return value in providerTypeMeta;
-}
-
-export function badgeToneClass(tone: ProviderTypeMeta["tone"]): string {
-  switch (tone) {
-    case "green":
-      return "bg-agent-3 text-primary-foreground";
-    case "blue":
-      return "bg-agent-2 text-primary-foreground";
-    case "dark":
-    default:
-      return "bg-foreground text-background";
-  }
 }
 
 export function errMessage(err: unknown): string {

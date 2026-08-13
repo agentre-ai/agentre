@@ -323,6 +323,163 @@ func TestDriveAutonomousTurn_TruncatedTurn_PersistsTerminatedNotCompleted(t *tes
 	})
 }
 
+// TestDriveAutonomousTurn_BrowserInitiatedRound_PersistsUserMessageWithSource 是 R18 的
+// 基石:浏览器在一条空闲会话上「开新一轮」跑起的一轮,daemon 在事件流开头注入一条
+// user_message 标记(带发起方设备身份)。driveAutonomousTurn 据它在转录里落成
+// **一行用户消息 + 一行 assistant**,用户消息带来源标识 —— 不退化成纯 assistant 轮
+// (「没有提问的回复」),与真·自主续轮在界面上可区分。
+func TestDriveAutonomousTurn_BrowserInitiatedRound_PersistsUserMessageWithSource(t *testing.T) {
+	convey.Convey("浏览器发起的一轮落成用户消息 + assistant,用户消息带来源标识", t, func() {
+		m := setupChatTest(t)
+		ctx := m.ctx
+
+		sess := &chat_entity.Session{ID: 100, AgentID: 7, AgentStatus: "idle", ProviderSessionID: "sess-abc"}
+		be := &agent_backend_entity.AgentBackend{ID: 12, Type: "claudecode"}
+
+		m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil).AnyTimes()
+
+		var createdRoles []string
+		var createdUser *chat_entity.Message
+		m.dbMock.ExpectBegin()
+		m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(5, nil)
+		m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+				createdRoles = append(createdRoles, msg.Role)
+				if msg.Role == "user" {
+					cp := *msg
+					createdUser = &cp
+				}
+				msg.ID = 2001 + int64(len(createdRoles))
+				return nil
+			}).Times(2)
+		m.session.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		m.dbMock.ExpectCommit()
+		m.message.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+		// 事件流开头是 daemon 注入的 user_message 标记,后面才是后端真正的事件。
+		evs := make(chan agentruntime.Event, 3)
+		evs <- agentruntime.UserMessageEvent{
+			Text:             "浏览器发来的消息",
+			SourceDevice:     "sha256:web-device",
+			SourceDeviceName: "Chrome · macOS",
+		}
+		evs <- agentruntime.TextDelta{Text: "reply"}
+		close(evs)
+		at := agentruntime.AutonomousTurn{
+			Events:  evs,
+			Result:  &agentruntime.RunResult{ProviderSessionID: "sess-abc", Model: "claude-sonnet-4-6"},
+			Trigger: "catch_up",
+		}
+
+		chat_svc.DriveAutonomousTurnForTest(ctx, m.svc, 100, be, at)
+
+		convey.Convey("落库两条消息:先 user 后 assistant(顺序正确)", func() {
+			assert.Equal(t, []string{"user", "assistant"}, createdRoles)
+			if assert.NotNil(t, createdUser) {
+				assert.Equal(t, "user", createdUser.Role)
+				assert.Equal(t, 5, createdUser.Seq)
+				assert.Contains(t, createdUser.BlocksJSON, "浏览器发来的消息")
+			}
+		})
+
+		var started *chat_svc.ChatStreamEvent
+		for _, ev := range m.events {
+			p, ok := ev.Payload.(chat_svc.ChatStreamEvent)
+			if !ok {
+				continue
+			}
+			if p.Kind == chat_svc.StreamAutonomousStarted {
+				cp := p
+				started = &cp
+			}
+		}
+
+		convey.Convey("StreamAutonomousStarted 携带用户消息且带来源标识(R18 守卫)", func() {
+			require.NotNil(t, started, "应 emit StreamAutonomousStarted")
+			require.Len(t, started.UserMessages, 1, "浏览器发起的一轮必须带 user 行,不能退化成纯 assistant 轮")
+			um := started.UserMessages[0]
+			assert.Equal(t, "user", um.Role)
+			assert.Equal(t, "sha256:web-device", um.SourceDevice)
+			assert.Equal(t, "Chrome · macOS", um.SourceDeviceName)
+			assert.Equal(t, "浏览器发来的消息", um.Blocks[0].Text)
+		})
+
+		convey.Convey("stream chunk 落在 assistant 上(用户文本不进 assistant)", func() {
+			var chunk string
+			for _, ev := range m.events {
+				p, ok := ev.Payload.(chat_svc.ChatStreamEvent)
+				if !ok {
+					continue
+				}
+				if p.Kind == chat_svc.StreamChunk {
+					chunk += p.Delta
+				}
+			}
+			assert.Equal(t, "reply", chunk)
+		})
+	})
+}
+
+// TestDriveAutonomousTurn_BrowserInitiatedRound_NameMissing_FallsBackWithoutBlocking 是
+// R19 的守卫:发起方没有声明显示名时,用户消息照常落库落地,来源标识回退由前端处理
+// (sourceDeviceName 为空 → 前端回退指纹),不阻塞消息落地。
+func TestDriveAutonomousTurn_BrowserInitiatedRound_NameMissing_FallsBackWithoutBlocking(t *testing.T) {
+	convey.Convey("名字缺失不阻塞:仍落 user + assistant,来源设备指纹在", t, func() {
+		m := setupChatTest(t)
+		ctx := m.ctx
+
+		sess := &chat_entity.Session{ID: 100, AgentID: 7, AgentStatus: "idle", ProviderSessionID: "sess-abc"}
+		be := &agent_backend_entity.AgentBackend{ID: 12, Type: "claudecode"}
+
+		m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil).AnyTimes()
+
+		var createdRoles []string
+		m.dbMock.ExpectBegin()
+		m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(7, nil)
+		m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+				createdRoles = append(createdRoles, msg.Role)
+				msg.ID = 3001 + int64(len(createdRoles))
+				return nil
+			}).Times(2)
+		m.session.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		m.dbMock.ExpectCommit()
+		m.message.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+		evs := make(chan agentruntime.Event, 2)
+		evs <- agentruntime.UserMessageEvent{Text: "继续", SourceDevice: "sha256:web-device"}
+		close(evs)
+		at := agentruntime.AutonomousTurn{
+			Events:  evs,
+			Result:  &agentruntime.RunResult{ProviderSessionID: "sess-abc"},
+			Trigger: "catch_up",
+		}
+
+		chat_svc.DriveAutonomousTurnForTest(ctx, m.svc, 100, be, at)
+
+		convey.Convey("名字缺失仍落 user + assistant(不阻塞落地)", func() {
+			assert.Equal(t, []string{"user", "assistant"}, createdRoles)
+		})
+
+		var started *chat_svc.ChatStreamEvent
+		for _, ev := range m.events {
+			p, ok := ev.Payload.(chat_svc.ChatStreamEvent)
+			if !ok {
+				continue
+			}
+			if p.Kind == chat_svc.StreamAutonomousStarted {
+				cp := p
+				started = &cp
+			}
+		}
+		require.NotNil(t, started, "应 emit StreamAutonomousStarted")
+		if assert.Len(t, started.UserMessages, 1) {
+			assert.Equal(t, "sha256:web-device", started.UserMessages[0].SourceDevice)
+			assert.Empty(t, started.UserMessages[0].SourceDeviceName, "名字缺失保持空,由前端回退指纹")
+		}
+	})
+}
+
 // TestDriveAutonomousTurn_PersistFailure_FlipsErrorEmitsAndInterrupts 覆盖落库
 // 最终失败(新建 assistant 消息的事务失败)时的四个可观察结果(design decisions
 // 6/7/9 + spec"自主续轮落库失败时的可观察结果"):会话翻 error 并持久化、经会话级

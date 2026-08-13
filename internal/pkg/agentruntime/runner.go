@@ -80,6 +80,10 @@ const (
 	EventRuntimeStatus EventKind = "runtime_status"
 	EventError         EventKind = "error"
 	EventDone          EventKind = "done"
+	// EventUserMessage (R18):daemon 在「开新一轮」事件流开头注入的发起方标记(见
+	// event.go 的 UserMessageEvent)。它是 wire 事件流的一部分,走既有的
+	// runtime.event 通知 / journal / 补齐,不需要额外的通知通道。
+	EventUserMessage EventKind = "user_message"
 )
 
 // ToolUseEvent EventToolUseStart / End 携带。Input 是原始 JSON；chat_svc 自己 unmarshal 到 map。
@@ -404,15 +408,28 @@ type RunRequest struct {
 	// 兜底（保留老的 Agent 级目录行为）。chat_svc 在拼 RunRequest 时调
 	// project_svc.ResolveSessionCwd 解析 project 维度的 cwd 注入此字段，避免
 	// agentruntime 反向依赖 project_svc。
-	Cwd               string
+	Cwd string
+	// Title 是该会话此刻的标题（R7）。桌面端每轮携带当前值，远端 daemon 幂等覆盖；
+	// 本地 runner 不用它。改名后最多滞后一轮生效。
+	Title string
+	// AgentSyncID 是该会话所属 Agent 的账号级同步标识（块 1 决策 3 的 ULID，不是本地
+	// 自增 agent_id）。远端 daemon 落库并在会话列表里回传（R5 / R7）；本地 runner 不用它。
+	AgentSyncID       string
 	SystemPrompt      string
 	ProviderSessionID string // 空 = 新建；非空 = resume
-	UserText          string
-	UserBlocks        []blocks.ContentBlock // 非空时为本轮用户输入权威 blocks；UserText 仅保留文本索引/兼容
-	History           []HistoryMessage      // 仅 builtin
-	GatewayURL        string                // 关联 provider 的 CLI 后端要；builtin 不用
-	GatewayToken      string                // 同上，一次性 token
-	Compact           bool                  // Codex 原生 compact turn；不创建普通 user prompt
+	// FreshSession 声明这一轮**必须起全新会话**(挂账修复 2026-08-11):即使远端 daemon
+	// 在自家落库里存了这条会话的 provider_session_id,也不许续。决策 8 之后「空
+	// ProviderSessionID」被重载成「用落库那份续话」,而 regenerate 无锚点 / provider 会话
+	// 失效恢复这两条路径的空字段本意是「全新」—— 两者在 wire 上不可区分,daemon 拿旧 id
+	// 顶掉就失效。chat_svc 在本地 sess.ProviderSessionID 为空(即没有可续的原生会话)时置
+	// true;本地 runner 忽略它,只有远端 daemon 的续话逻辑读它。
+	FreshSession bool
+	UserText     string
+	UserBlocks   []blocks.ContentBlock // 非空时为本轮用户输入权威 blocks；UserText 仅保留文本索引/兼容
+	History      []HistoryMessage      // 仅 builtin
+	GatewayURL   string                // 关联 provider 的 CLI 后端要；builtin 不用
+	GatewayToken string                // 同上，一次性 token
+	Compact      bool                  // Codex 原生 compact turn；不创建普通 user prompt
 
 	// MCPServers 非空 = 给本轮 CLI 注入额外 MCP tool server。仅声明 CapMCPTools
 	// 的 runtime(claudecode/codex)消费; 其它 runtime 忽略。org/subagent/hook 等工具经此注入。

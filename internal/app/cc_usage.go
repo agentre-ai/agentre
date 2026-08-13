@@ -76,6 +76,10 @@ func (a *App) buildCCUsageResolver() cc_usage_svc.FetcherResolver {
 	}
 }
 
+// ccUsagePollInterval 是 cc_usage_svc 后台轮询配额(本地 + 每个在线远端 device)
+// 的间隔。桌面端驱动,agentred 只响应 claudecode.usage RPC 不主动拉。
+const ccUsagePollInterval = 5 * time.Minute
+
 // startCCUsage 在 App.Startup 末尾调用。挂 emitter / resolver / 本地 ticker,
 // 5 秒后异步首探本地 + 所有已配对在线的远端 device。
 // 返回 cancel 让 Shutdown 停所有 ticker。
@@ -85,7 +89,7 @@ func (a *App) startCCUsage() func() {
 		wailsruntime.EventsEmit(a.ctx, "cc_usage:update", p)
 	})
 	mgr.SetFetcherResolver(a.buildCCUsageResolver())
-	mgr.StartTicker(a.ctx, cc_usage_svc.LocalKey, 2*time.Minute)
+	mgr.StartTicker(a.ctx, cc_usage_svc.LocalKey, ccUsagePollInterval)
 
 	go func() {
 		select {
@@ -102,7 +106,7 @@ func (a *App) startCCUsage() func() {
 				for _, v := range views {
 					if v.Online {
 						key := cc_usage_svc.DeviceKey(fmt.Sprintf("remote:%d", v.ID))
-						mgr.StartTicker(a.ctx, key, 2*time.Minute)
+						mgr.StartTicker(a.ctx, key, ccUsagePollInterval)
 						mgr.Probe(a.ctx, key)
 					}
 				}
@@ -119,7 +123,7 @@ func (a *App) onRemoteDeviceState(id int64, online bool) {
 	key := cc_usage_svc.DeviceKey(fmt.Sprintf("remote:%d", id))
 	mgr := cc_usage_svc.CCUsage()
 	if online {
-		mgr.StartTicker(a.ctx, key, 2*time.Minute)
+		mgr.StartTicker(a.ctx, key, ccUsagePollInterval)
 		go mgr.Probe(a.ctx, key)
 		return
 	}

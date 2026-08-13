@@ -3,7 +3,9 @@ package chat_svc
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/stretchr/testify/assert"
@@ -101,6 +103,384 @@ func TestReconnectRemote_SwapsLeaseAndKeepsCacheEntry(t *testing.T) {
 	svc.remoteMu.Unlock()
 	assert.Same(t, entry, still, "重连后 cache entry 必须还在")
 	assert.Same(t, lease2, swapped, "entry 必须持有新 lease")
+}
+
+// Given 上一轮已经把引用全还了、而那条池化连接**还活着**,When 同一台设备再借一次,
+// Then 交出的必须还是**同一个** *remote.Runtime。
+//
+// 它是这条连接上五类通知 handler 的属主,也是自主续轮消费方(startAutonomousWatcher,
+// 每会话只订阅一次)订阅的那个实例。为同一条连接另造一个 runtime,新实例会把 handler
+// 抢注过去,而消费方还挂在旧实例上 —— 别的端在这台机器上发起的一轮于是被投进一个没有
+// 消费方的补齐轮:什么都不落库(R18),同时新实例的会话表是空的,对那条会话提交工具
+// 决议当场 ErrNoActiveTurn(R10)。
+func TestBorrowRemoteRuntime_ReusesRuntimeWhilePooledConnLives(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	// 两条 lease 出自**同一个池 entry**:同一条连接、同一个 Closed() 信号。
+	client := &noopDaemonClient{}
+	alive := make(chan struct{})
+	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
+	lease1 := mock_remote_device_svc.NewMockLease(ctrl)
+	lease2 := mock_remote_device_svc.NewMockLease(ctrl)
+	for _, l := range []*mock_remote_device_svc.MockLease{lease1, lease2} {
+		l.EXPECT().Client().Return(client).AnyTimes()
+		l.EXPECT().Closed().Return(alive).AnyTimes()
+		l.EXPECT().Release().AnyTimes()
+	}
+	gomock.InOrder(
+		pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(lease1, nil),
+		pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(lease2, nil),
+	)
+
+	svc := &chatSvc{emitter: NoopEmitter{}}
+	svc.setConnPoolForTest(pool)
+	be := &agent_backend_entity.AgentBackend{DeviceID: "7"}
+
+	first, release, err := svc.borrowRemoteRuntimeForTurn(context.Background(), be, 100)
+	require.NoError(t, err)
+	release() // 这一轮跑完:引用归零,lease 还给池(空闲回收照常计时)
+	assert.Zero(t, svc.remoteRuntimeCount(7), "引用必须真的归零 —— 否则这条断言什么都没测")
+
+	second, _, err := svc.borrowRemoteRuntimeForTurn(context.Background(), be, 100)
+	require.NoError(t, err)
+	assert.Same(t, first, second,
+		"连接还活着时,同一台设备只能有一个 *remote.Runtime —— 第二个会抢走它的通知 handler")
+
+	svc.remoteMu.Lock()
+	entry := svc.remoteCache[7]
+	svc.remoteMu.Unlock()
+	require.NotNil(t, entry)
+	assert.Same(t, lease2, entry.lease, "重新借用必须把新 lease 装进同一个 entry")
+}
+
+// Given 那条池化连接在两轮之间被回收了(空闲超时 / daemon 掉线),When 同一台设备再
+// 借一次,Then 必须**另造**一个 *remote.Runtime —— 旧那个的连接已经死了,沿用它等于
+// 把这一轮发给一条不存在的 socket。
+func TestBorrowRemoteRuntime_RebuildsRuntimeAfterPooledConnEvicted(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	evicted := make(chan struct{})
+	close(evicted) // 第一条 lease 背后的池 entry 已失效
+	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
+	lease1 := mock_remote_device_svc.NewMockLease(ctrl)
+	lease2 := mock_remote_device_svc.NewMockLease(ctrl)
+	lease1.EXPECT().Client().Return(&noopDaemonClient{}).AnyTimes()
+	lease1.EXPECT().Closed().Return(evicted).AnyTimes()
+	lease1.EXPECT().Release().AnyTimes()
+	lease2.EXPECT().Client().Return(&noopDaemonClient{}).AnyTimes()
+	lease2.EXPECT().Closed().Return(make(chan struct{})).AnyTimes()
+	lease2.EXPECT().Release().AnyTimes()
+	gomock.InOrder(
+		pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(lease1, nil),
+		pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(lease2, nil),
+	)
+
+	svc := &chatSvc{emitter: NoopEmitter{}}
+	svc.setConnPoolForTest(pool)
+	be := &agent_backend_entity.AgentBackend{DeviceID: "7"}
+
+	first, release, err := svc.borrowRemoteRuntimeForTurn(context.Background(), be, 100)
+	require.NoError(t, err)
+	release()
+
+	second, _, err := svc.borrowRemoteRuntimeForTurn(context.Background(), be, 100)
+	require.NoError(t, err)
+	assert.NotSame(t, first, second, "连接已被回收,不能再沿用挂在它上面的 runtime")
+}
+
+// Given 上一条池化连接已经被摘出池子的表、但它的 Closed() 还没来得及关闭(池的
+// tryEvictIdle 与 watchClient 都是**先** delete 再 close),When 落在这两步之间的
+// 那次 Borrow 因此拨到了一条**新连接**,Then 必须另造一个 *remote.Runtime。
+//
+// 沿用旧那个等于把这一轮发给旧连接的 client —— 池下一刻就把那条 socket 关了,这一轮
+// 的每个 RPC 都打在已关的连接上。所以判据不能是「上一条 lease 还没关闭」(那只是
+// 「还没走到 close 那一行」),必须是「这次借到的就是同一条池化连接」。
+func TestBorrowRemoteRuntime_RebuildsWhenBorrowLandsOnAnotherPooledConn(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	// 两条 lease 出自**两个不同的池 entry**,而旧那条的信号此刻都还没关闭 ——
+	// 这正是 delete 与 close 之间那个窗口的样子。
+	oldConn := make(chan struct{})
+	newConn := make(chan struct{})
+	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
+	lease1 := mock_remote_device_svc.NewMockLease(ctrl)
+	lease2 := mock_remote_device_svc.NewMockLease(ctrl)
+	lease1.EXPECT().Client().Return(&noopDaemonClient{}).AnyTimes()
+	lease1.EXPECT().Closed().Return(oldConn).AnyTimes()
+	lease1.EXPECT().Release().AnyTimes()
+	lease2.EXPECT().Client().Return(&noopDaemonClient{}).AnyTimes()
+	lease2.EXPECT().Closed().Return(newConn).AnyTimes()
+	lease2.EXPECT().Release().AnyTimes()
+	gomock.InOrder(
+		pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(lease1, nil),
+		pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(lease2, nil),
+	)
+
+	svc := &chatSvc{emitter: NoopEmitter{}}
+	svc.setConnPoolForTest(pool)
+	be := &agent_backend_entity.AgentBackend{DeviceID: "7"}
+
+	first, release, err := svc.borrowRemoteRuntimeForTurn(context.Background(), be, 100)
+	require.NoError(t, err)
+	release()
+
+	second, _, err := svc.borrowRemoteRuntimeForTurn(context.Background(), be, 100)
+	require.NoError(t, err)
+	assert.NotSame(t, first, second,
+		"借到的是另一条池化连接,挂在旧连接上的 runtime 不能再用")
+}
+
+// Given 引用归零的归还与同一台设备上的下一次借用同时发生,When 归还方去还 lease,
+// Then 它还的必须是**自己解锁前手上那条**。
+//
+// entry 现在在引用归零后留在 cache 里(这正是本轮改的形态),于是并发的那次借用会走
+// 冷路径(fast path 因 leased==false 落空),Borrow 一条新 lease,并在 adoptLease 里
+// 把 entry.lease 换掉 —— 而归还方此刻正好在 Unlock 之后、Release 之前读它。读换过之后
+// 的那条会同时错两件事:entry.lease 上的数据竞争(go test -race 直接报),以及**还错
+// 人** —— 别人这一轮正用着的那条被提前还掉,自己那条的池引用则永远掉不下去,那条连接
+// 从此不再空闲回收。
+//
+// **判它的是 `go test -race`**:竞态本身是确定报得出来的(两次访问之间没有任何同步
+// 边),而「还错人」是那次无同步读的代价 —— 它要不要当场兑现取决于调度,不能指望不带
+// -race 的一遍跑到。下面那两条不变量断言是第二道网:一旦哪天变成必然发生的错还,
+// 不带 -race 也拦得住。
+//
+// 替身是手写的而不是 mockgen 的:gomock 的 controller 在**每一次**打桩调用上都过同一
+// 把锁,归还方的 Release 与借用方的 Borrow 因此被串成一条 happens-before 边,-race
+// 看到的是「有序的」两次访问 —— 真竞态会被这把锁整个盖住。下面这对替身在归还路径与
+// 借用路径之间不共享任何同步对象,竞态才暴露得出来。
+func TestReleaseRemoteRuntimeGeneration_ReleasesTheLeaseItHeld(t *testing.T) {
+	const rounds = 200
+	pool := &racePool{conn: make(chan struct{})} // 同一条池化连接:每次 Borrow 都落在它上面
+
+	svc := &chatSvc{emitter: NoopEmitter{}}
+	svc.setConnPoolForTest(pool)
+	be := &agent_backend_entity.AgentBackend{DeviceID: "7"}
+
+	for range rounds {
+		_, release, err := svc.borrowRemoteRuntimeForTurn(context.Background(), be, 100)
+		require.NoError(t, err)
+
+		// 归还与另一条会话的借用同时发生。
+		next := make(chan func(), 1)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			release()
+		}()
+		go func() {
+			defer wg.Done()
+			_, rel, berr := svc.borrowRemoteRuntimeForTurn(context.Background(), be, 101)
+			if berr != nil {
+				next <- func() {}
+				return
+			}
+			next <- rel
+		}()
+		wg.Wait()
+		(<-next)()
+	}
+
+	var orphaned, doubled int
+	for _, l := range pool.handedOut() {
+		switch n := l.releases.Load(); {
+		case n == 0:
+			orphaned++
+		case n > 1:
+			doubled++
+		}
+	}
+	assert.Zero(t, orphaned,
+		"%d 条 lease 从来没被归还 —— 它们的池引用永远掉不下去,那条连接再也不会空闲回收",
+		orphaned)
+	assert.Zero(t, doubled,
+		"%d 条 lease 被归还了不止一次 —— 归还方还的是别人装进去的那条",
+		doubled)
+}
+
+// Given 同一台设备上两条冷路径同时开工(cache 里还没有它的条目),When 两边都查过
+// 「没有可沿用的条目」之后才各自去装自己刚建的那个,Then 交出的必须是**同一个**
+// *remote.Runtime。
+//
+// 「查」与「装」分成两次上锁的话,后装的那个把先装的整个覆盖掉,代价有两条:
+//
+//   - 被覆盖的那个 entry 的 lease 从此没人还 —— 它那一轮的 release 按 deviceID 查
+//     cache,查到的是覆盖它的那个,generation 比不上就直接返回。那条池化连接的池引用
+//     永远掉不下去,再也不会空闲回收;
+//   - 两个 runtime 同时挂在**同一条**连接上抢注同名 handler,先来的那一轮的事件会被
+//     路由到不认识它的那个实例然后静默丢弃(R18),对那条会话提交工具决议当场
+//     ErrNoActiveTurn(R10)—— 正是本轮要修掉的那个形态。
+//
+// 怎么把那个窗口从「偶尔」压成「每轮都穿」——两件事叠起来,都是真实调度做得到的:
+//
+//  1. lease.Client() 正好被调在「查」之后、「装」之前,让每一条冷路径在那里合流一次,
+//     于是它们都已经查过 cache、都还没装进去(合流点带超时:某一轮少一条冷路径也不
+//     吊死);
+//  2. 另起一条 goroutine 反复占住 remoteMu 一小会儿,把它压进**饥饿模式** —— Go 的
+//     sync.Mutex 在某个等待方等满 1ms 后改成 FIFO 直接交棒,抢锁的一方不再插队。
+//     「查」完放开的那一手因此必然被排在队里的另一条冷路径接走。生产上这只是「锁很忙 /
+//     持锁方被调度出去」的日常样子,不是什么特殊构造。
+func TestBorrowRemoteRuntime_ConcurrentColdPathsShareOneRuntime(t *testing.T) {
+	const rounds, callers = 10, 8
+	for range rounds {
+		// 每轮一个全新的 svc:冷路径要的正是「cache 里还没有这台设备」。
+		pool := &coldPathPool{conn: make(chan struct{}), gate: newMeetingPoint(callers)}
+		svc := &chatSvc{emitter: NoopEmitter{}}
+		svc.setConnPoolForTest(pool)
+		be := &agent_backend_entity.AgentBackend{DeviceID: "7"}
+
+		stop := make(chan struct{})
+		var hog sync.WaitGroup
+		hog.Add(1)
+		go func() {
+			defer hog.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				svc.remoteMu.Lock()
+				time.Sleep(2 * time.Millisecond)
+				svc.remoteMu.Unlock()
+			}
+		}()
+
+		got := make([]*remote.Runtime, callers)
+		rel := make([]func(), callers)
+		errs := make([]error, callers)
+		var wg sync.WaitGroup
+		wg.Add(callers)
+		for i := range got {
+			go func() {
+				defer wg.Done()
+				got[i], rel[i], errs[i] = svc.borrowRemoteRuntimeForTurn(
+					context.Background(), be, int64(100+i))
+			}()
+		}
+		wg.Wait()
+		close(stop)
+		hog.Wait()
+
+		for i := range got {
+			require.NoError(t, errs[i])
+			require.Same(t, got[0], got[i],
+				"同一条池化连接上只能有一个 *remote.Runtime —— 第二个会抢走它的通知 handler")
+		}
+
+		// 被覆盖的那个 entry 的 lease 是还不掉的(那一轮的 release 按 deviceID 查
+		// cache,查到的是覆盖它的那个,generation 比不上就直接返回)。这里把每一轮都
+		// 正常收尾,再钉一次那条代价。
+		for _, r := range rel {
+			r()
+		}
+		for _, l := range pool.handedOut() {
+			assert.NotZero(t, l.releases.Load(),
+				"有 lease 从来没被归还 —— 它的池引用永远掉不下去,那条连接再也不会空闲回收")
+		}
+	}
+}
+
+// meetingPoint 让 want 条 goroutine 在同一处合流;到场的不足 want 条时按超时放行,
+// 不把测试吊死。
+type meetingPoint struct {
+	mu   sync.Mutex
+	n    int
+	want int
+	open chan struct{}
+}
+
+func newMeetingPoint(want int) *meetingPoint {
+	return &meetingPoint{want: want, open: make(chan struct{})}
+}
+
+func (m *meetingPoint) arrive() {
+	m.mu.Lock()
+	m.n++
+	if m.n == m.want {
+		close(m.open)
+	}
+	m.mu.Unlock()
+	select {
+	case <-m.open:
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// coldPathLease 在 Client() 上合流一次 —— 冷路径正是在那之后才去装自己建的 entry。
+type coldPathLease struct {
+	conn     chan struct{}
+	gate     *meetingPoint
+	releases atomic.Int32
+}
+
+func (l *coldPathLease) Client() agentruntime.DaemonClientPort {
+	l.gate.arrive()
+	return &noopDaemonClient{}
+}
+func (l *coldPathLease) Closed() <-chan struct{} { return l.conn }
+func (l *coldPathLease) Release()                { l.releases.Add(1) }
+
+// coldPathPool 每次 Borrow 都交出同一条池化连接上的一条新 lease。
+type coldPathPool struct {
+	conn chan struct{}
+	gate *meetingPoint
+	mu   sync.Mutex
+	out  []*coldPathLease
+}
+
+func (p *coldPathPool) Borrow(context.Context, int64) (remote_device_svc.Lease, error) {
+	l := &coldPathLease{conn: p.conn, gate: p.gate}
+	p.mu.Lock()
+	p.out = append(p.out, l)
+	p.mu.Unlock()
+	return l, nil
+}
+
+func (p *coldPathPool) Close() error { return nil }
+
+func (p *coldPathPool) handedOut() []*coldPathLease {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]*coldPathLease(nil), p.out...)
+}
+
+// raceLease 记账只落在自己身上(原子量各自独立),归还方与借用方之间因此没有同步边。
+type raceLease struct {
+	conn     chan struct{}
+	releases atomic.Int32
+}
+
+func (l *raceLease) Client() agentruntime.DaemonClientPort { return &noopDaemonClient{} }
+func (l *raceLease) Closed() <-chan struct{}               { return l.conn }
+func (l *raceLease) Release()                              { l.releases.Add(1) }
+
+// racePool 每次 Borrow 都交出同一条池化连接上的一条新 lease。mu 只在借用侧被拿,
+// 归还侧一次都不碰它 —— 否则又会把要观察的那条竞态盖住。
+type racePool struct {
+	conn chan struct{}
+	mu   sync.Mutex
+	out  []*raceLease
+}
+
+func (p *racePool) Borrow(context.Context, int64) (remote_device_svc.Lease, error) {
+	l := &raceLease{conn: p.conn}
+	p.mu.Lock()
+	p.out = append(p.out, l)
+	p.mu.Unlock()
+	return l, nil
+}
+
+func (p *racePool) Close() error { return nil }
+
+func (p *racePool) handedOut() []*raceLease {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]*raceLease(nil), p.out...)
 }
 
 // Given 某设备的 *remote.Runtime 已在 cache 里(第一条会话建的),When 第二条会话

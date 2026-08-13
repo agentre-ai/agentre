@@ -79,6 +79,7 @@ import type { PlanActionStream } from "./canonical-tool/props";
 import {
   ChatComposer,
   ChatTranscript,
+  type ChatComposerHandle,
   type ChatComposerSubmit,
   type ChatTranscriptHandle,
   type ChatImageAttachment,
@@ -668,6 +669,9 @@ function ChatPanel({
   const currentQueued = useQueuedMessagesStore(
     (s) => s.queuedBySession.get(sessionId) ?? null,
   );
+  // 回合收尾未消费被暂存的排队条目(最多一条)。只有它与当前 session 匹配时才传给
+  // QueuedMessagesBar —— 别 tab 的丢弃横幅不该贴在本 tab 的 composer 上。
+  const droppedQueue = useQueuedMessagesStore((s) => s.dropped);
   // doneTick / lastDoneEvent 从 session-status-store 读取。
   // 每次 turn 结束（done/error/aborted/closed/steer_consumed）bumpDone 自增 doneTick，
   // ChatPanel 的 lastSeenDoneTickRef effect 据此触发 reload + 副作用。
@@ -695,6 +699,11 @@ function ChatPanel({
     kind: "error" | "info";
     text: string;
     detail?: string;
+    // 发送失败草稿保留后的补救动作:Retry 重发同一条消息,Discard 清掉恢复的草稿。
+    actions?: {
+      retry: () => void;
+      discard: () => void;
+    };
   } | null>(null);
   // 「编辑用户消息」：点编辑后把目标消息文本直接载入 Composer。带 sessionId 在切换会话
   // 时自动失效，免得弄个 useEffect 在会话切换时手动 setState 一遍。
@@ -714,14 +723,28 @@ function ChatPanel({
   const [execTargetOverride, setExecTargetOverride] = React.useState<
     number | null
   >(null);
+  // 改选后生效档的 backend type（由 NewSessionExecTargetLine 报上来）。新建会话且
+  // 手动指定了执行目标时，permission mode 的 allowed 集合/默认值是 runtime 维度的，
+  // 必须跟随实际后端而不是 agent 主后端 —— 否则从 claudecode 主后端改到 codex 后端
+  // 后，pill 与 Send payload 还会带上 claudecode 才合法的 mode。
+  const [overrideBackendType, setOverrideBackendType] = React.useState<
+    string | null
+  >(null);
 
   const {
     session,
     messages,
     setMessages,
+    loading: sessionLoading,
     error: sessionError,
     reload: reloadSession,
   } = useChatSession(sessionId);
+  // ChatComposer 命令式句柄:doSend 失败时用它恢复草稿（restoreDraft）/ 丢弃草稿
+  // （clearDraft）。ChatComposer 内部已清空输入框,不恢复用户刚打的内容会永久丢失。
+  const composerRef = React.useRef<ChatComposerHandle>(null);
+  // 发送 RPC 在途标记:传给 ChatComposer 让发送按钮禁用 + spinner（乐观反馈的
+  // 轻量实现;真正的乐观气泡需要临时行回收,在本文件消息模型下风险过高,见任务说明）。
+  const [sendInFlight, setSendInFlight] = React.useState(false);
   const ensuredLocalCommandSessionRef = React.useRef<{
     agentId: number;
     projectId: number;
@@ -864,9 +887,16 @@ function ChatPanel({
         assistantMessageId: amsg.id,
         streamStartedAt: Date.now(),
       });
-      setMessages((prev) =>
-        prev.some((m) => m.id === amsg.id) ? prev : [...prev, amsg],
-      );
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === amsg.id)) return prev;
+        // R18:浏览器在空闲会话上「开新一轮」跑起的一轮,daemon 把发起方用户消息随
+        // StreamAutonomousStarted 的 userMessages 带出 —— 先插 user 行再插 assistant,
+        // 否则桌面端看到的又是「没有提问的回复」。来源标识在消息 DTO 上,转录渲染层
+        // 复用 chat.message.fromDevice 的 inline pill(本机消息无 sourceDevice,零变化)。
+        const userMsgs = ev.userMessages ?? [];
+        const additions = [...userMsgs, amsg];
+        return [...prev, ...additions];
+      });
     },
     [sessionId, openStream, setMessages],
   );
@@ -913,12 +943,8 @@ function ChatPanel({
     );
   }, [tree, sessionProjectId, currentSessionId]);
 
-  // 持久化的会话已被删（或加载失败），优雅通知父级回退
-  React.useEffect(() => {
-    if (sessionError && sessionId) {
-      onSessionDeleted?.();
-    }
-  }, [sessionError, sessionId, onSessionDeleted]);
+  // 持久化的会话加载失败不再静默关闭 tab:改为在转录区渲染错误卡（Retry / Close），
+  // 由用户决定去留。真正的删除流（confirmDelete）才调 onSessionDeleted。
 
   // ── Transcript 滚动跟随 ──
   // atBottomRef = 用户上次滚动后是否停在底部附近（32px 容差）。
@@ -1147,8 +1173,13 @@ function ChatPanel({
   // CLI mode 控件：claudecode 使用 permission mode，codex 使用 collaboration
   // mode 的 default/plan 子集。DB 是 source-of-truth；新会话还没有 sessionId
   // 时先保存在本地 state，首发 Send payload 会把 mode 写入新 session 行。
-  const activeBackendType =
-    session?.backendType ?? newSessionAgent?.backendType ?? "";
+  // 空会话态改选了执行目标时，以该档的 backend type 为准（overrideBackendType 由
+  // NewSessionExecTargetLine 报上来），caps / pill 与 Send 都跟随实际后端。
+  const newSessionBackendType =
+    execTargetOverride && overrideBackendType
+      ? overrideBackendType
+      : (newSessionAgent?.backendType ?? "");
+  const activeBackendType = session?.backendType ?? newSessionBackendType;
 
   // Claude Code OAuth 配额 HUD:仅 claudecode backend 显示。device 维度优先 session
   // (已存在的会话),sessionId=0 新建态回退到 newSessionAgent —— 否则远端 agent 起的
@@ -1238,13 +1269,14 @@ function ChatPanel({
     : t("chatPanel.localDevice");
   // caps 来自后端 runtime 的 Capabilities — UI 不再按 backendType 硬分支。
   // 已有 session 走 GetSessionCapabilities;新对话(sessionId<=0)按
-  // newSessionAgent.backendType 走 GetBackendCapabilities — 这样 PermissionModePill
-  // 在新对话首发前就能正确渲染并落定 backend 预设的 defaultPermissionMode。
+  // newSessionBackendType 走 GetBackendCapabilities — 这样 PermissionModePill
+  // 在新对话首发前就能正确渲染并落定 backend 预设的 defaultPermissionMode。改选
+  // 执行目标后 newSessionBackendType 跟随实际后端，caps 也随之更新。
   const { caps: sessionCaps } = useSessionCapabilities(
     sessionId > 0 ? sessionId : undefined,
   );
   const { caps: backendCaps } = useBackendCapabilities(
-    sessionId > 0 ? undefined : (newSessionAgent?.backendType ?? undefined),
+    sessionId > 0 ? undefined : newSessionBackendType || undefined,
   );
   const caps = sessionCaps ?? backendCaps;
   const isModeSwitchable = !!caps?.has("set_permission_mode");
@@ -1639,6 +1671,7 @@ function ChatPanel({
     // 发送消息时强制跟随到底部，无论用户当前在哪里
     atBottomRef.current = true;
     setShowBackToBottom(false);
+    setSendInFlight(true);
     // 调用点都是 void doSend(...) fire-and-forget；这里必须自吞错误成 notice，
     // 否则 RPC 失败时 UI 完全无声（用户在 composer 干瞪眼）。doEnqueue 的 fallback
     // 也走这里，set notice 后不 rethrow，正好顶替 doEnqueue 原本的 setNotice。
@@ -1703,11 +1736,35 @@ function ChatPanel({
     } catch (e: unknown) {
       const { msg, detail } = splitErrorDetail(e);
       console.error("[chat] send failed", e);
+      // 发送失败:ChatComposer 已清空输入框,这里把文本 + 图片原样放回(草稿保留),
+      // 并给 notice 挂 Retry / Discard 动作。Retry 用同一份 message 重新 doSend;
+      // Discard 清掉恢复的草稿。msg(headline)拼进 notice 文本让用户知道为什么失败,
+      // cause(detail)按既有规则只在存在时渲染成详情块。
+      composerRef.current?.restoreDraft(text, images);
+      const retryMessage: ChatComposerSubmit =
+        images.length > 0 ? { text, images } : { text };
       setNotice({
         kind: "error",
-        text: t("chatPanel.errors.send", { msg }),
+        text: `${t("chatPanel.sendRetry.restored")} · ${msg}`,
         detail,
+        actions: {
+          retry: () => {
+            setNotice(null);
+            void doSend(
+              targetSessionId,
+              agentId,
+              retryMessage,
+              permissionModeOverride,
+            );
+          },
+          discard: () => {
+            composerRef.current?.clearDraft();
+            setNotice(null);
+          },
+        },
       });
+    } finally {
+      setSendInFlight(false);
     }
   }
 
@@ -2707,6 +2764,7 @@ function ChatPanel({
                         projectId={newSessionContext?.projectId ?? 0}
                         overrideBackendId={execTargetOverride}
                         onOverride={setExecTargetOverride}
+                        onOverrideBackendType={setOverrideBackendType}
                       />
                     ) : null}
                   </div>
@@ -2718,43 +2776,122 @@ function ChatPanel({
                   onScroll={handleTranscriptScroll}
                   className="min-h-0 flex-1 overflow-auto px-7 py-6"
                 >
-                  <ChatTranscript
-                    ref={transcriptHandleRef}
-                    agentName={session?.agentName ?? "Agent"}
-                    agentColor={
-                      (session?.agentColor as AgentColor) || "agent-1"
-                    }
-                    cwd={session?.cwd}
-                    sessionId={session?.id ?? 0}
-                    scrollElement={transcriptElement}
-                    virtualize
-                    active={active}
-                    messages={messages}
-                    liveByMessageId={liveByMessageId}
-                    streaming={streaming}
-                    liveCompacting={liveCompacting}
-                    reconnecting={reconnecting}
-                    onContinue={() => {
-                      if (!session) return;
-                      void doSend(session.id, session.agentId, {
-                        text: "continue",
-                      });
-                    }}
-                    onRerun={(messageId) => void handleRegenerate(messageId)}
-                    onEdit={(messageId) => handleEdit(messageId)}
-                    onPlanActionStarted={handlePlanActionStarted}
-                    onStopSubagent={
-                      canStopBackgroundTask ? handleStopSubagent : undefined
-                    }
-                    onStopLocalCommand={handleStopLocalCommand}
-                    tabStateKey={scrollStateKey}
-                  />
-                  {showBackToBottom ? (
-                    <TranscriptJumpControl
-                      catchUp={catchUp}
-                      onJump={handleBackToBottom}
-                    />
-                  ) : null}
+                  {sessionError ? (
+                    (() => {
+                      const loadMsg = splitErrorDetail(sessionError).msg;
+                      // 后端 ChatSessionNotFound 的 zh 文案。不写字面量,用码点拼 ——
+                      // i18n 守卫会把任何 Han 字符串字面量当硬编码 UI copy 拦下;
+                      // 这是匹配动态后端错误文本,不是 UI copy,不进 t()。
+                      const chatSessionNotFoundZh = String.fromCharCode(
+                        0x4f1a, // 会
+                        0x8bdd, // 话
+                        0x4e0d, // 不
+                        0x5b58, // 存
+                        0x5728, // 在
+                      );
+                      const loadNotFound =
+                        loadMsg.includes("Chat session not found") ||
+                        loadMsg.includes(chatSessionNotFoundZh);
+                      return (
+                        <div
+                          role="alert"
+                          aria-label={t("chatPanel.loadError.title")}
+                          className="flex w-full max-w-measure flex-col gap-3 rounded-lg border border-status-error/40 bg-destructive-soft px-4 py-4"
+                        >
+                          <div className="flex items-center gap-2">
+                            <TriangleAlert
+                              className="size-4 shrink-0 text-status-error"
+                              aria-hidden="true"
+                            />
+                            <span className="text-sm font-semibold text-status-error">
+                              {t("chatPanel.loadError.title")}
+                            </span>
+                          </div>
+                          <p
+                            data-selectable-text="true"
+                            className="text-aux text-status-error"
+                          >
+                            {loadMsg}
+                          </p>
+                          {loadNotFound ? (
+                            <p className="text-meta text-status-error">
+                              {t("chatPanel.loadError.notFoundHint")}
+                            </p>
+                          ) : null}
+                          <div className="flex items-center gap-2">
+                            <Button
+                              type="button"
+                              size="xs"
+                              onClick={() => void reloadSession()}
+                            >
+                              {t("chatPanel.loadError.retry")}
+                            </Button>
+                            <Button
+                              type="button"
+                              size="xs"
+                              variant="ghost"
+                              onClick={() => onSessionDeleted?.()}
+                            >
+                              {t("chatPanel.loadError.close")}
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })()
+                  ) : sessionLoading && !session && messages.length === 0 ? (
+                    <div
+                      role="status"
+                      aria-label={t("chatPanel.loading.aria")}
+                      className="flex flex-col gap-3 py-2"
+                    >
+                      <div className="h-10 w-2/3 rounded-lg bg-muted" />
+                      <div className="h-6 w-1/2 rounded-md bg-muted" />
+                      <div className="h-24 w-full rounded-lg bg-muted" />
+                      <div className="h-6 w-3/4 rounded-md bg-muted" />
+                    </div>
+                  ) : (
+                    <>
+                      <ChatTranscript
+                        ref={transcriptHandleRef}
+                        agentName={session?.agentName ?? "Agent"}
+                        agentColor={
+                          (session?.agentColor as AgentColor) || "agent-1"
+                        }
+                        cwd={session?.cwd}
+                        sessionId={session?.id ?? 0}
+                        scrollElement={transcriptElement}
+                        virtualize
+                        active={active}
+                        messages={messages}
+                        liveByMessageId={liveByMessageId}
+                        streaming={streaming}
+                        liveCompacting={liveCompacting}
+                        reconnecting={reconnecting}
+                        onContinue={() => {
+                          if (!session) return;
+                          void doSend(session.id, session.agentId, {
+                            text: "continue",
+                          });
+                        }}
+                        onRerun={(messageId) =>
+                          void handleRegenerate(messageId)
+                        }
+                        onEdit={(messageId) => handleEdit(messageId)}
+                        onPlanActionStarted={handlePlanActionStarted}
+                        onStopSubagent={
+                          canStopBackgroundTask ? handleStopSubagent : undefined
+                        }
+                        onStopLocalCommand={handleStopLocalCommand}
+                        tabStateKey={scrollStateKey}
+                      />
+                      {showBackToBottom ? (
+                        <TranscriptJumpControl
+                          catchUp={catchUp}
+                          onJump={handleBackToBottom}
+                        />
+                      ) : null}
+                    </>
+                  )}
                 </section>
               )}
 
@@ -2783,6 +2920,26 @@ function ChatPanel({
                           >
                             {notice.detail}
                           </span>
+                        ) : null}
+                        {notice.actions ? (
+                          <div className="flex shrink-0 items-center gap-2 pt-1">
+                            <Button
+                              type="button"
+                              size="xs"
+                              variant="outline"
+                              onClick={notice.actions.retry}
+                            >
+                              {t("chatPanel.sendRetry.retry")}
+                            </Button>
+                            <Button
+                              type="button"
+                              size="xs"
+                              variant="ghost"
+                              onClick={notice.actions.discard}
+                            >
+                              {t("chatPanel.sendRetry.discard")}
+                            </Button>
+                          </div>
                         ) : null}
                       </div>
                       <button
@@ -2820,6 +2977,8 @@ function ChatPanel({
                 <NewSessionChatGuard agent={newSessionAgent} />
               ) : null}
               <ChatComposer
+                ref={composerRef}
+                sending={sendInFlight}
                 editing={activeEditing !== null}
                 editDraft={activeEditing?.text}
                 onCancelEdit={() => setEditingMessage(null)}
@@ -2867,6 +3026,17 @@ function ChatPanel({
                       queued={currentQueued ?? []}
                       onCancel={(id) => void doCancelQueued(sessionId, id)}
                       onClearAll={() => void doCancelQueued(sessionId, "")}
+                      dropped={
+                        droppedQueue && droppedQueue.sessionId === sessionId
+                          ? droppedQueue
+                          : null
+                      }
+                      onRestoreDropped={() =>
+                        useQueuedMessagesStore.getState().restoreDropped()
+                      }
+                      onDiscardDropped={() =>
+                        useQueuedMessagesStore.getState().dismissDropped()
+                      }
                     />
                   </>
                 }

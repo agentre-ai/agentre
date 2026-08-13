@@ -1,4 +1,4 @@
-.PHONY: run dev build agrctl agentred agentred-linux agentred-deploy agentred-deploy-restart agentred-deploy-local-coding agentred-local-coding generate test test-backend test-frontend test-cover lint lint-backend lint-frontend lint-fix lint-fix-backend lint-fix-frontend mock install install-deps clean check e2e e2e-scratch
+.PHONY: run dev build agrctl agentred agentred-package agentred-linux agentred-deploy agentred-deploy-restart agentred-deploy-local-coding agentred-local-coding generate test test-backend test-frontend test-cover test-agentred-packaging lint lint-backend lint-frontend lint-fix lint-fix-backend lint-fix-frontend mock install install-deps clean check e2e e2e-scratch
 
 APP_NAME := Agentre
 VERSION ?= 0.1.0
@@ -26,10 +26,12 @@ PREFIX ?= /usr/local
 WAILS_PLATFORM ?=
 WAILS_BUILD_FLAGS ?=
 AGENTRED_BUILD_DIR ?= build/bin
+AGENTRED_DIST_DIR ?= build/agentred-dist
 AGRCTL_BINARY := $(AGENTRED_BUILD_DIR)/agrctl$(EXE)
 AGENTRED_LOCAL_BINARY := $(AGENTRED_BUILD_DIR)/agentred
 AGENTRED_GOOS ?= linux
 AGENTRED_GOARCH ?= amd64
+AGENTRED_PACKAGE_NAME := agentred-$(VERSION)-$(AGENTRED_GOOS)-$(AGENTRED_GOARCH)
 AGENTRED_LINUX_BINARY := $(AGENTRED_BUILD_DIR)/agentred-$(AGENTRED_GOOS)-$(AGENTRED_GOARCH)
 AGENTRED_TARGET ?= local-coding
 AGENTRED_REMOTE_PATH ?= /usr/local/bin/agentred
@@ -64,6 +66,19 @@ agrctl:
 agentred:
 	mkdir -p "$(AGENTRED_BUILD_DIR)"
 	go build -ldflags="$(LDFLAGS)" -o "$(AGENTRED_LOCAL_BINARY)" ./cmd/agentred
+
+# 构建可发布的 agentred 跨平台归档（darwin/linux: tar.gz；windows: zip）。
+agentred-package:
+	rm -rf "$(AGENTRED_DIST_DIR)/.$(AGENTRED_PACKAGE_NAME)"
+	mkdir -p "$(AGENTRED_DIST_DIR)/.$(AGENTRED_PACKAGE_NAME)"
+ifeq ($(AGENTRED_GOOS),windows)
+	CGO_ENABLED=0 GOOS=$(AGENTRED_GOOS) GOARCH=$(AGENTRED_GOARCH) go build -ldflags="$(LDFLAGS)" -o "$(AGENTRED_DIST_DIR)/.$(AGENTRED_PACKAGE_NAME)/agentred.exe" ./cmd/agentred
+	cd "$(AGENTRED_DIST_DIR)/.$(AGENTRED_PACKAGE_NAME)" && zip -q "../$(AGENTRED_PACKAGE_NAME).zip" agentred.exe
+else
+	CGO_ENABLED=0 GOOS=$(AGENTRED_GOOS) GOARCH=$(AGENTRED_GOARCH) go build -ldflags="$(LDFLAGS)" -o "$(AGENTRED_DIST_DIR)/.$(AGENTRED_PACKAGE_NAME)/agentred" ./cmd/agentred
+	tar -C "$(AGENTRED_DIST_DIR)/.$(AGENTRED_PACKAGE_NAME)" -czf "$(AGENTRED_DIST_DIR)/$(AGENTRED_PACKAGE_NAME).tar.gz" agentred
+endif
+	rm -rf "$(AGENTRED_DIST_DIR)/.$(AGENTRED_PACKAGE_NAME)"
 
 # 构建 agentred Linux 版本(默认 linux/amd64，可覆盖 AGENTRED_GOOS/AGENTRED_GOARCH)
 agentred-linux:
@@ -144,9 +159,15 @@ test-frontend: generate
 e2e:
 	cd e2e && pnpm test
 
-# 临时功能验证:跑 e2e/scratch/ 里的一次性 spec(不提交)。约定/用法见 e2e/README.md。
+# 临时功能验证:跑 e2e/scratch/ 里的一次性 spec(不提交)。约定/用法见 e2e/README.md §6。
+# 必须显式指定目标,避免遗留 spec 被静默重跑:
+#   make e2e-scratch TASK="scratch/<task-name>/"     # 场景目录(递归拾取 verify.spec.ts)
+#   make e2e-scratch TASK="scratch/poke.spec.ts"     # 单个文件
+# 快速内循环(起一次 app、反复改 spec 重跑,不重建不起新 app)见 e2e/README.md §4:
+#   AGENTRE_E2E_REUSE=1 make e2e-scratch TASK="scratch/<task-name>/"
 e2e-scratch:
-	cd e2e && pnpm run test:scratch
+	@test -n "$(TASK)" || { echo "error: make e2e-scratch 需要 TASK=scratch/<task-name>/ (或 scratch/ 下文件路径); 例: make e2e-scratch TASK=\"scratch/poke.spec.ts\""; exit 1; }
+	cd e2e && pnpm run test:scratch "$(TASK)"
 
 # 工作区多端同步的本地端到端:真桌面端 + 真 agentre-server + Go 模拟对端。
 # 需要 agentre-server 的 PostgreSQL / Redis 可达(不跑容器),不进 CI。见 e2e/README.md §10。
@@ -158,6 +179,12 @@ test-cover:
 	go test -coverprofile=coverage.out $(BACKEND_PKGS)
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "覆盖率报告已生成: coverage.html"
+
+# 发布资产、安装脚本与 workflow 契约的聚焦测试。
+test-agentred-packaging:
+	python3 scripts/test-release-workflows.py
+	bash scripts/test-install.sh
+	@if command -v pwsh >/dev/null 2>&1; then pwsh -NoProfile -File scripts/test-install.ps1; else echo "pwsh not found; install.ps1 runs on the Windows CI job"; fi
 
 # 前后端代码检查
 lint: lint-backend lint-frontend

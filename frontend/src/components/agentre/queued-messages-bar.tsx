@@ -1,4 +1,4 @@
-import { Hourglass, Lock, Trash2, X } from "lucide-react";
+import { Hourglass, Lock, Trash2, TriangleAlert, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
@@ -18,6 +18,14 @@ type Props = {
   onCancel: (id: string) => void;
   /** 用户点 header「清空」。父组件负责调 CancelQueuedChatMessage({queuedId: ""})。 */
   onClearAll: () => void;
+  /** 回合收尾时还没被 AI 消费、被暂存的排队条目。父组件只在它与当前 session 匹配时
+   *  传入；null 不渲染。与 queued 互斥（markDropped 清空了队列），但组件不依赖这个
+   *  前提，有 dropped 时优先渲染丢弃横幅。 */
+  dropped?: { sessionId: number; items: QueuedItem[]; at: number } | null;
+  /** 点「恢复为草稿」。父组件负责调 queued-messages-store.restoreDropped。 */
+  onRestoreDropped?: () => void;
+  /** 点「丢弃」。父组件负责调 queued-messages-store.dismissDropped。 */
+  onDiscardDropped?: () => void;
 };
 
 // QueuedMessagesBar 显示当前 session 还没被 AI 取走的排队消息。
@@ -27,8 +35,77 @@ type Props = {
 // 空列表时 render null —— 这是组件契约：父组件不必判空，QueuedMessagesBar
 // 自己决定可见性。这样 ChatComposer 的 queueSlot prop 一直传 <QueuedMessagesBar/>
 // 也不会留空 DOM。
-export function QueuedMessagesBar({ queued, onCancel, onClearAll }: Props) {
+export function QueuedMessagesBar({
+  queued,
+  onCancel,
+  onClearAll,
+  dropped,
+  onRestoreDropped,
+  onDiscardDropped,
+}: Props) {
   const { t } = useTranslation();
+  // 丢弃横幅优先:markDropped 时队列已被清空,正常条目的 queued.length===0 判空
+  // 会把它整个藏掉 —— 这里在判空之前先看有没有被暂存的丢弃条目。
+  if (dropped && dropped.items.length > 0) {
+    return (
+      <div
+        role="alert"
+        aria-label={t("queuedMessages.dropped.title", {
+          count: dropped.items.length,
+        })}
+        className="flex flex-col gap-1.5 border-b border-status-error/40 bg-destructive-soft px-3 py-2"
+      >
+        <div className="flex items-center gap-2">
+          <TriangleAlert
+            className="size-3 shrink-0 text-status-error"
+            aria-hidden="true"
+          />
+          <span className="text-2xs font-semibold text-status-error">
+            {t("queuedMessages.dropped.title", {
+              count: dropped.items.length,
+            })}
+          </span>
+          <div className="min-w-0 flex-1" />
+          <button
+            type="button"
+            aria-label={t("queuedMessages.dropped.discard")}
+            onClick={onDiscardDropped}
+            className="inline-flex h-6 cursor-pointer items-center gap-1 rounded-sm border border-status-error/40 px-2 text-2xs font-medium text-status-error transition-colors hover:bg-destructive-soft hover:text-status-error"
+          >
+            {t("queuedMessages.dropped.discard")}
+          </button>
+          <button
+            type="button"
+            aria-label={t("queuedMessages.dropped.restore")}
+            onClick={onRestoreDropped}
+            className="inline-flex h-6 cursor-pointer items-center gap-1 rounded-sm border border-border-strong bg-card px-2 text-2xs font-medium text-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            {t("queuedMessages.dropped.restore")}
+          </button>
+        </div>
+        <ul className="flex flex-col gap-1">
+          {dropped.items.map((q) => (
+            <li
+              key={q.id}
+              className="flex items-center gap-2 rounded-sm border border-status-error/40 bg-card px-2 py-1"
+              title={q.text}
+            >
+              <TriangleAlert
+                className="size-3 shrink-0 text-status-error"
+                aria-hidden="true"
+              />
+              <span
+                data-selectable-text="true"
+                className="min-w-0 flex-1 truncate text-xs text-status-error"
+              >
+                {q.text}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
   if (queued.length === 0) return null;
   const anyCancellable = queued.some((q) => q.cancellable);
 

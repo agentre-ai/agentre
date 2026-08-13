@@ -822,7 +822,7 @@ describe("ChatPage sidebar — 状态筛选与顶部新建", () => {
     localStorage.clear();
   });
 
-  it("Given agents with different statuses, When the status (multi) filter toggles, Then the list narrows and restores", async () => {
+  it("Given agents with different statuses, When a status chip is selected, Then the list narrows and 全部 restores", async () => {
     renderChatPage();
 
     // 初始:两个 agent 全可见。
@@ -833,12 +833,8 @@ describe("ChatPage sidebar — 状态筛选与顶部新建", () => {
       screen.getByRole("button", { name: /Open Designer recent session/ }),
     ).toBeInTheDocument();
 
-    // 打开筛选下拉,保持打开以便连续组合多个状态。
-    fireEvent.click(screen.getByRole("button", { name: "Filter sidebar" }));
-    const panel = () => screen.getByRole("dialog");
-
-    // 状态 = Running → 只剩 running 的 Eng;Designer(idle)消失。
-    fireEvent.click(within(panel()).getByRole("button", { name: "Running" }));
+    // 状态 chip = Running(单选) → 只剩 running 的 Eng;Designer(idle)消失。
+    fireEvent.click(screen.getByTestId("filter-chip-running"));
     expect(
       screen.getByRole("button", { name: /Open Eng recent session/ }),
     ).toBeInTheDocument();
@@ -846,23 +842,23 @@ describe("ChatPage sidebar — 状态筛选与顶部新建", () => {
       screen.queryByRole("button", { name: /Open Designer recent session/ }),
     ).toBeNull();
 
-    // 再点 Running 取消(状态清空)→ 全部回来。证明状态是可切换的 toggle。
-    fireEvent.click(within(panel()).getByRole("button", { name: "Running" }));
+    // 单选切到 Unread → 只剩有未读会话的 Eng。
+    fireEvent.click(screen.getByTestId("filter-chip-unread"));
+    expect(
+      screen.getByRole("button", { name: /Open Eng recent session/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Open Designer recent session/ }),
+    ).toBeNull();
+
+    // chip All → 清空筛选,全部回来。
+    fireEvent.click(screen.getByTestId("filter-chip-all"));
     expect(
       screen.getByRole("button", { name: /Open Eng recent session/ }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Open Designer recent session/ }),
     ).toBeInTheDocument();
-
-    // 仅 状态 = Unread → 只剩有未读会话的 Eng。
-    fireEvent.click(within(panel()).getByRole("button", { name: /Unread/ }));
-    expect(
-      screen.getByRole("button", { name: /Open Eng recent session/ }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /Open Designer recent session/ }),
-    ).toBeNull();
   });
 
   it("Given the sidebar, When the top + menu picks new agent chat, Then it opens the new-chat command palette seed", async () => {
@@ -908,4 +904,152 @@ it("agentSessionFromMeta: bg_running session shows the background pill, not 'run
   );
   expect(s.trailingLabel).toBe(reasonToPillText("bg_running"));
   expect(s.trailingLabel).not.toBe("running");
+});
+
+describe("ChatPage sidebar — 会话行右键菜单", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetTabsStore();
+    selectSession(1);
+    localStorage.setItem("agentre.agentExpanded.agent:7", "1");
+    runtimeMocks.handlers.clear();
+    vi.clearAllMocks();
+    appMocks.RenameChatSession.mockReset();
+    appMocks.DeleteChatSession.mockReset();
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [
+        {
+          activeCount: 0,
+          avatarColor: "agent-1",
+          backendType: "builtin",
+          chattable: true,
+          id: 7,
+          name: "Eng",
+          pinned: false,
+          recentCount: 2,
+          sessions: [
+            {
+              id: 1,
+              lastMessageAt: 0,
+              status: "idle",
+              title: "Debug session",
+            },
+            {
+              id: 2,
+              lastMessageAt: 0,
+              status: "idle",
+              title: "Other session",
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    resetTabsStore();
+    localStorage.clear();
+  });
+
+  it("右键 → 改名 → 重命名对话框 → 提交调用 RenameChatSession", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderChatPage();
+
+    const row = await screen.findByRole("button", { name: /Debug session/ });
+    fireEvent.contextMenu(row);
+    await user.click(await screen.findByRole("menuitem", { name: "Rename" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Rename Session",
+    });
+    const input = within(dialog).getByLabelText("Session name");
+    await user.clear(input);
+    await user.type(input, "Renamed session");
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(appMocks.RenameChatSession).toHaveBeenCalledWith({
+        sessionId: 1,
+        title: "Renamed session",
+      });
+    });
+  });
+
+  it("右键 → 新标签打开 → 为该会话新建一个 tab", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderChatPage();
+
+    // session 2 尚未打开任何 tab。
+    const row = await screen.findByRole("button", { name: /Other session/ });
+    fireEvent.contextMenu(row);
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Open in new tab" }),
+    );
+
+    await waitFor(() => {
+      const { tabs, activeTabId } = useChatTabsStore.getState();
+      const sessionTabs = tabs.filter(
+        (t) => t.meta.kind === "session" && t.meta.sessionId === 2,
+      );
+      expect(sessionTabs).toHaveLength(1);
+      expect(sessionTabs[0].id).toBe(activeTabId);
+    });
+  });
+
+  it("右键 → 删除 → 删除对话框 → 确认调用 DeleteChatSession 并关闭对应 tab", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderChatPage();
+
+    const row = await screen.findByRole("button", { name: /Debug session/ });
+    fireEvent.contextMenu(row);
+    await user.click(await screen.findByRole("menuitem", { name: "Delete" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Delete Session",
+    });
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => {
+      expect(appMocks.DeleteChatSession).toHaveBeenCalledWith({
+        sessionId: 1,
+      });
+    });
+    // selectSession(1) 打开的 tab 随删除被关闭。
+    expect(useChatTabsStore.getState().tabs).toHaveLength(0);
+  });
+});
+
+describe("ChatPage sidebar — 空态", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetTabsStore();
+    useChatAgentsStore.getState().__reset();
+    runtimeMocks.handlers.clear();
+    vi.clearAllMocks();
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+  });
+
+  afterEach(() => {
+    resetTabsStore();
+    useChatAgentsStore.getState().__reset();
+    localStorage.clear();
+  });
+
+  it("没有 Agent 时渲染空态;CTA 触发新建 Agent 流程", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    consumeNewAgentDialogIntent();
+    renderChatPage();
+
+    expect(await screen.findByText("No conversations yet")).toBeInTheDocument();
+    expect(
+      screen.getByText("Create an agent to start collaborating."),
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Create your first agent" }),
+    );
+
+    expect(screen.getByTestId("location")).toHaveTextContent("/org");
+    expect(consumeNewAgentDialogIntent()).toBe(true);
+  });
 });

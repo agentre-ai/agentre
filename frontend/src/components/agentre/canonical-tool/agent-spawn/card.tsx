@@ -7,11 +7,8 @@ import {
   CircleHelp,
   CircleSlash,
   Clock,
-  FileText,
   LoaderCircle,
-  Search,
   Square,
-  Terminal,
   TriangleAlert,
   Users,
   Wrench,
@@ -20,15 +17,18 @@ import {
 import { cn } from "@/lib/utils";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
 
+import { ActivityBlock } from "../../activity-block/block";
+import type { PendingOutcome } from "../../activity-block/facts";
+import { CollapsibleCode } from "../../collapsible-code";
 import { shouldIgnoreClickForSelection } from "../../copyable-text";
 import {
   TranscriptCard,
   TranscriptCardHeader,
   TranscriptPill,
 } from "../../transcript-card";
+import { summarizeActivity, type ActivityStep } from "../../transcript-rows";
 import { statusConfig, type AgentStatus } from "../../types";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
-import { summarizeRawTool } from "../raw/summary";
 import type { AgentSpawnChildBlocks, CanonicalCardProps } from "../props";
 import type {
   AgentSpawnDTO,
@@ -111,18 +111,6 @@ function narrowSpawnStatus(
 
 function narrowSpawnMode(s: string | undefined): AgentSpawnMode | undefined {
   return s === "single" || s === "parallel" || s === "chain" ? s : undefined;
-}
-
-// isBashLikeTool 子调用 step 选 Terminal icon。
-function isBashLikeTool(name: string): boolean {
-  const n = name.toLowerCase();
-  return (
-    n === "bash" ||
-    n === "shell" ||
-    n === "run" ||
-    n === "exec" ||
-    n === "command_execution"
-  );
 }
 
 type StepRow = { tool: ChatBlockData; result?: ChatBlockData };
@@ -253,6 +241,78 @@ function buildProgressAriaLabel(
   return parts.join(", ");
 }
 
+// buildOutcomeSummary 拼出成功态卡头的次级信息「N 步 · <token> · <耗时>」。
+// 成功不再挂状态胶囊(spec 决策 10:没有标记 = 成功),腾出来的位置放实义信息;
+// 缺失的项整项不出现,三项都缺就返回空串(不渲染)。
+function buildOutcomeSummary(
+  t: TFunction,
+  toolUses: number,
+  totalTokens: number,
+  durationMs: number,
+): string {
+  const parts: string[] = [];
+  if (toolUses > 0) {
+    parts.push(t("canonical.agentSpawn.outcome.steps", { count: toolUses }));
+  }
+  if (totalTokens > 0) parts.push(formatTokens(totalTokens));
+  if (durationMs > 0) parts.push(formatDuration(durationMs));
+  return parts.join(" · ");
+}
+
+// 子代理内部的活动块阈值(spec 决策 9)。转录里的块只看运行态,子代理这层另有
+// 阈值 —— 用户已经主动展开过卡片一次,再默认折叠一遍步骤反而多一次点击;但
+// 200 步的子代理默认展开就是一面墙,所以超过阈值仍然只留组头。
+const STEPS_DEFAULT_EXPANDED_MAX = 20;
+
+// AgentSpawnSteps —— 子代理的步骤区就是转录里的那一个活动块(spec 子代理 §1):
+// 同一个组头、同一套活动行、同一套展开体。StepRow 只是换形状成 ActivityStep,
+// 汇总走 transcript-rows 导出的 summarizeActivity —— 子代理组头与转录组头因此
+// 不可能分叉(自建一份子代理专用汇总迟早跟着两边各改一次)。
+function AgentSpawnSteps({
+  cwd,
+  keyPrefix,
+  runStatus,
+  steps,
+}: {
+  cwd?: string;
+  /** 组头 / 每一步折叠态的持久化前缀,沿用旧 step key 形态(折叠态零迁移)。 */
+  keyPrefix: string;
+  /** 这些步骤所属 run 的状态 —— 决定没配到结果的一步怎么报(见 unmatchedOutcome)。 */
+  runStatus?: AgentSpawnStatus;
+  steps: StepRow[];
+}): React.ReactElement {
+  const activitySteps: ActivityStep[] = steps.map((step, index) => ({
+    resultBlock: step.result,
+    toolBlock: step.tool,
+    type: "tool",
+    uiStateKey: `${keyPrefix}:step:${step.tool.toolUseId || index}`,
+  }));
+  const pendingOutcome = unmatchedOutcome(runStatus);
+  return (
+    <ActivityBlock
+      steps={activitySteps}
+      // 组头失败计数与活动行走同一个 pendingOutcome:run 以失败终结时,没配到
+      // 结果的那些步在行里是红的,组头也必须把它们算进去 —— 21 步以上默认折叠,
+      // 组头漏算就等于宣称「一个失败都没有」。
+      summary={summarizeActivity(activitySteps, pendingOutcome === "failed")}
+      uiStateKey={`${keyPrefix}:activity`}
+      cwd={cwd}
+      defaultExpanded={activitySteps.length <= STEPS_DEFAULT_EXPANDED_MAX}
+      pendingOutcome={pendingOutcome}
+    />
+  );
+}
+
+// unmatchedOutcome —— run 已经终结、某一步却始终没配到 tool_result 时,那一步
+// 归属不明:按 run 的终态报 失败 / 已取消,其余(含 completed)一律「结果未知」。
+// 判据与旧 AgentSpawnStepCard 的 terminalFallbackStatus 完全一致 —— 步骤区换成
+// 活动块不改变「它到底发生了什么」,只改变它长什么样。
+function unmatchedOutcome(status?: AgentSpawnStatus): PendingOutcome {
+  if (!status || status === "running" || status === "waiting") return "running";
+  if (status === "failed" || status === "canceled") return status;
+  return "unknown";
+}
+
 const EMPTY_CHILD_BLOCKS: AgentSpawnChildBlocks = {
   all: [],
   byRun: new Map(),
@@ -295,6 +355,10 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
 
   if (!spawn) return null;
 
+  // 折叠态持久化前缀。uiStateKey 在转录里恒定有值(transcript-row-view 传的行
+  // 身份);缺省时退到 tool_use id,保证同一屏的两张卡不会共用一个 key。
+  const keyBase = uiStateKey ?? `agent-spawn:${toolBlock.toolUseId ?? ""}`;
+
   if (isGroupedSpawn(spawn)) {
     return (
       <GroupedAgentSpawnCard
@@ -305,7 +369,7 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
         childBlocks={childBlocks}
         expanded={expanded}
         setExpanded={setExpanded}
-        uiStateKey={uiStateKey}
+        keyBase={keyBase}
         onStopSubagent={onStopSubagent}
       />
     );
@@ -381,6 +445,14 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
   // R8:展开区 meta 行独立于运行状态存在,只要有值就列出;模型用未裁剪原值。
   const hasMetaRow =
     !!singleSpawn.model || toolUses > 0 || totalTokens > 0 || durationMs > 0;
+  // 成功 = 落定且没有取消 / 跳过 / 未知 / 部分失败这些非成功语义(它们同样走
+  // idle 通道)。只有成功态摘掉状态胶囊,其余标记一律不动(spec 决策 10)。
+  const isSuccess =
+    status === "idle" &&
+    (singleSpawn.status === undefined || singleSpawn.status === "completed");
+  const outcomeSummary = isSuccess
+    ? buildOutcomeSummary(t, toolUses, totalTokens, durationMs)
+    : "";
 
   return (
     <TranscriptCard
@@ -407,12 +479,14 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
           aria-hidden="true"
         />
         <Users
-          className="size-3.5 shrink-0 text-primary-text"
+          // 名字与图标不再占用品牌色:primary 的语义是「可交互」,归还给真正
+          // 可点的元素(spec 决策 10 / docs/design.md §2.3)。
+          className="size-3.5 shrink-0 text-muted-foreground"
           aria-hidden="true"
         />
         <span
           data-copyable-control-text="true"
-          className="shrink-0 font-semibold text-primary-text"
+          className="shrink-0 font-semibold text-foreground"
         >
           {displayName}
         </span>
@@ -502,20 +576,34 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
               <Square className="size-2.5 fill-current" aria-hidden="true" />
             </button>
           )}
-        <TranscriptPill
-          data-copyable-control-text="true"
-          className={pillClassName}
-        >
-          <StatusIcon
-            className={cn(
-              "size-2.5",
-              (status === "running" || status === "waiting") &&
-                "animate-spin motion-reduce:animate-none",
-            )}
-            aria-hidden="true"
-          />
-          {statusLabel}
-        </TranscriptPill>
+        {isSuccess ? (
+          // 成功态没有胶囊,位置改放实义信息;三项都缺时整块不渲染。
+          outcomeSummary ? (
+            <span
+              data-testid="agent-spawn-outcome"
+              data-copyable-control-text="true"
+              className="shrink-0 text-meta text-subtle-foreground"
+            >
+              {outcomeSummary}
+            </span>
+          ) : null
+        ) : (
+          <TranscriptPill
+            data-testid="agent-spawn-status-pill"
+            data-copyable-control-text="true"
+            className={pillClassName}
+          >
+            <StatusIcon
+              className={cn(
+                "size-2.5",
+                (status === "running" || status === "waiting") &&
+                  "animate-spin motion-reduce:animate-none",
+              )}
+              aria-hidden="true"
+            />
+            {statusLabel}
+          </TranscriptPill>
+        )}
       </TranscriptCardHeader>
       <div
         data-slot="agent-spawn-details"
@@ -587,33 +675,24 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
                     ? t("canonical.agentSpawn.emptyStepsRunning")
                     : t("canonical.agentSpawn.emptySteps")}
                 </div>
-              ) : // 性能:步骤列表懒挂载 —— 卡片折叠态不 mount 任何 step 卡。
-              // 一个大 subagent 可带 150-200 个嵌套步骤,折叠时把整列表 mount 进
-              // DOM(0fr 网格只是视觉隐藏)会让 transcript 在会话打开 / tab 切换 /
-              // 滚动时卡顿;展开才逐条挂载。折叠态下 steps 数量仍从 steps.length
+              ) : // 性能:步骤区懒挂载 —— 卡片折叠态不 mount 活动块。一个大
+              // subagent 可带 150-200 个嵌套步骤,折叠时把整列表 mount 进 DOM
+              // (0fr 网格只是视觉隐藏)会让 transcript 在会话打开 / tab 切换 /
+              // 滚动时卡顿;展开才挂载。折叠态下 steps 数量仍从 steps.length
               // 读取,头部/进度/摘要不受影响。
               expanded ? (
-                <div className="flex flex-col gap-2">
-                  {steps.map((s, idx) => (
-                    <AgentSpawnStepCard
-                      key={s.tool.toolUseId || s.tool.text || ""}
-                      step={s}
-                      cwd={cwd}
-                      terminalFallbackStatus={
-                        normalizedRun &&
-                        normalizedStatus &&
-                        isTerminalRunStatus(normalizedStatus)
-                          ? normalizedStatus
-                          : undefined
-                      }
-                      uiStateKey={
-                        uiStateKey
-                          ? `${uiStateKey}:step:${s.tool.toolUseId || idx}`
-                          : undefined
-                      }
-                    />
-                  ))}
-                </div>
+                <AgentSpawnSteps
+                  steps={steps}
+                  cwd={cwd}
+                  keyPrefix={keyBase}
+                  runStatus={
+                    normalizedRun &&
+                    normalizedStatus &&
+                    isTerminalRunStatus(normalizedStatus)
+                      ? normalizedStatus
+                      : undefined
+                  }
+                />
               ) : null}
             </AgentSpawnSection>
             <AgentSpawnSection
@@ -636,7 +715,8 @@ type GroupedAgentSpawnCardProps = {
   childBlocks: AgentSpawnChildBlocks;
   expanded: boolean;
   setExpanded: React.Dispatch<React.SetStateAction<boolean>>;
-  uiStateKey?: string;
+  /** 卡片级折叠态前缀,run / 步骤的 key 都从它派生。 */
+  keyBase: string;
   onStopSubagent?: (toolUseId: string) => void;
 };
 
@@ -678,14 +758,6 @@ function buildNormalizedStatusLabel(
         duration: formatDuration(durationMs),
       })
     : label;
-}
-
-function unmatchedFallbackStatus(
-  status: AgentSpawnStatus,
-): AgentSpawnStatus | undefined {
-  if (status === "running" || status === "waiting") return undefined;
-  if (status === "failed" || status === "canceled") return status;
-  return "unknown";
 }
 
 function statusAgentState(status: AgentSpawnStatus): AgentStatus {
@@ -744,7 +816,7 @@ function GroupedAgentSpawnCard({
   childBlocks,
   expanded,
   setExpanded,
-  uiStateKey,
+  keyBase,
   onStopSubagent,
 }: GroupedAgentSpawnCardProps): React.ReactElement {
   const { t } = useTranslation();
@@ -766,6 +838,17 @@ function GroupedAgentSpawnCard({
         : outerStatus === "failed"
           ? "error"
           : "idle";
+  // 卡头与单卡同一条规则:成功摘掉胶囊换实义信息,其余状态标记原样保留。
+  const outcomeSummary =
+    outerStatus === "completed"
+      ? buildOutcomeSummary(
+          t,
+          spawn.toolUses ??
+            childBlocks.all.filter((block) => block.type === "tool_use").length,
+          spawn.totalTokens ?? 0,
+          spawn.durationMs ?? 0,
+        )
+      : "";
 
   return (
     <TranscriptCard
@@ -792,12 +875,12 @@ function GroupedAgentSpawnCard({
           aria-hidden="true"
         />
         <Users
-          className="size-3.5 shrink-0 text-primary-text"
+          className="size-3.5 shrink-0 text-muted-foreground"
           aria-hidden="true"
         />
         <span
           data-copyable-control-text="true"
-          className="shrink-0 font-semibold text-primary-text"
+          className="shrink-0 font-semibold text-foreground"
         >
           {t("canonical.agentSpawn.groupedName")}
         </span>
@@ -833,10 +916,25 @@ function GroupedAgentSpawnCard({
               <Square className="size-2.5 fill-current" aria-hidden="true" />
             </button>
           )}
-        <TranscriptPill className={statusPillClass(outerStatus)}>
-          <StatusGlyph status={outerStatus} />
-          {statusLabel(outerStatus, t)}
-        </TranscriptPill>
+        {outerStatus === "completed" ? (
+          outcomeSummary ? (
+            <span
+              data-testid="agent-spawn-outcome"
+              data-copyable-control-text="true"
+              className="shrink-0 text-meta text-subtle-foreground"
+            >
+              {outcomeSummary}
+            </span>
+          ) : null
+        ) : (
+          <TranscriptPill
+            data-testid="agent-spawn-status-pill"
+            className={statusPillClass(outerStatus)}
+          >
+            <StatusGlyph status={outerStatus} />
+            {statusLabel(outerStatus, t)}
+          </TranscriptPill>
+        )}
       </TranscriptCardHeader>
       <div
         data-slot="agent-spawn-details"
@@ -856,11 +954,7 @@ function GroupedAgentSpawnCard({
                     blocks={childBlocks.byRun.get(run.id) ?? []}
                     cwd={cwd}
                     cardExpanded={expanded}
-                    uiStateKey={
-                      uiStateKey
-                        ? `${uiStateKey}:run:${run.id || run.index}`
-                        : undefined
-                    }
+                    uiStateKey={`${keyBase}:run:${run.id || run.index}`}
                   />
                 ))}
               </div>
@@ -870,23 +964,12 @@ function GroupedAgentSpawnCard({
                 <AgentSpawnSection
                   label={t("canonical.agentSpawn.sections.steps")}
                 >
-                  <div className="flex flex-col gap-2">
-                    {fallbackSteps.map((step, index) => (
-                      <AgentSpawnStepCard
-                        key={step.tool.toolUseId || index}
-                        step={step}
-                        cwd={cwd}
-                        terminalFallbackStatus={unmatchedFallbackStatus(
-                          outerStatus,
-                        )}
-                        uiStateKey={
-                          uiStateKey
-                            ? `${uiStateKey}:fallback:${step.tool.toolUseId || index}`
-                            : undefined
-                        }
-                      />
-                    ))}
-                  </div>
+                  <AgentSpawnSteps
+                    steps={fallbackSteps}
+                    cwd={cwd}
+                    keyPrefix={`${keyBase}:fallback`}
+                    runStatus={outerStatus}
+                  />
                 </AgentSpawnSection>
               </div>
             ) : null}
@@ -914,9 +997,9 @@ function AgentSpawnRunGroup({
   mode: AgentSpawnMode | undefined;
   blocks: ChatBlockData[];
   cwd?: string;
-  /** 卡片级展开态 —— 折叠的卡片不 mount 任何 run 内的 step 卡(性能)。 */
+  /** 卡片级展开态 —— 折叠的卡片不 mount 任何 run 内的步骤(性能)。 */
   cardExpanded: boolean;
-  uiStateKey?: string;
+  uiStateKey: string;
 }): React.ReactElement {
   const { t } = useTranslation();
   const status = runStatus(run, mode);
@@ -1020,25 +1103,16 @@ function AgentSpawnRunGroup({
           <div className="flex flex-col gap-2 border-t border-border px-2.5 py-2">
             <AgentSpawnSection label={t("canonical.agentSpawn.sections.steps")}>
               {steps.length > 0 ? (
-                // 性能:run group 的 step 列表按**卡片**展开态懒挂载 —— 折叠的卡片
-                // 不 mount 任何 step 卡。run group 自身折叠/展开只控制视觉高度,不
+                // 性能:run group 的步骤区按**卡片**展开态懒挂载 —— 折叠的卡片
+                // 不 mount 任何步骤。run group 自身折叠/展开只控制视觉高度,不
                 // 卸载步骤(测试契约:卡片展开后,折叠 run 的步骤仍可查询到)。
                 cardExpanded ? (
-                  <div className="flex flex-col gap-2">
-                    {steps.map((step, index) => (
-                      <AgentSpawnStepCard
-                        key={step.tool.toolUseId || index}
-                        step={step}
-                        cwd={cwd}
-                        terminalFallbackStatus={terminal ? status : undefined}
-                        uiStateKey={
-                          uiStateKey
-                            ? `${uiStateKey}:step:${step.tool.toolUseId || index}`
-                            : undefined
-                        }
-                      />
-                    ))}
-                  </div>
+                  <AgentSpawnSteps
+                    steps={steps}
+                    cwd={cwd}
+                    keyPrefix={uiStateKey}
+                    runStatus={terminal ? status : undefined}
+                  />
                 ) : null
               ) : (
                 <div className="rounded-sm bg-muted/30 px-2.5 py-2 text-muted-foreground">
@@ -1052,16 +1126,11 @@ function AgentSpawnRunGroup({
               <AgentSpawnSection
                 label={t("canonical.agentSpawn.sections.output")}
               >
-                <div
-                  className={cn(
-                    "max-h-[220px] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-sm px-2.5 py-2",
-                    status === "failed"
-                      ? "bg-destructive-soft text-status-error"
-                      : "bg-muted/40 text-foreground",
-                  )}
-                >
-                  {output || t("canonical.agentSpawn.emptyResult")}
-                </div>
+                <CollapsibleCode
+                  value={output || t("canonical.agentSpawn.emptyResult")}
+                  surface={status === "failed" ? "destructive" : "muted"}
+                  bodyClassName="rounded-sm px-2.5 py-2"
+                />
               </AgentSpawnSection>
             ) : null}
           </div>
@@ -1138,173 +1207,6 @@ function AgentSpawnSection({
   );
 }
 
-function AgentSpawnStepCard({
-  cwd,
-  step,
-  terminalFallbackStatus,
-  uiStateKey,
-}: {
-  cwd?: string;
-  step: StepRow;
-  terminalFallbackStatus?: AgentSpawnStatus;
-  uiStateKey?: string;
-}): React.ReactElement {
-  const { t } = useTranslation();
-  const [expanded, setExpanded] = useTranscriptBooleanState(uiStateKey, false);
-  const tool = step.tool;
-  const result = step.result;
-  const toolName = tool.toolName || "tool";
-  const summary = summarizeRawTool(toolName, tool.toolInput, { cwd });
-  const isError = !!result?.isError;
-  const isUnmatchedTerminal = !result && !!terminalFallbackStatus;
-  const isRunning = !result && !isUnmatchedTerminal;
-  const unmatchedStatus =
-    terminalFallbackStatus === "failed"
-      ? "failed"
-      : terminalFallbackStatus === "canceled"
-        ? "canceled"
-        : "unknown";
-  const toolNameLower = toolName.toLowerCase();
-  const StepIcon = isBashLikeTool(toolName)
-    ? Terminal
-    : toolNameLower === "grep" ||
-        toolNameLower === "glob" ||
-        toolNameLower === "search" ||
-        toolNameLower === "ripgrep"
-      ? Search
-      : toolNameLower === "read" ||
-          toolNameLower === "read_file" ||
-          toolNameLower === "write" ||
-          toolNameLower === "write_file" ||
-          toolNameLower === "edit"
-        ? FileText
-        : Wrench;
-  const stepStatus: AgentStatus =
-    isError || unmatchedStatus === "failed"
-      ? "error"
-      : isRunning
-        ? "running"
-        : "idle";
-  const StepStatusIcon =
-    isError || unmatchedStatus === "failed"
-      ? TriangleAlert
-      : unmatchedStatus === "canceled"
-        ? CircleSlash
-        : isRunning
-          ? LoaderCircle
-          : Check;
-  const stepLabel = isError
-    ? t("canonical.agentSpawn.status.fail")
-    : isRunning
-      ? t("canonical.agentSpawn.status.runningLower")
-      : isUnmatchedTerminal
-        ? statusLabel(unmatchedStatus, t)
-        : t("canonical.agentSpawn.status.done");
-
-  return (
-    <div
-      className={cn(
-        "overflow-hidden rounded-lg border bg-background",
-        isError
-          ? "border-status-error/50 border-l-2 border-l-status-error"
-          : isRunning
-            ? "border-status-running/50 border-l-2 border-l-status-running"
-            : "border-border border-l-2 border-l-border",
-      )}
-    >
-      <button
-        type="button"
-        onClick={(event) => {
-          if (shouldIgnoreClickForSelection(event)) return;
-          setExpanded((v) => !v);
-        }}
-        aria-expanded={expanded}
-        aria-label={t("canonical.agentSpawn.stepToggle", { tool: toolName })}
-        className="flex w-full min-w-0 cursor-pointer items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-muted/30 focus-visible:ring-2 focus-visible:ring-ring/50"
-      >
-        <ChevronRight
-          className={cn(
-            "size-2.5 shrink-0 text-muted-foreground transition-transform duration-150 ease-out motion-reduce:transition-none",
-            expanded && "rotate-90",
-          )}
-          aria-hidden="true"
-        />
-        <StepIcon
-          className="size-3 shrink-0 text-foreground"
-          aria-hidden="true"
-        />
-        <span
-          data-copyable-control-text="true"
-          className="shrink-0 font-semibold text-foreground"
-        >
-          {toolName}
-        </span>
-        {summary ? (
-          <>
-            <span className="text-muted-foreground">·</span>
-            <span
-              data-copyable-control-text="true"
-              className="min-w-0 truncate text-muted-foreground"
-            >
-              {summary}
-            </span>
-          </>
-        ) : null}
-        <span className="min-w-0 flex-1" />
-        <TranscriptPill
-          data-testid="agent-spawn-step-status"
-          data-copyable-control-text="true"
-          className={statusConfig[stepStatus].pillClassName}
-        >
-          <StepStatusIcon
-            className={cn(
-              "size-2.5",
-              isRunning && "animate-spin motion-reduce:animate-none",
-            )}
-            aria-hidden="true"
-          />
-          {stepLabel}
-        </TranscriptPill>
-      </button>
-      <div
-        aria-hidden={!expanded}
-        className="grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
-        style={{ gridTemplateRows: expanded ? "1fr" : "0fr" }}
-      >
-        <div className="min-h-0 overflow-hidden">
-          {
-            // 性能:step 结果文本懒挂载 —— 折叠态不 mount result 文本节点。
-            // 嵌套工具结果可到几十 KB(如 read/grep 大文件输出),一个 200 步的
-            // subagent 折叠时把这些文本全挂进 DOM 就是几 MB 隐藏文本,layout/paint
-            // 全程陪跑。展开单条 step 才渲染它的结果。
-            expanded ? (
-              <div className="border-t border-border px-2.5 py-1.5">
-                <div
-                  data-testid="agent-spawn-step-result"
-                  className={cn(
-                    "max-h-[180px] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-sm px-2 py-1.5 text-foreground",
-                    isError
-                      ? "bg-destructive-soft text-status-error"
-                      : "bg-muted/40",
-                  )}
-                >
-                  {result?.text ? (
-                    <span>{result.text}</span>
-                  ) : isRunning ? (
-                    "—"
-                  ) : result ? (
-                    t("canonical.agentSpawn.emptyResult")
-                  ) : null}
-                </div>
-              </div>
-            ) : null
-          }
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function renderSummary(
   status: AgentStatus,
   t: TFunction,
@@ -1326,15 +1228,13 @@ function renderSummary(
     );
   }
   return (
-    <div
-      className={cn(
-        "max-h-[220px] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-sm border-l-2 px-2.5 py-2",
-        status === "error"
-          ? "border-status-error bg-destructive-soft text-status-error"
-          : "border-primary bg-muted/40 text-foreground",
+    <CollapsibleCode
+      value={resultBlock.text}
+      surface={status === "error" ? "destructive" : "muted"}
+      bodyClassName={cn(
+        "rounded-sm border-l-2 px-2.5 py-2",
+        status === "error" ? "border-status-error" : "border-primary",
       )}
-    >
-      {resultBlock.text}
-    </div>
+    />
   );
 }

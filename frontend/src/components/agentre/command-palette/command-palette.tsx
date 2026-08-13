@@ -43,6 +43,7 @@ import { useOptionalShortcutsContext } from "../shortcuts/shortcuts-provider";
 import { NotChattableDialog } from "../not-chattable";
 import { COMMAND_PREFIX, parseMode, type PaletteMode } from "./mode";
 import { chatSessionsSource } from "./sources/chat-sessions-source";
+import { navigationSource } from "./sources/navigation-source";
 import { newAgentSource } from "./sources/new-agent-source";
 import { newChatSource } from "./sources/new-chat-source";
 import { newProjectChatSource } from "./sources/new-project-chat-source";
@@ -62,9 +63,10 @@ function isProjectsRoute(pathname: string): boolean {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const SOURCES: CommandSource<any>[] = [
   chatSessionsSource,
-  newAgentSource,
+  navigationSource,
   newChatSource,
   newProjectChatSource,
+  newAgentSource,
 ];
 
 export function CommandPalette(): React.ReactElement {
@@ -79,6 +81,13 @@ export function CommandPalette(): React.ReactElement {
   const openSessionInNewTab = useChatTabsStore((s) => s.openSessionInNewTab);
   const openNewSessionRaw = useChatTabsStore((s) => s.openNewSession);
   const [query, setQuery] = React.useState("");
+  const [selectedValue, setSelectedValue] = React.useState("");
+  const selectedValueRef = React.useRef(selectedValue);
+  const selectionTouchedRef = React.useRef({ scope: "", touched: false });
+  const candidatesRef = React.useRef({
+    scope: "",
+    byPriority: new Map<number, string[]>(),
+  });
   const { mode, payload } = parseMode(query);
   // 不可对话分支选中后由面板宿主打开引导弹窗（onSelect 里先 close 面板再设置）。
   const [guidanceAgent, setGuidanceAgent] =
@@ -138,14 +147,64 @@ export function CommandPalette(): React.ReactElement {
     ],
   );
 
-  const activeSources = React.useMemo(
-    () =>
-      SOURCES.filter(
-        (s) =>
-          s.modes.includes(mode) &&
-          (s.activeFor == null || s.activeFor({ pathname: location.pathname })),
-      ),
-    [mode, location.pathname],
+  const activeSources = SOURCES.filter(
+    (s) =>
+      s.modes.includes(mode) &&
+      (s.activeFor == null || s.activeFor({ pathname: location.pathname })),
+  );
+
+  React.useEffect(() => {
+    selectedValueRef.current = selectedValue;
+  }, [selectedValue]);
+
+  const selectionScope = `${open}:${mode}:${location.pathname}:${payload.trim()}`;
+  // cmdk registers later source groups first, so command mode owns selection and
+  // re-applies the highest-priority source after async groups finish loading.
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization
+  const sourceSelection = React.useMemo(
+    () => ({
+      reportFirstSelectable: (sourcePriority: number, itemKeys: string[]) => {
+        if (mode !== "command") return;
+
+        if (candidatesRef.current.scope !== selectionScope) {
+          candidatesRef.current = {
+            scope: selectionScope,
+            byPriority: new Map<number, string[]>(),
+          };
+        }
+        candidatesRef.current.byPriority.set(sourcePriority, itemKeys);
+
+        if (selectionTouchedRef.current.scope !== selectionScope) {
+          selectionTouchedRef.current = {
+            scope: selectionScope,
+            touched: false,
+          };
+        }
+
+        const firstAvailable = Array.from(
+          candidatesRef.current.byPriority.entries(),
+        )
+          .sort(([left], [right]) => left - right)
+          .find(([, candidates]) => candidates.length > 0)?.[1][0];
+        const selectionUnavailable =
+          selectedValueRef.current !== "" &&
+          !document.querySelector(
+            `[cmdk-item][data-value="${CSS.escape(selectedValueRef.current)}"]:not([aria-disabled="true"])`,
+          );
+        if (!firstAvailable || firstAvailable === selectedValueRef.current)
+          return;
+        if (selectionTouchedRef.current.touched && !selectionUnavailable)
+          return;
+
+        selectedValueRef.current = firstAvailable;
+        setSelectedValue(firstAvailable);
+      },
+      markTouched: () => {
+        selectionTouchedRef.current = { scope: selectionScope, touched: true };
+      },
+    }),
+    // eslint-disable-next-line react-hooks/preserve-manual-memoization
+    [mode, selectionScope],
   );
 
   // ContextBar / Tab 拦截只在项目路由 + 命令模式下成立 —— 与 newProjectChatSource 的 activeFor 同步。
@@ -170,9 +229,37 @@ export function CommandPalette(): React.ReactElement {
           </DialogDescription>
 
           <CommandPrimitive
+            key={mode}
             // 关掉 cmdk 内置 filter / sort —— 我们用 source.getScore 自己排
             shouldFilter={false}
             loop
+            value={mode === "command" ? selectedValue : undefined}
+            onValueChange={mode === "command" ? setSelectedValue : undefined}
+            onKeyDownCapture={(event) => {
+              if (
+                event.key === "ArrowDown" ||
+                event.key === "ArrowUp" ||
+                event.key === "Home" ||
+                event.key === "End" ||
+                ((event.key === "n" ||
+                  event.key === "j" ||
+                  event.key === "p" ||
+                  event.key === "k") &&
+                  event.ctrlKey)
+              ) {
+                sourceSelection.markTouched();
+              }
+            }}
+            onPointerMoveCapture={(event) => {
+              if ((event.target as Element).closest("[cmdk-item]")) {
+                sourceSelection.markTouched();
+              }
+            }}
+            onPointerDownCapture={(event) => {
+              if ((event.target as Element).closest("[cmdk-item]")) {
+                sourceSelection.markTouched();
+              }
+            }}
             label={t("commandPalette.title")}
             className="flex h-full flex-col overflow-hidden"
           >
@@ -190,12 +277,16 @@ export function CommandPalette(): React.ReactElement {
               <CommandPrimitive.Empty className="px-4 py-10 text-center text-xs text-muted-foreground">
                 {emptyText(mode, payload, t)}
               </CommandPrimitive.Empty>
-              {activeSources.map((source) => (
+              {activeSources.map((source, sourcePriority) => (
                 <SourceGroup
                   key={source.id}
                   source={source}
+                  sourcePriority={sourcePriority}
                   query={payload}
                   ctx={ctx}
+                  onFirstSelectableChange={
+                    sourceSelection.reportFirstSelectable
+                  }
                 />
               ))}
             </CommandPrimitive.List>
@@ -349,14 +440,18 @@ function emptyText(mode: PaletteMode, payload: string, t: TFunction): string {
 
 type SourceGroupProps<T extends CommandItemBase> = {
   source: CommandSource<T>;
+  sourcePriority: number;
   query: string;
   ctx: OnSelectCtx;
+  onFirstSelectableChange: (sourcePriority: number, itemKeys: string[]) => void;
 };
 
 function SourceGroup<T extends CommandItemBase>({
   source,
+  sourcePriority,
   query,
   ctx,
+  onFirstSelectableChange,
 }: SourceGroupProps<T>) {
   const { t } = useTranslation();
   const { items, loading } = source.useItems();
@@ -385,6 +480,22 @@ function SourceGroup<T extends CommandItemBase>({
     });
     return withScore.slice(0, 50);
   }, [items, q, source]);
+
+  const selectableKeys = React.useMemo(
+    () =>
+      ranked
+        .filter(({ item }) => !(source.isDisabled?.(item) ?? false))
+        .map(({ item }) => item.key),
+    [ranked, source],
+  );
+  const selectableKeySignature = selectableKeys.join("\u0000");
+
+  React.useLayoutEffect(() => {
+    onFirstSelectableChange(sourcePriority, selectableKeys);
+    // selectableKeySignature is the stable semantic dependency; selectableKeys
+    // is intentionally omitted because its array identity changes every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onFirstSelectableChange, selectableKeySignature, sourcePriority]);
 
   const heading = q
     ? t("commandPalette.group.matches", { count: ranked.length })

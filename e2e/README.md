@@ -17,7 +17,7 @@ SQLite**. The external agent boundary does **not** run for real: a real turn spa
 | | **Committed core-flow suite** | **Ad-hoc functional verification** |
 |---|---|---|
 | Lives in | `e2e/tests/*.spec.ts` (committed) | `e2e/scratch/**/*.spec.ts` — flat quick looks or nested scenarios (**gitignored**) |
-| Run with | `make e2e` | `make e2e-scratch` |
+| Run with | `make e2e` | `make e2e-scratch TASK="scratch/<name>/"` |
 | Lifetime | permanent regression guard | throwaway — write, run, observe, delete |
 | What goes here | **only core / critical flows** | "I just built X — does it work in the real app?" |
 
@@ -48,6 +48,7 @@ Playwright drives its **own** chromium against `:34216`. The native webview wind
 | Env | Effect |
 |---|---|
 | `AGENTRE_DATA_DIR=<tmp>/agentre-e2e-data` | DB / config / logs under a throwaway dir — the highest-precedence data-root override (`internal/pkg/paths/paths.go`), so it never collides with your real DB or the `make dev` root |
+| `AGENTRE_E2E_KEYCHAIN_DIR=<tmp>/agentre-e2e-keychain` | device tokens, fingerprint, and e2e login secrets use an isolated 0700 file-keychain directory instead of the production system keychain; bootstrap rejects a missing or unsafe directory |
 | `AGENTRE_ENV=test` | quiet logger level (`internal/bootstrap/cago.go` `appEnv()`) |
 | `AGENTRE_PROXY_PORT=0` | bind the local HTTP gateway to an OS-chosen **free** port instead of the fixed default 52401 (`internal/bootstrap/cago.go` `loadProxyAddr` → `proxyPortFromEnv`). The fixed port is **not** data-dir-scoped, so a running real Agentre already holds 52401; without this override the e2e gateway fails to bind → `BaseURL()` is empty → every gateway round-trip (MCP tool calls, hooks, LLM forward) silently dies. `BaseURL()` reports the real bound port via the listener, so nothing hardcodes 52401 |
 
@@ -85,6 +86,10 @@ A run is fully hermetic, and in particular **a running Agentre does not interfer
 - **Data** — DB / config / logs live under `<tmp>/agentre-e2e-data` (`agentre.db`), removed by
   `run-e2e.mjs` after a **passing** run (kept on failure for debugging — see §7). Your real
   `~/Library/Application Support/agentre` is never touched.
+- **Keychain** — device tokens, fingerprint, and seeded login credentials live under the 0700
+  `<tmp>/agentre-e2e-keychain` file backend. The runner removes it after a passing run and keeps
+  it with other evidence on failure; the e2e process never reads, writes, or deletes production
+  system-keychain entries.
 - **Single-instance lock** — set only when `!isWailsDevMode()` (`main.go`); e2e runs via
   `wails dev` (sets the `devserver` env → dev mode), so the lock is **already skipped**, and its
   id is data-dir-scoped (`singleInstanceUniqueID(dataDir)`) regardless. So an e2e run launches
@@ -125,11 +130,28 @@ cd e2e && pnpm test --debug     # Playwright inspector
 cd e2e && pnpm test --headed    # watch the browser
 ```
 
-Do not hand-start a reusable Wails server against the fixed e2e data directory: loading the Playwright config prepares that directory for a fresh run, so a separately running app and the DB oracle can diverge.
+Do not hand-start a reusable Wails server against the fixed e2e data directory **without the keep-alive flag** (below): a plain run prepares that directory for a fresh start, so a separately running app and the DB oracle can diverge.
 
-The HTML report lands at `e2e/playwright-report/` (gitignored); traces are
-`retain-on-failure`, screenshots `only-on-failure`. webServer output → `$TMPDIR/agentre-e2e-webserver.log`.
-e2e is **not** part of `make test` / `make check` — it runs only on demand.
+**Fast inner loop (keep-alive).** Every normal run pays the full start-up tax (Go compile + vite + app boot + re-seed, ~30 s even with the fake). When iterating on a scratch spec — tweak, re-run, observe — reuse one already-running app instead:
+
+```bash
+# 1. start the app once, leave it running (any terminal) — the env overrides are mandatory: they
+#    point the app at the e2e temp data dir (the same ones playwright.config.ts injects), so the
+#    server never touches your real ~/Library/Application Support/agentre:
+mkdir -p "$TMPDIR/agentre-e2e-data" "$TMPDIR/agentre-e2e-keychain"
+chmod 700 "$TMPDIR/agentre-e2e-keychain"
+AGENTRE_DATA_DIR="$TMPDIR/agentre-e2e-data" AGENTRE_ENV=test \
+  AGENTRE_E2E_KEYCHAIN_DIR="$TMPDIR/agentre-e2e-keychain" AGENTRE_PROXY_PORT=0 \
+  wails dev -tags e2e -devserver localhost:34216 > "$TMPDIR/agentre-e2e-webserver.log" 2>&1
+# 2. iterate: each run reuses the running app — no rebuild, no data-dir wipe, ~5 s
+cd e2e && AGENTRE_E2E_REUSE=1 pnpm run test:scratch "scratch/<task>/"
+# or via make (AGENTRE_E2E_REUSE propagates through):
+AGENTRE_E2E_REUSE=1 make e2e-scratch TASK="scratch/<task>/"
+```
+
+`AGENTRE_E2E_REUSE=1` switches `playwright.config.ts` and `run-e2e.mjs` into **reuse mode**: the temp data dir is **not** wiped (the running app owns it), `reuseExistingServer` is forced on, and the runner performs **no teardown** (no orphan-vite reap, no temp-dir removal) so the app survives for the next iteration. It is an explicit "I started the server" contract: the runner fails fast unless **both** `:34216` is listening **and** `$TMPDIR/agentre-e2e-data/agentre.db` exists (a server up on the real data dir — e.g. started without `AGENTRE_DATA_DIR` — would silently seed your real DB, so it is rejected with the command above). Kill the dev server yourself when done. The default (flag unset) is unchanged and fully hermetic: a fresh data dir each run, with Playwright managing and tearing down its own server.
+
+The HTML report lands at `e2e/playwright-report/` (gitignored) **in CI only** — a local run uses the list reporter and keeps traces/screenshots on failure (`CI=1` forces a local HTML report). webServer output → `$TMPDIR/agentre-e2e-webserver.log`. e2e is **not** part of `make test` / `make check` — it runs only on demand.
 
 **In CI:** the committed suite runs on every PR / push to `main` / `develop/*` as the `E2E` job
 (`.github/workflows/ci.yml`, `ubuntu-22.04`). It installs xvfb + GTK/WebKit + the wails CLI,
@@ -213,10 +235,7 @@ in mind when changing it.
 
 ## 8. Extending the harness
 
-- **Fake a new event** (tool call / error) → branch the fake `Run` on a prompt prefix (e.g. an
-  `@e2e:…` directive) to emit `ToolCall` / `ErrorEvent` from the sealed `agentruntime.Event` set.
-  **Not implemented yet** — it's the intended seam; add it red→green (with a fake-runtime unit
-  test) when a spec first needs it.
+- **Fake a new event** (tool call / error) → branch the fake `Run` on a prompt-prefix directive, `e2e-<name>:<args>` in the user's message. This seam is **already implemented** for several flows (each red→green with a fake-runtime unit test): `e2e-subagent-call:<agent>:<prompt>` (calls the injected `/mcp/subagent/` `agent_call`), `e2e-org-create-dept:<name>` and `e2e-hook-create:<name>` (approved write tools on the injected `/mcp/org/` / `/mcp/hook/`), `e2e-ask:<question>` (AskUserQuestion expiry), `e2e-bg-task:<label>` (background-turn → CLI auto-continue), `e2e-long-thinking:<runes>` (long thinking stream), and `e2e-assert-system:<needle>` (system-prompt assertion). Add a new one the same way — red→green with a fake-runtime unit test — when a spec first needs it.
 - **Fake an injected MCP tool call** → when the real backend would call an injected MCP tool, the
   fake makes the same HTTP `tools/call` like a real CLI. **Done for the `org` / `subagent` / `hook` tools**:
   when the agent has the relevant tool enabled, the real backend injects the MCP server, so the
@@ -236,13 +255,14 @@ in mind when changing it.
 | `e2e/playwright.config.ts` | base harness: temp dir + env + `frontend/dist` prep, webServer (`wails dev -tags e2e -devserver 34216`) | yes |
 | `e2e/playwright.scratch.config.ts` | extends base, `testDir: ./scratch` for throwaway specs | yes |
 | `e2e/fixtures/db.ts` | read-only `node:sqlite` DB oracle (`runningSessionCount`, …) | yes |
-| `e2e/tests/*.spec.ts` | committed **core-flow** specs (chat smoke/reload plus approved org/subagent tool flows) | yes |
+| `e2e/tests/*.spec.ts` | committed **core-flow** specs (chat smoke/reload, git-preview tabs, plus approved org/subagent tool flows) | yes |
 | `e2e/scratch/**/*.spec.ts` | throwaway specs, either flat quick looks or `<task-name>/verify.spec.ts` scenarios | **no (gitignored)** |
 | `e2e/scratch/README.md` | scratch convention + starter template | yes |
 | `e2e/package.json` → `setup` / `test` / `test:scratch` / `test:sync` | one-time install+Chromium / run suite / run scratch / run the sync suite (§10) | yes |
-| `Makefile` → `e2e` / `e2e-scratch` / `e2e-sync` | thin aliases for `cd e2e && pnpm test` / `pnpm run test:scratch` / `pnpm run test:sync` | yes |
+| `Makefile` → `e2e` / `e2e-scratch` / `e2e-sync` | thin aliases for `cd e2e && pnpm test` / `pnpm run test:scratch` (requires `TASK=scratch/…`) / `pnpm run test:sync` | yes |
 | `e2e/fakes/install.go` (`//go:build e2e`) / `install_noop.go` (`//go:build !e2e`) | register the fake + seed / no-op | yes |
-| `e2e/fakes/login.go` (`//go:build e2e`) | seed a logged-in desktop from env, for §10 only (no-op without it) | yes |
+| `e2e/fakes/login.go` (`//go:build e2e`) | seed a logged-in desktop from env, for §10 / §11 only (no-op without it) | yes |
+| `e2e/fakes/remote.go` (`//go:build e2e`) | seed a paired agentred + an agent bound to it, for §11 only (no-op without it) | yes |
 | `e2e/run-e2e-sync.mjs` / `playwright.sync.config.ts` / `sync/` / `fixtures/sync.ts` | the sync suite: runner, config, specs, oracles (§10) | yes |
 | `internal/pkg/agentruntime/runtimes/fake/` | the deterministic fake runtime (entire package `//go:build e2e`) | yes |
 
@@ -301,3 +321,27 @@ Gotchas learned building it:
   tombstone's absent `project_sync_id` (the server's natural-key guard now skips
   deleted items). The spec deletes a project that has a path record, so it covers
   the cascade rather than the plain project tombstone alone.
+
+## 11. The dual-end run — this app **and** a browser on one agentred
+
+A fourth mode, and the only one this repo does not drive: it is orchestrated from
+the sibling `agentre-server` checkout (`cd agentre-server/e2e && pnpm dual`,
+`run-e2e-web.mjs --dual`). That runner starts a real server + a real `agentred`,
+seeds one throwaway account, and then brings up **two** ends against it — a
+browser and this app (`wails dev -tags e2e -devserver 34217`, its own temp data
+dir, the seeded login of §10). One Playwright test drives both.
+
+It exists for the handful of requirements that only two simultaneous ends can
+decide (`docs/specs/2026-08-10-web-session-access.md` R7 / R18 / R19 / R6 / R10):
+a browser's message must land in **this app's** transcript as a real user row
+carrying `chat.message.fromDevice`, not as a reply with no question.
+
+What this repo contributes:
+
+| Piece | Why |
+| --- | --- |
+| `e2e/fakes/remote.go` (`//go:build e2e`) | The app joins that agentred the way a claimed machine would: one `paired_agentreds` row (`AGENTRE_E2E_AGENTRED_FINGERPRINT` / `_URL`) + a claudecode backend bound to it + the `E2E Remote Agent` that uses it. Every turn with that agent therefore goes `remote.Runtime → ConnPool.Borrow → /v1/relay/client` — the browser's own endpoint. The paired row's URL points at a dead loopback port on purpose: `Borrow` races LAN-direct against relay, and only the relay leg is under test. It re-runs `bootstrap.InitRemoteDevice` first, because `login.go` **replaces** the `server_svc` singleton the connection pool captured at boot (a real login mutates that instance instead), and a pool still holding the old one dials with no access token |
+| `e2e/fakes/login.go` | the same seeded login §10 uses |
+
+Run it from `agentre-server/e2e`; its README owns the runner, the ports and the
+runtime gotchas the scenario had to be shaped around.

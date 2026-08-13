@@ -2203,6 +2203,49 @@ func TestIntegration_MultiClientVisibility_GatesAllPeerAccessByClaimedAccount(t 
 		}, &ok), "control resolution must use the named origin's runtime session key")
 	})
 
+	// R9(本轮):浏览器给**别的对端发起的**那条会话发新消息 —— 这一轮必须落在发起端
+	// 名下的那条会话上,而不是调用方自己名下那条同号会话。会话键是 (发起端指纹, 会话
+	// id):runtime.run 不认 origin 时,调用方发的每一轮都会在自己名下另建一条同号会话,
+	// 于是 ①上下文续不上(决策 8 落库的 provider_session_id 在发起端那一行);②事件
+	// journal 落到另一个分区,发起端与它的其余订阅者一条都收不到(R6 / R18 的前提落空);
+	// ③清单里凭空多出一条重号会话。控制族(attach / pull / abort / submit)早就按
+	// ResolveSessionPeer 认 origin,runtime.run 是唯一还没认的那一个。
+	t.Run("a same-account peer can run a turn on another origin's session", func(t *testing.T) {
+		rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+		credential := claimDaemonForIntegration(t, rig.d, "account-42")
+		peerA := accountClientForIntegration(t, rig.d, "sha256:account-peer-a", credential)
+		peerB := accountClientForIntegration(t, rig.d, "sha256:account-peer-b", credential)
+		startRunAs(t, peerB, rig.dir, 302, "from-b")
+		awaitLifecycle(t, peerB, 302, wire.SessionLifecycleIdle)
+
+		// peerA 在 peerB 那条会话上开新一轮,点名 origin。
+		be, err := json.Marshal(agent_backend_entity.AgentBackend{
+			Type: string(agent_backend_entity.TypeClaudeCode), ID: 1, Name: "test-backend",
+		})
+		require.NoError(t, err)
+		var ack wire.RunAck
+		require.NoError(t, callRig(t, peerA, wire.MethodRun, wire.RunParams{
+			Backend: be, AgentID: 1, SessionID: 302, Cwd: rig.dir,
+			PeerFingerprint: "sha256:account-peer-b", UserText: "from-a-on-b",
+		}, &ack))
+		awaitLifecycle(t, peerB, 302, wire.SessionLifecycleIdle)
+
+		// 清单里仍然只有 peerB 名下那一条 302 —— 没有在 peerA 名下另建同号会话。
+		var list wire.SessionListResult
+		require.NoError(t, callRig(t, peerA, wire.MethodSessionList, nil, &list))
+		require.Equal(t, []int64{302}, sessionIDs(list.Sessions))
+		require.Equal(t, map[int64]string{302: "sha256:account-peer-b"}, sessionOrigins(list.Sessions),
+			"这一轮必须落在发起端那条会话上,而不是调用方自己名下那条同号会话")
+
+		// 这一轮的事件落在发起端那个 journal 分区里,发起端补齐时读得到。
+		var page wire.SessionPullResult
+		require.NoError(t, callRig(t, peerB, wire.MethodSessionPull, wire.SessionPullParams{
+			SessionID: 302, Cursor: 0, Limit: 200,
+		}, &page))
+		require.NotEmpty(t, page.Notifications,
+			"别的端跑的这一轮必须扇出/落库在发起端这条会话上(R6 / R18 的前提)")
+	})
+
 	// Given 一台已认领 daemon,和一台**既配过对、又持账号凭据**的桌面 —— R6 的并发选路
 	// 让它每次重连都可能落在直连(有配对令牌就走 auth.connect)或中转(恒走 auth.account)
 	// 任一条路径上;When 它在账号鉴权那条路径上取会话清单,把清单交出的 origin 记下来,

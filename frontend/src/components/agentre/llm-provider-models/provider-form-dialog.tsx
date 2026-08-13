@@ -36,11 +36,10 @@ import {
 
 import { PreviewLLMModels } from "../../../../wailsjs/go/app/App";
 import { llm_provider_svc } from "../../../../wailsjs/go/models";
-import { LlmModelLogo } from "../ai-brand-logo";
+import { LlmModelLogo, LlmProviderLogo } from "../ai-brand-logo";
 import { cn } from "@/lib/utils";
 import {
   type Provider,
-  badgeToneClass,
   errMessage,
   isProviderType,
   providerTypeMeta,
@@ -357,15 +356,10 @@ export function ProviderFormDialog({
                   <SelectContent>
                     {providerTypeOrder.map((key) => (
                       <SelectItem key={key} value={key}>
-                        <span
-                          aria-hidden="true"
-                          className={cn(
-                            "inline-flex size-[16px] shrink-0 items-center justify-center rounded-sm font-mono text-2xs font-bold",
-                            badgeToneClass(providerTypeMeta[key].tone),
-                          )}
-                        >
-                          {providerTypeMeta[key].badge}
-                        </span>
+                        <LlmProviderLogo
+                          providerType={key}
+                          className="size-4 rounded-sm"
+                        />
                         <span className="flex min-w-0 flex-col">
                           <span className="text-sm font-medium leading-tight">
                             {t(`llmProviders.providerType.${key}.label`)}

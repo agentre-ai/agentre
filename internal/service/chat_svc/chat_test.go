@@ -640,9 +640,9 @@ func TestListAgents(t *testing.T) {
 			}
 		})
 
-		convey.Convey("CEO 默认 Pinned，但无后端时 Chattable=false", func() {
+		convey.Convey("CEO 未置顶（DB pinned=0，无默认置顶回填），无后端时 Chattable=false", func() {
 			m.agent.EXPECT().List(ctx).Return([]*agent_entity.Agent{
-				{ID: 1, Name: "CEO 助手", SystemBadge: agent_entity.SystemBadgeDefault, AgentBackendID: 0, Status: consts.ACTIVE},
+				{ID: 1, Name: "CEO 助手", SystemBadge: agent_entity.SystemBadgeDefault, Pinned: false, AgentBackendID: 0, Status: consts.ACTIVE},
 				{ID: 2, Name: "工程师", AgentBackendID: 7, Status: consts.ACTIVE},
 			}, nil)
 			m.backend.EXPECT().BatchFind(ctx, []int64{7}).Return(map[int64]*agent_backend_entity.AgentBackend{
@@ -668,7 +668,7 @@ func TestListAgents(t *testing.T) {
 			resp, err := m.svc.ListAgents(ctx, &chat_svc.ListAgentsRequest{})
 			assert.NoError(t, err)
 			assert.Len(t, resp.Agents, 2)
-			assert.True(t, resp.Agents[0].Pinned)
+			assert.False(t, resp.Agents[0].Pinned)
 			assert.False(t, resp.Agents[0].Chattable)
 			assert.True(t, resp.Agents[1].Chattable)
 			assert.Equal(t, 3, resp.Agents[1].ActiveCount)
@@ -2082,6 +2082,64 @@ func TestSend_PersistsProviderSessionIDBeforeStreamDrains(t *testing.T) {
 	close(runner.release)
 	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
 	assert.True(t, persistedBeforeDrain, "provider session id must be persisted before the runtime event stream drains")
+}
+
+// TestSend_FreshSessionReflectsLocalProviderSessionID 覆盖挂账修复(2026-08-11)的
+// 生产者侧:chat_svc 在本地 sess.ProviderSessionID 为空(regenerate 无锚点 / provider 会话
+// 失效恢复同此)时,必须在 RunRequest 上声明 FreshSession=true,daemon 才不拿落库旧 id 续话;
+// 本地有可续的原生会话时保持 false,决策 8 的续话语义原样。
+func TestSend_FreshSessionReflectsLocalProviderSessionID(t *testing.T) {
+	convey.Convey("Given 本地 provider_session_id 有无两种状态, When Send, Then RunRequest.FreshSession 跟随", t, func() {
+		run := func(providerSessionID string) bool {
+			t.Setenv("AGENTRE_DATA_DIR", t.TempDir())
+			m := setupChatTest(t)
+			ctx := m.ctx
+			runner := &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}
+			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, runner)
+			t.Cleanup(restore)
+
+			sess := &chat_entity.Session{ID: 100, AgentID: 7, ProviderSessionID: providerSessionID, AgentStatus: "idle", Status: consts.ACTIVE}
+			backend := &agent_backend_entity.AgentBackend{ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE}
+			agent := &agent_entity.Agent{ID: 7, Name: "Claude", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`}
+
+			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(agent, nil)
+			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(backend, nil)
+			m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+			m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+			m.dbMock.ExpectBegin()
+			m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+			m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+					if msg.Role == "user" {
+						msg.ID = 1000
+					} else {
+						msg.ID = 1001
+					}
+					return nil
+				}).Times(2)
+			m.dbMock.ExpectCommit()
+
+			resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+			require.NoError(t, err)
+			chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+			select {
+			case req := <-runner.requests:
+				return req.FreshSession
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for runtime request")
+				return false
+			}
+		}
+
+		convey.Convey("本地无 provider_session_id → FreshSession=true", func() {
+			assert.True(t, run(""), "regenerate 无锚点 / 会话失效恢复:必须声明 freshSession,daemon 才不拿落库旧 id 续话")
+		})
+		convey.Convey("本地有 provider_session_id → FreshSession=false(resume)", func() {
+			assert.False(t, run("claude-abc123"), "本地有可续的原生会话时保持决策 8 续话语义")
+		})
+	})
 }
 
 type streamErrorRunner struct{ err error }

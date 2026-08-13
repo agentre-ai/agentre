@@ -506,6 +506,56 @@ func TestCreatePermissionMode_BypassDefaultStartsInPlan(t *testing.T) {
 	})
 }
 
+// TestCreatePermissionMode_CrossTypeOverrideFallsBack 回归用户报告: 新建会话在空会话
+// 态把执行目标改选到另一个类型的后端(如 claudecode 主后端 → codex 后端)后首发,前端
+// 按 agent 主后端推导的 permissionMode(如 acceptEdits/bypassPermissions)对实际后端
+// 不合法, createPermissionMode 必须回落到该后端的默认派生而不是硬报
+// ChatPermissionModeInvalid —— 否则一次合法的改选连第一条消息都发不出去。
+//
+// 真正需要拒绝非法 mode 的路径是 SetPermissionMode 那条 IPC 线(现有测试锁死), 新建
+// 会话 Send 的 mode 只是前端偏好, 后端(唯一知道实际后端的地方)在边界归一。
+func TestCreatePermissionMode_CrossTypeOverrideFallsBack(t *testing.T) {
+	convey.Convey("Given codex 实际后端, When raw 是 claudecode 才合法的 acceptEdits, Then 回落到 codex 默认 default 不报错", t, func() {
+		ctx := context.Background()
+		be := &agent_backend_entity.AgentBackend{
+			Type: string(agent_backend_entity.TypeCodex),
+		}
+		mode, err := createPermissionMode(ctx, be, "acceptEdits", true)
+		assert.NoError(t, err)
+		assert.Equal(t, "default", mode)
+	})
+
+	convey.Convey("Given codex 实际后端, When raw 是 claudecode 才合法的 bypassPermissions, Then 回落到 codex 默认不报错", t, func() {
+		ctx := context.Background()
+		be := &agent_backend_entity.AgentBackend{
+			Type: string(agent_backend_entity.TypeCodex),
+		}
+		mode, err := createPermissionMode(ctx, be, "bypassPermissions", true)
+		assert.NoError(t, err)
+		assert.Equal(t, "default", mode)
+	})
+
+	convey.Convey("Given codex 实际后端, When raw 对该后端本来就合法(default), Then 尊重 raw 不回落", t, func() {
+		ctx := context.Background()
+		be := &agent_backend_entity.AgentBackend{
+			Type: string(agent_backend_entity.TypeCodex),
+		}
+		mode, err := createPermissionMode(ctx, be, "plan", true)
+		assert.NoError(t, err)
+		assert.Equal(t, "plan", mode)
+	})
+
+	convey.Convey("Given builtin 实际后端(0 档), When raw 非空 carryover, Then 回落为空串不报错", t, func() {
+		ctx := context.Background()
+		be := &agent_backend_entity.AgentBackend{
+			Type: string(agent_backend_entity.TypeBuiltin),
+		}
+		mode, err := createPermissionMode(ctx, be, "acceptEdits", true)
+		assert.NoError(t, err)
+		assert.Equal(t, "", mode)
+	})
+}
+
 // TestResolveSessionCwd_LocalUsesCwdResolver 验证 be.IsLocal() 时走注入的 CwdResolver 回调。
 func TestResolveSessionCwd_LocalUsesCwdResolver(t *testing.T) {
 	prev := resolveCwdFn

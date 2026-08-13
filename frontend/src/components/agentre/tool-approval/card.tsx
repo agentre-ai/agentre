@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import type { ToolApprovalData } from "@/stores/chat-streams-store";
 import { AnswerToolApproval } from "../../../../wailsjs/go/app/App";
 import { chat_svc } from "../../../../wailsjs/go/models";
+import { CollapsibleCode } from "../collapsible-code";
 import {
   TranscriptCard,
   TranscriptCardBody,
@@ -108,9 +109,11 @@ export const ToolApprovalCard: React.FC<{
 
       {isPending && inputJson && (
         <TranscriptCardBody>
-          <pre className="max-h-64 overflow-auto rounded-sm bg-muted/40 px-2.5 py-2 text-aux">
-            <code>{inputJson}</code>
-          </pre>
+          <CollapsibleCode
+            value={inputJson}
+            surface="muted"
+            bodyClassName="rounded-sm px-2.5 py-2"
+          />
         </TranscriptCardBody>
       )}
 

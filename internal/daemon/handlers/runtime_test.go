@@ -1074,6 +1074,76 @@ func TestRuntime_Run_ForwardsAutonomousTurn(t *testing.T) {
 	assert.Equal(t, "claude-sonnet-4-6", autoDone.Model)
 }
 
+// TestRuntime_Run_UserMessageMarker: R18 —— 浏览器在空闲会话上「开新一轮」时,daemon
+// 在事件流开头注入一条 user_message 标记(携带发起方设备身份与用户文本),扇出给同一条
+// 会话的其余订阅者,让桌面端把这一轮落成一行带来源标识的用户消息。
+func TestRuntime_Run_UserMessageMarker(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 3)
+		ch <- agentruntime.TextDelta{Text: "reply"}
+		ch <- agentruntime.Done{}
+		close(ch)
+		return ch, &agentruntime.RunResult{ProviderSessionID: "psid-1"}, nil
+	}
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+
+	be := agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypeClaudeCode), Name: "x"}
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend:          backendJSON(t, be),
+		SessionID:        42,
+		AgentID:          7,
+		Cwd:              "/tmp",
+		UserText:         "浏览器发来的消息",
+		SourceDevice:     "sha256:web-device",
+		SourceDeviceName: "Chrome · macOS",
+	})
+	require.NoError(t, err)
+
+	// 标记 + 后端事件 + 终态 = 3 帧。
+	frames := notif.waitFrames(t, 3)
+
+	require.Equal(t, wire.NotifyEvent, frames[0].method)
+	ef0, ok := frames[0].params.(*wire.EventFrame)
+	require.True(t, ok, "expected EventFrame, got %T", frames[0].params)
+	assert.Equal(t, int64(42), ef0.SessionID)
+	assert.Contains(t, string(ef0.Event), `"kind":"user_message"`)
+	assert.Contains(t, string(ef0.Event), `"text":"浏览器发来的消息"`)
+	assert.Contains(t, string(ef0.Event), `"sourceDevice":"sha256:web-device"`)
+	assert.Contains(t, string(ef0.Event), `"sourceDeviceName":"Chrome · macOS"`)
+
+	// 后续后端事件原样跟在标记之后。
+	ef1, ok := frames[1].params.(*wire.EventFrame)
+	require.True(t, ok)
+	assert.Contains(t, string(ef1.Event), `"kind":"text_delta"`)
+}
+
+// TestRuntime_Run_NoUserMessageMarkerWhenNoSource: R18 单端零变化 —— 桌面端自己发消息
+// 不带 SourceDevice,daemon 不注入 user_message 标记,事件流与今天逐帧一致。
+func TestRuntime_Run_NoUserMessageMarkerWhenNoSource(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 2)
+		ch <- agentruntime.TextDelta{Text: "hi"}
+		ch <- agentruntime.Done{}
+		close(ch)
+		return ch, &agentruntime.RunResult{ProviderSessionID: "psid-1"}, nil
+	}
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+
+	be := agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypeClaudeCode), Name: "x"}
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend: backendJSON(t, be), SessionID: 42, AgentID: 7, Cwd: "/tmp", UserText: "hi",
+	})
+	require.NoError(t, err)
+
+	frames := notif.waitFrames(t, 3)
+	ef0, ok := frames[0].params.(*wire.EventFrame)
+	require.True(t, ok)
+	assert.NotContains(t, string(ef0.Event), `"kind":"user_message"`)
+	assert.Contains(t, string(ef0.Event), `"kind":"text_delta"`)
+}
+
 func TestRuntime_Run_BadBackendJSON_Errors(t *testing.T) {
 	ctx, _, _, _, h := setupRuntimeTest(t, &fullRT{})
 	_, err := h.Run(ctx, wire.RunParams{Backend: json.RawMessage(`{bad`)})
@@ -1798,6 +1868,97 @@ func TestRuntime_Run_RecordsSessionRowThenMovesItToIdleAtTurnEnd(t *testing.T) {
 		BackendType:    string(agent_backend_entity.TypeClaudeCode),
 		LifecycleState: wire.SessionLifecycleRunning,
 	}}, sess.started(), "起手必须建行并置 running,带上客户端展示要用的元数据")
+}
+
+// TestRuntime_Run_PersistsTitleAgentSyncIDAndProviderSessionID 覆盖 R7 + 决策 8 的
+// 落库:每轮 runtime.run 起手时把会话标题、Agent 同步标识与 daemon 从 result 收回的
+// provider_session_id 一并写进那一行。
+func TestRuntime_Run_PersistsTitleAgentSyncIDAndProviderSessionID(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.Done{}
+		close(ch)
+		return ch, &agentruntime.RunResult{ProviderSessionID: "claude-abc123"}, nil
+	}
+	ctx, notif, sess, h := setupRuntimeTestWithSessions(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)}
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend: backendJSON(t, be), SessionID: 5, AgentID: 7, Cwd: "/work",
+		Title: "fix the bug", AgentSyncID: "01HXsync000000000000000000",
+	})
+	require.NoError(t, err)
+
+	notif.waitFrames(t, 2) // Done + runResultDone
+	assert.Equal(t, []handlers.SessionRecord{{
+		PeerSessionID:     "5",
+		AgentID:           7,
+		Cwd:               "/work",
+		BackendType:       string(agent_backend_entity.TypeClaudeCode),
+		LifecycleState:    wire.SessionLifecycleRunning,
+		Title:             "fix the bug",
+		AgentSyncID:       "01HXsync000000000000000000",
+		ProviderSessionID: "claude-abc123",
+	}}, sess.started(), "起手建行必须带上标题、Agent 同步标识与 daemon 收回的 provider_session_id")
+}
+
+// TestRuntime_Run_ContinuationResolvesStoredProviderSessionID 覆盖决策 8:provider_session_id
+// 落库之后,续话不再需要调用方提供 —— 调用方空着字段发下一轮时,daemon 用自己落库的那
+// 份把它续上。
+func TestRuntime_Run_ContinuationResolvesStoredProviderSessionID(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.Done{}
+		close(ch)
+		return ch, &agentruntime.RunResult{ProviderSessionID: "claude-abc123"}, nil
+	}
+	ctx, notif, _, h := setupRuntimeTestWithSessions(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)}
+	// 第一轮:daemon 从 result 收回 providerSessionID 并落库。
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 5, AgentID: 7, Cwd: "/work"})
+	require.NoError(t, err)
+	notif.waitFrames(t, 2)
+	require.Len(t, rt.runReqs, 1)
+
+	// 第二轮:调用方不再提供 providerSessionID(决策 8)。
+	_, err = h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 5, AgentID: 7, Cwd: "/work"})
+	require.NoError(t, err)
+	notif.waitFrames(t, 2)
+	require.Len(t, rt.runReqs, 2)
+	assert.Equal(t, "claude-abc123", rt.runReqs[1].req.ProviderSessionID,
+		"续话不需要调用方提供 providerSessionID,daemon 拿自己落库的那份续上")
+}
+
+// TestRuntime_Run_FreshSessionSkipsStoredProviderSessionID 覆盖挂账修复:决策 8 把「空
+// RunParams.ProviderSessionID」重载成「用落库那份续话」,但 regenerate 与 provider 会话
+// 失效恢复这两条路径的空字段本意是「起全新会话」。freshSession=true 显式声明这一轮不续
+// 任何落库的 provider_session_id —— daemon 必须把 ProviderSessionID 保持为空让 runtime
+// 新建,而不是拿落库的旧 id 顶掉(否则 regenerate 退化成续旧上下文、gone 恢复永远撞同
+// 一个失效 id)。
+func TestRuntime_Run_FreshSessionSkipsStoredProviderSessionID(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.Done{}
+		close(ch)
+		return ch, &agentruntime.RunResult{ProviderSessionID: "claude-abc123"}, nil
+	}
+	ctx, notif, _, h := setupRuntimeTestWithSessions(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)}
+	// 第一轮:daemon 从 result 收回 providerSessionID 并落库。
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 5, AgentID: 7, Cwd: "/work"})
+	require.NoError(t, err)
+	notif.waitFrames(t, 2)
+	require.Len(t, rt.runReqs, 1)
+
+	// 第二轮:调用方显式声明 freshSession —— 落库已有旧 id,也必须起全新会话。
+	_, err = h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 5, AgentID: 7, Cwd: "/work", FreshSession: true})
+	require.NoError(t, err)
+	notif.waitFrames(t, 2)
+	require.Len(t, rt.runReqs, 2)
+	assert.Equal(t, "", rt.runReqs[1].req.ProviderSessionID,
+		"freshSession=true 时 daemon 不得用落库的 provider_session_id 续话,必须保持为空起全新会话")
 }
 
 // TestRuntime_Run_AutonomousTurnMovesLifecycleBackToRunning 覆盖自主续轮:backend

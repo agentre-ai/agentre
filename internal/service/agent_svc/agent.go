@@ -337,7 +337,9 @@ func (s *agentSvc) DeleteAvatar(ctx context.Context, req *DeleteAvatarRequest) (
 	return &DeleteAvatarResponse{Item: toItem(existing, targets)}, nil
 }
 
-// SetPinned 切换 Agent 用户置顶。系统 agent 也允许置顶（虽然恒置顶），不特判。
+// SetPinned 切换 Agent 用户置顶。系统 agent 与普通 Agent 同一条路径，不特判：
+// 置顶与否完全由 DB 的 pinned 列承载，侧栏读口不再用 IsSystem() 强制浮顶
+// （R: ceo-unpin）。
 func (s *agentSvc) SetPinned(ctx context.Context, req *SetPinnedRequest) (*SetPinnedResponse, error) {
 	existing, err := agent_repo.Agent().Find(ctx, req.ID)
 	if err != nil {

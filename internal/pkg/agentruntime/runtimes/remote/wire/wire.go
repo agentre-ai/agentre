@@ -244,12 +244,35 @@ type HistoryMessageWire struct {
 // daemon 端 handlers/runtime.go 在 Run 入口处自己用 ProviderLookup + 自家
 // Gateway 解出这三者,desktop 端 chat_svc.runTurn 检 be.IsRemote() 后也不再填。
 type RunParams struct {
-	Backend           json.RawMessage      `json:"backend"`
-	AgentID           int64                `json:"agentId"`
-	SessionID         int64                `json:"sessionId"`
-	Cwd               string               `json:"cwd,omitempty"`
-	SystemPrompt      string               `json:"systemPrompt,omitempty"`
-	ProviderSessionID string               `json:"providerSessionId,omitempty"`
+	Backend   json.RawMessage `json:"backend"`
+	AgentID   int64           `json:"agentId"`
+	SessionID int64           `json:"sessionId"`
+	// PeerFingerprint 点名这一轮要落在**哪个对端**名下的那条会话上(R9)。会话键是
+	// (发起端指纹, 会话 id),而清单(SessionSummary.PeerFingerprint)是客户端学 origin
+	// 的唯一来源;省略 = 调用方自己的对端,与控制族(attach / pull / abort / submit)
+	// 同一条 ResolveSessionPeer 约定 —— 点名别人的 origin 是账号级能力,配对身份点名
+	// 一律被拒。不点名地给别人的会话开新一轮,会在调用方名下另建一条同号会话:上下文
+	// (决策 8 的 provider_session_id)续不上,事件也落到另一个 journal 分区,发起端与
+	// 它的其余订阅者一条都收不到(R6 / R18 的前提)。
+	PeerFingerprint string `json:"peerFingerprint,omitempty"`
+	Cwd             string `json:"cwd,omitempty"`
+	// Title 是该会话此刻的标题(R7)。桌面端每轮携带当前值,daemon 幂等覆盖;老桌面端
+	// 不传时保持空串。改名后最多滞后一轮生效。
+	Title string `json:"title,omitempty"`
+	// AgentSyncID 是该会话所属 Agent 的账号级同步标识(块 1,决策 3 的 ULID,不是本地
+	// 自增 agent_id)。会话列表按它解析 Agent 名与头像(R5)。
+	AgentSyncID       string `json:"agentSyncId,omitempty"`
+	SystemPrompt      string `json:"systemPrompt,omitempty"`
+	ProviderSessionID string `json:"providerSessionId,omitempty"`
+	// FreshSession 声明这一轮**必须起全新会话**:即使 daemon 在自家落库里存了这条会话
+	// 的 provider_session_id,也不许续(挂账修复,2026-08-11)。决策 8 之后「空
+	// ProviderSessionID」的语义被重载成「用落库那份续话」,而 regenerate 与 provider 会话
+	// 失效恢复这两条路径的空字段本意是「全新」—— 两者在 wire 上不可区分,daemon 拿旧 id
+	// 顶掉:regenerate 退化成续旧上下文、gone 恢复永远撞同一个失效 id。本字段是那个
+	// 「全新」意图的显式出口。三种取值:ProviderSessionID 非空 = resume;空 +
+	// FreshSession=false(缺省)= 决策 8 续话(daemon 续落库那份);空 + FreshSession=true
+	// = 全新,忽略落库。浏览器续话不置它;桌面端在本地 sess.ProviderSessionID 为空时置它。
+	FreshSession      bool                 `json:"freshSession,omitempty"`
 	UserText          string               `json:"userText,omitempty"`
 	UserBlocks        []blocks.StoredBlock `json:"userBlocks,omitempty"`
 	History           []HistoryMessageWire `json:"history,omitempty"`
@@ -271,6 +294,14 @@ type RunParams struct {
 	// （daemon 解析该 Provider 当前默认模型），非空 = fixed-model（daemon 精确解析
 	// 该模型，缺失/停用/旧 daemon 一律严格拒绝，绝不静默降级为默认模型）。
 	LLMModelKey string `json:"llmModelKey,omitempty"`
+	// SourceDevice / SourceDeviceName 是「开新一轮」发起方的设备身份（R18/R19）。
+	// 浏览器**每轮**随 runtime.run 声明自己的设备指纹与显示名（如「Chrome · macOS」）：
+	// 握手（auth.account）只带指纹、不带显示名，而 R19 要的是「人能认出的名字」，所以
+	// 名字走这里而不是握手。daemon 据此在事件流开头注入一条 user_message 标记，扇出给
+	// 同一条会话的其余订阅者，让桌面端把这一轮落成一行带来源标识的用户消息。桌面端自己
+	// 发消息不传这两个字段 → 不注入、消息不带来源标识，单端界面零变化（R17 既有承诺不变）。
+	SourceDevice     string `json:"sourceDevice,omitempty"`
+	SourceDeviceName string `json:"sourceDeviceName,omitempty"`
 }
 
 // MCPProxyRequest 是 daemon→desktop 隧道里一次 MCP HTTP 请求的封装。daemon 把 CLI 子进程
@@ -427,17 +458,35 @@ type SessionSummary struct {
 	SessionID       int64  `json:"sessionId"`
 	PeerFingerprint string `json:"peerFingerprint,omitempty"`
 	AgentID         int64  `json:"agentId,omitempty"`
-	Cwd             string `json:"cwd,omitempty"`
-	BackendType     string `json:"backendType,omitempty"`
-	LifecycleState  string `json:"lifecycleState"`
-	WaitingForInput bool   `json:"waitingForInput,omitempty"`
-	LatestSeq       int64  `json:"latestSeq"`
+	// Title / AgentSyncID / ProviderSessionID 是 R7 + 决策 8 的新列:会话标题、所属
+	// Agent 的账号级同步标识、以及续话要用的 provider 原生会话身份。老会话缺这些
+	// 字段时如实留空(空串,不猜、不填占位名)。
+	Title             string `json:"title,omitempty"`
+	AgentSyncID       string `json:"agentSyncId,omitempty"`
+	ProviderSessionID string `json:"providerSessionId,omitempty"`
+	Cwd               string `json:"cwd,omitempty"`
+	BackendType       string `json:"backendType,omitempty"`
+	LifecycleState    string `json:"lifecycleState"`
+	WaitingForInput   bool   `json:"waitingForInput,omitempty"`
+	LatestSeq         int64  `json:"latestSeq"`
+	// UpdatedAt 是这条会话最后一次活动的时刻(Unix 毫秒),取自 daemon_sessions 的
+	// updated_at —— 每轮起手幂等覆盖时一并推进。会话清单要显示「最后活动时间」
+	// (R5),而它的唯一真相源在执行端这台机器上。没记过活动时间的老会话报 0,由
+	// 客户端如实表达为「未知」而不是猜一个时刻。
+	UpdatedAt int64 `json:"updatedAt,omitempty"`
 }
 
-// SessionListResult 是 MethodSessionList 的应答:调用方自己那个对端在这台 daemon 上的
-// 全部会话。无参数 —— 范围就是「调用这条连接的对端」,不接受别的取值。
+// SessionListResult 是 MethodSessionList 的应答:这台 daemon 上的会话。调用方自己的
+// 对端永远在范围内;daemon 已认领账号时 ListAll 会把全部对端的会话一并列出(账号可见
+// 性,见 handlers/session_catchup.go 的 List),范围不再只有「调用这条连接的对端」。
 type SessionListResult struct {
 	Sessions []SessionSummary `json:"sessions"`
+	// SupportsSessionMetadata 声明这台 daemon 落库并回传 R7 的标题 / Agent 同步标识
+	// 与决策 8 的 provider_session_id。**未升级的 agentred 不认识这个字段**,它的应答
+	// 里解出来恒为 false —— 这是客户端区分「这台机器上的老会话」与「这台机器本身没
+	// 升级」的唯一信号。后者上头,会话只能按 R5 退化显示、发新消息也续不上上下文,
+	// 客户端必须如实说明该机器需要升级而不是静默失败(规格「安全、隐私与兼容性」)。
+	SupportsSessionMetadata bool `json:"supportsSessionMetadata,omitempty"`
 }
 
 // SessionPullParams 是 MethodSessionPull 的请求:给定会话与起始游标,取其后的通知。

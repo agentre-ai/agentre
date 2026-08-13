@@ -1690,6 +1690,36 @@ func TestBuildRunParams_ForwardsMCPServers(t *testing.T) {
 	}
 }
 
+// TestBuildRunParams_ForwardsFreshSession 钉死挂账修复(2026-08-11)的映射:chat_svc 在
+// 本地 sess.ProviderSessionID 为空时置 RunRequest.FreshSession=true,必须随 wire 过线到
+// daemon —— 漏传则 daemon 拿落库旧 id 续话,regenerate / provider 会话失效恢复又变回坏路径。
+func TestBuildRunParams_ForwardsFreshSession(t *testing.T) {
+	params, err := buildRunParams(agentruntime.RunRequest{
+		Backend:      &agent_backend_entity.AgentBackend{},
+		SessionID:    9,
+		FreshSession: true,
+	})
+	if err != nil {
+		t.Fatalf("buildRunParams: %v", err)
+	}
+	if !params.FreshSession {
+		t.Fatalf("buildRunParams dropped FreshSession: %+v", params)
+	}
+
+	// wire JSON round-trip preserves the field.
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out wire.RunParams
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !out.FreshSession {
+		t.Fatalf("FreshSession not preserved across wire JSON: %+v", out)
+	}
+}
+
 // TestBuildRunParams_ForwardsEnabledPlugins 钉死 buildRunParams 把
 // RunRequest.EnabledPlugins 透传到 wire.RunParams，且 JSON round-trip 保留该字段。
 func TestBuildRunParams_ForwardsEnabledPlugins(t *testing.T) {

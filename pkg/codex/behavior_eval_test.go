@@ -223,13 +223,28 @@ func evalSteer(t *testing.T) {
 
 func evalInterrupt(t *testing.T) {
 	captured := make(chan rpcReq, 1)
+	// turnActive 由 fake server 在 turn/start 回 inProgress 之后关闭：只有此刻
+	// Stream 才确定持有 active turn，Interrupt 才能安全发出（与 evalSteer 的
+	// ready 门闩同构，消除“turn 尚未就绪就发 interrupt”的时序竞争）。
+	turnActive := make(chan struct{})
 	stream := runEvalStream(t, "interrupt", func(t *testing.T, h *fakeAppServerHandle, sc *bufio.Scanner, threadID, turnID string) {
+		close(turnActive)
 		req := readRPCReq(t, sc)
 		captured <- req
 		respondRPC(h, req, map[string]any{})
 		h.send(evalCompleted(threadID, turnID, "interrupted"))
 	}, nil)
-	require.NoError(t, stream.Interrupt(context.Background()))
+	<-turnActive
+	// Interrupt 经 goroutine + 超时调用：真挂住会 fail-fast，不会卡住测试。
+	// ctx 带截止时间，避免 Interrupt 在 fake 无响应时无限阻塞。
+	interruptCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	select {
+	case err := <-interruptStream(interruptCtx, stream):
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Interrupt did not return")
+	}
 	events := drainEvalStream(stream, nil)
 	assert.Equal(t, 1, countEvalKind(events, EventDone))
 	assert.Equal(t, TurnStateCanceled, stream.State())
@@ -315,6 +330,14 @@ func evalCrossTurnIsolation(t *testing.T) {
 
 type evalScript func(*testing.T, *fakeAppServerHandle, *bufio.Scanner, string, string)
 
+// evalFakeServerGrace 是行为评估假 app server 的 kill grace。假服务端同步应答、
+// 真实往返是亚毫秒级，因此 grace 给到秒级后，drain 在 Interrupt 时启动的 grace
+// 定时器在测试生命周期内按构造不可能触发，也就不会抢占 interrupt RPC 往返而
+// 偶发 ErrNoActiveTurn（曾用 20ms，CI 负载下的调度延迟会超过它，见
+// evalInterrupt 的 flake）。真实中断语义仍由 TestStream_InterruptForwardsRPC
+// 独立验证。
+const evalFakeServerGrace = time.Second
+
 func runEvalStream(t *testing.T, suffix string, script evalScript, opts []Option) *Stream {
 	t.Helper()
 	threadID := "thread-" + suffix
@@ -329,7 +352,7 @@ func runEvalStream(t *testing.T, suffix string, script evalScript, opts []Option
 		script(t, h, sc, threadID, turnID)
 	}
 	clientOpts := make([]Option, 0, 2+len(opts))
-	clientOpts = append(clientOpts, WithAppServerRunnerForTesting(runner), WithKillGrace(20*time.Millisecond))
+	clientOpts = append(clientOpts, WithAppServerRunnerForTesting(runner), WithKillGrace(evalFakeServerGrace))
 	clientOpts = append(clientOpts, opts...)
 	client := New(clientOpts...)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

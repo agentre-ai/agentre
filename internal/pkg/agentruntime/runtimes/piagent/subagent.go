@@ -241,6 +241,7 @@ type trackedRun struct {
 	pendingResults    map[string]trackedResult
 	lastAssistantText string
 	activity          bool
+	totalTokens       int
 }
 
 type trackedResult struct {
@@ -301,10 +302,12 @@ func (t *subagentTracker) spawn() canonical.AgentSpawn {
 func (t *subagentTracker) info() agentruntime.SubagentInfo {
 	runs := make([]agentruntime.SubagentRun, len(t.runs))
 	toolUses := 0
+	totalTokens := 0
 	lastToolName := ""
 	for i := range t.runs {
 		runs[i] = t.runs[i].info
 		toolUses += runs[i].ToolUses
+		totalTokens += t.runs[i].totalTokens
 		if runs[i].LastToolName != "" {
 			lastToolName = runs[i].LastToolName
 		}
@@ -320,6 +323,7 @@ func (t *subagentTracker) info() agentruntime.SubagentInfo {
 		Prompt:          first.Task,
 		LastToolName:    lastToolName,
 		ToolUses:        toolUses,
+		TotalTokens:     totalTokens,
 		Status:          status,
 		Mode:            string(t.invocation.Mode),
 		Runs:            runs,
@@ -450,6 +454,7 @@ type decodedSnapshot struct {
 	agentSource   string
 	errorMessage  string
 	summary       string
+	totalTokens   int
 	emptyOfficial bool
 }
 
@@ -646,6 +651,7 @@ func decodeSnapshotMap(object map[string]json.RawMessage, messages []json.RawMes
 		readTrimmedString(object["summary"]),
 		readTrimmedString(object["output"]),
 	)
+	snapshot.totalTokens = readUsageTotalTokens(object["usage"])
 	return snapshot
 }
 
@@ -689,6 +695,25 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// readUsageTotalTokens 从子代理 details 的 usage 对象里提取已消耗的上下文大小。
+// pi 侧的 subagent 工具（如 dev-kit）把每轮 message_end 的 totalTokens（= 该轮
+// 语境窗口大小，随累计历史增长）记录为 usage.contextTokens，取最新一帧的值即
+// 子代理当前消耗的上下文大小。不累加 input/output/cache*：那些是逐调用 token
+// 量，跨轮求和会把每轮重发的历史重复计数，数值虚高（真实卡片应像 Claude 一样
+// 显示已消耗的上下文量级）。缺省/畸形字段按 0 处理，由调用方决定是否覆盖。
+func readUsageTotalTokens(raw json.RawMessage) int {
+	if len(raw) == 0 || isJSONNull(raw) {
+		return 0
+	}
+	var usage struct {
+		ContextTokens int `json:"contextTokens"`
+	}
+	if json.Unmarshal(raw, &usage) != nil {
+		return 0
+	}
+	return usage.ContextTokens
+}
+
 func (t *subagentTracker) applySnapshotMetadata(index int, snapshot decodedSnapshot, final bool) {
 	run := &t.runs[index]
 	if snapshotHasActivity(snapshot) {
@@ -701,13 +726,20 @@ func (t *subagentTracker) applySnapshotMetadata(index int, snapshot decodedSnaps
 	if snapshot.model != "" && run.info.Model == "" {
 		run.info.Model = snapshot.model
 	}
+	// usage 快照单调递增，但缺失/异常帧会解成 0；0 不覆盖已记录的累计值（与
+	// chat_svc SubagentProgress/Done 的 R4 守卫同一约定）。
+	if snapshot.totalTokens > 0 {
+		run.totalTokens = snapshot.totalTokens
+	}
 	t.applyStopReason(run, snapshot.stopReason)
 	if snapshot.stopReason == "" && (snapshot.status == "failed" || snapshot.status == "canceled") {
 		run.info.Status = snapshot.status
 	}
 	if snapshot.errorMessage != "" {
 		run.info.ErrorMessage = snapshot.errorMessage
-		run.info.Status = "failed"
+		if final {
+			run.info.Status = "failed"
+		}
 	}
 	if final {
 		if snapshot.summary != "" {

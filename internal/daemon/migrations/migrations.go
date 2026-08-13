@@ -24,5 +24,6 @@ func RunMigrations(db *gorm.DB) error {
 func migrationList() []*gormigrate.Migration {
 	return []*gormigrate.Migration{
 		migration202608080011(), // daemon_sessions + daemon_notification_logs
+		migration202608100001(), // R7 标题/Agent 同步标识 + 决策 8 provider_session_id
 	}
 }

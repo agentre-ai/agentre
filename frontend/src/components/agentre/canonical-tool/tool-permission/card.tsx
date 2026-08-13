@@ -9,6 +9,7 @@ import { useChatStreamsStore } from "@/stores/chat-streams-store";
 import { AnswerToolPermission as wailsAnswerToolPermission } from "../../../../../wailsjs/go/app/App";
 import type { chat_svc } from "../../../../../wailsjs/go/models";
 
+import { CollapsibleCode } from "../../collapsible-code";
 import { shouldIgnoreClickForSelection } from "../../copyable-text";
 import {
   TranscriptCard,
@@ -198,9 +199,11 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
 
       {!collapsed && inputJson && (
         <TranscriptCardBody>
-          <pre className="max-h-64 overflow-auto rounded-sm bg-muted/40 px-2.5 py-2 text-aux">
-            <code>{inputJson}</code>
-          </pre>
+          <CollapsibleCode
+            value={inputJson}
+            surface="muted"
+            bodyClassName="rounded-sm px-2.5 py-2"
+          />
         </TranscriptCardBody>
       )}
 

@@ -137,6 +137,16 @@ func (c *appClient) Call(ctx context.Context, method string, params any) (json.R
 		return nil, ctx.Err()
 	case <-c.done:
 		c.deletePending(key)
+		// readLoop 只在把读到的响应全部 route 完之后才 close(done)：所以一旦
+		// done 关闭，任何已到达的响应必然已经缓冲在 ch 里。这里必须优先取回
+		// 它，否则一次成功的中断/转向会被误报为 ErrNoActiveTurn（进程在
+		// 响应到达后、Call 尚未醒来时退出就会触发该竞态，见 evalInterrupt
+		// 在高并发下的偶发失败）。
+		select {
+		case res := <-ch:
+			return res.Result, res.Err
+		default:
+		}
 		if err := c.Err(); err != nil {
 			return nil, err
 		}

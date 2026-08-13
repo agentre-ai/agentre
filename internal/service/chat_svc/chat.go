@@ -369,7 +369,9 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 			AvatarColor:   a.AvatarColor,
 			AvatarIcon:    a.AvatarIcon,
 			AvatarDataURL: a.AvatarDataURL,
-			Pinned:        a.IsSystem() || a.Pinned,
+			// 置顶完全由 DB 的 pinned 列承载（含系统 Agent/CEO）：系统 Agent 不再被
+			// IsSystem() 强制浮顶，用户置顶/取消后这里透传 DB 值（R: ceo-unpin）。
+			Pinned:        a.Pinned,
 			ActiveCount:   counts[a.ID],
 			TotalSessions: totals[a.ID],
 			SessionIDs:    ids,
@@ -1753,9 +1755,10 @@ func (s *chatSvc) isAgentInProjectChain(ctx context.Context, agentID int64, p *p
 // resolveAgentBackend 查 agent → backend → provider 并做完整的"可对话"校验，同时是
 // 会话粘性（R15b / 决策36）的唯一解析点：sess 非 nil 且已经钉住某一档
 // (ExecAgentBackendID > 0) 时直接解析那一档、不重挑 —— 同一台机器上可以有多档，钉住
-// 的是档本身，续轮不因排序里有更靠前的档现在可用而改派。没钉住时（首轮 / sess 为
-// nil / 老会话）按 R15 顺序挑第一个可用的档（PickExecTarget，task 2 的挑选口）；挑到
-// 之后由调用方（startTurn / StartGoal）负责把它写回会话行 —— 本函数只解析，不写库。
+// 的是档本身，续轮不因排序里有更靠前的档现在可用而改派。唯一恢复边界是钉住的
+// backend 已被删除：该引用已经不再指向一档，按 Agent 当前列表重挑并替换失效钉档。
+// 没钉住时（首轮 / sess 为 nil / 老会话）按 R15 顺序挑第一个可用的档
+// （PickExecTarget，task 2 的挑选口）。
 //
 // Agent 的执行目标列表为空时退化为直接用 a.AgentBackendID 解析：这与
 // agent_repo.hydrateExecTargets 的语义一致（两者理论上永远同值），提前短路避免对着
@@ -1786,6 +1789,19 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, sess *chat_entity.Ses
 	be, err := agent_backend_repo.AgentBackend().Find(ctx, backendID)
 	if err != nil {
 		return nil, nil, nil, operationFailedWithCause(ctx, err)
+	}
+	if be == nil && sess != nil && sess.ID > 0 && sess.ExecAgentBackendID == backendID {
+		choice, pickErr := s.PickExecTarget(ctx, agentID, projectID)
+		if pickErr != nil {
+			return nil, nil, nil, pickErr
+		}
+		be = choice.Backend
+		sess.ExecAgentBackendID = 0
+		s.pinExecTargetIfUnset(ctx, sess, be)
+		logger.Ctx(ctx).Info("chat_svc.resolveAgentBackend: recovered deleted pinned exec target",
+			zap.Int64("sessionId", sess.ID),
+			zap.Int64("deletedAgentBackendId", backendID),
+			zap.Int64("agentBackendId", be.ID))
 	}
 	if be == nil {
 		return nil, nil, nil, i18n.NewError(ctx, code.ChatAgentNotChattable)
@@ -2411,8 +2427,15 @@ func createPermissionMode(ctx context.Context, be *agent_backend_entity.AgentBac
 		return "", nil
 	}
 	backendType := agent_backend_entity.BackendType(be.Type)
-	if strings.TrimSpace(raw) != "" {
-		return validateRequestedPermissionMode(ctx, backendType, raw)
+	// raw 是前端偏好, 可能来自 agent 主后端的 mode 集合(空会话态改选执行目标到另一
+	// 个类型后, 前端按主后端推导出的 mode 对实际后端不合法)。后端是唯一知道实际
+	// 后端的地方, 在这里做边界归一: 合法就尊重, 不合法就当作没给, 回落到下面的默认
+	// 派生, 而不是硬报 ChatPermissionModeInvalid —— 否则一次合法改选连第一条消息都
+	// 发不出去。真正需要拒绝非法 mode 的入口是 SetPermissionMode 那条 IPC 线。
+	if requested := strings.TrimSpace(raw); requested != "" {
+		if mode, err := validateRequestedPermissionMode(ctx, backendType, requested); err == nil {
+			return mode, nil
+		}
 	}
 	// claudecode + admin 配 bypass 时, 交互式新会话以 plan 起手: CLI 仍按 bypass 启动(由
 	// runtime resolveLaunchMode 保证), session.PermissionMode=plan 让前端 pill 显
@@ -3905,12 +3928,17 @@ func (s *chatSvc) prepareTurnRun(
 		AgentID:           a.ID,
 		SessionID:         sess.ID,
 		Cwd:               cwd,
+		Title:             sess.Title,
+		AgentSyncID:       a.SyncID,
 		SystemPrompt:      strings.Join(a.GetPrompt(), "\n"),
 		ProviderSessionID: sess.ProviderSessionID,
-		Compact:           compact,
-		ForkAnchor:        forkAnchor,
-		MCPServers:        appendTurnMCP(ctx, nil, a, sess.ID, runner.Capabilities().Has(capability.CapMCPTools)),
-		EnabledPlugins:    enabledPluginsForTurn(ctx, a, be.ID, runner.Capabilities().Has(capability.CapSkills)),
+		// 挂账修复(2026-08-11):本地没有可续的原生会话(regenerate 无锚点 / provider 会话
+		// 失效恢复 / 首轮)时声明 freshSession,远端 daemon 据此不拿落库旧 id 续话。
+		FreshSession:   strings.TrimSpace(sess.ProviderSessionID) == "",
+		Compact:        compact,
+		ForkAnchor:     forkAnchor,
+		MCPServers:     appendTurnMCP(ctx, nil, a, sess.ID, runner.Capabilities().Has(capability.CapMCPTools)),
+		EnabledPlugins: enabledPluginsForTurn(ctx, a, be.ID, runner.Capabilities().Has(capability.CapSkills)),
 	}
 	if userMsg != nil {
 		req.UserText = textOfMessage(userMsg)
@@ -4131,7 +4159,37 @@ func (s *chatSvc) runTurn(
 		segmentStart  = startedAt
 		dispEmit      = &dispatcherEmitter{svc: s}
 		turnCtx       = s.newTurnContext(assistantMsg, sess, stream, be.Type)
+		// pendingSteers 已被 backend 消费、但分段还没落地的 steer。见 flushPendingSteers。
+		pendingSteers []agentruntime.ConsumedSteer
 	)
+	// flushPendingSteers 把 pendingSteers 落成「收口当前 assistant + 插 user 行 +
+	// 开新 assistant」,并整体切换 assistantMsg/acc/segmentStart/turnCtx 四个 local。
+	flushPendingSteers := func() {
+		if len(pendingSteers) == 0 {
+			return
+		}
+		steers := pendingSteers
+		pendingSteers = nil
+		nextAssistant, payload, perr := s.persistConsumedSteers(
+			ctx, sess, be, assistantMsg, acc, segmentStart,
+			assistantMsg.Model, steers,
+		)
+		if perr != nil {
+			logger.Ctx(ctx).Warn("chat_svc: streamStopErr set by persistConsumedSteers",
+				zap.Int64("sessionId", sess.ID),
+				zap.Int64("assistantMsgId", assistantMsg.ID),
+				zap.Error(perr))
+			streamStopErr = perr
+			return
+		}
+		if nextAssistant != nil && payload != nil {
+			assistantMsg = nextAssistant
+			acc = turn.New()
+			segmentStart = time.Now()
+			turnCtx = s.newTurnContext(assistantMsg, sess, stream, be.Type)
+			s.emitter.Emit(ctx, stream, *payload)
+		}
+	}
 	for ev := range events {
 		if streamStopErr != nil {
 			if eventShowsProgressAfterError(ev) {
@@ -4156,25 +4214,16 @@ func (s *chatSvc) runTurn(
 		//     且缺 Message 字段。
 		switch e := ev.(type) {
 		case agentruntime.SteerConsumed:
-			nextAssistant, payload, perr := s.persistConsumedSteers(
-				ctx, sess, be, assistantMsg, acc, segmentStart,
-				assistantMsg.Model, e.Steers,
-			)
-			if perr != nil {
-				logger.Ctx(ctx).Warn("chat_svc: streamStopErr set by persistConsumedSteers",
-					zap.Int64("sessionId", sess.ID),
-					zap.Int64("assistantMsgId", assistantMsg.ID),
-					zap.Error(perr))
-				streamStopErr = perr
+			pendingSteers = append(pendingSteers, e.Steers...)
+			// 工具在途时先不分段:claudecode 的 PostToolUse hook 在 CLI 写出
+			// tool_result 帧**之前**就 drain 走排队消息,SteerConsumed 因此会先于
+			// 同一个工具的 ToolResult 到达。此刻收口 assistant 会把 tool_use 冻在
+			// 旧消息里,随后的 tool_result 在新 accumulator 里查不到 tool_use,被
+			// ToolResultHandler 当孤儿丢弃 —— 工具卡永远停在 running。
+			if acc.HasOpenToolUse() {
 				continue
 			}
-			if nextAssistant != nil && payload != nil {
-				assistantMsg = nextAssistant
-				acc = turn.New()
-				segmentStart = time.Now()
-				turnCtx = s.newTurnContext(assistantMsg, sess, stream, be.Type)
-				s.emitter.Emit(ctx, stream, *payload)
-			}
+			flushPendingSteers()
 			continue
 		case agentruntime.ErrorEvent:
 			if e.Err != nil {
@@ -4190,15 +4239,29 @@ func (s *chatSvc) runTurn(
 			}
 			continue
 		}
+		// 推迟中的分段:这一帧不是 tool_result,说明在途 tool_use 的结果根本不走流
+		// (AskUserQuestion 这类),不再等 —— 且必须赶在 Apply 之前落地,否则这一帧的
+		// 内容会被记进本该收口的旧 assistant。推迟至多一个事件。
+		if len(pendingSteers) > 0 {
+			if _, isToolResult := ev.(agentruntime.ToolResult); !isToolResult {
+				flushPendingSteers()
+			}
+		}
 		if err := s.dispatcher.Apply(ctx, ev, acc, dispEmit, nil, turnCtx); err != nil {
 			logger.Ctx(ctx).Warn("chat dispatcher Apply failed",
 				zap.String("eventType", fmt.Sprintf("%T", ev)),
 				zap.Error(err))
 		}
+		// 在途工具都配上结果了:分段落地,tool_use 与 tool_result 一起留在旧 assistant。
+		if len(pendingSteers) > 0 && !acc.HasOpenToolUse() {
+			flushPendingSteers()
+		}
 		if shouldCheckpointAssistantAfterEvent(ev) {
 			s.checkpointAssistantNew(ctx, assistantMsg, acc)
 		}
 	}
+	// 流结束时仍在推迟的分段必须落地:steer 已经从 inbox drain 走了,不落就丢。
+	flushPendingSteers()
 	turnCtx.ClearWaits()
 
 	if req.CollaborationMode == permissionModePlan && !compact && acc.Empty() {
@@ -5248,10 +5311,18 @@ func uniqueProviderKeys(backends map[int64]*agent_backend_entity.AgentBackend) [
 // Lease, and the set of session IDs currently using it. Pool 负责底层 conn
 // 复用 + idle 回收 + daemon drop evict;chat_svc 这层只是把 lease.Client()
 // 升成 *remote.Runtime(handlers conn-scoped,一台 device 装一组就够)。
+//
+// entry 的寿命跟的是**那条池化连接**,不是本进程手上还有几个会话引用:runtime 是这条
+// 连接上五类通知 handler 的属主,连接还活着就不能为它另造一个(见
+// releaseRemoteRuntimeGeneration 与 remoteRuntimeForDevice)。
 type remoteRuntimeEntry struct {
 	runtime  *remote.Runtime
 	lease    remote_device_svc.Lease
 	sessions map[int64]*remoteRuntimeGeneration
+	// leased 记 entry.lease 此刻是不是还没归还。引用归零时 lease 还给池(池的空闲回收
+	// 因此与今天完全一致)而 entry 留着,此后它为 false —— 下一次借用必须重新借一条,
+	// 否则这一轮进行中连接会被空闲回收抽走。
+	leased bool
 }
 
 // remoteRuntimeGeneration is the exact lease owner for one turn. A stale
@@ -5344,27 +5415,36 @@ func (s *chatSvc) remoteRuntimeForDevice(
 	sessionIDs []int64,
 	owner *remoteRuntimeGeneration,
 ) (*remote.Runtime, string, error) {
-	// Fast path: cache hit
+	// Fast path: cache hit —— entry 手上还握着 lease,连借都不用借。
 	s.remoteMu.Lock()
 	if s.remoteCache == nil {
 		s.remoteCache = map[int64]*remoteRuntimeEntry{}
 	}
-	if entry, ok := s.remoteCache[deviceID]; ok {
+	if entry, ok := s.remoteCache[deviceID]; ok && entry.leased {
 		addSessionRefs(entry, sessionIDs, owner)
 		s.remoteMu.Unlock()
 		return entry.runtime, s.daemonFingerprint(ctx, deviceID), nil
 	}
 	s.remoteMu.Unlock()
 
-	// Cold path: 借 lease + wrap runtime
+	// Cold path: 借 lease,再看能不能沿用留在 cache 里的那个 runtime
 	lease, err := s.pool().Borrow(ctx, deviceID)
 	if err != nil {
 		return nil, "", err
 	}
 	fp := s.daemonFingerprint(ctx, deviceID)
 
+	if entry, installed := s.adoptLease(deviceID, lease, sessionIDs, owner, nil); entry != nil {
+		if installed {
+			go s.watchLeaseClosed(deviceID, entry, lease)
+		} else {
+			lease.Release()
+		}
+		return entry.runtime, fp, nil
+	}
+
 	// entry 先建出来:重连端口要往里换 lease,所以它必须先于 runtime 存在。
-	entry := &remoteRuntimeEntry{lease: lease, sessions: map[int64]*remoteRuntimeGeneration{}}
+	entry := &remoteRuntimeEntry{lease: lease, leased: true, sessions: map[int64]*remoteRuntimeGeneration{}}
 	addSessionRefs(entry, sessionIDs, owner)
 	rt := remote.New(lease.Client(),
 		remote.WithDaemonFingerprint(fp),
@@ -5378,19 +5458,94 @@ func (s *chatSvc) remoteRuntimeForDevice(
 	)
 	entry.runtime = rt
 
-	// Re-lock and insert. TOCTOU 输家:用赢家的 entry,释放自己的 lease。
-	s.remoteMu.Lock()
-	if existing, ok := s.remoteCache[deviceID]; ok {
-		addSessionRefs(existing, sessionIDs, owner)
-		s.remoteMu.Unlock()
+	// TOCTOU 输家:用赢家的 entry,自己刚建的这个丢掉。「查」与「装」交给 adoptLease
+	// 在同一个临界区里做完 —— 分成两次上锁的话两条冷路径会各自查到「没有」,后装的那个
+	// 把先装的整个覆盖掉(见 adoptLease 的说明)。fresh 非 nil,交回的 entry 因此非 nil。
+	installedEntry, installed := s.adoptLease(deviceID, lease, sessionIDs, owner, entry)
+	if installed {
+		go s.watchLeaseClosed(deviceID, installedEntry, lease)
+	} else {
 		lease.Release()
-		return existing.runtime, fp, nil
 	}
-	s.remoteCache[deviceID] = entry
-	s.remoteMu.Unlock()
+	return installedEntry.runtime, fp, nil
+}
 
-	go s.watchLeaseClosed(deviceID, entry, lease)
-	return rt, fp, nil
+// adoptLease 试着把这次借到的 lease 交给 deviceID 在 cache 里已有的那个 entry,并把
+// sessionIDs 记进它的引用集。交回 (要用的 entry, 这条 lease 是否被装了进去)。
+//
+// 没有可用的 entry(没有条目、或它那条池化连接已经被回收)时:fresh 非 nil 就把它装
+// 进 cache 并交回它,fresh 为 nil 则交回 nil,调用方据此去新建。「查」与「装」因此在
+// **同一个临界区**里 —— 分开两次上锁的话,两条同时走冷路径的 borrow 会各自查到「没有」,
+// 后装的那个把先装的整个覆盖掉。代价有两条:被覆盖的那个 entry 的 lease 从此没人还
+// (那一轮的 release 按 deviceID 查 cache,查到的是覆盖它的那个,generation 比不上就
+// 直接返回),它那条池化连接再也不会空闲回收;而两个 runtime 同时挂在同一条连接上抢注
+// 同名 handler —— 正是下面这一段说的 R18 / R10。
+//
+// 为什么非沿用不可:entry.runtime 是**那条连接**上五类通知 handler 的属主,也是自主
+// 续轮消费方(chat_svc 每会话只订阅一次)订阅的那个实例。连接还活着却为它另造一个
+// runtime,新实例会把 handler 抢注过去,而消费方还挂在旧实例上 —— 别的端在这台机器上
+// 发起的一轮于是被投进一个没有消费方的补齐轮,既不落库也不报错(R18);新实例的会话表
+// 又是空的,对那条会话提交工具决议当场 ErrNoActiveTurn(R10)。
+//
+// 「还能沿用吗」问的是**这次借到的是不是同一条池化连接**(见 samePooledConn),不是
+// 「上一条 lease 还没关闭吗」:池的 tryEvictIdle 与 watchClient 都是先把 entry 从表里
+// 摘掉、再关 closedCh,落进这两步之间的 Borrow 会拨一条新连接,而旧那条此刻还没关 ——
+// 「还没关」并不蕴含「借到的是同一条」。
+func (s *chatSvc) adoptLease(
+	deviceID int64,
+	lease remote_device_svc.Lease,
+	sessionIDs []int64,
+	owner *remoteRuntimeGeneration,
+	fresh *remoteRuntimeEntry,
+) (*remoteRuntimeEntry, bool) {
+	s.remoteMu.Lock()
+	defer s.remoteMu.Unlock()
+	entry, ok := s.remoteCache[deviceID]
+	if ok && entry.leased {
+		// 期间已经有人给它借了一条(并发的另一次 borrow / 重连端口换过 lease):
+		// 用它手上那条,自己这条还回去。
+		addSessionRefs(entry, sessionIDs, owner)
+		return entry, false
+	}
+	if ok && !samePooledConn(entry.lease, lease) {
+		// 借到的是另一条连接 —— 上一条已经被池摘走(daemon drop / 空闲回收 /
+		// Pool.Close),这个 entry 连同它的 runtime 一起作废(它自己的 watchClose
+		// 会收尾挂在上面的会话与消费方)。
+		delete(s.remoteCache, deviceID)
+		ok = false
+	}
+	if !ok {
+		if fresh == nil {
+			return nil, false
+		}
+		// fresh 由调用方建好(lease / leased / 引用集都已就位),这里只负责装。
+		s.remoteCache[deviceID] = fresh
+		return fresh, true
+	}
+	entry.lease = lease
+	entry.leased = true
+	addSessionRefs(entry, sessionIDs, owner)
+	return entry, true
+}
+
+// samePooledConn 报告两条 lease 是不是同一条池化连接上的 —— 也就是挂在前者上的
+// runtime 能不能接着用后者。
+//
+// 判据是 Lease.Closed():按契约它交回的是**池 entry 级**的信号(daemon drop /
+// 空闲超时 / Pool.Close 时关闭,与 Release 无关),同一个池 entry 交出的每一条
+// lease 因此拿到同一个 channel —— 它就是那条连接的身份。而 Borrow 只会在 entry
+// 还没失效时把它交出来,所以「同一条」自带「还活着」。
+//
+// 不用「上一条还没关闭吗」来代替:池摘表与关信号是两步(先 delete 后 close),
+// 落进中间的 Borrow 会拨一条新连接而旧信号尚未关闭,那时「还没关」是真的、
+// 「同一条」却是假的,沿用旧 runtime 等于把这一轮发给一条正被关掉的 socket。
+func samePooledConn(a, b remote_device_svc.Lease) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	// 契约里 closedCh 恒非 nil;真为 nil 时两个 nil 会假装成「同一条」,宁可重建。
+	closed := a.Closed()
+	return closed != nil && closed == b.Closed()
 }
 
 // addSessionRefs 调用方必须持 remoteMu。owner 非 nil = 这一轮的 generation token,
@@ -5427,7 +5582,8 @@ func (s *chatSvc) watchLeaseClosed(deviceID int64, entry *remoteRuntimeEntry, le
 
 // releaseRemoteRuntime decrements the session refcount for deviceID. 当
 // 最后一个 session release 时,把 lease 还给 Pool(Pool 自己负责 idle 回收 +
-// 后续 borrow 复用)。
+// 后续 borrow 复用),但 cache entry 与它的 runtime 留着 —— 见
+// releaseRemoteRuntimeGeneration。
 func (s *chatSvc) releaseRemoteRuntime(deviceID, sessionID int64) {
 	s.remoteMu.Lock()
 	entry, ok := s.remoteCache[deviceID]
@@ -5457,9 +5613,20 @@ func (s *chatSvc) releaseRemoteRuntimeGeneration(
 		s.remoteMu.Unlock()
 		return
 	}
-	delete(s.remoteCache, deviceID)
+	// 引用归零只把 lease 还给池(池的空闲回收计时因此照旧),**不摘 cache entry**:
+	// 那条连接还活着,而 entry.runtime 是它上面通知 handler 的属主、也是自主续轮消费方
+	// 订阅的实例。摘掉它,下一轮 borrow 会为同一条连接另造一个 runtime 并抢走 handler
+	// —— 别的端此后在这条会话上发起的一轮就没人落库了(R18),对它提交工具决议也当场
+	// ErrNoActiveTurn(R10)。连接真被回收时由 watchLeaseClosed 摘 entry。
+	//
+	// 要还的那条必须在解锁**之前**抓下来:entry 从此留在 map 里,解锁之后并发的另一次
+	// borrow 会走冷路径(fast path 因 leased==false 落空)并在 adoptLease 里把
+	// entry.lease 换成它刚借的那条。到那时再读 entry.lease,读到的是别人这一轮正用着的
+	// 那条 —— 把它提前还掉,而自己这条的池引用永远掉不下去,那条连接从此不再空闲回收。
+	lease := entry.lease
+	entry.leased = false
 	s.remoteMu.Unlock()
-	entry.lease.Release()
+	lease.Release()
 }
 
 // remoteRuntimeCount returns the number of sessions currently sharing the

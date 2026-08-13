@@ -485,6 +485,122 @@ func TestSubagentTracker_ResultBeforeCallAndFinalRecovery(t *testing.T) {
 	assert.Equal(t, "completed", info.Runs[0].Status)
 }
 
+func TestSubagentTracker_PartialErrorDoesNotFinishActiveRun(t *testing.T) {
+	inv, ok := classifySubagentInvocation([]byte(`{"task":"inspect","profile":"write"}`))
+	require.True(t, ok)
+	tracker := newSubagentTracker("outer", inv)
+
+	// Given an incremental snapshot that reports a broken model-response stream
+	// while the outer subagent tool is still active, when the tracker consumes it,
+	// then the diagnostic is retained without publishing a terminal run status.
+	_, changed := tracker.consumeUpdate([]byte(`{"details":{"messages":[
+		{"role":"assistant","content":[{"type":"toolCall","id":"first","name":"edit","arguments":{}}],"stopReason":"toolUse"}
+	],"errorMessage":"OpenAI Responses stream ended before a terminal response event"}}`))
+	require.True(t, changed)
+	info := tracker.info()
+	assert.Equal(t, "running", info.Status)
+	assert.Equal(t, "running", info.Runs[0].Status)
+	assert.Equal(t, "OpenAI Responses stream ended before a terminal response event", info.Runs[0].ErrorMessage)
+
+	// And when later incremental child activity arrives, then it remains attached
+	// to the running subagent rather than continuing beneath a failed card.
+	events, changed := tracker.consumeUpdate([]byte(`{"details":{"messages":[
+		{"role":"assistant","content":[{"type":"toolCall","id":"first","name":"edit","arguments":{}}],"stopReason":"toolUse"},
+		{"role":"toolResult","toolCallId":"first","content":[{"type":"text","text":"ok"}]},
+		{"role":"assistant","content":[{"type":"toolCall","id":"second","name":"bash","arguments":{}}],"stopReason":"toolUse"}
+	],"errorMessage":"OpenAI Responses stream ended before a terminal response event"}}`))
+	require.True(t, changed)
+	require.Len(t, events, 2)
+	assert.Equal(t, "running", tracker.info().Status)
+	assert.Equal(t, 2, tracker.info().ToolUses)
+
+	// When the same error reaches the real outer final boundary, then the run is
+	// settled as failed because the subagent invocation has actually completed.
+	_, changed = tracker.consumeFinal([]byte(`{"messages":[
+		{"role":"assistant","content":[{"type":"toolCall","id":"first","name":"edit","arguments":{}}],"stopReason":"toolUse"},
+		{"role":"toolResult","toolCallId":"first","content":[{"type":"text","text":"ok"}]},
+		{"role":"assistant","content":[{"type":"toolCall","id":"second","name":"bash","arguments":{}}],"stopReason":"toolUse"}
+	],"errorMessage":"OpenAI Responses stream ended before a terminal response event"}`), true, "OpenAI Responses stream ended before a terminal response event")
+	require.True(t, changed)
+	assert.Equal(t, "failed", tracker.info().Status)
+	assert.Equal(t, "failed", tracker.info().Runs[0].Status)
+}
+
+func TestSubagentTracker_UsageFeedsPerRunAndAggregateTotalTokens(t *testing.T) {
+	t.Run("flat single snapshots report usage in real time", func(t *testing.T) {
+		inv, ok := classifySubagentInvocation([]byte(`{"task":"inspect","profile":"read-only"}`))
+		require.True(t, ok)
+		tracker := newSubagentTracker("outer", inv)
+
+		// Given a flat progress frame whose details carry the consumed context size
+		// (usage.contextTokens = pi's per-turn totalTokens, the live context window),
+		// when the tracker consumes it, then it reports that context size — not the
+		// sum of per-call input/output/cache tokens, which would double-count history.
+		_, changed := tracker.consumeUpdate([]byte(`{"details":{"messages":[
+			{"role":"assistant","model":"observed","content":[{"type":"text","text":"working"}],"stopReason":"toolUse"}
+		],"usage":{"input":100,"output":20,"cacheRead":5,"cacheWrite":3,"cost":{"total":0.01},"contextTokens":512,"turns":1}}}`))
+		require.True(t, changed)
+		assert.Equal(t, 512, tracker.info().TotalTokens, "context size, not the 128-token per-call sum")
+
+		// Given a later frame with a larger consumed context, then it updates.
+		_, changed = tracker.consumeUpdate([]byte(`{"details":{"messages":[
+			{"role":"assistant","model":"observed","content":[{"type":"text","text":"working"}],"stopReason":"toolUse"}
+		],"usage":{"input":200,"output":40,"cacheRead":10,"cacheWrite":6,"cost":{"total":0.02},"contextTokens":1024,"turns":2}}}`))
+		require.True(t, changed)
+		assert.Equal(t, 1024, tracker.info().TotalTokens)
+	})
+
+	t.Run("zero-usage frames never wipe recorded totals", func(t *testing.T) {
+		inv, ok := classifySubagentInvocation([]byte(`{"task":"inspect","profile":"read-only"}`))
+		require.True(t, ok)
+		tracker := newSubagentTracker("outer", inv)
+
+		_, changed := tracker.consumeUpdate([]byte(`{"details":{"messages":[],"usage":{"input":100,"output":20,"cacheRead":5,"cacheWrite":3,"cost":{"total":0.01},"contextTokens":512,"turns":1}}}`))
+		require.True(t, changed)
+		assert.Equal(t, 512, tracker.info().TotalTokens)
+
+		// A progress frame whose usage decodes to zero (or is absent) must not erase
+		// the recorded context size; the producer's own frames are monotonic.
+		_, _ = tracker.consumeUpdate([]byte(`{"details":{"messages":[],"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":{"total":0},"contextTokens":0,"turns":0}}}`))
+		assert.Equal(t, 512, tracker.info().TotalTokens, "zero usage does not overwrite a recorded context size")
+
+		_, _ = tracker.consumeUpdate([]byte(`{"details":{"messages":[]}}`))
+		assert.Equal(t, 512, tracker.info().TotalTokens, "missing usage does not wipe a recorded context size")
+	})
+
+	t.Run("parallel runs keep per-run totals and aggregate sums them", func(t *testing.T) {
+		inv, ok := classifySubagentInvocation([]byte(`{"tasks":[
+			{"agent":"a","task":"one"},
+			{"agent":"b","task":"two"}
+		]}`))
+		require.True(t, ok)
+		tracker := newSubagentTracker("outer", inv)
+
+		_, changed := tracker.consumeUpdate([]byte(`{"details":{"mode":"parallel","results":[
+			{"messages":[],"usage":{"input":90,"output":10,"cacheRead":0,"cacheWrite":0,"cost":{"total":0},"contextTokens":999,"turns":1}},
+			{"messages":[],"usage":{"input":30,"output":5,"cacheRead":2,"cacheWrite":1,"cost":{"total":0},"contextTokens":77,"turns":1}}
+		]}}`))
+		require.True(t, changed)
+		assert.Equal(t, 999, tracker.runs[0].totalTokens)
+		assert.Equal(t, 77, tracker.runs[1].totalTokens)
+		assert.Equal(t, 1076, tracker.info().TotalTokens, "aggregate sums each run's consumed context size")
+	})
+
+	t.Run("final flat snapshot carries usage into the terminal snapshot", func(t *testing.T) {
+		inv, ok := classifySubagentInvocation([]byte(`{"task":"inspect","profile":"read-only"}`))
+		require.True(t, ok)
+		tracker := newSubagentTracker("outer", inv)
+
+		_, changed := tracker.consumeFinal([]byte(`{"messages":[
+			{"role":"assistant","model":"observed","content":[{"type":"text","text":"done"}],"stopReason":"stop"}
+		],"exitCode":0,"usage":{"input":500,"output":60,"cacheRead":30,"cacheWrite":10,"cost":{"total":0.05},"contextTokens":777,"turns":3}}`), false, "outer")
+		require.True(t, changed)
+		info := tracker.info()
+		assert.Equal(t, "completed", info.Runs[0].Status)
+		assert.Equal(t, 777, info.TotalTokens, "context size, not the 600-token per-call sum")
+	})
+}
+
 func TestSubagentTracker_NullToolResultContentIsMalformedRatherThanEmpty(t *testing.T) {
 	inv, ok := classifySubagentInvocation([]byte(`{"task":"inspect","profile":"read-only"}`))
 	require.True(t, ok)

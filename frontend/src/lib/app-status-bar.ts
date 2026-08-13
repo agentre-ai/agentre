@@ -23,8 +23,10 @@ export type StatusBarSessionMeta = {
 };
 
 export type AppStatusBarState = {
-  agentSummary: string;
-  attentionSummary: string | null;
+  agentCount: number;
+  runningCount: number;
+  approvalIds: number[];
+  unreadIds: number[];
   indicatorStatus: AgentStatus;
 };
 
@@ -38,14 +40,6 @@ function normalizeAgentStatus(status: string | undefined): AgentStatus {
     default:
       return "idle";
   }
-}
-
-function formatPlural(
-  count: number,
-  singular: string,
-  plural = `${singular}s`,
-) {
-  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 export function deriveAppStatusBarState(
@@ -66,8 +60,8 @@ export function deriveAppStatusBarState(
   }
 
   let runningCount = 0;
-  let approvalCount = 0;
-  let unreadCount = 0;
+  const approvalIds: number[] = [];
+  const unreadIds: number[] = [];
 
   for (const [sessionId, session] of sessionsById) {
     const liveStatus = statuses.get(sessionId);
@@ -88,29 +82,22 @@ export function deriveAppStatusBarState(
     }
 
     if (isWaitingForUser) {
-      approvalCount += 1;
+      approvalIds.push(sessionId);
       continue;
     }
 
     if (agentStatus !== "running" && lastMessageAt > lastReadAt) {
-      unreadCount += 1;
+      unreadIds.push(sessionId);
     }
   }
 
-  const attentionParts: string[] = [];
-  if (approvalCount > 0) {
-    attentionParts.push(formatPlural(approvalCount, "approval"));
-  }
-  if (unreadCount > 0) {
-    attentionParts.push(`${unreadCount} unread`);
-  }
-
   return {
-    agentSummary: `${formatPlural(agents.length, "agent")} · ${runningCount} running`,
-    attentionSummary:
-      attentionParts.length > 0 ? attentionParts.join(" · ") : null,
+    agentCount: agents.length,
+    runningCount,
+    approvalIds,
+    unreadIds,
     indicatorStatus:
-      approvalCount > 0 || unreadCount > 0
+      approvalIds.length > 0 || unreadIds.length > 0
         ? "waiting"
         : runningCount > 0
           ? "running"

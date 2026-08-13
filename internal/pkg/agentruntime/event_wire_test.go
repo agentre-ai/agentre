@@ -296,13 +296,36 @@ func TestUnmarshalEvent_AllKindsCovered(t *testing.T) {
 		PermissionModeChanged{},
 		SubagentStarted{}, SubagentProgress{}, SubagentDone{}, SubagentModel{},
 		Retry{}, UsageUpdate{}, ContextWindowUpdated{}, CompactBoundary{}, RuntimeStatus{}, PlanUpdated{},
-		Done{}, ErrorEvent{},
+		Done{}, ErrorEvent{}, UserMessageEvent{},
 	}
 	for _, sp := range specimens {
 		b, err := json.Marshal(sp)
 		require.NoError(t, err)
 		_, err = UnmarshalEvent(b)
 		require.NoError(t, err, "type %T failed UnmarshalEvent round-trip: %s", sp, string(b))
+	}
+}
+
+func TestUserMessageEvent_RoundTrip(t *testing.T) {
+	// R18:「开新一轮」发起方标记。Text 是发起方的用户文本,SourceDevice / SourceDeviceName
+	// 是发起方设备身份(R19 名字缺失时空,前端回退指纹)。
+	cases := []struct {
+		name string
+		in   Event
+	}{
+		{"带名字", UserMessageEvent{Text: "跑一下测试", SourceDevice: "sha256:web-device", SourceDeviceName: "Chrome · macOS"}},
+		{"名字缺失", UserMessageEvent{Text: "继续", SourceDevice: "sha256:web-device"}},
+		{"空文本", UserMessageEvent{}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b, err := json.Marshal(c.in)
+			require.NoError(t, err)
+			assert.Contains(t, string(b), `"kind":"user_message"`)
+			got, err := UnmarshalEvent(b)
+			require.NoError(t, err)
+			assert.Equal(t, c.in, got)
+		})
 	}
 }
 

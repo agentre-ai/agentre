@@ -1,3 +1,5 @@
+import type { CSSProperties } from "react";
+
 import agentreLogo from "@/assets/images/logo-mark.png";
 import anthropicLogo from "@/assets/brands/anthropic.svg";
 import claudeLogo from "@/assets/brands/claude.svg";
@@ -41,13 +43,18 @@ type LogoProps = {
 type BrandDefinition = {
   label: string;
   src: string;
+  monochrome?: boolean;
   modelPatterns?: RegExp[];
   identityPatterns?: RegExp[];
 };
 
 const brandRegistry: Record<Brand, BrandDefinition> = {
   agentre: { label: "Agentre", src: agentreLogo },
-  anthropic: { label: "Anthropic", src: anthropicLogo },
+  anthropic: {
+    label: "Anthropic",
+    src: anthropicLogo,
+    monochrome: true,
+  },
   claude: {
     label: "Claude",
     src: claudeLogo,
@@ -82,6 +89,7 @@ const brandRegistry: Record<Brand, BrandDefinition> = {
   kimi: {
     label: "Kimi",
     src: kimiLogo,
+    monochrome: true,
     modelPatterns: [/^(?:kimi|moonshot)(?:-|$)/],
     identityPatterns: [/\b(?:kimi|moonshot)\b/],
   },
@@ -110,6 +118,7 @@ const brandRegistry: Record<Brand, BrandDefinition> = {
   openai: {
     label: "OpenAI",
     src: openaiLogo,
+    monochrome: true,
     modelPatterns: [/^(?:gpt|chatgpt)(?:-|$)/, /^o\d+(?:-|$)/],
   },
   openclaw: { label: "OpenClaw", src: openClawLogo },
@@ -126,6 +135,7 @@ const brandRegistry: Record<Brand, BrandDefinition> = {
   xai: {
     label: "xAI",
     src: xaiLogo,
+    monochrome: true,
     modelPatterns: [/^grok(?:-|$)/],
     identityPatterns: [/\b(?:xai|x\.ai|grok)\b/, /api\.x\.ai/],
   },
@@ -152,11 +162,22 @@ function BrandLogo({ brand, className }: LogoProps & { brand: Brand }) {
       data-brand={brand}
       className={cn(
         "inline-flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-sm",
-        (brand === "openai" || brand === "anthropic") && "bg-white p-0.5",
         className,
       )}
     >
-      <img src={meta.src} alt="" className="size-full object-contain" />
+      {meta.monochrome ? (
+        <span
+          aria-hidden="true"
+          className="block size-full bg-foreground [mask-image:var(--brand-logo)] [mask-position:center] [mask-repeat:no-repeat] [mask-size:contain] [-webkit-mask-image:var(--brand-logo)] [-webkit-mask-position:center] [-webkit-mask-repeat:no-repeat] [-webkit-mask-size:contain]"
+          style={
+            {
+              "--brand-logo": `url("${meta.src}")`,
+            } as CSSProperties
+          }
+        />
+      ) : (
+        <img src={meta.src} alt="" className="size-full object-contain" />
+      )}
     </span>
   );
 }

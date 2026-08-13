@@ -41,6 +41,46 @@
     "needsAttention": "Approval",
     "unread": "Unread"
   },
+  "activity": {
+    "header": {
+      "steps": "{{count}} steps",
+      "steps_one": "{{count}} step",
+      "steps_other": "{{count}} steps",
+      "running": "Running · {{count}} steps",
+      "running_one": "Running · {{count}} step",
+      "running_other": "Running · {{count}} steps",
+      "duration": "{{seconds}}s",
+      "durationTitle": "Turn duration"
+    },
+    "summary": {
+      "thinking": "Thinking {{count}}",
+      "read": "Read {{count}}",
+      "edit": "Edited {{count}} files",
+      "edit_one": "Edited {{count}} file",
+      "edit_other": "Edited {{count}} files",
+      "write": "Wrote {{count}}",
+      "command": "Commands {{count}}",
+      "other": "Other {{count}}",
+      "failures": "{{count}} failed"
+    },
+    "row": {
+      "thinking": "Thought",
+      "thinkingMeta": "{{count}} chars",
+      "exit": "exit {{code}}",
+      "failed": "failed",
+      "running": "running",
+      "canceled": "canceled",
+      "unknown": "unknown result",
+      "lines": "{{count}} lines",
+      "lines_one": "{{count}} line",
+      "lines_other": "{{count}} lines",
+      "sections": {
+        "params": "PARAMS",
+        "result": "RESULT",
+        "content": "CONTENT"
+      }
+    }
+  },
   "agentBackends": {
     "actions": {
       "cancelTest": "Cancel Test",
@@ -322,7 +362,6 @@
       "defaultName": "Agent",
       "groupedName": "Agents",
       "runToggle": "Toggle run {{index}}: {{name}}",
-      "stepToggle": "Toggle {{tool}} step details",
       "stop": "Stop",
       "emptyPrompt": "No prompt",
       "emptyResult": "(empty result)",
@@ -351,6 +390,11 @@
         "tools_other": "{{count}} tools",
         "tokens": "{{value}} tokens"
       },
+      "outcome": {
+        "steps": "{{count}} steps",
+        "steps_one": "{{count}} step",
+        "steps_other": "{{count}} steps"
+      },
       "sections": {
         "prompt": "TASK PROMPT",
         "tasks": "TASKS",
@@ -361,11 +405,9 @@
       "status": {
         "done": "DONE",
         "error": "ERROR",
-        "fail": "FAIL",
         "failed": "FAILED",
         "partial": "PARTIAL",
         "running": "RUNNING",
-        "runningLower": "running",
         "waiting": "WAITING",
         "skipped": "SKIPPED",
         "unknown": "UNKNOWN",
@@ -375,8 +417,12 @@
       "summaryRunning": "Subagent is still running. Results will return later...",
       "waitingFirstStep": "Waiting for the first child call..."
     },
+    "code": {
+      "copy": "Copy",
+      "copyAll": "Copy all",
+      "paramCount": "{{count}} params"
+    },
     "fileEdit": {
-      "aria": "{{tool}} tool call",
       "badge": {
         "deleted": "DELETED",
         "new": "NEW"
@@ -386,13 +432,10 @@
       "truncated": "Some lines are truncated · full diff has {{count}} lines (showing first {{shown}})"
     },
     "fileWrite": {
-      "aria": "Write tool call",
       "copyDone": "Full content copied",
       "copyFailed": "Failed to copy full content",
       "copyFull": "Copy Full Content",
       "empty": "Created empty file",
-      "newBadge": "NEW",
-      "title": "Write",
       "truncated": "Content truncated · showing first {{lines}} lines"
     },
     "plan": {
@@ -616,7 +659,7 @@
         "opusWeekly": "Opus 7-day",
         "sonnetWeekly": "Sonnet 7-day",
         "title": "Claude subscription usage",
-        "usedNote": "Percentages are usage · refreshed every 60s",
+        "usedNote": "Percentages are usage · refreshed every 5 minutes",
         "weekly": "7-day window"
       },
       "resetRemaining": " (resets in {{time}})",
@@ -796,7 +839,8 @@
       "rename": "Rename failed: {{msg}}",
       "send": "Send failed: {{msg}}",
       "stop": "Stop failed: {{msg}}",
-      "stopBackgroundTask": "Failed to stop background task: {{msg}}"
+      "stopBackgroundTask": "Failed to stop background task: {{msg}}",
+      "loadFailed": "Failed to load session: {{msg}}"
     },
     "execTarget": {
       "willRunPrefix": "Will run on",
@@ -896,7 +940,22 @@
       "stopInactiveTitle": "No chat is currently running",
       "terminalTitle": "Terminal (⌘`)"
     },
-    "untitled": "(Untitled)"
+    "untitled": "(Untitled)",
+    "loadError": {
+      "title": "Couldn't load session",
+      "retry": "Retry",
+      "close": "Close session",
+      "notFoundHint": "This session no longer exists or has been deleted."
+    },
+    "sending": "Sending…",
+    "sendRetry": {
+      "restored": "Send failed — draft kept",
+      "retry": "Retry send",
+      "discard": "Discard draft"
+    },
+    "loading": {
+      "aria": "Loading session…"
+    }
   },
   "chatPage": {
     "add": {
@@ -905,7 +964,17 @@
       "newAgentChat": "New agent chat",
       "newAgentHint": "Create a new assistant/employee in the org chart"
     },
+    "empty": {
+      "title": "No conversations yet",
+      "description": "Create an agent to start collaborating.",
+      "cta": "Create your first agent"
+    },
     "filter": {
+      "chips": {
+        "all": "All",
+        "running": "Running",
+        "unread": "Unread"
+      },
       "open": "Filter sidebar",
       "options": {
         "running": "Running",
@@ -988,6 +1057,11 @@
       "clear": "Clear filter",
       "noMatches": "No agents match \"{{query}}\"",
       "placeholder": "Search Agent"
+    },
+    "sessionMenu": {
+      "delete": "Delete",
+      "openInNewTab": "Open in new tab",
+      "rename": "Rename"
     },
     "sections": {
       "agents": "AGENTS",
@@ -1133,7 +1207,10 @@
       "commandPlaceholder": "Type a command...",
       "sessionPlaceholder": "Search sessions..."
     },
-    "title": "Command Palette"
+    "title": "Command Palette",
+    "nav": {
+      "heading": "Navigate"
+    }
   },
   "dataBackup": {
     "actions": {
@@ -1911,6 +1988,12 @@
       "loadFailed": "Load failed: {{error}}",
       "reorderFailed": "Failed to save project order: {{error}}"
     },
+    "filter": {
+      "chips": {
+        "all": "All",
+        "running": "Running"
+      }
+    },
     "localPath": {
       "badge": "Not configured",
       "allMissingTitle": "This device hasn't configured a path for any project yet",
@@ -1967,7 +2050,12 @@
     "count": "Queued · {{count}}",
     "insertAfterAI": "Inserted after AI finishes",
     "notCancellable": "Not cancellable (codex backend)",
-    "notCancellableTitle": "codex turn/steer protocol is not cancellable after send"
+    "notCancellableTitle": "codex turn/steer protocol is not cancellable after send",
+    "dropped": {
+      "title": "{{count}} message(s) were not sent when the turn ended",
+      "restore": "Restore as draft",
+      "discard": "Discard"
+    }
   },
   "projectMerge": {
     "title": "Merge into existing project",
@@ -2026,6 +2114,86 @@
     "truncated": "Some items are not listed. Use the filter to narrow the folder."
   },
   "remoteDevices": {
+    "onboarding": {
+      "commands": {
+        "daemonRunning": "Daemon running",
+        "foregroundRun": "agentred run",
+        "installUnix": "curl -fsSL https://github.com/agentre-ai/agentre/releases/latest/download/install.sh | sh",
+        "installWindows": "irm https://github.com/agentre-ai/agentre/releases/latest/download/install.ps1 | iex",
+        "listenAddress": "ws://…:7456/rpc",
+        "pair": "agentred pair",
+        "serviceInstall": "agentred service install --start",
+        "serviceRestart": "agentred service restart",
+        "serviceStatus": "agentred service status",
+        "version": "agentred --version"
+      },
+      "complete": {
+        "action": "Configure Agent Backends",
+        "description": "Choose Claude Code, Codex, or Pi on this device.",
+        "title": "Remote connected"
+      },
+      "copyLabel": "Copy {{label}}",
+      "copySuccess": "Command copied",
+      "install": {
+        "archHint": "Architecture is detected automatically",
+        "description": "Choose the remote operating system, then run the install command in its terminal.",
+        "linux": "Linux",
+        "macos": "macOS",
+        "manual": "Manual installation",
+        "next": "Installed, next",
+        "osLabel": "Remote operating system",
+        "powershell": "PowerShell",
+        "recommended": "Recommended install command",
+        "terminal": "Remote terminal",
+        "verify": "Verify installation",
+        "windows": "Windows",
+        "title": "Install agentred"
+      },
+      "pair": {
+        "back": "Back to service",
+        "commandLabel": "Get pairing information",
+        "description": "Run the pairing command on the remote machine, then enter its address and one-time code.",
+        "submit": "Pair and verify",
+        "title": "Connect this remote machine"
+      },
+      "service": {
+        "background": "Background service (recommended)",
+        "description": "Use the background service for a machine that should stay available.",
+        "diagnostics": {
+          "first": "Run <command>{{command}}</command> and confirm <status>{{status}}</status> appears.",
+          "second": "Confirm the listen address includes <address>{{address}}</address>.",
+          "third": "Keep the service running, then continue to pairing."
+        },
+        "diagnosticsHint": "Run these checks in the remote terminal",
+        "diagnosticsTitle": "Confirm the service is running",
+        "foreground": "Temporary foreground",
+        "foregroundDescription": "Keep this terminal open; closing it stops agentred.",
+        "installLabel": "Install and start service",
+        "modeHint": "Background service is recommended",
+        "modeLabel": "Run mode",
+        "next": "Service is running",
+        "restartLabel": "Restart service",
+        "statusLabel": "Check status",
+        "title": "Start the remote service"
+      },
+      "stepLabel": "Step {{current}} of {{total}}",
+      "steps": {
+        "install": {
+          "done": "Complete",
+          "subtitle": "About 1 minute",
+          "title": "Install agentred"
+        },
+        "pair": {
+          "subtitle": "One-time code",
+          "title": "Pair and verify"
+        },
+        "service": {
+          "done": "Running",
+          "subtitle": "Stay online",
+          "title": "Start the remote service"
+        }
+      }
+    },
     "actions": {
       "addAgentred": "Add agentred",
       "continueAddLan": "+ Add another agentred (LAN)",
@@ -2047,7 +2215,9 @@
         "displayNamePlaceholder": "Leave empty to derive it from the address",
         "pairingCode": "Pairing Code",
         "pairingCodeHint": "6-character pairing code",
-        "url": "Address"
+        "url": "Address",
+        "urlInvalid": "Address must end with /rpc, e.g. ws://192.168.1.100:7456/rpc",
+        "codeInvalid": "Pairing code must be exactly 6 characters"
       },
       "instructions": {
         "prefix": "Run",
@@ -2057,16 +2227,15 @@
       "pairing": "Pairing...",
       "title": "Add agentred Device"
     },
-    "empty": {
-      "middle": ", then run",
-      "prefix": "Run",
-      "suffix": "to get a 6-character pairing code, then return here and choose Add agentred.",
-      "title": "No agentred devices paired"
-    },
     "errors": {
       "dialFailed": "Connection failed: {{message}}",
       "tofuMismatch": "The server identity fingerprint changed. Verify it is safe, then pair again.",
       "unauthorized": "Credentials expired. Pair again."
+    },
+    "load": {
+      "errorDescription": "Check the connection and try again.",
+      "errorTitle": "Couldn't load remote devices",
+      "loading": "Loading remote devices"
     },
     "login": {
       "actions": {
@@ -3001,5 +3170,13 @@
     "remoteSyncNeeded": "Local only — sync to this device first",
     "fixedModelUnsupported": "This device does not support fixed models — upgrade agentred",
     "remoteGateHint": "Disabled items need sync to the device or an unsupported capability"
+  },
+  "statusBar": {
+    "agentSummary": "{{count}} agents · {{running}} running",
+    "approval_one": "{{count}} approval",
+    "approval_other": "{{count}} approvals",
+    "unread_one": "{{count}} unread",
+    "unread_other": "{{count}} unread",
+    "attentionAria": "{{summary}} — click to open the first session needing attention"
   }
 }

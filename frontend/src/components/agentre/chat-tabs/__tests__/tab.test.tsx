@@ -36,10 +36,27 @@ describe("Tab 组件", () => {
     expect(screen.getByRole("tab")).toHaveAttribute("data-active", "true");
   });
 
-  it("status='running' 时 close X 被替换成 spinner", () => {
+  it("status='running' 时同时渲染 spinner 和 close X", () => {
     render(<Tab {...baseProps} status="running" />);
     expect(screen.getByTestId("tab-spinner")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Close Tab")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Close Tab")).toBeInTheDocument();
+  });
+
+  it("status='running' 时点 close X 触发 onClose(并 stopPropagation)", async () => {
+    const user = userEvent.setup();
+    const onActivate = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <Tab
+        {...baseProps}
+        status="running"
+        onActivate={onActivate}
+        onClose={onClose}
+      />,
+    );
+    await user.click(screen.getByLabelText("Close Tab"));
+    expect(onClose).toHaveBeenCalled();
+    expect(onActivate).not.toHaveBeenCalled();
   });
 
   it("pillText='审批' 渲染 pill", () => {

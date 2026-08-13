@@ -48,8 +48,9 @@ import {
   type TranscriptRenderContextValue,
 } from "./transcript-row-view";
 import {
+  applyLiveTranscriptRows,
+  buildSettledTranscriptRows,
   buildSourceByMessageId,
-  buildTranscriptRows,
   estimateRowSizeWithSpacing,
   isLastRowOfMessage,
   type LiveRowContent,
@@ -188,6 +189,8 @@ type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
   /** 在输入框上方插入的内容（例：QueuedMessagesBar）。Composer 不关心内容，
    *  只负责把节点放进 card 顶部，跟 editing banner 同位。空节点正常渲染（组件自决可见性）。 */
   topSlot?: React.ReactNode;
+  /** 发送 RPC 在途（await SendChatMessage 未返回）。true 时发送按钮禁用并转 spinner。 */
+  sending?: boolean;
   /** 上下文用量。max <= 0 时整块不渲染（未知模型 / 后端未配置）。 */
   contextUsage?: { used: number; max: number };
   /** Claude Code OAuth 5h/7d 配额。undefined / reason='no_credentials' 时整块不渲染。
@@ -240,6 +243,13 @@ export type ChatImageAttachment = {
 export type ChatComposerSubmit = {
   images?: ChatImageAttachment[];
   text: string;
+};
+
+// ChatComposer 的命令式句柄。restoreDraft 用于发送失败时把用户刚提交的文本 + 图片
+// 原样放回输入框（草稿恢复）；clearDraft 清空输入框 + 图片附件（丢弃草稿）。
+export type ChatComposerHandle = {
+  restoreDraft: (text: string, images: ChatImageAttachment[]) => void;
+  clearDraft: () => void;
 };
 
 const CHAT_IMAGE_ACCEPT = "image/png,image/jpeg,image/webp";
@@ -654,473 +664,514 @@ function ContextMeter({ used, max }: { used: number; max: number }) {
   );
 }
 
-function ChatComposer({
-  className,
-  onSubmit,
-  placeholder,
-  userMessageHistory,
-  editing = false,
-  editDraft,
-  onCancelEdit,
-  topSlot,
-  contextUsage,
-  quotaUsage,
-  quotaDeviceLabel,
-  permissionModeSlot,
-  modelSlot,
-  onShiftTab,
-  autoFocusOnMount = false,
-  backendType,
-  agentId = 0,
-  cwd = "",
-  supportsImageInput = true,
-  onSlashRpc,
-  onRunCommand,
-  onCommandModeChange,
-  localCommandHistoryScope,
-  editorRef,
-  onPasteCapture,
-  disabled = false,
-  ...props
-}: ChatComposerProps) {
-  const { t } = useTranslation();
-  const { agents } = useChatAgents();
-  const { projects } = useProjectList();
-  const mentionSources = React.useMemo(
-    () => buildMentionSources(agents, projects),
-    [agents, projects],
-  );
-  const inputRef = React.useRef<AIChatInputHandle>(null);
-  const fileInputRef = React.useRef<HTMLInputElement>(null);
-  const [isEmpty, setIsEmpty] = React.useState(true);
-  const [images, setImages] = React.useState<ChatImageAttachment[]>([]);
-  const [imageError, setImageError] = React.useState("");
-  const [commandMode, setCommandMode] = React.useState(false);
-  const skillCommands = useAgentSkillCommands(agentId, backendType ?? "", cwd);
-  const resolvedPlaceholder =
-    placeholder ??
-    t(
-      backendType === "codex"
-        ? "chat.composer.placeholderCodex"
-        : backendType === "claudecode"
-          ? "chat.composer.placeholderClaude"
-          : backendType === "piagent"
-            ? "chat.composer.placeholderPi"
-            : "chat.composer.placeholder",
+const ChatComposer = React.forwardRef<ChatComposerHandle, ChatComposerProps>(
+  function ChatComposer(
+    {
+      className,
+      onSubmit,
+      placeholder,
+      userMessageHistory,
+      editing = false,
+      editDraft,
+      onCancelEdit,
+      topSlot,
+      contextUsage,
+      quotaUsage,
+      quotaDeviceLabel,
+      permissionModeSlot,
+      modelSlot,
+      onShiftTab,
+      autoFocusOnMount = false,
+      backendType,
+      agentId = 0,
+      cwd = "",
+      supportsImageInput = true,
+      onSlashRpc,
+      onRunCommand,
+      onCommandModeChange,
+      localCommandHistoryScope,
+      editorRef,
+      onPasteCapture,
+      disabled = false,
+      sending = false,
+      ...props
+    }: ChatComposerProps,
+    ref,
+  ) {
+    const { t } = useTranslation();
+    const { agents } = useChatAgents();
+    const { projects } = useProjectList();
+    const mentionSources = React.useMemo(
+      () => buildMentionSources(agents, projects),
+      [agents, projects],
+    );
+    const inputRef = React.useRef<AIChatInputHandle>(null);
+    const fileInputRef = React.useRef<HTMLInputElement>(null);
+    const [isEmpty, setIsEmpty] = React.useState(true);
+    const [images, setImages] = React.useState<ChatImageAttachment[]>([]);
+    const [imageError, setImageError] = React.useState("");
+    const [commandMode, setCommandMode] = React.useState(false);
+    const skillCommands = useAgentSkillCommands(
+      agentId,
+      backendType ?? "",
+      cwd,
+    );
+    const resolvedPlaceholder =
+      placeholder ??
+      t(
+        backendType === "codex"
+          ? "chat.composer.placeholderCodex"
+          : backendType === "claudecode"
+            ? "chat.composer.placeholderClaude"
+            : backendType === "piagent"
+              ? "chat.composer.placeholderPi"
+              : "chat.composer.placeholder",
+      );
+
+    // 发送失败草稿恢复:把用户刚提交的文本 + 图片原样放回输入框（父组件在 doSend
+    // 的 catch 里调用）。loadDraft 走与编辑模式载入草稿同一路径,行为一致。
+    React.useImperativeHandle(
+      ref,
+      () => ({
+        restoreDraft: (text: string, restoreImages: ChatImageAttachment[]) => {
+          inputRef.current?.loadDraft(text);
+          setImages(restoreImages);
+          setImageError("");
+        },
+        clearDraft: () => {
+          inputRef.current?.clear();
+          setImages([]);
+          setImageError("");
+        },
+      }),
+      [],
     );
 
-  // 切换到编辑模式（或换了编辑目标）时把目标文本载进 TipTap，并把光标抓回输入框；
-  // 退出编辑模式时清空输入，免得上一次的编辑残留干扰下一条新消息。
-  const wasEditingRef = React.useRef(false);
-  React.useEffect(() => {
-    if (editing) {
-      if (editDraft !== undefined) {
-        inputRef.current?.loadDraft(editDraft);
+    // 切换到编辑模式（或换了编辑目标）时把目标文本载进 TipTap，并把光标抓回输入框；
+    // 退出编辑模式时清空输入，免得上一次的编辑残留干扰下一条新消息。
+    const wasEditingRef = React.useRef(false);
+    React.useEffect(() => {
+      if (editing) {
+        if (editDraft !== undefined) {
+          inputRef.current?.loadDraft(editDraft);
+        }
+        inputRef.current?.focus();
+      } else if (wasEditingRef.current) {
+        inputRef.current?.clear();
       }
+      if (editing) {
+        setImages([]);
+        setImageError("");
+      }
+      wasEditingRef.current = editing;
+    }, [editing, editDraft]);
+
+    const wasAutoFocusOnMountRef = React.useRef(autoFocusOnMount);
+    React.useEffect(() => {
+      const wasAutoFocusOnMount = wasAutoFocusOnMountRef.current;
+      wasAutoFocusOnMountRef.current = autoFocusOnMount;
+      if (!autoFocusOnMount || wasAutoFocusOnMount) return;
       inputRef.current?.focus();
-    } else if (wasEditingRef.current) {
-      inputRef.current?.clear();
-    }
-    if (editing) {
+    }, [autoFocusOnMount]);
+
+    React.useEffect(() => {
+      if (supportsImageInput) return;
+      setImages([]);
+      setImageError("");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }, [supportsImageInput]);
+
+    const dropRef = React.useRef<HTMLFormElement>(null);
+
+    const handleDroppedPaths = React.useCallback(
+      (paths: string[]) => {
+        if (disabled) return;
+        void (async () => {
+          const { attachments, text } = await resolveDroppedPaths(paths, {
+            allowImages: !editing && supportsImageInput,
+            remainingImageSlots: MAX_CHAT_IMAGE_COUNT - images.length,
+            readImages: async (imagePaths) => {
+              const resp = await ChatReadDroppedImages(
+                chat_svc.ReadDroppedImagesRequest.createFrom({
+                  paths: imagePaths,
+                }),
+              );
+              return (resp.items ?? []).map((it) => ({
+                path: it.path,
+                kind:
+                  it.kind === "image" ? ("image" as const) : ("path" as const),
+                name: it.name,
+                mediaType: it.mediaType,
+                dataUrl: it.dataUrl,
+              }));
+            },
+          });
+          if (attachments.length > 0) {
+            setImages((prev) => [...prev, ...attachments]);
+            setImageError("");
+          }
+          if (text) inputRef.current?.insertText(text);
+        })();
+      },
+      [disabled, editing, supportsImageInput, images.length],
+    );
+
+    const { isDragOver } = useFileDropZone({
+      ref: dropRef,
+      enabled: !disabled,
+      onPaths: handleDroppedPaths,
+    });
+
+    function handleSend(text: string) {
+      if (disabled) return;
+      const trimmed = text.trim();
+      if (!trimmed && images.length === 0) return;
+      onSubmit?.(
+        images.length > 0 ? { images, text: trimmed } : { text: trimmed },
+      );
       setImages([]);
       setImageError("");
     }
-    wasEditingRef.current = editing;
-  }, [editing, editDraft]);
 
-  const wasAutoFocusOnMountRef = React.useRef(autoFocusOnMount);
-  React.useEffect(() => {
-    const wasAutoFocusOnMount = wasAutoFocusOnMountRef.current;
-    wasAutoFocusOnMountRef.current = autoFocusOnMount;
-    if (!autoFocusOnMount || wasAutoFocusOnMount) return;
-    inputRef.current?.focus();
-  }, [autoFocusOnMount]);
-
-  React.useEffect(() => {
-    if (supportsImageInput) return;
-    setImages([]);
-    setImageError("");
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  }, [supportsImageInput]);
-
-  const dropRef = React.useRef<HTMLFormElement>(null);
-
-  const handleDroppedPaths = React.useCallback(
-    (paths: string[]) => {
+    function handleFormSubmit(event: React.FormEvent<HTMLFormElement>) {
+      event.preventDefault();
       if (disabled) return;
-      void (async () => {
-        const { attachments, text } = await resolveDroppedPaths(paths, {
-          allowImages: !editing && supportsImageInput,
-          remainingImageSlots: MAX_CHAT_IMAGE_COUNT - images.length,
-          readImages: async (imagePaths) => {
-            const resp = await ChatReadDroppedImages(
-              chat_svc.ReadDroppedImagesRequest.createFrom({
-                paths: imagePaths,
-              }),
-            );
-            return (resp.items ?? []).map((it) => ({
-              path: it.path,
-              kind:
-                it.kind === "image" ? ("image" as const) : ("path" as const),
-              name: it.name,
-              mediaType: it.mediaType,
-              dataUrl: it.dataUrl,
-            }));
-          },
-        });
-        if (attachments.length > 0) {
-          setImages((prev) => [...prev, ...attachments]);
-          setImageError("");
+      if (isEmpty && images.length > 0) {
+        handleSend("");
+        return;
+      }
+      inputRef.current?.submit();
+    }
+
+    async function handleImageFiles(files: FileList | readonly File[] | null) {
+      try {
+        if (disabled || !files || files.length === 0) return;
+        const nextFiles = Array.from(files);
+        if (images.length + nextFiles.length > MAX_CHAT_IMAGE_COUNT) {
+          setImageError(
+            t("chat.composer.imageErrors.tooMany", {
+              count: MAX_CHAT_IMAGE_COUNT,
+            }),
+          );
+          return;
         }
-        if (text) inputRef.current?.insertText(text);
-      })();
-    },
-    [disabled, editing, supportsImageInput, images.length],
-  );
-
-  const { isDragOver } = useFileDropZone({
-    ref: dropRef,
-    enabled: !disabled,
-    onPaths: handleDroppedPaths,
-  });
-
-  function handleSend(text: string) {
-    if (disabled) return;
-    const trimmed = text.trim();
-    if (!trimmed && images.length === 0) return;
-    onSubmit?.(
-      images.length > 0 ? { images, text: trimmed } : { text: trimmed },
-    );
-    setImages([]);
-    setImageError("");
-  }
-
-  function handleFormSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (disabled) return;
-    if (isEmpty && images.length > 0) {
-      handleSend("");
-      return;
-    }
-    inputRef.current?.submit();
-  }
-
-  async function handleImageFiles(files: FileList | readonly File[] | null) {
-    try {
-      if (disabled || !files || files.length === 0) return;
-      const nextFiles = Array.from(files);
-      if (images.length + nextFiles.length > MAX_CHAT_IMAGE_COUNT) {
-        setImageError(
-          t("chat.composer.imageErrors.tooMany", {
-            count: MAX_CHAT_IMAGE_COUNT,
-          }),
+        const bad = nextFiles.find(
+          (file) =>
+            !CHAT_IMAGE_ACCEPT.split(",").includes(file.type) ||
+            file.size > MAX_CHAT_IMAGE_BYTES,
         );
-        return;
+        if (bad) {
+          setImageError(t("chat.composer.imageErrors.unsupported"));
+          return;
+        }
+        const attachments = await Promise.all(nextFiles.map(readImageFile));
+        setImages((prev) => [...prev, ...attachments]);
+        setImageError("");
+      } catch {
+        setImageError(t("chat.composer.imageErrors.readFailed"));
+      } finally {
+        if (fileInputRef.current) fileInputRef.current.value = "";
       }
-      const bad = nextFiles.find(
-        (file) =>
-          !CHAT_IMAGE_ACCEPT.split(",").includes(file.type) ||
-          file.size > MAX_CHAT_IMAGE_BYTES,
-      );
-      if (bad) {
-        setImageError(t("chat.composer.imageErrors.unsupported"));
+    }
+
+    function handlePasteCapture(event: React.ClipboardEvent<HTMLFormElement>) {
+      onPasteCapture?.(event);
+      if (event.defaultPrevented || disabled || editing || !supportsImageInput)
         return;
-      }
-      const attachments = await Promise.all(nextFiles.map(readImageFile));
-      setImages((prev) => [...prev, ...attachments]);
-      setImageError("");
-    } catch {
-      setImageError(t("chat.composer.imageErrors.readFailed"));
-    } finally {
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
-  }
-
-  function handlePasteCapture(event: React.ClipboardEvent<HTMLFormElement>) {
-    onPasteCapture?.(event);
-    if (event.defaultPrevented || disabled || editing || !supportsImageInput)
-      return;
-    const pastedImages = imageFilesFromClipboard(event.clipboardData);
-    if (pastedImages.length === 0) return;
-    event.preventDefault();
-    void handleImageFiles(pastedImages);
-  }
-
-  // Esc 取消编辑。TipTap 的 handleKeyDown 不处理 Esc，所以这里在 form 层捕获；
-  // 非编辑态下不消费，让默认行为走。
-  //
-  // Shift+Tab 循环切换 permission mode —— 对齐 Claude TUI；focus 在 composer 内
-  // （TipTap editor / 普通按钮）时都会冒泡到 form，preventDefault 拦掉默认 tab 切换。
-  // 历史 Clear footer 保留原生反向焦点；编辑模式也不消费 Shift+Tab。
-  function handleFormKeyDown(event: React.KeyboardEvent<HTMLFormElement>) {
-    if (
-      !editing &&
-      isEmpty &&
-      images.length > 0 &&
-      event.key === "Enter" &&
-      !event.shiftKey &&
-      !event.metaKey &&
-      !event.ctrlKey &&
-      !event.altKey &&
-      !event.nativeEvent.isComposing
-    ) {
+      const pastedImages = imageFilesFromClipboard(event.clipboardData);
+      if (pastedImages.length === 0) return;
       event.preventDefault();
-      handleSend("");
-      return;
+      void handleImageFiles(pastedImages);
     }
-    if (editing && event.key === "Escape") {
-      event.preventDefault();
-      onCancelEdit?.();
-      return;
-    }
-    if (
-      !event.defaultPrevented &&
-      !editing &&
-      onShiftTab &&
-      event.key === "Tab" &&
-      event.shiftKey &&
-      !event.metaKey &&
-      !event.ctrlKey &&
-      !event.altKey
-    ) {
+
+    // Esc 取消编辑。TipTap 的 handleKeyDown 不处理 Esc，所以这里在 form 层捕获；
+    // 非编辑态下不消费，让默认行为走。
+    //
+    // Shift+Tab 循环切换 permission mode —— 对齐 Claude TUI；focus 在 composer 内
+    // （TipTap editor / 普通按钮）时都会冒泡到 form，preventDefault 拦掉默认 tab 切换。
+    // 历史 Clear footer 保留原生反向焦点；编辑模式也不消费 Shift+Tab。
+    function handleFormKeyDown(event: React.KeyboardEvent<HTMLFormElement>) {
       if (
-        event.target instanceof Element &&
-        event.target.closest(LOCAL_COMMAND_HISTORY_CLEAR_SELECTOR)
+        !editing &&
+        isEmpty &&
+        images.length > 0 &&
+        event.key === "Enter" &&
+        !event.shiftKey &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.nativeEvent.isComposing
       ) {
+        event.preventDefault();
+        handleSend("");
         return;
       }
-      event.preventDefault();
-      onShiftTab();
+      if (editing && event.key === "Escape") {
+        event.preventDefault();
+        onCancelEdit?.();
+        return;
+      }
+      if (
+        !event.defaultPrevented &&
+        !editing &&
+        onShiftTab &&
+        event.key === "Tab" &&
+        event.shiftKey &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey
+      ) {
+        if (
+          event.target instanceof Element &&
+          event.target.closest(LOCAL_COMMAND_HISTORY_CLEAR_SELECTOR)
+        ) {
+          return;
+        }
+        event.preventDefault();
+        onShiftTab();
+      }
     }
-  }
 
-  return (
-    <form
-      ref={dropRef}
-      className={cn(
-        // @container/composer:底栏按 composer 自身宽度分档降级 —— chat panel 的实际
-        // 宽度取决于侧栏 / 右侧面板开合,视口宽度读不到它。
-        "@container/composer relative w-full border-t border-border bg-background px-7 py-3.5",
-        className,
-      )}
-      onSubmit={handleFormSubmit}
-      onKeyDown={handleFormKeyDown}
-      onPasteCapture={handlePasteCapture}
-      {...props}
-    >
-      {isDragOver ? (
-        <div
-          className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-md border-2 border-dashed border-ring bg-background/85 text-sm font-medium text-foreground"
-          aria-hidden="true"
-        >
-          {t("chat.composer.dropHint")}
-        </div>
-      ) : null}
-      <div
+    return (
+      <form
+        ref={dropRef}
         className={cn(
-          "flex w-full flex-col overflow-hidden rounded-md border bg-card shadow-xs transition-colors",
-          "focus-within:ring-[3px] focus-within:ring-ring/50",
-          editing
-            ? "border-primary-text/45 focus-within:border-primary-text/70"
-            : "border-border focus-within:border-ring",
+          // @container/composer:底栏按 composer 自身宽度分档降级 —— chat panel 的实际
+          // 宽度取决于侧栏 / 右侧面板开合,视口宽度读不到它。
+          "@container/composer relative w-full border-t border-border bg-background px-7 py-3.5",
+          className,
         )}
+        onSubmit={handleFormSubmit}
+        onKeyDown={handleFormKeyDown}
+        onPasteCapture={handlePasteCapture}
+        {...props}
       >
-        {topSlot}
-        {editing ? (
+        {isDragOver ? (
           <div
-            role="status"
-            aria-label={t("chat.composer.editing.aria")}
-            className="flex items-center gap-2 border-b border-primary-text/20 bg-primary-soft px-3 py-1.5 text-meta"
+            className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-md border-2 border-dashed border-ring bg-background/85 text-sm font-medium text-foreground"
+            aria-hidden="true"
           >
-            <Pencil
-              className="size-3 shrink-0 text-primary-text"
-              aria-hidden="true"
-            />
-            <span className="font-semibold text-primary-text">
-              {t("chat.composer.editing.title")}
-            </span>
-            <span className="text-muted-foreground">·</span>
-            <span className="min-w-0 flex-1 truncate text-muted-foreground">
-              {t("chat.composer.editing.description")}
-            </span>
-            <button
-              type="button"
-              aria-label={t("chat.composer.editing.cancel")}
-              title={t("chat.composer.editing.cancelTitle")}
-              className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              onClick={() => onCancelEdit?.()}
+            {t("chat.composer.dropHint")}
+          </div>
+        ) : null}
+        <div
+          className={cn(
+            "flex w-full flex-col overflow-hidden rounded-md border bg-card shadow-xs transition-colors",
+            "focus-within:ring-[3px] focus-within:ring-ring/50",
+            editing
+              ? "border-primary-text/45 focus-within:border-primary-text/70"
+              : "border-border focus-within:border-ring",
+          )}
+        >
+          {topSlot}
+          {editing ? (
+            <div
+              role="status"
+              aria-label={t("chat.composer.editing.aria")}
+              className="flex items-center gap-2 border-b border-primary-text/20 bg-primary-soft px-3 py-1.5 text-meta"
             >
-              <X className="size-3" aria-hidden="true" />
-            </button>
-          </div>
-        ) : null}
-        {!editing && commandMode ? (
-          <div
-            role="status"
-            className="flex items-center gap-2 border-b border-primary-text/20 bg-primary-soft px-3 py-1.5 text-meta"
-          >
-            <SquareTerminal
-              className="size-3 shrink-0 text-primary-text"
-              aria-hidden="true"
-            />
-            <span className="min-w-0 flex-1 truncate font-medium text-primary-text">
-              {t("chat.composer.command.banner")}
-            </span>
-            <span className="inline-flex items-center gap-1 text-muted-foreground">
-              <EyeOff className="size-3" aria-hidden="true" />
-              {t("localCommand.notSharedWithAI")}
-            </span>
-          </div>
-        ) : null}
-        <div className="flex flex-col gap-1 px-3.5 pt-2.5 pb-1">
-          {!editing && images.length > 0 ? (
-            <div className="flex flex-wrap gap-2 pb-1">
-              {images.map((img, idx) => (
-                <div
-                  key={`${img.name}-${idx}`}
-                  className="group relative h-16 w-20 overflow-hidden rounded-md border border-border bg-muted"
-                >
-                  <img
-                    src={img.dataUrl}
-                    alt={img.name || t("chat.image.attachmentAlt")}
-                    className="h-full w-full object-cover"
-                  />
-                  <button
-                    type="button"
-                    aria-label={t("chat.composer.removeImage", {
-                      name: img.name || idx + 1,
-                    })}
-                    className="absolute top-1 right-1 inline-flex size-5 items-center justify-center rounded-sm bg-background/90 text-muted-foreground opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
-                    onClick={() => {
-                      setImages((prev) => prev.filter((_, i) => i !== idx));
-                      setImageError("");
-                    }}
+              <Pencil
+                className="size-3 shrink-0 text-primary-text"
+                aria-hidden="true"
+              />
+              <span className="font-semibold text-primary-text">
+                {t("chat.composer.editing.title")}
+              </span>
+              <span className="text-muted-foreground">·</span>
+              <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                {t("chat.composer.editing.description")}
+              </span>
+              <button
+                type="button"
+                aria-label={t("chat.composer.editing.cancel")}
+                title={t("chat.composer.editing.cancelTitle")}
+                className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                onClick={() => onCancelEdit?.()}
+              >
+                <X className="size-3" aria-hidden="true" />
+              </button>
+            </div>
+          ) : null}
+          {!editing && commandMode ? (
+            <div
+              role="status"
+              className="flex items-center gap-2 border-b border-primary-text/20 bg-primary-soft px-3 py-1.5 text-meta"
+            >
+              <SquareTerminal
+                className="size-3 shrink-0 text-primary-text"
+                aria-hidden="true"
+              />
+              <span className="min-w-0 flex-1 truncate font-medium text-primary-text">
+                {t("chat.composer.command.banner")}
+              </span>
+              <span className="inline-flex items-center gap-1 text-muted-foreground">
+                <EyeOff className="size-3" aria-hidden="true" />
+                {t("localCommand.notSharedWithAI")}
+              </span>
+            </div>
+          ) : null}
+          <div className="flex flex-col gap-1 px-3.5 pt-2.5 pb-1">
+            {!editing && images.length > 0 ? (
+              <div className="flex flex-wrap gap-2 pb-1">
+                {images.map((img, idx) => (
+                  <div
+                    key={`${img.name}-${idx}`}
+                    className="group relative h-16 w-20 overflow-hidden rounded-md border border-border bg-muted"
                   >
-                    <X className="size-3" aria-hidden="true" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : null}
-          <AIChatInput
-            ref={inputRef}
-            editorRef={editorRef}
-            onSubmit={handleSend}
-            onEmptyChange={setIsEmpty}
-            onCommandModeChange={(active) => {
-              setCommandMode(active);
-              onCommandModeChange?.(active);
-            }}
-            onCommandSubmit={onRunCommand}
-            localCommandHistoryScope={localCommandHistoryScope}
-            sendOnEnter
-            userMessageHistory={userMessageHistory}
-            placeholder={resolvedPlaceholder}
-            autoFocus={autoFocusOnMount}
-            disabled={disabled}
-            backendType={backendType}
-            mentionSources={mentionSources}
-            skillCommands={skillCommands}
-            onSlashSelect={(cmd, exec) => {
-              // literal_text 由 AIChatInput 内部直接填回编辑器(不自动发送),
-              // 这里只接 rpc 类命令转交给父组件。
-              if (exec.kind === "rpc") onSlashRpc?.(cmd, exec);
-            }}
-          />
-          {imageError ? (
-            <div className="text-meta text-status-error" role="alert">
-              {imageError}
-            </div>
-          ) : null}
-          {/* 底栏恒为单行:靠 @container 分档隐藏装饰来适配窄宽,绝不允许内部文字
+                    <img
+                      src={img.dataUrl}
+                      alt={img.name || t("chat.image.attachmentAlt")}
+                      className="h-full w-full object-cover"
+                    />
+                    <button
+                      type="button"
+                      aria-label={t("chat.composer.removeImage", {
+                        name: img.name || idx + 1,
+                      })}
+                      className="absolute top-1 right-1 inline-flex size-5 items-center justify-center rounded-sm bg-background/90 text-muted-foreground opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                      onClick={() => {
+                        setImages((prev) => prev.filter((_, i) => i !== idx));
+                        setImageError("");
+                      }}
+                    >
+                      <X className="size-3" aria-hidden="true" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            <AIChatInput
+              ref={inputRef}
+              editorRef={editorRef}
+              onSubmit={handleSend}
+              onEmptyChange={setIsEmpty}
+              onCommandModeChange={(active) => {
+                setCommandMode(active);
+                onCommandModeChange?.(active);
+              }}
+              onCommandSubmit={onRunCommand}
+              localCommandHistoryScope={localCommandHistoryScope}
+              sendOnEnter
+              userMessageHistory={userMessageHistory}
+              placeholder={resolvedPlaceholder}
+              autoFocus={autoFocusOnMount}
+              disabled={disabled}
+              backendType={backendType}
+              mentionSources={mentionSources}
+              skillCommands={skillCommands}
+              onSlashSelect={(cmd, exec) => {
+                // literal_text 由 AIChatInput 内部直接填回编辑器(不自动发送),
+                // 这里只接 rpc 类命令转交给父组件。
+                if (exec.kind === "rpc") onSlashRpc?.(cmd, exec);
+              }}
+            />
+            {imageError ? (
+              <div className="text-meta text-status-error" role="alert">
+                {imageError}
+              </div>
+            ) : null}
+            {/* 底栏恒为单行:靠 @container 分档隐藏装饰来适配窄宽,绝不允许内部文字
               折行把行高顶高(Hard invariant 1),也绝不允许横向溢出把发送按钮裁出
               可视区(Hard invariant 2)。
               溢出优先级:按钮与两个 Pill 保持 shrink-0 不参与收缩,两个计量器是唯一
               带 min-w-0 的让位者 —— 断点万一估窄,多出的宽度只吃掉计量器。 */}
-          <div className="flex flex-nowrap items-center gap-2">
-            {!editing && supportsImageInput ? (
-              <>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept={CHAT_IMAGE_ACCEPT}
-                  multiple
-                  className="hidden"
-                  onChange={(event) =>
-                    void handleImageFiles(event.target.files)
-                  }
-                />
+            <div className="flex flex-nowrap items-center gap-2">
+              {!editing && supportsImageInput ? (
+                <>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept={CHAT_IMAGE_ACCEPT}
+                    multiple
+                    className="hidden"
+                    onChange={(event) =>
+                      void handleImageFiles(event.target.files)
+                    }
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={t("chat.composer.addImage")}
+                    title={t("chat.composer.addImage")}
+                    disabled={disabled || images.length >= MAX_CHAT_IMAGE_COUNT}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <ImagePlus data-icon="only" aria-hidden="true" />
+                  </Button>
+                </>
+              ) : null}
+              {/* 快捷键提示是一次性教学文案,空间不足时第一个让位。 */}
+              <span className="shrink-0 font-mono text-meta leading-none whitespace-nowrap text-subtle-foreground @max-[1000px]/composer:hidden">
+                {editing
+                  ? t("chat.composer.shortcuts.edit")
+                  : t("chat.composer.shortcuts.send")}
+              </span>
+              {!editing && (permissionModeSlot || modelSlot) ? (
+                <div className="flex shrink-0 items-center gap-1">
+                  {permissionModeSlot}
+                  {modelSlot}
+                </div>
+              ) : null}
+              <div className="min-w-0 flex-1" />
+              {!editing && !commandMode ? (
+                <QuotaMeter data={quotaUsage} deviceLabel={quotaDeviceLabel} />
+              ) : null}
+              {contextUsage &&
+              contextUsage.max > 0 &&
+              !editing &&
+              !commandMode ? (
+                <ContextMeter used={contextUsage.used} max={contextUsage.max} />
+              ) : null}
+              {!editing && commandMode ? (
                 <Button
-                  type="button"
-                  variant="ghost"
+                  type="submit"
                   size="icon-sm"
-                  aria-label={t("chat.composer.addImage")}
-                  title={t("chat.composer.addImage")}
-                  disabled={disabled || images.length >= MAX_CHAT_IMAGE_COUNT}
-                  onClick={() => fileInputRef.current?.click()}
+                  aria-label={t("chat.composer.command.run")}
+                  title={t("chat.composer.command.run")}
                 >
-                  <ImagePlus data-icon="only" aria-hidden="true" />
+                  <SquareTerminal data-icon="only" aria-hidden="true" />
                 </Button>
-              </>
-            ) : null}
-            {/* 快捷键提示是一次性教学文案,空间不足时第一个让位。 */}
-            <span className="shrink-0 font-mono text-meta leading-none whitespace-nowrap text-subtle-foreground @max-[1000px]/composer:hidden">
-              {editing
-                ? t("chat.composer.shortcuts.edit")
-                : t("chat.composer.shortcuts.send")}
-            </span>
-            {!editing && (permissionModeSlot || modelSlot) ? (
-              <div className="flex shrink-0 items-center gap-1">
-                {permissionModeSlot}
-                {modelSlot}
-              </div>
-            ) : null}
-            <div className="min-w-0 flex-1" />
-            {!editing && !commandMode ? (
-              <QuotaMeter data={quotaUsage} deviceLabel={quotaDeviceLabel} />
-            ) : null}
-            {contextUsage &&
-            contextUsage.max > 0 &&
-            !editing &&
-            !commandMode ? (
-              <ContextMeter used={contextUsage.used} max={contextUsage.max} />
-            ) : null}
-            {!editing && commandMode ? (
-              <Button
-                type="submit"
-                size="icon-sm"
-                aria-label={t("chat.composer.command.run")}
-                title={t("chat.composer.command.run")}
-              >
-                <SquareTerminal data-icon="only" aria-hidden="true" />
-              </Button>
-            ) : editing ? (
-              <Button
-                type="submit"
-                disabled={isEmpty}
-                size="xs"
-                aria-label={t("chat.composer.saveEdit")}
-              >
-                <Check data-icon="inline-start" aria-hidden="true" />
-                {t("common.save")}
-              </Button>
-            ) : (
-              <Button
-                type="submit"
-                disabled={disabled || (isEmpty && images.length === 0)}
-                size="icon-sm"
-                aria-label={t("chat.composer.send")}
-                title={t("chat.composer.sendTitle")}
-              >
-                <SendHorizontal data-icon="only" aria-hidden="true" />
-              </Button>
-            )}
+              ) : editing ? (
+                <Button
+                  type="submit"
+                  disabled={isEmpty}
+                  size="xs"
+                  aria-label={t("chat.composer.saveEdit")}
+                >
+                  <Check data-icon="inline-start" aria-hidden="true" />
+                  {t("common.save")}
+                </Button>
+              ) : (
+                <Button
+                  type="submit"
+                  disabled={
+                    disabled || sending || (isEmpty && images.length === 0)
+                  }
+                  size="icon-sm"
+                  aria-label={
+                    sending ? t("chatPanel.sending") : t("chat.composer.send")
+                  }
+                  title={t("chat.composer.sendTitle")}
+                >
+                  {sending ? (
+                    <LoaderCircle
+                      data-icon="only"
+                      className="animate-spin"
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <SendHorizontal data-icon="only" aria-hidden="true" />
+                  )}
+                </Button>
+              )}
+            </div>
           </div>
         </div>
-      </div>
-    </form>
-  );
-}
+      </form>
+    );
+  },
+);
 
 // Generic tool card extension point: canonical-tool/raw/card.tsx handles
 // non-canonical tools; canonical-tool/<kind>/card.tsx handles canonical kinds.
@@ -1406,9 +1457,23 @@ const ChatTranscript = React.forwardRef<
     () => buildSourceByMessageId(displayMessages, localFingerprint),
     [displayMessages, localFingerprint],
   );
+  // settled:只依赖 messages(流式中引用稳定),整体 memoize —— 每 chunk 不再全量
+  // 重建 rows + 两张索引图。live 内容变化时只走 applyLiveTranscriptRows 的 O(live)
+  // 叠加(非 live 行与 settled 共享引用,行组件 memo 恒命中)。
+  const settled = React.useMemo(
+    () =>
+      buildSettledTranscriptRows({
+        autonomousIds,
+        cache: rowsCacheRef.current,
+        displayMessages,
+        localCommands,
+        sourceByMessageId,
+      }),
+    [autonomousIds, displayMessages, localCommands, sourceByMessageId],
+  );
   const { rows, firstRowIndexByMessageId, rowIndexByKey } = React.useMemo(
     () =>
-      buildTranscriptRows({
+      applyLiveTranscriptRows(settled, {
         autonomousIds,
         cache: rowsCacheRef.current,
         displayMessages,
@@ -1421,6 +1486,7 @@ const ChatTranscript = React.forwardRef<
       displayMessages,
       liveByMessageId,
       localCommands,
+      settled,
       sourceByMessageId,
     ],
   );

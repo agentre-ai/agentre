@@ -36,6 +36,9 @@ export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [
   { file: "markdown-text.tsx" },
   { file: "code-block.tsx" },
   { file: "thinking-block.tsx" },
+  // collapsible-code.tsx 是卡片共用的长内容滚动块。复制角标按钮用 rounded
+  // (非 rounded-md)、尺寸用 size-3/size-5(非 text-[9/10/11]px)。
+  { file: "collapsible-code.tsx" },
   // rich-link.tsx 被 markdown-text.tsx 注册为 markdown 的 `a` 渲染器,每条含链接
   // 的消息都会渲染它,是对话流组件。7 处 rounded-md 分两类:3 处是手写的 Copy
   // <button>,故意与全局 shadcn Button 保持一致的 rounded-md;4 处是 HoverCard
@@ -43,10 +46,16 @@ export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [
   // rounded-lg),这 4 处不是「卡片外壳」,不受 rounded-lg 约束。故整文件豁免
   // radius 组。
   { file: "rich-link.tsx", skip: ["radius"] },
+  // 活动块:折叠态组头 + 展开态活动行 + 行内就地展开体。对话流的新形态,
+  // 全套字号走 text-meta / text-aux,无卡片外壳(不受 radius/shadow 影响)。
+  { file: "activity-block/block.tsx" },
+  { file: "activity-block/row.tsx" },
   { file: "canonical-tool/raw/card.tsx" },
-  { file: "canonical-tool/file-edit/card.tsx" },
+  // file.write / file.edit 的卡壳已随聚合改动删除(它们只会折进活动块,
+  // 路由永远到不了),留下的是给活动行展开体复用的两个正文渲染器 ——
+  // 守卫范围跟着正文走,别把已覆盖的行漏出去。
   { file: "canonical-tool/file-edit/hunk-renderer.tsx" },
-  { file: "canonical-tool/file-write/card.tsx" },
+  { file: "canonical-tool/file-write/content-renderer.tsx" },
   { file: "canonical-tool/agent-spawn/card.tsx" },
   { file: "canonical-tool/plan/card.tsx" },
   { file: "tool-approval/card.tsx" },

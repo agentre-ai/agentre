@@ -272,14 +272,19 @@ describe("Agentre foundation components", () => {
   });
 
   it("renders the shared chrome from the Pencil design", () => {
+    const onAttentionClick = vi.fn();
     const { container } = render(
       <div>
         <AppTopBar appName="Agentre" breadcrumb="CEO 助手" platform="windows" />
         <AppStatusBar
-          agentSummary="7 agents · 12 running"
-          attentionSummary="1 approval · 2 unread"
+          agentCount={7}
+          runningCount={12}
+          approvalCount={1}
+          unreadCount={2}
+          attentionIds={[101, 202]}
           status="waiting"
           version="0.1.0"
+          onAttentionClick={onAttentionClick}
         />
       </div>,
     );
@@ -313,10 +318,40 @@ describe("Agentre foundation components", () => {
       screen.queryByRole("button", { name: "用户菜单" }),
     ).not.toBeInTheDocument();
     expect(screen.getByText("7 agents · 12 running")).toBeInTheDocument();
-    expect(screen.getByText("1 approval · 2 unread")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: /1 approval · 2 unread — click to open the first session needing attention/,
+      }),
+    ).toBeInTheDocument();
     expect(screen.queryByText("main · ~/Code/agentre")).not.toBeInTheDocument();
     expect(screen.queryByText("synced 2s ago")).not.toBeInTheDocument();
     expect(screen.getByText("0.1.0")).toBeInTheDocument();
+  });
+
+  it("opens the first attention session when the status bar segment is clicked", async () => {
+    const user = userEvent.setup();
+    const onAttentionClick = vi.fn();
+
+    render(
+      <AppStatusBar
+        agentCount={7}
+        runningCount={12}
+        approvalCount={1}
+        unreadCount={2}
+        attentionIds={[101, 202]}
+        status="waiting"
+        version="0.1.0"
+        onAttentionClick={onAttentionClick}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", {
+        name: /click to open the first session needing attention/,
+      }),
+    );
+
+    expect(onAttentionClick).toHaveBeenCalledWith(101);
   });
 
   it("reserves native traffic-light space only on macOS", () => {

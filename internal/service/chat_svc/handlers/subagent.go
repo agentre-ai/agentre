@@ -194,8 +194,6 @@ type SubagentDoneHandler struct{}
 
 func (SubagentDoneHandler) Apply(ctx context.Context, ev agentruntime.Event, acc *turn.Accumulator, emit turn.Emitter, _ turn.View, tc *turn.TurnContext) error {
 	r := ev.(agentruntime.SubagentDone)
-	// 同 Progress:命中不到既有 overlay(前台 bash)→ 不 emit 孤儿事件。后台 bash 的
-	// 完成是跨轮的(autonomous turn 经 FlipSubagentStatus 定向翻转),不走这条 handler。
 	hit := turn.Mutate[blocks.SubagentStateBlock](acc, "subagent_state:"+r.ToolCallID, func(b *blocks.SubagentStateBlock) {
 		mergeNormalizedSnapshot(b, r.Info)
 		if r.Info.Status == "" {
@@ -215,7 +213,7 @@ func (SubagentDoneHandler) Apply(ctx context.Context, ev agentruntime.Event, acc
 		}
 	})
 	if !hit {
-		return nil
+		return flipSubagentOutsideTurn(ctx, acc, tc, r)
 	}
 	if emit != nil {
 		emit.Emit(ctx, streamOf(tc), map[string]any{
@@ -225,4 +223,31 @@ func (SubagentDoneHandler) Apply(ctx context.Context, ev agentruntime.Event, acc
 		})
 	}
 	return nil
+}
+
+// flipSubagentOutsideTurn 处理「本轮 accumulator 里没有这个 overlay」的完成帧。落空有
+// 两种成因,结果完全不同:
+//
+//   - 发起它的 tool_use **就在本轮** —— 前台 bash,按 trackSubagentState 的约定从未建
+//     overlay。静默忽略:一条消息里几十次普通 Bash,每次都去跨消息扫一遍纯属白跑。
+//   - 发起它的 tool_use **不在本轮** —— 后台任务(run_in_background 的 bash / subagent)
+//     在别人的轮里完成了。它的派遣卡住在更早那条消息里,过不了 per-turn accumulator。
+//
+// 后一种此前被一并静默丢弃,派遣卡就永远停在 running(sess-2825)。跨消息翻转那条通路
+// 当时只挂在自主续轮上,而完成通知只有在**会话空闲**时才起得了自主续轮;若它在某一轮
+// 进行中到达,CLI 会把这一帧并进当前活跃轮,此处便是该终态唯一的落点。
+func flipSubagentOutsideTurn(
+	ctx context.Context, acc *turn.Accumulator, tc *turn.TurnContext, r agentruntime.SubagentDone,
+) error {
+	if tc == nil || tc.SubagentFlipper == nil || r.ToolCallID == "" {
+		return nil
+	}
+	if _, inThisTurn := acc.ToolUseInput(r.ToolCallID); inThisTurn {
+		return nil
+	}
+	status := r.Info.Status
+	if status == "" {
+		status = "completed" // 与命中路径同一默认,否则空 status 会被 flipper 直接丢弃
+	}
+	return tc.SubagentFlipper.FlipSubagentStatus(ctx, r.ToolCallID, status)
 }

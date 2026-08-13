@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { chat_svc } from "../../../../wailsjs/go/models";
@@ -759,6 +759,220 @@ describe("CommandPalette — 路由互斥的两个命令 source", () => {
   });
 });
 
+describe("CommandPalette — 命令模式分组顺序：新建对话先于操作 (BDD)", () => {
+  it("Given /chat + ⌘N with both New chat and New agent visible, When the palette opens, Then the 'New Chat' group and its first agent command come before 'Actions / New agent'", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [mkAgent({ id: 1, name: "CEO 助手" })],
+    });
+    appMocks.ProjectListTree.mockResolvedValue([]);
+    renderHarness("/chat");
+    await act(async () => {
+      useCommandPaletteStore.getState().openWith("> ");
+    });
+    await flush();
+
+    // New Chat 分组（含首个 agent 命令）先于 Actions 分组 / New agent 项
+    const newChatHeading = screen.getByText("New Chat");
+    const actionsHeading = screen.getByText("Actions");
+    expect(
+      newChatHeading.compareDocumentPosition(actionsHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    const firstAgent = screen.getByText("CEO 助手");
+    expect(
+      firstAgent.closest("[cmdk-item]")?.getAttribute("aria-selected"),
+    ).toBe("true");
+    const newAgentItem = screen.getByText("New agent");
+    expect(
+      firstAgent.compareDocumentPosition(newAgentItem) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("Given /projects + ⌘N with project new chat and New agent visible, When the palette opens, Then the 'New Project Chat' group/results come before 'Actions / New agent' while the project ContextBar stays visible", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [mkAgent({ id: 1, name: "CEO 助手" })],
+    });
+    appMocks.ProjectListTree.mockResolvedValue([]);
+    renderHarness("/projects");
+    await act(async () => {
+      useCommandPaletteStore.getState().openWith("> ");
+    });
+    await flush();
+
+    // 项目新对话分组 / 结果先于 Actions 分组 / New agent 项
+    const projectChatHeading = screen.getByText("New Project Chat");
+    const actionsHeading = screen.getByText("Actions");
+    expect(
+      projectChatHeading.compareDocumentPosition(actionsHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    const projectChatItem = screen.getByText("New project chat with");
+    expect(
+      projectChatItem.closest("[cmdk-item]")?.getAttribute("aria-selected"),
+    ).toBe("true");
+    const newAgentItem = screen.getByText("New agent");
+    expect(
+      projectChatItem.compareDocumentPosition(newAgentItem) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    // 既有上下文表现保留：ContextBar 仍可见
+    expect(screen.getByLabelText("Switch project context")).toBeTruthy();
+  });
+
+  it("Given agents are still loading, When the pointer moves over a non-command control, Then the first agent command takes selection after loading", async () => {
+    let resolveAgents!: (value: { agents: chat_svc.ChatAgentItem[] }) => void;
+    const agentsPromise = new Promise<{ agents: chat_svc.ChatAgentItem[] }>(
+      (resolve) => {
+        resolveAgents = resolve;
+      },
+    );
+    appMocks.ListChatAgents.mockReturnValue(agentsPromise);
+    appMocks.ProjectListTree.mockResolvedValue([]);
+    renderHarness("/chat");
+
+    await act(async () => {
+      useCommandPaletteStore.getState().openWith("> ");
+    });
+    await flush();
+
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    expect(
+      screen
+        .getByText("New agent")
+        .closest("[cmdk-item]")
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
+    fireEvent.pointerMove(input);
+
+    await act(async () => {
+      resolveAgents({ agents: [mkAgent({ id: 1, name: "Builder" })] });
+      await agentsPromise;
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        screen
+          .getByText("Builder")
+          .closest("[cmdk-item]")
+          ?.getAttribute("aria-selected"),
+      ).toBe("true");
+    });
+  });
+
+  it("Given a command item is selected, When Backspace exits command mode, Then the first default-mode result is selected", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [mkAgent({ id: 1, name: "Builder" })],
+    });
+    appMocks.ProjectListTree.mockResolvedValue([]);
+    renderHarness("/chat");
+
+    await act(async () => {
+      useCommandPaletteStore.getState().openWith("> ");
+    });
+    await flush();
+    expect(
+      screen
+        .getByText("Builder")
+        .closest("[cmdk-item]")
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
+
+    fireEvent.keyDown(screen.getByRole("combobox"), { key: "Backspace" });
+    await flush();
+
+    expect(
+      screen
+        .getByText("Chat")
+        .closest("[cmdk-item]")
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
+  });
+
+  it("Given keyboard selection was moved to an agent in project A, When Tab switches to project B where that agent is disabled, Then selection returns to the first enabled project command", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [
+        mkAgent({ id: 5, name: "Builder" }),
+        mkAgent({ id: 6, name: "Reviewer" }),
+      ],
+    });
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: {
+          id: 1,
+          parentID: 0,
+          name: "Project A",
+          icon: "",
+          color: "",
+          description: "",
+          path: "",
+          isGitRepo: false,
+          createtime: 0,
+          updatetime: 0,
+        },
+        children: [],
+      },
+      {
+        project: {
+          id: 2,
+          parentID: 0,
+          name: "Project B",
+          icon: "",
+          color: "",
+          description: "",
+          path: "",
+          isGitRepo: false,
+          createtime: 0,
+          updatetime: 0,
+        },
+        children: [],
+      },
+    ]);
+    appMocks.ProjectGet.mockImplementation(async (projectID: number) => ({
+      project: null,
+      directMembers:
+        projectID === 1 ? [{ agentID: 5 }, { agentID: 6 }] : [{ agentID: 5 }],
+      inheritedMembers: [],
+    }));
+    useNewChatContextStore
+      .getState()
+      .setContext({ projectID: 1, projectName: "Project A" });
+
+    renderHarness("/projects");
+    await act(async () => {
+      useCommandPaletteStore.getState().openWith("> ");
+    });
+    expect(await screen.findByText("New chat in Project A")).toBeTruthy();
+
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(
+      screen
+        .getByText("Reviewer")
+        .closest("[cmdk-item]")
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
+
+    fireEvent.keyDown(input, { key: "Tab" });
+    expect(await screen.findByText("New chat in Project B")).toBeTruthy();
+
+    await vi.waitFor(() => {
+      const reviewerItem = screen.getByText("Reviewer").closest("[cmdk-item]");
+      expect(reviewerItem?.getAttribute("aria-disabled")).toBe("true");
+      expect(reviewerItem?.getAttribute("aria-selected")).toBe("false");
+      expect(
+        screen
+          .getByText("Builder")
+          .closest("[cmdk-item]")
+          ?.getAttribute("aria-selected"),
+      ).toBe("true");
+    });
+  });
+});
+
 describe("CommandPalette — 非成员（其它 Agent）行不可选/不可点（disabled）", () => {
   it("/projects: 非成员行 aria-disabled=true + cursor-not-allowed；成员行可选", async () => {
     appMocks.ListChatAgents.mockResolvedValue({
@@ -883,5 +1097,47 @@ describe("CommandPalette — 非可对话 agent：需要先配置 分组 + 选�
     expect(dialog).toBeTruthy();
     // no-backend 弹窗标题（task 2 文案）
     expect(screen.getByText("未绑后端 cannot chat yet")).toBeTruthy();
+  });
+});
+
+describe("CommandPalette — navigation source (BDD)", () => {
+  function LocationProbe() {
+    const location = useLocation();
+    return <div data-testid="location-probe">{location.pathname}</div>;
+  }
+
+  it("Given palette open in default mode, When selecting the Projects nav item, Then navigate('/projects') and the palette closes", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <LocationProbe />
+        <CommandPalette />
+      </MemoryRouter>,
+    );
+    await act(async () => {
+      useCommandPaletteStore.getState().toggle(); // 默认模式
+    });
+    await flush();
+
+    // nav 分组渲染（heading 与 Footer 的 "Navigate" 提示共用同一文案 → getAllByText）
+    expect(screen.getAllByText("Navigate").length).toBeGreaterThanOrEqual(1);
+    // 6 个导航目的地都在
+    for (const label of [
+      "Chat",
+      "Projects",
+      "Issues",
+      "Organization",
+      "Hooks",
+      "Settings",
+    ]) {
+      expect(screen.getByText(label)).toBeTruthy();
+    }
+
+    fireEvent.click(screen.getByText("Projects"));
+    await flush();
+
+    // 面板关闭 + 路由切到 /projects
+    expect(useCommandPaletteStore.getState().open).toBe(false);
+    expect(screen.getByTestId("location-probe").textContent).toBe("/projects");
   });
 });

@@ -163,6 +163,32 @@ describe("ExecTargetList", () => {
     ).toBeInTheDocument();
   });
 
+  it("Given an unresolved fingerprint target, When it is rendered, Then the internal sha256 identifier is not shown as the machine name", async () => {
+    const fingerprint =
+      "sha256:4bba4ebecbb1e2ecb75c21b031d3b4319ecc25fb1ec811cdef634d4f6d7be906";
+    availabilityStub([
+      {
+        agentBackendId: 51,
+        available: false,
+        reason: "exec-target-unpaired",
+      },
+    ]);
+    render(
+      <ExecTargetList
+        agentId={7}
+        agentName="开发"
+        targets={[{ agentBackendId: 51 }]}
+        backends={[localBackend({ deviceId: fingerprint, deviceName: "" })]}
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      (await screen.findAllByText("This computer isn't paired with it")).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText(fingerprint)).toBeNull();
+  });
+
   it("shows an all-unavailable banner listing each target's reason", async () => {
     availabilityStub([
       {
@@ -230,6 +256,36 @@ describe("ExecTargetList", () => {
       { agentBackendId: 51 },
       { agentBackendId: 52 },
     ]);
+  });
+
+  it("Given an unpaired fingerprint backend, When the add picker opens, Then its group heading does not expose the internal identifier", async () => {
+    const fingerprint =
+      "sha256:4bba4ebecbb1e2ecb75c21b031d3b4319ecc25fb1ec811cdef634d4f6d7be906";
+    availabilityStub([{ agentBackendId: 51, available: true }]);
+    const user = userEvent.setup();
+    render(
+      <ExecTargetList
+        agentId={7}
+        agentName="开发"
+        targets={[{ agentBackendId: 51 }]}
+        backends={[
+          localBackend(),
+          backend({
+            id: 52,
+            name: "fingerprint backend",
+            deviceId: fingerprint,
+            deviceName: "",
+          }),
+        ]}
+        onChange={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Add" }));
+    expect((await screen.findAllByText("Not paired")).length).toBeGreaterThan(
+      0,
+    );
+    expect(screen.queryByText(fingerprint)).toBeNull();
   });
 
   it("single target: Replace swaps the sole target instead of appending", async () => {

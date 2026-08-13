@@ -3,15 +3,22 @@ import { useTranslation } from "react-i18next";
 import {
   Check,
   ChevronRight,
+  Copy,
   LoaderCircle,
   Terminal,
   TriangleAlert,
   Wrench,
 } from "lucide-react";
 
+import { copyTextWithToast } from "@/lib/clipboard-toast";
 import { cn } from "@/lib/utils";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
 
+import {
+  CollapsibleCode,
+  CollapsibleCodeParams,
+  toolInputEntries,
+} from "../../collapsible-code";
 import {
   TranscriptCard,
   TranscriptCardBody,
@@ -20,6 +27,11 @@ import {
 } from "../../transcript-card";
 import { statusConfig, type AgentStatus } from "../../types";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
+import {
+  commandResultOf,
+  isFailedCommandResult,
+  type CommandResult,
+} from "../command-result";
 import type { CanonicalCardProps } from "../props";
 
 import { summarizeRawTool } from "./summary";
@@ -62,16 +74,10 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
   );
 
   const commandResult = React.useMemo(
-    () => parseCommandExecutionResult(resultBlock?.text),
-    [resultBlock?.text],
+    () => commandResultOf(resultBlock),
+    [resultBlock],
   );
-  const commandFailed =
-    commandResult !== null &&
-    ((typeof commandResult.exitCode === "number" &&
-      commandResult.exitCode !== 0) ||
-      commandResult.status === "failed" ||
-      commandResult.status === "error" ||
-      commandResult.status === "interrupted");
+  const commandFailed = isFailedCommandResult(commandResult);
 
   const hasResult = !!resultBlock;
   const isError = !!resultBlock?.isError || commandFailed;
@@ -107,6 +113,13 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
     : hasResult
       ? null
       : t("canonical.raw.waitingResult");
+
+  async function copyParams() {
+    await copyTextWithToast(input ? JSON.stringify(input, null, 2) : "", {
+      errorTitle: t("common.copyFailed"),
+      successTitle: t("common.copied"),
+    });
+  }
 
   return (
     <TranscriptCard
@@ -182,22 +195,35 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
           data-selectable-text="true"
           className="flex flex-col gap-3"
         >
-          <Section label={t("canonical.raw.sections.params")}>
+          <Section
+            label={t("canonical.raw.sections.params")}
+            meta={
+              params.length > 0
+                ? t("canonical.code.paramCount", { count: params.length })
+                : undefined
+            }
+            actions={
+              params.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => void copyParams()}
+                  className="inline-flex items-center gap-1 rounded border border-border-strong px-1.5 py-0.5 font-sans text-meta text-muted-foreground transition-colors hover:border-primary hover:bg-primary-soft hover:text-primary-text"
+                >
+                  <Copy className="size-3" aria-hidden="true" />
+                  {t("canonical.code.copyAll")}
+                </button>
+              ) : undefined
+            }
+          >
             {params.length === 0 ? (
               <div className="text-muted-foreground">
                 {t("canonical.raw.emptyParams")}
               </div>
             ) : (
-              <dl className="grid max-h-[120px] grid-cols-[minmax(80px,auto)_1fr] gap-x-3 gap-y-1 overflow-y-auto overscroll-contain px-1">
-                {params.map(([key, value]) => (
-                  <React.Fragment key={key}>
-                    <dt className="text-muted-foreground">{key}</dt>
-                    <dd className="min-w-0 whitespace-pre-wrap break-words text-foreground">
-                      {value}
-                    </dd>
-                  </React.Fragment>
-                ))}
-              </dl>
+              <CollapsibleCodeParams
+                entries={params}
+                testIdPrefix={uiStateKey ? `${uiStateKey}:param` : undefined}
+              />
             )}
           </Section>
           <Section
@@ -212,28 +238,35 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
               ) : null
             }
           >
-            <div
-              className={cn(
-                "min-w-0 max-h-[200px] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-sm px-2.5 py-2",
-                isError
-                  ? "bg-destructive-soft text-status-error"
-                  : "bg-muted/40 text-foreground",
-              )}
-            >
+            <div className="flex flex-col gap-1">
               {commandResult ? (
                 commandResult.output ? (
-                  <span>{commandResult.output}</span>
+                  <CollapsibleCode
+                    value={commandResult.output}
+                    surface={isError ? "destructive" : "muted"}
+                    bodyClassName="rounded-sm px-2.5 py-2"
+                  />
                 ) : (
-                  t("canonical.raw.emptyOutput")
+                  <div className="rounded-sm bg-muted/40 px-2.5 py-2 text-muted-foreground">
+                    {t("canonical.raw.emptyOutput")}
+                  </div>
                 )
               ) : hasResult ? (
                 resultBlock?.text ? (
-                  <span>{resultBlock.text}</span>
+                  <CollapsibleCode
+                    value={resultBlock.text}
+                    surface={isError ? "destructive" : "muted"}
+                    bodyClassName="rounded-sm px-2.5 py-2"
+                  />
                 ) : (
-                  t("canonical.raw.emptyResult")
+                  <div className="rounded-sm bg-muted/40 px-2.5 py-2 text-muted-foreground">
+                    {t("canonical.raw.emptyResult")}
+                  </div>
                 )
               ) : (
-                "—"
+                <div className="rounded-sm bg-muted/40 px-2.5 py-2 text-muted-foreground">
+                  {"—"}
+                </div>
               )}
             </div>
           </Section>
@@ -253,10 +286,12 @@ function Section({
   children,
   label,
   meta,
+  actions,
 }: {
   children: React.ReactNode;
   label: string;
   meta?: React.ReactNode;
+  actions?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-1.5">
@@ -270,73 +305,14 @@ function Section({
           </span>
         ) : null}
         <span className="h-px min-w-0 flex-1 bg-border" />
+        {actions}
       </div>
       {children}
     </div>
   );
 }
 
-function toolInputEntries(input?: Record<string, unknown>): [string, string][] {
-  if (!input) return [];
-  return Object.entries(input)
-    .filter(([, value]) => typeof value !== "undefined")
-    .map(([key, value]) => [key, stringifyValue(value)]);
-}
-
-function stringifyValue(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-type CommandExecutionResult = {
-  exitCode?: number;
-  output: string;
-  status?: string;
-};
-
-// command_execution 工具返回 JSON {exitCode, output, status};其它工具的 result
-// 直接是 plain text。**靠 result shape 判定**,不靠 toolName。
-function parseCommandExecutionResult(
-  text?: string,
-): CommandExecutionResult | null {
-  if (typeof text !== "string") return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== "object") return null;
-  const data = parsed as Record<string, unknown>;
-  if (!("output" in data) && !("exitCode" in data) && !("status" in data)) {
-    return null;
-  }
-  return {
-    exitCode: typeof data.exitCode === "number" ? data.exitCode : undefined,
-    output: commandOutput(data.output),
-    status: typeof data.status === "string" ? data.status : undefined,
-  };
-}
-
-function commandOutput(output: unknown): string {
-  if (output == null) return "";
-  if (typeof output === "string") return output;
-  try {
-    return JSON.stringify(output, null, 2);
-  } catch {
-    return String(output);
-  }
-}
-
-function formatCommandMeta(result: CommandExecutionResult): string {
+function formatCommandMeta(result: CommandResult): string {
   const parts: string[] = [];
   if (typeof result.exitCode === "number")
     parts.push(`exit ${result.exitCode}`);

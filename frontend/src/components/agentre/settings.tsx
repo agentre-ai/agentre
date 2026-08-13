@@ -682,7 +682,9 @@ function SettingsPage({
       <main className="min-w-0 flex-1 overflow-auto bg-background">
         <div className="flex min-h-full w-full min-w-0 max-w-[1180px] flex-col gap-6 px-4 py-5 sm:px-6 lg:gap-8 lg:px-10 lg:py-8">
           {activePage === "remote-devices" ? (
-            <RemoteDevicesPanel />
+            <RemoteDevicesPanel
+              onOpenAgentBackends={() => setActivePage("agent-backend")}
+            />
           ) : activePage === "appearance" ? (
             <AppearanceSettings
               effectiveTheme={effectiveTheme}

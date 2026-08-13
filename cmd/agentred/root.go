@@ -19,8 +19,9 @@ func newUsageError(format string, args ...any) error {
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "agentred",
-		Short: "Headless agent compute daemon",
+		Use:     "agentred",
+		Short:   "Headless agent compute daemon",
+		Version: agentredBuildIdentity(),
 		Long: `agentred — headless agent compute daemon.
 
 Stateless executor that runs claude-code / codex subprocesses on behalf of
@@ -28,6 +29,7 @@ remote desktops over a JSON-RPC over WebSocket control API on the LAN.`,
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}
+	root.SetVersionTemplate("agentred {{.Version}}\n")
 	root.AddCommand(
 		newRunCmd(),
 		newStatusCmd(),
@@ -36,6 +38,7 @@ remote desktops over a JSON-RPC over WebSocket control API on the LAN.`,
 		newUnclaimCmd(),
 		newLLMCmd(),
 		newClaudeCodeCmd(),
+		newServiceCmd(),
 	)
 	return root
 }

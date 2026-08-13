@@ -93,6 +93,32 @@ func (a *Accumulator) HasToolUse(id string) bool {
 	return false
 }
 
+// HasOpenToolUse 是否还有已 push、但尚未收到配对 tool_result 的外层
+// cago.ToolUseBlock —— 即"工具在途"。只看外层块,与 ToolResultHandler 的孤儿
+// 判定(ParentToolCallID == "" 才查 HasToolUse)同一口径:subagent 内层
+// NestedToolUseBlock 的结果不走外层配对,不计入在途。
+//
+// 用于 turn 分段:SteerConsumed 到达时若还有在途工具,分段要等它的 tool_result
+// 落进当前 accumulator 之后再做,否则结果会在新 accumulator 里成为孤儿被丢弃。
+func (a *Accumulator) HasOpenToolUse() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	open := make(map[string]struct{})
+	for _, b := range a.finalBlocks {
+		switch blk := b.(type) {
+		case *cagoblocks.ToolUseBlock:
+			open[blk.ID] = struct{}{}
+		case cagoblocks.ToolUseBlock:
+			open[blk.ID] = struct{}{}
+		case *cagoblocks.ToolResultBlock:
+			delete(open, blk.ToolUseID)
+		case cagoblocks.ToolResultBlock:
+			delete(open, blk.ToolUseID)
+		}
+	}
+	return len(open) > 0
+}
+
 // ToolUseInput 返回已 push 的该 ID cago.ToolUseBlock 的原始 Input(value 或 pointer
 // 形态),未找到返回 (nil, false)。SubagentStarted handler 用它读 run_in_background
 // 判定一次 local_bash 帧是真后台 bash 还是普通前台 bash。

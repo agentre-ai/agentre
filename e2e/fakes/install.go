@@ -7,8 +7,6 @@ package fakes
 
 import (
 	"context"
-	"os"
-	"strings"
 
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
@@ -18,23 +16,12 @@ import (
 	fakert "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/fake"
 	"github.com/agentre-ai/agentre/internal/pkg/agentskill"
 	"github.com/agentre-ai/agentre/internal/pkg/agenttool"
-	"github.com/agentre-ai/agentre/internal/pkg/keychain"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/service/agent_backend_svc"
 	"github.com/agentre-ai/agentre/internal/service/agent_svc"
 	"github.com/agentre-ai/agentre/internal/service/department_svc"
 )
-
-const e2eKeychainDirEnv = "AGENTRE_E2E_KEYCHAIN_DIR"
-
-func installE2EKeychainOverride() {
-	dir := strings.TrimSpace(os.Getenv(e2eKeychainDirEnv))
-	if dir == "" {
-		return
-	}
-	keychain.SetDefault(keychain.NewFile(dir))
-}
 
 type codexSkillDiscoverer struct{}
 
@@ -79,9 +66,11 @@ func (claudeSkillDiscoverer) Discover(context.Context, agentskill.DiscoverQuery)
 //  2. seed 一个本地 claudecode backend 并挂到默认 CEO agent,
 //     让前端"建会话→发消息→看回复"无需真实 CLI 即可跑通。
 //
+// e2e 的隔离 keychain 由 bootstrap(initKeychain,见 internal/bootstrap/
+// keychain_e2e.go)在装配 Server / Remote Device 之前建立,这里不再覆盖。
+//
 // 失败只记日志不 panic:e2e 环境异常应让 Playwright 用例红,而不是让 app 崩。
 func Install(ctx context.Context) {
-	installE2EKeychainOverride()
 	// 先接账号:随后 seed 出来的 backend / agent 才会带着账号进出站队列(R3)。
 	installE2ELoggedInAccount(ctx)
 	agentruntime.RegisterRuntime(agent_backend_entity.TypeClaudeCode, fakert.New())
@@ -198,6 +187,23 @@ func Install(ctx context.Context) {
 		}
 	}
 
+	// 「桌面端 + 浏览器对着同一台 agentred」那个场景要的那台已配对机器 + 用它的 Agent。
+	// 放在最后:它读的 CEO / backend 表到这里才播齐,而缺 env 时它整段 no-op。
+	installE2ERemoteAgentred(ctx)
+
 	logger.Ctx(ctx).Info("e2efakes.Install: e2e fakes installed",
 		zap.Int64("backendID", backendID), zap.Int64("agentID", ceo.ID))
+}
+
+// InstallAgentred 在 agentred(daemon)的 e2e 构建里注册确定性 fake runtime,让
+// web 端到端对 agentred 的 runtime.run 得到字节稳定的回复(见 fake 包注释)。
+//
+// 它与 Install 分开:Install 播的是桌面侧那一套(backend / agent / 工具表,表在
+// agentre.db),agentred 的 SQLite 没有那些表;daemon 的 runtime 选择按 wire
+// RunParams 里的 backend.type 走 agentruntime.RuntimeFor,这里只注册就够。失败只
+// 记日志不 panic —— e2e 环境异常应让 Playwright 用例红,而不是让 daemon 崩。
+func InstallAgentred(ctx context.Context) {
+	agentruntime.RegisterRuntime(agent_backend_entity.TypeClaudeCode, fakert.New())
+	agentskill.RegisterDiscoverer(agent_backend_entity.TypeClaudeCode, claudeSkillDiscoverer{})
+	logger.Ctx(ctx).Info("e2efakes.InstallAgentred: e2e fake runtime installed for agentred")
 }

@@ -8,7 +8,7 @@
 //   - 第一次任何组件调用时,挂一个全局 wails EventsOn("cc_usage:update")
 //     把推送灌进 cc-usage-store(后续 mount 不重挂)。
 //   - 第一次见到一个 deviceKey 时,主动 GetCCUsage(key) 拉一次缓存灌进 store
-//     (避免等下一次后端 60s tick)。
+//     (避免等下一次后端 5 分钟 tick)。
 //
 // 全局订阅生命周期跟 app 进程一致 —— 卸载所有 ChatComposer 也不解订(下次
 // chat tab 打开还要用)。Wails event runtime 退出时自动清理。

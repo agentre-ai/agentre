@@ -3,39 +3,29 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log"
-	"net"
 	"net/http"
 	"os"
-	"path/filepath"
-	"runtime"
 	"time"
 
+	"github.com/cago-frame/cago/configs"
+
+	"github.com/agentre-ai/agentre/internal/buildinfo"
 	"github.com/agentre-ai/agentre/internal/daemon/handlers"
 	"github.com/agentre-ai/agentre/internal/daemon/state"
+	"github.com/agentre-ai/agentre/internal/pkg/agentredipc"
 )
 
-const ipcSocketName = "agentred.sock"
+// BuildIdentity returns the version and commit injected into the agentred binary.
+func BuildIdentity() string {
+	return configs.Version + " (" + buildinfo.ShortCommitID() + ")"
+}
 
-// startIPC binds a unix-domain socket under <DataDir>/agentred.sock and
-// serves a minimal HTTP API for the local CLI (status / pair / llm).
-// Returns the server so daemon.Run can call Shutdown on ctx cancel.
-//
-// Windows is not yet wired (would need named pipe); returns an error so the
-// daemon refuses to start on Windows until we add platform support.
+// startIPC serves the local status / pair / llm HTTP API over the
+// platform-local endpoint owned by agentredipc.
 func (d *Daemon) startIPC(ctx context.Context) (*http.Server, error) {
-	if runtime.GOOS == "windows" {
-		return nil, errors.New("ipc: windows named pipe path not yet wired")
-	}
-	path := d.SocketPath()
-	_ = os.Remove(path)
-	ln, err := net.Listen("unix", path)
+	ln, err := agentredipc.Listen(d.opts.DataDir)
 	if err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		_ = ln.Close()
 		return nil, err
 	}
 	mux := http.NewServeMux()
@@ -47,16 +37,16 @@ func (d *Daemon) startIPC(ctx context.Context) (*http.Server, error) {
 	go func() {
 		<-ctx.Done()
 		_ = srv.Shutdown(context.Background())
-		_ = os.Remove(path)
+		_ = agentredipc.Cleanup(d.opts.DataDir)
 	}()
 	go func() { _ = srv.Serve(ln) }()
 	return srv, nil
 }
 
-// SocketPath returns the absolute path of the daemon's IPC unix socket.
-// Tests use this to dial without going through paths.AgentredDataDir().
+// SocketPath returns the daemon's platform-local IPC endpoint. The method name
+// remains stable for existing status JSON and Unix callers.
 func (d *Daemon) SocketPath() string {
-	return filepath.Join(d.opts.DataDir, ipcSocketName)
+	return agentredipc.Endpoint(d.opts.DataDir)
 }
 
 func (d *Daemon) ipcPair(w http.ResponseWriter, r *http.Request) {
@@ -79,6 +69,7 @@ func (d *Daemon) ipcStatus(w http.ResponseWriter, r *http.Request) {
 	dbStat := d.DBStat()
 	writeJSON(w, map[string]any{
 		"pid":              os.Getpid(),
+		"version":          BuildIdentity(),
 		"daemonUUID":       snap.DaemonInstanceUUID,
 		"listenURLs":       lanURLs(d),
 		"socketPath":       d.SocketPath(),

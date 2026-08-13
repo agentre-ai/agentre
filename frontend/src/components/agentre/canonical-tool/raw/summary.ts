@@ -58,7 +58,9 @@ function stringifyValue(value: unknown): string {
   }
 }
 
-function relativizePath(path: string, cwd?: string): string {
+// relativizePath 导出给活动行的行首标签复用 —— 摘要里的路径与这里的写法必须一致,
+// 不然同一个文件在工具卡与活动行里显示成两种路径。
+export function relativizePath(path: string, cwd?: string): string {
   if (!cwd) return path;
   const cwdTrimmed = cwd.replace(/\/+$/, "");
   if (path === cwdTrimmed) return "./";

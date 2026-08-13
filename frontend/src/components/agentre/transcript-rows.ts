@@ -1,7 +1,17 @@
 // transcript-rows: chat transcript 的「block → 渲染项 → 虚拟行」纯函数层,零 React 依赖。
 // renderMessageBlocks 的配对状态机抽取到这里,让行级虚拟化(每个 RenderItem 一个
 // 虚拟行)能在不碰 JSX 的前提下单测配对 / 合并 / skip / FIFO / 归集 / key 稳定性。
+import {
+  commandResultOf,
+  isFailedCommandResult,
+} from "@/components/agentre/canonical-tool/command-result";
 import type { AgentSpawnChildBlocks } from "@/components/agentre/canonical-tool/props";
+import {
+  tier,
+  toolCategory,
+  type ToolCategory,
+} from "@/components/agentre/canonical-tool/tier";
+import type { CanonicalDTO } from "@/components/agentre/canonical-tool/types";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
 import type { LocalCommandEntry } from "@/stores/local-commands-store";
 import type { chat_svc } from "../../../wailsjs/go/models";
@@ -51,8 +61,6 @@ export type RenderItem =
       type: "thinking";
     }
   | {
-      // permissionBlock 仅在审批通过后由配对逻辑挂上,渲染时透传给 ToolInvocationCard。
-      permissionBlock?: ChatBlockData;
       resultBlock?: ChatBlockData;
       toolBlock?: ChatBlockData;
       // childBlocks 仅 canonical.agent.spawn 需要(parent → run 归集),其它工具留空。
@@ -76,10 +84,72 @@ export type RenderItem =
   | { block: ChatBlockData; type: "notice" }
   | { block: ChatBlockData; type: "compact_boundary" };
 
-// VisibleRenderItem = 过滤掉已 merge 审批后的渲染项 + 预计算的 uiStateKey。
-// uiStateKey 进 TranscriptUIStateContext 持久化卡片折叠态,格式与旧
-// renderMessageBlocks 字节级一致:message:${messageId}:${type}:${identity ?? visibleIdx}。
-export type VisibleRenderItem = RenderItem & { uiStateKey: string };
+// ─── 活动块 ─────────────────────────────────────────────────────────────────
+// 一段连续的「思考 / 只读探查 / 中性 / 写 / 命令 / 失败」折成一个活动块:一个
+// RenderItem = 一个 TranscriptRow = 一个虚拟行,折叠态只出组头,展开态出 steps。
+// 正文与出组项(子代理 / 审批 / 提问 / 计划…)打断聚合,时间顺序原样保留。
+
+/** 组头汇总的类目。思考不是工具调用,其余由 canonical-tool/tier 的 toolCategory 判定。 */
+export type ActivityCategory = "thinking" | ToolCategory;
+
+/** 组头汇总的固定输出顺序(位置可预期),失败计数不在其中——它不参与截断。 */
+export const ACTIVITY_CATEGORY_ORDER: readonly ActivityCategory[] = [
+  "thinking",
+  "read",
+  "edit",
+  "write",
+  "command",
+  "other",
+];
+
+/** 组头最多列这么多类,再多的折成一个省略号(truncated)。 */
+export const ACTIVITY_SUMMARY_MAX_PARTS = 4;
+
+export type ActivitySummaryPart = {
+  category: ActivityCategory;
+  /** 本类目的步数。 */
+  count: number;
+  /** 仅 edit:本组改到的文件数(同一路径改多次算一个)。 */
+  files?: number;
+  /** 仅 edit:本组增行合计。 */
+  plus?: number;
+  /** 仅 edit:本组删行合计。 */
+  minus?: number;
+};
+
+export type ActivitySummary = {
+  /** 组内步数(= steps.length),组头的「N 步」。 */
+  steps: number;
+  /** 固定顺序、已截断到 ACTIVITY_SUMMARY_MAX_PARTS 的类目汇总。 */
+  parts: ActivitySummaryPart[];
+  /** 还有类目没进 parts —— 组头在末尾补省略号。 */
+  truncated: boolean;
+  /** 组内失败步数。永不参与截断:折叠态不得让发生过的事消失。 */
+  failures: number;
+};
+
+/** 组内一步。形状与它单独成行时完全一致,展开体因此能复用同一套渲染。 */
+export type ActivityStep = (
+  | Extract<RenderItem, { type: "thinking" }>
+  | Extract<RenderItem, { type: "tool" }>
+) & { uiStateKey: string };
+
+export type ActivityRenderItem = {
+  steps: ActivityStep[];
+  summary: ActivitySummary;
+  type: "activity";
+};
+
+/** 渲染层拿到的活动块 —— 与其它渲染项一样带 uiStateKey(折叠态挂在它上面)。 */
+export type VisibleActivityItem = ActivityRenderItem & { uiStateKey: string };
+
+// VisibleRenderItem = 过滤掉已 merge 审批、并把连续可折叠项聚合成活动块之后的
+// 渲染项 + 预计算的 uiStateKey。uiStateKey 进 TranscriptUIStateContext 持久化
+// 折叠态,格式:message:${messageId}:${type}:${identity ?? visibleIdx}——聚合前
+// 就已经算好,所以组内步骤的 key 与「它单独成行」时字节级一致(折叠态零迁移)。
+export type VisibleRenderItem = (RenderItem | ActivityRenderItem) & {
+  uiStateKey: string;
+};
 
 export type BuildRenderItemsArgs = {
   messageId: number;
@@ -208,6 +278,8 @@ export function buildRenderItems({
         }
         const item: RenderItem = { toolBlock: b, type: "tool" };
         // 配对消费一条审批 RenderItem —— 找最早未消费且同 toolName 的 allowed 审批。
+        // 只是把那条审批标成已消费(它不再单独出现在转录里);审批本身的信息由
+        // 工具块上的 toolPermission 承载,不需要再挂一份到 RenderItem 上。
         if (b.toolName) {
           const queue = pendingPermsByTool.get(b.toolName);
           if (queue && queue.length > 0) {
@@ -215,7 +287,6 @@ export function buildRenderItems({
             const permItem = items[permIdx];
             if (permItem?.type === "tool_permission_request") {
               permItem._consumed = true;
-              item.permissionBlock = permItem.block;
             }
           }
         }
@@ -322,7 +393,7 @@ export function buildRenderItems({
   appendText(liveTail, true);
 
   // 被 merge 到下方 tool_use 卡的审批 RenderItem 不再独立渲染。
-  return items
+  const visible: (RenderItem & { uiStateKey: string })[] = items
     .filter(
       (item) => !(item.type === "tool_permission_request" && item._consumed),
     )
@@ -331,6 +402,151 @@ export function buildRenderItems({
         uiStateKey: itemUIStateKey(messageId, item, idx),
       }),
     );
+  return groupActivityItems(messageId, visible);
+}
+
+// isFoldableStep:这一项能不能折进活动块。
+//   - 思考进组(extended thinking 下 think/tool 高频交替,让思考打断聚合等于不聚合),
+//     但**正在流的思考不进组** —— 它是那一刻唯一承载 live tail 的表面。
+//   - 工具按 tier 判档:出组档(子代理 / 提问 / 计划审批 / 工具权限)永不进组。
+//   - tool_use 之外的 block(ask_user_question 等)即使 canonical 缺失也不进组 ——
+//     阻塞用户的卡片折叠等于把会话卡死,不能依赖 canonical 是否齐全。
+//   - 其余项(正文 / 计划 / 审批 / 图片 / notice / compact / unknown)一律打断聚合。
+function isFoldableStep(
+  item: RenderItem & { uiStateKey: string },
+): item is ActivityStep {
+  if (item.type === "thinking") return !item.streaming;
+  if (item.type !== "tool") return false;
+  const block = item.toolBlock;
+  if (!block || block.type !== "tool_use") return false;
+  return tier(block) !== "out";
+}
+
+// groupActivityItems 线性扫一遍可见项:连续可折叠项攒成一段,遇到别的项就先结束
+// 当前段再原样输出那一项 —— 顺序与输入完全一致,任何情况下都不跨越出组项合并。
+//
+// 一步的段也发活动项,不退回原来那张整卡:一条 assistant 消息只由「正文 / 活动块
+// / 出组卡片 / 脚注」四种东西组成,落单的一次调用同样是活动行。「单条不成组」
+// (不套「1 步」的壳)是渲染层的事 —— ActivityBlock 见到一步就只出那一行。行模型
+// 保持单一形态还顺带保住了 key 稳定性:流式里一段从 1 步长到 N 步时行 key 不变,
+// 不会整行 remount。
+function groupActivityItems(
+  messageId: number,
+  items: (RenderItem & { uiStateKey: string })[],
+): VisibleRenderItem[] {
+  const out: VisibleRenderItem[] = [];
+  let run: ActivityStep[] = [];
+  let runStartIdx = 0;
+
+  const flush = () => {
+    if (run.length === 0) return;
+    out.push(makeActivityItem(messageId, run, runStartIdx));
+    run = [];
+  };
+
+  items.forEach((item, idx) => {
+    if (isFoldableStep(item)) {
+      if (run.length === 0) runStartIdx = idx;
+      run.push(item);
+      return;
+    }
+    flush();
+    out.push(item);
+  });
+  flush();
+  return out;
+}
+
+// 活动块的 identity 取**首步**的身份(缺身份时回退首步的可见下标)。首步在流式
+// 生长中不变,组头 key 因此不随新步骤追加而漂移 —— 用户展开的块不会在轮次中途
+// 因为 key 变了而重新折叠。
+function makeActivityItem(
+  messageId: number,
+  steps: ActivityStep[],
+  runStartIdx: number,
+): VisibleActivityItem {
+  const first = steps[0];
+  const firstBlock = first.type === "tool" ? first.toolBlock : first.block;
+  const identity = stableBlockIdentity(firstBlock) ?? runStartIdx;
+  return {
+    steps,
+    summary: summarizeActivity(steps),
+    type: "activity",
+    uiStateKey: `message:${messageId}:activity:${identity}`,
+  };
+}
+
+// isFailedStep —— 「这一步失败了没有」的唯一判据,组头失败计数与活动行的红色标记
+// 共用它。没有结果的一步只有在调用方声明「这一轮已经以失败终结」(unresolvedFailed)
+// 时才算失败 —— 转录里的一轮默认还在跑,没结果 ≠ 失败。
+// 两处各写一遍必然漂移:组头会宣称零失败,而展开后是几行红的。
+//
+// 有结果时 isError 只是失败信号之一:命令类工具把退出码 / status 写在结果 JSON 里,
+// 一条 exit 1 的命令 isError 是 false(见 command-result 的 isFailedCommandResult)。
+// RawToolCard 一直是按这两条一起判的,活动块只认 isError 就等于把它降级了。
+export function isFailedStep(
+  step: ActivityStep,
+  unresolvedFailed = false,
+): boolean {
+  if (step.type === "thinking") return false;
+  const result = step.resultBlock;
+  if (!result) return unresolvedFailed;
+  return !!result.isError || isFailedCommandResult(commandResultOf(result));
+}
+
+// summarizeActivity 汇总组头:类目计数按固定顺序输出并截断,写操作额外报出对象
+// 规模(改到几个文件 / 增删多少行),失败计数单列且不参与截断。
+// unresolvedFailed 透传给 isFailedStep —— 见那里的注释。
+export function summarizeActivity(
+  steps: ActivityStep[],
+  unresolvedFailed = false,
+): ActivitySummary {
+  const counts = new Map<ActivityCategory, number>();
+  const editedPaths = new Set<string>();
+  let plus = 0;
+  let minus = 0;
+  let failures = 0;
+
+  for (const step of steps) {
+    if (step.type === "thinking") {
+      counts.set("thinking", (counts.get("thinking") ?? 0) + 1);
+      continue;
+    }
+    const block = step.toolBlock;
+    if (!block) continue;
+    const category = toolCategory(block);
+    counts.set(category, (counts.get(category) ?? 0) + 1);
+    for (const patch of fileEditPatches(block)) {
+      editedPaths.add(patch.path);
+      plus += patch.plus ?? 0;
+      minus += patch.minus ?? 0;
+    }
+    if (isFailedStep(step, unresolvedFailed)) failures++;
+  }
+
+  const all: ActivitySummaryPart[] = ACTIVITY_CATEGORY_ORDER.filter((c) =>
+    counts.has(c),
+  ).map((category) => {
+    const count = counts.get(category) ?? 0;
+    return category === "edit"
+      ? { category, count, files: editedPaths.size, minus, plus }
+      : { category, count };
+  });
+
+  return {
+    failures,
+    parts: all.slice(0, ACTIVITY_SUMMARY_MAX_PARTS),
+    steps: steps.length,
+    truncated: all.length > ACTIVITY_SUMMARY_MAX_PARTS,
+  };
+}
+
+// fileEditPatches:后端 translator 已把每次编辑算成按文件的 patch(路径 + 增删行),
+// 组头的「改 N 个文件 +P −M」直接汇总它,不在前端重算 diff。
+function fileEditPatches(block: ChatBlockData) {
+  const canonical = (block as { canonical?: CanonicalDTO }).canonical;
+  if (canonical?.kind !== "file.edit") return [];
+  return canonical.fileEdit?.files ?? [];
 }
 
 // itemUIStateKey 的 type 段沿用旧 renderMessageBlocks 渲染层的命名
@@ -525,17 +741,36 @@ function localCommandRow(entry: LocalCommandEntry): TranscriptRow {
   };
 }
 
-export function buildTranscriptRows({
-  displayMessages,
-  autonomousIds,
-  localCommands,
-  liveByMessageId,
-  cache,
-  sourceByMessageId,
-}: BuildTranscriptRowsArgs): TranscriptRowsResult {
+/** SettledTranscriptRows = 不含任何 live 内容的完整重建结果 + 行组边界。
+ * 它在 ChatTranscript 里只依赖 messages(流式中稳定),可整体 memoize。 */
+export type SettledTranscriptRows = TranscriptRowsResult & {
+  /** messageId → 该消息行组在 rows 里的 [start, length)。live overlay 据此 splice。 */
+  groupByMessageId: ReadonlyMap<number, { start: number; length: number }>;
+  /** messageId → 消息对象。overlay 重建 live 行时按 id 取对象,避免每 chunk 全表扫描。 */
+  messageByMessageId: ReadonlyMap<number, chat_svc.ChatMessage>;
+};
+
+/**
+ * buildRows 是三层公共 API 共享的核心:带/不带 liveByMessageId 的完整重建,
+ * 顺带记录行组边界(groupByMessageId)与消息索引(messageByMessageId)。
+ * 带 live 时 group 长度反映 live 行(调用方不应依赖 —— 只有 settled 版本对外暴露)。
+ */
+function buildRows(args: BuildTranscriptRowsArgs): SettledTranscriptRows {
+  const {
+    displayMessages,
+    autonomousIds,
+    localCommands,
+    liveByMessageId,
+    cache,
+    sourceByMessageId,
+  } = args;
   // 阶段一:按 displayMessages 顺序产出各消息的行组(缓存/live 逻辑与历史一致),
   // 同时记下每组的 createtime,供阶段二归并 —— 消息组顺序原样保留,无重排可能。
   const messageGroups: { rows: TranscriptRow[]; createtime: number }[] = [];
+  const messageByMessageId = new Map<number, chat_svc.ChatMessage>();
+  for (const m of displayMessages) {
+    messageByMessageId.set(m.id, m);
+  }
   for (const m of displayMessages) {
     const autonomous = autonomousIds.has(m.id);
     // R17:来源标识只属于「非本机发出的用户消息」—— 其它角色恒 undefined。
@@ -587,6 +822,7 @@ export function buildTranscriptRows({
 
   const rows: TranscriptRow[] = [];
   const firstRowIndexByMessageId = new Map<number, number>();
+  const groupByMessageId = new Map<number, { start: number; length: number }>();
   const rowIndexByKey = new Map<string, number>();
   const pushRow = (row: TranscriptRow) => {
     rowIndexByKey.set(row.key, rows.length);
@@ -600,10 +836,15 @@ export function buildTranscriptRows({
 
   for (const [groupIdx, group] of messageGroups.entries()) {
     flushCommands(groupIdx);
-    // 消息组首行下标对准 firstRowIndexByMessageId(只收真实消息行,messageId >= 0)。
+    // 消息组首行下标对准 firstRowIndexByMessageId(只收真实消息行,messageId >= 0),
+    // 同时记下行组边界供 live overlay splice。
     const firstRow = group.rows[0];
     if (firstRow && firstRow.messageId >= 0) {
       firstRowIndexByMessageId.set(firstRow.messageId, rows.length);
+      groupByMessageId.set(firstRow.messageId, {
+        start: rows.length,
+        length: group.rows.length,
+      });
     }
     for (const row of group.rows) {
       pushRow(row);
@@ -612,7 +853,122 @@ export function buildTranscriptRows({
   // 末尾桶:晚于所有消息的命令。
   flushCommands(messageGroups.length);
 
-  return { firstRowIndexByMessageId, rowIndexByKey, rows };
+  return {
+    firstRowIndexByMessageId,
+    groupByMessageId,
+    messageByMessageId,
+    rowIndexByKey,
+    rows,
+  };
+}
+
+/**
+ * buildSettledTranscriptRows:不含 live 内容的完整重建。rows / 两张索引图 / 行组边界
+ * 只依赖 displayMessages + autonomousIds + localCommands + sourceByMessageId + cache,
+ * 在流式中全部引用稳定 —— ChatTranscript 把它 memoize 在 messages 上,每 chunk 不再重建。
+ */
+export function buildSettledTranscriptRows(
+  args: Omit<BuildTranscriptRowsArgs, "liveByMessageId">,
+): SettledTranscriptRows {
+  return buildRows({ ...args, liveByMessageId: undefined });
+}
+
+/**
+ * applyLiveTranscriptRows:在已 memoize 的 settled 之上叠加 live 内容。
+ *
+ * 快速路径(live 消息是 rows 的尾部连续后缀 —— 流式常态):只重建 live 消息的行组,
+ * 其余行与 settled 共享同一引用(行组件 memo 恒命中),firstRowIndexByMessageId 原样
+ * 复用、rowIndexByKey 只做 O(live) 的增量替换 —— 不再每 chunk O(全量) 重建两张索引图。
+ *
+ * 不满足快速路径条件(live 在中间 / 尾部还有本地命令 / live id 不在消息表里)时回退
+ * 到 buildRows 完整重建,输出与历史逐项一致。
+ */
+export function applyLiveTranscriptRows(
+  settled: SettledTranscriptRows,
+  args: BuildTranscriptRowsArgs,
+): TranscriptRowsResult {
+  const { liveByMessageId } = args;
+  if (!liveByMessageId || liveByMessageId.size === 0) {
+    // 无 live:零拷贝返回 settled(messages 不变时引用稳定 → 下游 useMemo/effect 不触发)。
+    return {
+      firstRowIndexByMessageId: settled.firstRowIndexByMessageId,
+      rowIndexByKey: settled.rowIndexByKey,
+      rows: settled.rows,
+    };
+  }
+
+  const liveGroups: {
+    content: LiveRowContent;
+    length: number;
+    m: chat_svc.ChatMessage;
+    start: number;
+  }[] = [];
+  for (const [messageId, content] of liveByMessageId) {
+    const m = settled.messageByMessageId.get(messageId);
+    const g = settled.groupByMessageId.get(messageId);
+    if (!m || !g) return buildRows({ ...args, liveByMessageId }); // live id 异常 → 回退
+    liveGroups.push({ content, length: g.length, m, start: g.start });
+  }
+  // 按消息顺序(settled 行序)。
+  liveGroups.sort((a, b) => a.start - b.start);
+
+  // 快速路径条件:live 组构成 settled.rows 的尾部连续后缀(中间无其它消息、无尾部命令)。
+  // 第一个 live 组前面可以有非 live 前缀(它在 rows 里任意位置),只要各组相邻、
+  // 且最后一组的尾部正好落在 settled.rows.length 上。
+  let ok = liveGroups.length > 0;
+  let prevEnd = liveGroups[0]?.start ?? 0;
+  for (const g of liveGroups) {
+    if (g.start !== prevEnd) {
+      ok = false;
+      break;
+    }
+    prevEnd = g.start + g.length;
+  }
+  if (!ok || prevEnd !== settled.rows.length) {
+    return buildRows({ ...args, liveByMessageId }); // 尾部有命令 / live 在中间 → 回退
+  }
+
+  const prefixLen = liveGroups[0].start;
+  // 只重建 live 消息的行组(live 内容每 chunk 都在变,必须现场重建)。
+  const liveRows: TranscriptRow[] = [];
+  for (const { content, m } of liveGroups) {
+    const autonomous = args.autonomousIds.has(m.id);
+    const sourceDevice =
+      m.role === "user" ? args.sourceByMessageId?.get(m.id) : undefined;
+    liveRows.push(...buildMessageRows(m, autonomous, sourceDevice, content));
+  }
+  // 前缀与 settled 共享引用(浅拷贝数组,元素仍是同一批 row 对象)。
+  const rows = settled.rows.slice(0, prefixLen).concat(liveRows);
+
+  // rowIndexByKey:复制 settled 的,剔除被替换掉的 settled 组 key,再写入 live 行 key。
+  // firstRowIndexByMessageId 在尾部后缀场景下不受影响,原样复用。
+  const rowIndexByKey = new Map(settled.rowIndexByKey);
+  for (const g of liveGroups) {
+    for (let i = g.start; i < g.start + g.length; i++) {
+      rowIndexByKey.delete(settled.rows[i].key);
+    }
+  }
+  for (let i = 0; i < liveRows.length; i++) {
+    rowIndexByKey.set(liveRows[i].key, prefixLen + i);
+  }
+
+  return {
+    firstRowIndexByMessageId: settled.firstRowIndexByMessageId,
+    rowIndexByKey,
+    rows,
+  };
+}
+
+/** 兼容入口:完整重建(等价于 settled + applyLive),供测试与一次性调用方使用。 */
+export function buildTranscriptRows(
+  args: BuildTranscriptRowsArgs,
+): TranscriptRowsResult {
+  const {
+    groupByMessageId: _g,
+    messageByMessageId: _m,
+    ...result
+  } = buildRows(args);
+  return result;
 }
 
 // estimateRowSize:按 item 类型估行高,供虚拟器 estimateSize 用。真实高度由
@@ -644,6 +1000,11 @@ export function estimateRowSize(row: TranscriptRow): number {
     case "image":
       return scaleRowSize(160); // 179
     case "thinking":
+      return scaleRowSize(40); // 45
+    case "activity":
+      // 折叠态活动块只有一行组头(一行 --text-meta + 上下内边距),与折叠态
+      // thinking 同档 —— 比整张折叠卡片(下方 default 的 54)矮一档。展开态由
+      // measureElement 实测覆盖。
       return scaleRowSize(40); // 45
     case "compact_boundary":
       return scaleRowSize(48); // 54
