@@ -35,6 +35,14 @@ import (
 	"github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 )
 
+type prepareTurnRuntime struct{}
+
+func (prepareTurnRuntime) Capabilities() capability.Capabilities { return capability.Capabilities{} }
+
+func (prepareTurnRuntime) Run(context.Context, agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, nil
+}
+
 func TestToChatMessage_BlockTypes(t *testing.T) {
 	m := &chat_entity.Message{ID: 1, SessionID: 9, Role: "assistant"}
 	require.NoError(t, m.SetBlocks([]blocks.ContentBlock{
@@ -824,6 +832,11 @@ func TestPrepareTurnRun_GivenSelfFingerprintBackend_ThenRunsLocally(t *testing.T
 	prevSvc := remote_device_svc.Default()
 	remote_device_svc.SetDefault(rds)
 	t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+	restoreRuntime := agentruntime.SwapRuntimeForTest(
+		agent_backend_entity.TypeClaudeCode,
+		prepareTurnRuntime{},
+	)
+	t.Cleanup(restoreRuntime)
 
 	// 不装 conn pool：任何 borrow 尝试都会因 nil pool 而失败，测试据此暴露错误分支。
 	svc := &chatSvc{}
