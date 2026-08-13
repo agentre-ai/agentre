@@ -156,21 +156,27 @@ describe("classifyFileType", () => {
 });
 
 describe("FileTypeIcon", () => {
-  it("renders the identity glyph, tone token, fixed 17px square and is decorative", () => {
+  it("renders a colored identity glyph in a transparent 17px slot", () => {
     render(<FileTypeIcon path="cmd/agentred/main.go" testId="file-icon" />);
     const el = screen.getByTestId("file-icon");
+    const glyph = el.querySelector("svg");
 
     expect(el).toHaveAttribute("data-file-type", "go");
-    expect(el).toHaveClass("bg-file-cyan");
     expect(el).toHaveClass("size-[17px]");
+    expect(el).toHaveClass("text-file-cyan");
+    expect(el).not.toHaveClass("bg-file-cyan");
+    expect(el).not.toHaveClass("rounded-sm");
+    expect(el).not.toHaveClass("text-white");
     expect(el).toHaveAttribute("aria-hidden", "true");
+    expect(glyph).toHaveClass("size-[17px]");
   });
 
-  it("falls back to the neutral unknown identity for unrecognized paths", () => {
+  it("falls back to a neutral glyph without restoring a badge background", () => {
     render(<FileTypeIcon path="dir/.hidden" testId="file-icon" />);
     const el = screen.getByTestId("file-icon");
 
     expect(el).toHaveAttribute("data-file-type", "unknown");
-    expect(el).toHaveClass("bg-file-neutral");
+    expect(el).toHaveClass("text-file-neutral");
+    expect(el).not.toHaveClass("bg-file-neutral");
   });
 });

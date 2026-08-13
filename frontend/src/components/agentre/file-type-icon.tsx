@@ -358,14 +358,14 @@ export function classifyFileType(path: string): FileTypeMeta {
 }
 
 const fileToneClassNames: Record<FileTypeTone, string> = {
-  blue: "bg-file-blue",
-  yellow: "bg-file-yellow",
-  cyan: "bg-file-cyan",
-  purple: "bg-file-purple",
-  orange: "bg-file-orange",
-  green: "bg-file-green",
-  red: "bg-file-red",
-  neutral: "bg-file-neutral",
+  blue: "text-file-blue",
+  yellow: "text-file-yellow",
+  cyan: "text-file-cyan",
+  purple: "text-file-purple",
+  orange: "text-file-orange",
+  green: "text-file-green",
+  red: "text-file-red",
+  neutral: "text-file-neutral",
 };
 
 type FileTypeIconProps = {
@@ -375,7 +375,7 @@ type FileTypeIconProps = {
 };
 
 /**
- * 统一的文件身份图标：17px 圆角小方块 + 身份色调 token 背景 + 白色 Tabler 字形。
+ * 统一的文件身份图标：17px 透明对齐槽位 + 身份色调 token 着色的 Tabler Logo/glyph。
  * 纯装饰（`aria-hidden`），文件名 / Git 状态 / 可操作性由既有语义继续表达。
  */
 export function FileTypeIcon({
@@ -391,14 +391,14 @@ export function FileTypeIcon({
       data-file-type={meta.id}
       aria-hidden="true"
       className={cn(
-        "inline-flex size-[17px] shrink-0 items-center justify-center rounded-sm text-white",
+        "inline-flex size-[17px] shrink-0 items-center justify-center",
         fileToneClassNames[meta.tone],
         className,
       )}
     >
       <IconifyIconCmp
         icon={CATALOG[meta.id].icon}
-        className="size-[11px]"
+        className="size-[17px]"
         aria-hidden="true"
       />
     </span>

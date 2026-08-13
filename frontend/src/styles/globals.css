@@ -90,8 +90,8 @@
   --agent-15: #64748b;
   --agent-16: #9333ea;
 
-  /* File identity — 8 semantic hues for the 17px file-type badges. Light uses
-     saturated 500-600 shades so a white glyph holds up on the colored square;
+  /* File identity — 8 semantic hues for Logo/glyph color in a transparent 17px
+     alignment slot. Light uses saturated 500-600 shades for readable marks;
      glyph shape always provides the second, non-color cue. */
   --file-blue: #2563eb;
   --file-yellow: #ca8a04;
@@ -198,8 +198,8 @@
   --agent-15: #94a3b8;
   --agent-16: #c084fc;
 
-  /* File identity — lighter 400 shades for dark surfaces (mirrors the agent
-     palette light/dark split). */
+  /* File identity glyph colors — lighter 400 shades for dark surfaces
+     (mirrors the agent palette light/dark split). */
   --file-blue: #60a5fa;
   --file-yellow: #facc15;
   --file-cyan: #22d3ee;

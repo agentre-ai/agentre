@@ -153,7 +153,7 @@ Default fallback color is `agent-1`. `agentColorOrder` is the canonical 1→16 s
 
 ### 3.6a File identity (8 semantic hues)
 
-The 17px file-type badge uses eight semantic identity hues (`--file-*`), assigned by the unified path classifier in [`components/agentre/file-type-icon.tsx`](../frontend/src/components/agentre/file-type-icon.tsx). Like the agent palette, light uses saturated 500–600 shades (a white glyph holds up) and dark uses lighter 400 shades. The glyph shape always carries a second, non-color cue; these tokens only aid scanning.
+The file-type icon uses a transparent 17px alignment slot containing a directly colored 16–17px Tabler Brand Logo or file-type glyph. Eight semantic identity hues (`--file-*`) are assigned by the unified path classifier in [`components/agentre/file-type-icon.tsx`](../frontend/src/components/agentre/file-type-icon.tsx). Like the agent palette, light uses saturated 500–600 shades and dark uses lighter 400 shades. The glyph shape always carries a second, non-color cue; these tokens only aid scanning.
 
 | Token / class | Light | Dark | Typical identities |
 | --- | --- | --- | --- |
@@ -166,7 +166,7 @@ The 17px file-type badge uses eight semantic identity hues (`--file-*`), assigne
 | `file-red` | `#dc2626` | `#f87171` | YAML, Ruby, npm, PDF, video, binary |
 | `file-neutral` | `#71717a` | `#8a8d94` | plain text / log, TOML, `*.lock`, unknown fallback |
 
-Use `bg-file-<tone>` (exposed via `--color-file-*` in the `@theme inline` block); never write the hex directly. The badge itself is decorative (`aria-hidden`) — file names, Git status and actions keep carrying the semantics.
+Use `text-file-<tone>` (exposed via `--color-file-*` in the `@theme inline` block); never write the hex directly. The slot has no background, border, radius, shadow or padding, and selected/hover backgrounds belong to the containing row or tab. High-recognition languages use the installed Tabler Brand Logo where available; formats use their file-type glyph. Directory rows remain separate and keep neutral `Folder` / `FolderOpen` plus Chevron icons. The icon itself is decorative (`aria-hidden`) — file names, Git status and actions keep carrying the semantics.
 
 ### 3.7 Sidebar
 
