@@ -694,7 +694,7 @@ func TestLLMProviderRepo_CountModelReferences(t *testing.T) {
 		ctx, mock, repo := setupLLMProviderRepoTest(t)
 
 		convey.Convey("返回 Backend / Session / Route 三路计数", func() {
-			mock.ExpectQuery("SELECT count\\(\\*\\) FROM `agent_backends` WHERE llm_model_key = \\? AND status = \\?").
+			mock.ExpectQuery("SELECT count\\(\\*\\) FROM `agent_backends` WHERE model_key = \\? AND status = \\?").
 				WithArgs("mk-1", consts.ACTIVE).
 				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(1)))
 			mock.ExpectQuery("SELECT count\\(\\*\\) FROM `chat_sessions` WHERE model_key = \\? AND status = \\?").
@@ -713,7 +713,7 @@ func TestLLMProviderRepo_CountModelReferences(t *testing.T) {
 		})
 
 		convey.Convey("驱动报错时透传", func() {
-			mock.ExpectQuery("SELECT count\\(\\*\\) FROM `agent_backends` WHERE llm_model_key = \\? AND status = \\?").
+			mock.ExpectQuery("SELECT count\\(\\*\\) FROM `agent_backends` WHERE model_key = \\? AND status = \\?").
 				WithArgs("mk-1", consts.ACTIVE).
 				WillReturnError(sql.ErrConnDone)
 

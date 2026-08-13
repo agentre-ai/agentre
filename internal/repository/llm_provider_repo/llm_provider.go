@@ -275,7 +275,7 @@ func (r *llmProviderRepo) CountProviderReferences(ctx context.Context, providerK
 func (r *llmProviderRepo) CountModelReferences(ctx context.Context, modelKey string) (ModelRefCounts, error) {
 	var out ModelRefCounts
 	if err := db.Ctx(ctx).Table("agent_backends").
-		Where("llm_model_key = ? AND status = ?", modelKey, consts.ACTIVE).
+		Where("model_key = ? AND status = ?", modelKey, consts.ACTIVE).
 		Count(&out.Backends).Error; err != nil {
 		return out, err
 	}
