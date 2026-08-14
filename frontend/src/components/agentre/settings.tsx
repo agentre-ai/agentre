@@ -685,7 +685,9 @@ function SettingsPage({
   // 后端」，LLM 供应商页缺「有后端绑了未激活/缺失的供应商」(= blockReason
   // provider-inactive / backend-requires-provider)。
   const { agents } = useChatAgents();
-  const backendGap = agents.some((a) => a.blockReason === "no-backend");
+  const backendGap = agents.some(
+    (a) => a.blockReason === "no-backend" && !a.hasBackendTarget,
+  );
   const providerGap = agents.some(
     (a) =>
       a.blockReason === "provider-inactive" ||

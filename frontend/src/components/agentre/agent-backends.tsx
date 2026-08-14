@@ -2563,6 +2563,44 @@ function bindingTriggerSub(t: Translate, target: ResolvedModelTarget): string {
     : t("agentBackends.binding.fixedResolution", { model: target.modelId });
 }
 
+// 分级路由 Picker 顶部「继承主绑定」项的解析副行 —— 与会话场景同一形态：箭头点出
+// 「解析到」，品牌标识让主绑定的供应商一眼可认，模型 ID 单独走等宽。CLI 登录态 / 失效
+// 目标没有可认的供应商，回落既有纯文字说明（宁可少画一个标识，也不画半个空标识）。
+function bindingSpecialSublabel(
+  t: Translate,
+  target: ResolvedModelTarget,
+): React.ReactNode {
+  if (
+    target.mode === "native" ||
+    target.mode === "invalid" ||
+    !target.providerType
+  ) {
+    return bindingTriggerSub(t, target);
+  }
+  return (
+    <span
+      data-testid="special-resolution"
+      className="flex min-w-0 items-center gap-1"
+    >
+      <span aria-hidden="true">→</span>
+      <LlmProviderLogo
+        providerType={target.providerType}
+        providerName={target.providerName}
+        className="size-3.5"
+      />
+      <span className="min-w-0 truncate">
+        {target.providerName}
+        {target.modelId ? (
+          <>
+            {" · "}
+            <span className="font-mono">{target.modelId}</span>
+          </>
+        ) : null}
+      </span>
+    </span>
+  );
+}
+
 function routeConclusion(
   t: Translate,
   route: RouteTarget,
@@ -2643,21 +2681,18 @@ function ModelBindingSection({
       data-testid="model-binding-block"
       className="flex flex-col gap-3 rounded-lg border border-border bg-secondary/30 p-3"
     >
-      <div className="flex flex-col gap-0.5">
-        {/* 区块标题就是这项配置的唯一标题，下面的 Picker 直接是它的第一项，不再重复一遍字段名。 */}
-        <div className="flex min-w-0 items-center gap-1.5">
-          <h3 className="text-xs font-semibold">
-            {t("agentBackends.binding.label")}
-          </h3>
-          {isCliBackend(type) ? (
-            <span className="font-mono text-2xs text-muted-foreground">
-              {t("agentBackends.provider.optionalSuffix")}
-            </span>
-          ) : null}
-        </div>
-        <p className="text-2xs text-muted-foreground">
-          {t("agentBackends.binding.description")}
-        </p>
+      {/* 区块标题就是这项配置的唯一标题，下面的 Picker 直接是它的第一项，不再重复一遍
+          字段名 —— 「分级路由 / 自定义模型从属于主绑定」也由区块嵌套自己讲清楚，不另起
+          一段说明（mockup ?view=backend 的区块头就只有标题）。 */}
+      <div className="flex min-w-0 items-center gap-1.5">
+        <h3 className="text-xs font-semibold">
+          {t("agentBackends.binding.label")}
+        </h3>
+        {isCliBackend(type) ? (
+          <span className="font-mono text-2xs text-muted-foreground">
+            {t("agentBackends.provider.optionalSuffix")}
+          </span>
+        ) : null}
       </div>
       <ModelTargetField
         type={type}
@@ -2942,7 +2977,7 @@ function ModelRoutesField({
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        className="flex min-w-0 items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+        className="flex min-w-0 cursor-pointer items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
       >
         {open ? (
           <ChevronDown className="size-3.5 shrink-0" aria-hidden="true" />
@@ -3012,7 +3047,7 @@ function ModelRoutesField({
                   invalid={tierInvalid}
                   supportsFixedModel={supportsFixedModel}
                   remoteCatalog={remoteCatalog}
-                  specialSublabel={bindingTriggerSub(t, mainTarget)}
+                  specialSublabel={bindingSpecialSublabel(t, mainTarget)}
                   triggerSub={routeConclusion(t, route, mainTarget, catalog)}
                   compact
                   aria-label={t("agentBackends.modelRoutes.tierAria", { tier })}

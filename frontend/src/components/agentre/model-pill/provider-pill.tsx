@@ -39,6 +39,10 @@ export function ProviderPill({
   effectiveKey,
   pillState,
   boundResolutionLabel,
+  boundProviderType,
+  boundProviderLabel,
+  boundModelLabel,
+  boundCliLogin,
   invalid,
   disabled,
   disabledReason,
@@ -87,15 +91,16 @@ export function ProviderPill({
     providerLogo
   );
 
-  const triggerLabel =
-    pillState.mode === "follow-agent"
-      ? t("modelTargetPicker.special.chat")
-      : pillState.mode === "provider-default"
-        ? t("providerPill.mode.followDefault")
-        : pillState.mode === "fixed"
-          ? t("providerPill.mode.fixed")
-          : t("providerPill.mode.invalid");
-  const triggerSub = pillState.resolutionLabel || undefined;
+  // 脸上写的是「实际会跑哪个模型」：解析出模型就写模型 ID（标识符走等宽），只解析到
+  // 供应商（新建会话没有 agent model key）就退回供应商人读名；确知没绑供应商就写
+  // 「CLI 自身登录态」（那才是这一轮真正的模型来源）。三者都不成立 = 还不知道，不写。
+  const resolvedTarget = pillState.modelLabel ? (
+    <span className="font-mono">{pillState.modelLabel}</span>
+  ) : pillState.providerLabel ? (
+    pillState.providerLabel
+  ) : pillState.cliLogin ? (
+    t("modelTargetPicker.special.backend")
+  ) : null;
   const triggerIcon =
     pillState.mode === "follow-agent" ? (
       <UserRound
@@ -104,6 +109,7 @@ export function ProviderPill({
         aria-hidden="true"
       />
     ) : pillState.mode === "invalid" ? null : (
+      // 失效态的警示三角由 Picker 的 invalid 分支画，这里不重复挂图标。
       modelLogo
     );
   const modeMarker = pillState.dynamic ? (
@@ -113,6 +119,70 @@ export function ProviderPill({
       aria-hidden="true"
     />
   ) : null;
+
+  // mockup ?view=chat 的四态 pill 都是单行：图标 → 文字 → 可选 ↻ → chevron。模式不再
+  // 写成一行字，而是由图标（人形 / 品牌标识 / 警示三角）加 ↻（跟随默认才有）表达，
+  // 省下来的一行让「实际会跑哪个模型」直接上脸。
+  const triggerText =
+    pillState.mode === "follow-agent" ? (
+      <>
+        {t("modelTargetPicker.special.chat")}
+        {resolvedTarget ? (
+          <>
+            {" · "}
+            {resolvedTarget}
+          </>
+        ) : null}
+      </>
+    ) : pillState.mode === "invalid" ? (
+      <>
+        {resolvedTarget}
+        {" · "}
+        {t("providerPill.mode.invalid")}
+      </>
+    ) : (
+      resolvedTarget
+    );
+
+  // 顶部「跟随 Agent 绑定」项的解析副行：箭头点出「解析到」，品牌标识让绑定的供应商
+  // 一眼可认，模型 ID 单独走等宽（标识符不跟人读名一起排）。目录里解析不出供应商时
+  // 回落纯文字 —— 宁可少画一个标识，也不画半个空标识。
+  const specialSublabel = boundProviderType ? (
+    <span
+      data-testid="special-resolution"
+      className="flex min-w-0 items-center gap-1"
+    >
+      <span aria-hidden="true">→</span>
+      <LlmProviderLogo
+        providerType={boundProviderType}
+        providerName={boundProviderLabel}
+        className="size-3.5"
+      />
+      <span className="min-w-0 truncate">
+        {boundProviderLabel}
+        {boundModelLabel ? (
+          <>
+            {" · "}
+            <span className="font-mono">{boundModelLabel}</span>
+          </>
+        ) : null}
+      </span>
+    </span>
+  ) : boundCliLogin ? (
+    // 确知没绑供应商：箭头保留（它解析成的就是「CLI 自身的登录账号」），但没有供应商
+    // 可认领，不画标识。
+    <span
+      data-testid="special-resolution"
+      className="flex min-w-0 items-center gap-1"
+    >
+      <span aria-hidden="true">→</span>
+      <span className="min-w-0 truncate">
+        {t("modelTargetPicker.special.backendSublabel")}
+      </span>
+    </span>
+  ) : (
+    boundResolutionLabel || undefined
+  );
 
   return (
     <>
@@ -128,7 +198,7 @@ export function ProviderPill({
         errorText={error ?? undefined}
         disabled={disabled}
         invalid={invalid}
-        specialSublabel={boundResolutionLabel || undefined}
+        specialSublabel={specialSublabel}
         onSyncProvider={
           canSyncProvider
             ? (provider) => {
@@ -143,25 +213,26 @@ export function ProviderPill({
         remoteCatalog={remoteCatalog}
         supportsFixedModel={supportsFixedModel}
         remoteMissing={remoteMissing}
-        triggerLabel={triggerLabel}
-        triggerSub={
-          <span className="flex min-w-0 items-center gap-1">
+        triggerLabel={
+          <>
             {triggerIcon}
-            <span className="truncate">{triggerSub}</span>
+            <span className="min-w-0 truncate">{triggerText}</span>
             {modeMarker}
-          </span>
+          </>
         }
         title={disabledTitle ?? undefined}
         footer={t("providerPill.switchNote")}
         aria-label={t("providerPill.aria", { provider: ariaValue })}
         data-testid="provider-pill"
         className={cn(
-          "h-auto w-auto min-h-9 px-2 py-1 text-2xs font-medium",
+          // mockup ?view=chat 的 .pill：中性描边 + card 底，全程一个样 —— 选没选、
+          // 跟随还是固定，一律不靠常亮边框宣示，那份区分由图标与 ↻ 承担。
+          // 悬停只加深背景，不动边框（边框式反馈是明确否掉的）；focus-visible ring
+          // 由 Picker 基类提供，键盘定位不受影响。
+          "h-[26px] w-auto cursor-pointer gap-1.5 rounded-md px-2.5 text-2xs font-medium",
           invalid
-            ? "border-status-waiting/60 bg-status-waiting-bg text-status-waiting"
-            : providerKey
-              ? "border-primary-text/60 bg-primary-soft text-primary-text"
-              : "border-border bg-muted text-foreground",
+            ? "border-status-waiting bg-status-waiting-bg text-status-waiting hover:bg-status-waiting-bg/70"
+            : "border-border bg-card text-foreground hover:bg-accent",
         )}
       />
       <Dialog

@@ -38,6 +38,7 @@ import type { AgentStatus } from "./types";
 // 序列化的真实 JSON, 不影响数据流)。
 export type AgentSlim = chat_svc.ChatAgentItem & {
   sessionIds: number[];
+  hasBackendTarget?: boolean;
   deviceID?: string;
   deviceName?: string;
   online?: boolean;

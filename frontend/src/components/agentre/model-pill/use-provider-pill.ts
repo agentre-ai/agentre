@@ -134,6 +134,12 @@ export type ProviderPillState = {
   modelLabel: string;
   resolutionLabel: string;
   dynamic: boolean;
+  /**
+   * 确知该 Agent 后端没绑供应商 → 下一轮由 CLI 自身的登录账号决定模型。
+   * 只有 boundProviderKey 明确是空串才为真；undefined/null（会话详情或新建目标还没
+   * 到）是「还不知道」，绝不能当成「没绑」—— 否则加载中的一瞬会闪成「CLI 登录态」。
+   */
+  cliLogin: boolean;
 };
 
 export interface UseProviderPillReturn {
@@ -180,6 +186,14 @@ export interface UseProviderPillReturn {
   pillState: ProviderPillState;
   /** Picker 顶部「跟随 Agent 绑定」项的解析副行。 */
   boundResolutionLabel: string;
+  /** 绑定供应商的类型（品牌标识判定用）；空串 = 目录里解析不出供应商。 */
+  boundProviderType: string;
+  /** 绑定供应商的人读名（品牌标识回落 + 副行正文）。 */
+  boundProviderLabel: string;
+  /** 绑定解析出的模型 ID；空串 = 只承诺供应商（新建会话没有 agent model key）。 */
+  boundModelLabel: string;
+  /** 确知该 Agent 后端没绑供应商（走 CLI 自身登录账号）；「还不知道」时为 false。 */
+  boundCliLogin: boolean;
   /** 当前选中 target 在目录里解析不出来（Provider/Model 缺失/停用/被删）→「目标已失效」。 */
   invalid: boolean;
   /** pill 是否禁用（规格「UI 与禁用状态」状态表：加载中 / 后端不可选 / 无兼容供应商）。 */
@@ -348,6 +362,9 @@ export function useProviderPill({
     );
     const providerLabel = provider?.name ?? boundProviderKey ?? "";
     const providerType = provider?.type ?? "";
+    // 空串是「已经知道了，就是没绑」；undefined/null 是「还没拿到」。只有前者能推出
+    // 「由 CLI 自身登录账号决定」，后者必须继续什么都不说。
+    const cliLogin = boundProviderKey === "";
 
     // 新建会话没有 agent model key。即使目录能看见默认模型，也不能据此断言 agent
     // 后端绑定的是 provider-default；它也可能固定到了另一个模型（决策 18）。
@@ -359,6 +376,7 @@ export function useProviderPill({
         modelLabel: "",
         resolutionLabel: providerLabel,
         dynamic: false,
+        cliLogin,
       };
     }
 
@@ -376,6 +394,7 @@ export function useProviderPill({
         ? `${providerLabel} · ${modelLabel}`
         : providerLabel,
       dynamic: !fixedModel && !!resolvedModel,
+      cliLogin,
     };
   }, [boundModelKey, boundProviderKey, catalog]);
 
@@ -400,6 +419,8 @@ export function useProviderPill({
         ? `${providerLabel} · ${modelLabel}`
         : providerLabel,
       dynamic: !invalid && modelKey === "" && !!selectedModel,
+      // 会话自己选了目标，就不再由 CLI 登录账号决定。
+      cliLogin: false,
     };
   }, [boundState, catalog, invalid, modelKey, providerKey]);
 
@@ -532,6 +553,10 @@ export function useProviderPill({
     effectiveKey: providerKey || boundProviderKey || "",
     pillState,
     boundResolutionLabel: boundState.resolutionLabel,
+    boundProviderType: boundState.providerType,
+    boundProviderLabel: boundState.providerLabel,
+    boundModelLabel: boundState.modelLabel,
+    boundCliLogin: boundState.cliLogin,
     invalid,
     disabled: loading || catalogLoading || disabledReason !== null,
     disabledReason,

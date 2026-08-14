@@ -650,7 +650,11 @@ type ChatAgentItem struct {
 	ChattableHint  string `json:"chattableHint"`
 	// BlockReason 是结构化不可对话原因；空串 = 可对话。取值见 BlockReason 常量，
 	// 由 ListAgents 与 Chattable 同一判定点位设置，保持二者一致。
-	BlockReason       BlockReason       `json:"blockReason"`
+	BlockReason BlockReason `json:"blockReason"`
+	// HasBackendTarget 表示 Agent 的执行目标列表里仍有后端引用。目标所指后端被
+	// 软删除后 BlockReason 仍是 no-backend，但设置导航不应把这个不可见的残留
+	// 关联当成一个可操作的“尚未配置”缺口。
+	HasBackendTarget  bool              `json:"hasBackendTarget"`
 	ActiveCount       int               `json:"activeCount"`
 	RecentCount       int               `json:"recentCount"`
 	TotalSessions     int64             `json:"totalSessions"`

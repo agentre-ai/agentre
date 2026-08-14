@@ -499,6 +499,18 @@ func TestListAgents_BlockReason(t *testing.T) {
 			assert.Equal(t, chat_svc.BlockReasonNoBackend, item.BlockReason)
 		})
 
+		convey.Convey("已绑定的后端被删除时保留目标存在信号，供设置导航忽略不可见的残留关联", func() {
+			m := setupChatTest(t)
+			item := listSingleAgentItem(t, m,
+				&agent_entity.Agent{ID: 40, Name: "Deleted backend", AgentBackendID: 99, Status: consts.ACTIVE},
+				nil,
+				map[string]*llm_provider_entity.LLMProvider{},
+			)
+			assert.False(t, item.Chattable)
+			assert.Equal(t, chat_svc.BlockReasonNoBackend, item.BlockReason)
+			assert.True(t, item.HasBackendTarget)
+		})
+
 		convey.Convey("backend-requires-provider（内置后端找不到绑定的供应商）", func() {
 			m := setupChatTest(t)
 			item := listSingleAgentItem(t, m,

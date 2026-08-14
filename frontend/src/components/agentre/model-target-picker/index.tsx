@@ -19,10 +19,12 @@ import {
   ChevronDown,
   GitBranch,
   Loader2,
+  Lock,
   Monitor,
   RefreshCw,
   Search,
   Upload,
+  UserRound,
   X,
 } from "lucide-react";
 
@@ -84,8 +86,9 @@ export type ModelTargetPickerProps = {
   deviceLabel?: string;
   // specialSublabel：顶部特殊项的解析结果副行（chat/route 由消费方解析后传入，
   // 写出「供应商 · 模型」或「跟随该 Agent 绑定的供应商」）。backend 场景未传时
-  // 回落「由 CLI 自身的登录账号决定」。
-  specialSublabel?: string;
+  // 回落「由 CLI 自身的登录账号决定」。可以是节点（带品牌标识的「→ [logo] 供应商 ·
+  // 模型」）；节点只参与渲染，特殊项的搜索始终只按 specialLabel 匹配（见 Option.searchText）。
+  specialSublabel?: React.ReactNode;
   // 远端目录缺少本机 Provider 时的显式同步入口；消费方负责确认与执行凭证复制。
   onSyncProvider?: (provider: PickerProvider) => void;
   // footer：弹层底部常显说明（chat 场景的「自下一轮生效」等），随弹层一起出现。
@@ -111,22 +114,31 @@ type Option = {
   key: string;
   kind: "special" | "invalid" | "provider-default" | "fixed";
   label: string;
-  sublabel?: string;
+  // sublabel 只用于渲染，可以是节点（特殊项的解析结果带品牌标识）；搜索一律走
+  // searchText，否则节点会被拼成 "[object Object]" 混进匹配。
+  sublabel?: React.ReactNode;
+  // searchText 该项参与搜索匹配的纯文本（渲染与匹配彻底分开）。
+  searchText: string;
   target: ModelTarget;
   disabled: boolean;
   group?: string;
   groupType?: string;
   // disabledHint 不可选项的行内原因：模型停用 / 供应商停用 / 远端需同步 / 不支持固定模型。
+  // 有原因时它取代副行（mockup 的停用行是「模型名 / 原因」两行，不叠第三行）。
   disabledHint?: string;
-  // fixed 行专属：modelId 供 LlmModelLogo 判定品牌，contextWindow/maxOutput 供右侧展示。
-  modelId?: string;
+  // fixed 行专属：contextWindow/maxOutput 供右侧展示（品牌标识由 sticky 组头承载，
+  // 行内不再重复）。
   contextWindow?: number;
   maxOutput?: number;
 };
 
 type RecentChip = {
   key: string;
+  // kind 决定 chip 上的品牌标识取法：fixed 按 modelId 判定，provider-default 按供应商。
+  kind: "fixed" | "provider-default";
   label: string;
+  providerType: string;
+  providerName: string;
   target: ModelTarget;
   disabled: boolean;
   title?: string;
@@ -188,6 +200,10 @@ export function ModelTargetPicker({
   const listRef = React.useRef<HTMLUListElement>(null);
 
   const specialLabel = t(`modelTargetPicker.special.${scenario}`);
+  // 特殊项图标分场景（mockup）：chat = 跟随 Agent（与 composer pill 同一枚人像），
+  // backend = CLI 自身登录态（锁），route = 继承主绑定（分支）。
+  const SpecialIcon =
+    scenario === "chat" ? UserRound : scenario === "backend" ? Lock : GitBranch;
   const specialResolution =
     specialSublabel ??
     (scenario === "backend"
@@ -268,7 +284,10 @@ export function ModelTargetPicker({
         : p.name;
       out.push({
         key: `recent-${dedupeKey}`,
+        kind: target.modelKey ? "fixed" : "provider-default",
         label,
+        providerType: p.type,
+        providerName: p.name,
         target,
         disabled: !p.enabled || !modelOk || !remoteTargetOk,
         title: !p.enabled
@@ -325,10 +344,17 @@ export function ModelTargetPicker({
         group: groupLabel,
         groupType: p.type,
         label: followDefaultLabel,
-        // 副行只写解析到的模型标识 —— 它回答「到底跑哪个模型」，必须完整可读。
-        // 「默认变了会自动跟着变」这条后果对每一行都一样，交给弹层里唯一一条图例
-        // （+ ↻ 图标 + 「固定到具体模型」分段）承担，不逐行重复把副行挤到截断。
-        sublabel: defaultModel ? defaultModel.modelId : noDefaultModelLabel,
+        // 副行 = mockup .opt.dyn 的「当前 <mono>模型标识</mono>」：只回答「现在跑哪个
+        // 模型」，不带后果从句；等宽只包标识符，人读前缀不跟着走等宽。
+        sublabel: defaultModel ? (
+          <>
+            {t("modelTargetPicker.defaultCurrentPrefix")}{" "}
+            <span className="break-all font-mono">{defaultModel.modelId}</span>
+          </>
+        ) : (
+          noDefaultModelLabel
+        ),
+        searchText: `${followDefaultLabel} ${defaultModel?.modelId ?? ""}`,
         target: { providerKey: p.providerKey, modelKey: "" },
         disabled: !p.enabled || providerSyncNeeded || defaultSyncNeeded,
         disabledHint:
@@ -365,7 +391,7 @@ export function ModelTargetPicker({
           groupType: p.type,
           label: m.name || m.modelId,
           sublabel: m.modelId,
-          modelId: m.modelId,
+          searchText: `${m.name || m.modelId} ${m.modelId}`,
           contextWindow: m.contextWindow,
           maxOutput: m.maxOutput,
           target: { providerKey: p.providerKey, modelKey: m.modelKey },
@@ -399,15 +425,18 @@ export function ModelTargetPicker({
     remoteFixedHint,
     disabledProviderHint,
     disabledModelHint,
+    t,
   ]);
 
   // 失效目标：以禁用项保留在列表顶部（不被清除），目标本身即当前 selected。
   const invalidOption = React.useMemo((): Option | null => {
     if (!invalid || !selected || isNativeTarget(selected)) return null;
+    const label = resolveTargetLabel(selected, catalog);
     return {
       key: "invalid-selected",
       kind: "invalid",
-      label: resolveTargetLabel(selected, catalog),
+      label,
+      searchText: label,
       target: selected,
       disabled: true,
     };
@@ -420,7 +449,9 @@ export function ModelTargetPicker({
       key: SPECIAL_ITEM_KEY,
       kind: "special",
       label: specialLabel,
+      // 副行可能是节点（带品牌标识的解析结果）；搜索只按标题匹配。
       sublabel: specialResolution,
+      searchText: specialLabel,
       target: { providerKey: "", modelKey: "" },
       disabled: false,
     };
@@ -434,8 +465,7 @@ export function ModelTargetPicker({
     }
     base.push(...catalogOptions);
     if (q === "") return base;
-    const match = (o: Option) =>
-      (o.label + " " + (o.sublabel ?? "")).toLowerCase().includes(q);
+    const match = (o: Option) => o.searchText.toLowerCase().includes(q);
     return base.filter(match);
   }, [search, specialLabel, specialResolution, invalidOption, catalogOptions]);
 
@@ -527,38 +557,62 @@ export function ModelTargetPicker({
   // 最近使用横条：紧跟在顶部特殊项之后、供应商分组之前（mockup 的列表次序），
   // 自带「最近使用」标签，单行横向可移除 chip，不占竖列表位。
   const recentChipsRow = showChips ? (
-    <li role="none" className="px-1 pt-1">
+    <li role="none">
+      {/* mockup .recents：7px 8px 5px / gap 5px / 单行横滑且不显示滚动条。 */}
       <div
         data-testid="recent-chips"
-        className="flex flex-nowrap items-center gap-1 overflow-x-auto py-0.5"
+        className="flex flex-nowrap items-center gap-[5px] overflow-x-auto px-2 pb-[5px] pt-[7px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
-        <span className="shrink-0 pr-0.5 text-2xs uppercase tracking-wide text-subtle-foreground">
+        <span className="shrink-0 pr-px text-[10px] uppercase tracking-[0.06em] text-subtle-foreground">
           {t("modelTargetPicker.recentLabel")}
         </span>
         {recents.map((r) => (
           <span
             key={r.key}
-            className="flex shrink-0 items-center gap-0.5 rounded-full border border-border bg-secondary/40 px-1.5 py-0.5 text-2xs"
+            className={cn(
+              "flex h-[22px] shrink-0 items-center gap-1 rounded-md border border-border bg-card pl-[5px] pr-1 text-2xs transition-colors",
+              // mockup .rchip：整颗 chip 是手形 + hover 只加深描边；停用的不给可点暗示。
+              r.disabled
+                ? "cursor-not-allowed"
+                : "cursor-pointer hover:border-border-strong",
+            )}
           >
             <button
               type="button"
               disabled={r.disabled}
               title={r.title}
-              className="max-w-[10rem] truncate text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex max-w-[10rem] cursor-pointer items-center gap-1 font-mono text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               onClick={() => {
                 if (r.disabled) return;
                 onChange(r.target);
                 setOpen(false);
               }}
             >
-              {r.label}
+              {/* 品牌标识只做视觉，绝不能进按钮的无障碍名（logo 自带 role=img + 品牌名）。 */}
+              <span aria-hidden="true" className="flex shrink-0">
+                {r.kind === "fixed" ? (
+                  <LlmModelLogo
+                    model={r.label}
+                    providerType={r.providerType}
+                    providerName={r.providerName}
+                    className="size-3.5"
+                  />
+                ) : (
+                  <LlmProviderLogo
+                    providerType={r.providerType}
+                    providerName={r.providerName}
+                    className="size-3.5"
+                  />
+                )}
+              </span>
+              <span className="truncate">{r.label}</span>
             </button>
             <button
               type="button"
               aria-label={t("modelTargetPicker.removeRecent", {
                 label: r.label,
               })}
-              className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground"
+              className="shrink-0 cursor-pointer rounded p-0.5 text-subtle-foreground transition-colors hover:bg-accent hover:text-foreground"
               onClick={() => handleRemoveRecent(r.target)}
             >
               <X className="size-3" aria-hidden="true" />
@@ -581,7 +635,8 @@ export function ModelTargetPicker({
           aria-expanded={open}
           aria-haspopup="listbox"
           className={cn(
-            "inline-flex w-full items-center justify-between gap-2 rounded-md border border-border bg-background text-xs transition-colors",
+            // mockup .trigger：input 描边 + input-bg 底 + 8px 圆角 + 手形光标。
+            "inline-flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg border border-input bg-input-bg text-xs transition-colors",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
             "disabled:cursor-not-allowed disabled:opacity-60",
             triggerSub
@@ -592,7 +647,7 @@ export function ModelTargetPicker({
                 ? "h-7 px-2"
                 : "h-9 px-2.5",
             invalid
-              ? "border-status-waiting/60 bg-status-waiting-bg"
+              ? "border-status-waiting bg-status-waiting-bg"
               : "hover:bg-secondary/60",
             className,
           )}
@@ -638,27 +693,35 @@ export function ModelTargetPicker({
         align={align}
         side="bottom"
         sideOffset={6}
-        // 348px = mockup .pop 的 CSS 宽度（index.html data-view="picker"），让
-        // provider-default / 特殊项副行放得下有意义的解析结果；min(...) 在极窄
-        // 视口兜底收缩，不会把弹层推出屏幕（860×640 最小窗口下恒等于 348px）。
-        className="w-[min(348px,calc(100vw-2rem))] p-0"
+        data-testid="model-target-popover"
+        // 348px / 10px 圆角 = mockup .pop（index.html data-view="picker"）；overflow-hidden
+        // 让搜索区与 foot 的分隔线贴着圆角收口。min(...) 在极窄视口兜底收缩，
+        // 不会把弹层推出屏幕（860×640 最小窗口下恒等于 348px）。
+        className="w-[min(348px,calc(100vw-2rem))] overflow-hidden rounded-[10px] p-0"
         onKeyDown={handleKeyDown}
       >
         {/* 失效目标顶部警示（弹层内上方，不是底部 footer）。 */}
         {invalid ? (
-          <div
-            data-testid="invalid-banner"
-            className="flex items-start gap-2 border-b border-border bg-status-waiting-bg px-3 py-2 text-2xs text-status-waiting"
-          >
-            <AlertTriangle
-              className="mt-px size-3.5 shrink-0"
-              aria-hidden="true"
-            />
-            <span>
-              {t("modelTargetPicker.invalidTarget", {
-                target: selected ? resolveTargetLabel(selected, catalog) : "",
-              })}
-            </span>
+          // mockup 把警示做成 .psearch 里的一张圆角 .banner.warn，不是通栏横条。
+          <div className="border-b border-border p-2">
+            <div
+              data-testid="invalid-banner"
+              className="flex items-start gap-2 rounded-lg bg-status-waiting-bg px-2.5 py-2 text-2xs text-status-waiting"
+            >
+              <AlertTriangle
+                className="mt-px size-3.5 shrink-0"
+                aria-hidden="true"
+              />
+              <span>
+                <strong className="font-semibold">
+                  {t("modelTargetPicker.invalidTitle")}
+                </strong>
+                <br />
+                {t("modelTargetPicker.invalidTarget", {
+                  target: selected ? resolveTargetLabel(selected, catalog) : "",
+                })}
+              </span>
+            </div>
           </div>
         ) : null}
 
@@ -677,56 +740,41 @@ export function ModelTargetPicker({
           </div>
         ) : null}
 
-        {/* 搜索框 */}
-        <div className="flex items-center gap-1.5 border-b border-border px-2.5 py-2">
-          <Search
-            className="size-3.5 shrink-0 text-muted-foreground"
-            aria-hidden="true"
-          />
-          <Input
-            ref={searchRef}
-            value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
-              setActiveIndex(0);
-            }}
-            placeholder={t("modelTargetPicker.searchPlaceholder")}
-            className="h-7 border-0 bg-transparent px-0 text-xs shadow-none focus-visible:ring-0"
-          />
-          {search ? (
-            <button
-              type="button"
-              aria-label={t("modelTargetPicker.clearSearch")}
-              className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground"
-              onClick={() => {
-                setSearch("");
-                searchRef.current?.focus();
-              }}
-            >
-              <X className="size-3.5" aria-hidden="true" />
-            </button>
-          ) : null}
-        </div>
-
-        {/* ↻ 图例：整颗弹层只说一次「跟随默认会变、固定模型不会变」，选项行因此只留
-            解析到的模型标识。贴着它解释的选项列表放（底部留给消费方 footer 的
-            「何时生效」，两条说的是不同的事，不叠在一起）。列表里没有跟随默认项时不渲染。 */}
-        {!loading &&
-        !error &&
-        flatOptions.some((o) => o.kind === "provider-default") ? (
-          <div
-            data-testid="dynamic-legend"
-            className="flex items-start gap-1.5 border-b border-border px-3 py-1.5 text-2xs text-muted-foreground"
-          >
-            <RefreshCw
-              className="mt-px size-3 shrink-0 text-primary-text"
+        {/* 搜索框（mockup .psearch > .search）：有边框的输入框，放大镜绝对定位在框内左侧。 */}
+        <div className="border-b border-border p-2">
+          <div className="relative">
+            <Search
+              className="pointer-events-none absolute left-[9px] top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
               aria-hidden="true"
             />
-            <span>{t("modelTargetPicker.dynamicLegend")}</span>
+            <Input
+              ref={searchRef}
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setActiveIndex(0);
+              }}
+              placeholder={t("modelTargetPicker.searchPlaceholder")}
+              className="h-8 rounded-[7px] bg-input-bg pl-7 pr-7 text-xs dark:bg-input-bg"
+            />
+            {search ? (
+              <button
+                type="button"
+                aria-label={t("modelTargetPicker.clearSearch")}
+                className="absolute right-1.5 top-1/2 shrink-0 -translate-y-1/2 cursor-pointer rounded p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                onClick={() => {
+                  setSearch("");
+                  searchRef.current?.focus();
+                }}
+              >
+                <X className="size-3.5" aria-hidden="true" />
+              </button>
+            ) : null}
           </div>
-        ) : null}
+        </div>
 
-        <div className="max-h-64 overflow-y-auto p-1.5">
+        {/* 330px / 5px = mockup .pop .plistw。 */}
+        <div className="max-h-[330px] overflow-y-auto p-[5px]">
           {loading ? (
             <div className="flex items-center gap-2 px-2.5 py-3 text-xs text-muted-foreground">
               <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
@@ -767,6 +815,13 @@ export function ModelTargetPicker({
                 // 远端：组头标注该供应商在目标设备上已存在（不代表模型齐全，行内另有原因）。
                 const groupOnDevice =
                   remoteGated && remoteByKey.has(opt.target.providerKey);
+                // 行内原因取代副行，让不可选行收敛成「名字 / 原因」两行。
+                const inlineHint =
+                  opt.kind === "invalid"
+                    ? t("modelTargetPicker.invalidCurrent")
+                    : opt.disabled
+                      ? opt.disabledHint
+                      : undefined;
                 // 行内同步入口：只挂在该供应商第一条待同步的行上。
                 const syncProvider =
                   syncAnchorByProvider.get(opt.target.providerKey) === opt.key
@@ -781,7 +836,9 @@ export function ModelTargetPicker({
                         <div
                           data-testid="picker-group"
                           data-provider-key={opt.target.providerKey}
-                          className="sticky top-0 z-10 flex items-center gap-1.5 bg-background px-2.5 pb-0.5 pt-2 text-2xs font-medium uppercase tracking-wide text-subtle-foreground"
+                          // 底色必须是 popover：bg-background 在暗色下比弹层更黑，
+                          // 会在列表里拉出一条黑带（mockup .pgrp { background: var(--popover) }）。
+                          className="sticky top-0 z-10 flex items-center gap-1.5 bg-popover px-2 pb-1 pt-[9px] text-[10px] font-semibold uppercase tracking-[0.06em] text-subtle-foreground"
                         >
                           {opt.groupType ? (
                             <LlmProviderLogo
@@ -798,8 +855,9 @@ export function ModelTargetPicker({
                           ) : null}
                         </div>
                       ) : null}
+                      {/* mockup .fixhdr：6px 8px 2px / 10px / 不加粗。 */}
                       {showFixedSection ? (
-                        <div className="px-2.5 pb-0.5 pt-1 text-2xs font-medium text-subtle-foreground">
+                        <div className="px-2 pb-0.5 pt-1.5 text-[10px] text-subtle-foreground">
                           {t("modelTargetPicker.fixedSection")}
                         </div>
                       ) : null}
@@ -824,26 +882,60 @@ export function ModelTargetPicker({
                             setOpen(false);
                           }}
                           className={cn(
-                            "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
-                            "focus-visible:outline-none",
+                            // mockup .opt：7px 圆角 / 6px 8px padding / 手形光标。
+                            "flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-[7px] px-2 py-1.5 text-left text-xs transition-[background-color,filter]",
+                            // 焦点环只表达「键盘焦点在这」，不兼任常态 hover。
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
                             // 核心语义分歧：跟随默认（动态）用 primary-soft 强调底，
                             // 固定到具体模型保持中性底，两态一眼可分。
                             opt.kind === "provider-default"
                               ? cn(
-                                  "bg-primary-soft",
-                                  active && "ring-1 ring-ring/40",
+                                  // mockup .opt.dyn:hover 只改 filter：底色不换、不画边，
+                                  // 靠提亮/压暗表达 hover 与键盘活动态。
+                                  "mb-[3px] bg-primary-soft",
+                                  !opt.disabled &&
+                                    "hover:brightness-95 dark:hover:brightness-125",
+                                  !opt.disabled &&
+                                    active &&
+                                    "brightness-95 dark:brightness-125",
                                 )
                               : opt.kind === "invalid"
-                                ? "border border-dashed border-status-waiting/60"
-                                : active
-                                  ? "bg-accent"
-                                  : "hover:bg-accent/60",
+                                ? "border border-dashed border-status-waiting"
+                                : // mockup .opt:hover 是满色 accent；.opt.dis:hover 保持透明；
+                                  // .opt.sel 排在 .opt:hover 之后 → 选中项 hover 不翻 accent。
+                                  !opt.disabled &&
+                                  !selectedNow &&
+                                  (active ? "bg-accent" : "hover:bg-accent"),
+                            // 顶部特殊项是独立描边卡片（mockup .opt.special）：比普通行
+                            // 重一档，选中时描边转实线 primary。
+                            opt.kind === "special" &&
+                              cn(
+                                "mb-1 border border-dashed p-2",
+                                selectedNow
+                                  ? "border-solid border-primary"
+                                  : "border-border-strong",
+                              ),
+                            // 选中项带底色且盖过 hover（mockup .opt.sel 排在 .opt:hover 之后）。
+                            //
+                            // ⚠️ 与 mockup 字面的有意偏离：mockup 给 .opt.sel 用的是
+                            // primary-soft，但这里改成中性的 accent。primary-soft 在这颗
+                            // 弹层里是「动态跟随供应商默认」的语义编码（.opt.dyn 常态就是
+                            // 蓝底），选中态不能把这层含义借走 —— 否则「选中的固定模型」和
+                            // 「跟随默认」长成一样，只剩 ✓ 能区分，正好抹掉整套设计要表达的
+                            // 核心分歧。跟随默认行因此**不**套 accent：它选中与否都是蓝底，
+                            // 由 ✓ 表示选中。别为了「对齐 mockup」把这里改回 primary-soft。
+                            selectedNow &&
+                              (opt.kind === "provider-default"
+                                ? "bg-primary-soft"
+                                : "bg-accent"),
                             "disabled:cursor-not-allowed disabled:opacity-50",
                           )}
                         >
                           <span className="flex min-w-0 flex-1 items-center gap-2">
                             {opt.kind === "special" ? (
-                              <GitBranch
+                              <SpecialIcon
+                                data-testid="special-icon"
+                                data-scenario={scenario}
                                 className="size-3.5 shrink-0 text-muted-foreground"
                                 aria-hidden="true"
                               />
@@ -858,51 +950,40 @@ export function ModelTargetPicker({
                                 className="size-3.5 shrink-0 text-primary-text"
                                 aria-hidden="true"
                               />
-                            ) : opt.kind === "fixed" && opt.modelId ? (
-                              <LlmModelLogo
-                                model={opt.modelId}
-                                providerType={opt.groupType ?? ""}
-                                providerName={opt.group}
-                                className="size-4"
-                              />
                             ) : null}
                             <span className="flex min-w-0 flex-1 flex-col">
                               <span
                                 className={cn(
-                                  "truncate",
-                                  opt.kind === "special"
-                                    ? "font-medium text-foreground"
-                                    : opt.kind === "provider-default"
-                                      ? "font-medium text-primary-text"
-                                      : "text-foreground",
+                                  // mockup .opt .o1 一律 500 字重。
+                                  "truncate font-medium",
+                                  opt.kind === "provider-default"
+                                    ? "text-primary-text"
+                                    : "text-foreground",
                                 )}
                               >
                                 {opt.label}
                               </span>
-                              {opt.sublabel ? (
+                              {/* 停用行是「名字 / 原因」两行（mockup .opt.dis）：原因
+                                  取代副行，不在模型标识之下再叠第三行。 */}
+                              {inlineHint ? (
+                                <span className="truncate text-2xs text-status-waiting">
+                                  {inlineHint}
+                                </span>
+                              ) : opt.sublabel ? (
                                 <span
                                   className={cn(
-                                    "font-mono text-2xs text-muted-foreground",
-                                    // 跟随默认行的副行 = 解析到的模型标识，是「到底跑哪个
-                                    // 模型」的答案；宁可折行也不许截断。
+                                    "text-2xs text-muted-foreground",
+                                    // 等宽只给「副行整条就是一个标识符」的 fixed 行；
+                                    // 跟随默认 / 特殊项的副行是人读文案，标识符由副行
+                                    // 自己包 mono。跟随默认行宁可折行也不许截断。
                                     opt.kind === "provider-default"
                                       ? "break-all"
-                                      : "truncate",
+                                      : opt.kind === "fixed"
+                                        ? "truncate font-mono"
+                                        : "truncate",
                                   )}
                                 >
                                   {opt.sublabel}
-                                </span>
-                              ) : null}
-                              {opt.kind === "invalid" ? (
-                                <span className="truncate text-2xs text-status-waiting">
-                                  {t("modelTargetPicker.invalidCurrent")}
-                                </span>
-                              ) : null}
-                              {opt.disabled &&
-                              opt.disabledHint &&
-                              opt.kind !== "invalid" ? (
-                                <span className="truncate text-2xs text-status-waiting">
-                                  {opt.disabledHint}
                                 </span>
                               ) : null}
                             </span>
@@ -913,7 +994,7 @@ export function ModelTargetPicker({
                             ) : null}
                             {opt.kind === "fixed" &&
                             (opt.contextWindow || opt.maxOutput) ? (
-                              <span className="shrink-0 font-mono text-2xs text-muted-foreground">
+                              <span className="shrink-0 font-mono text-[10px] text-subtle-foreground">
                                 {t("modelTargetPicker.contextOutput", {
                                   ctx: formatTokens(opt.contextWindow ?? 0),
                                   out: formatTokens(opt.maxOutput ?? 0),
@@ -932,7 +1013,7 @@ export function ModelTargetPicker({
                         {syncProvider && onSyncProvider ? (
                           <button
                             type="button"
-                            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-1.5 py-1 text-2xs text-primary-text transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                            className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-border px-1.5 py-1 text-2xs text-primary-text transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                             aria-label={t(
                               "modelTargetPicker.syncProviderNamed",
                               {
@@ -955,22 +1036,22 @@ export function ModelTargetPicker({
           ) : null}
         </div>
 
-        {remoteGated && catalogOptions.some((o) => o.disabledHint) ? (
-          <div className="flex flex-col gap-1 border-t border-border bg-secondary px-3 py-2 text-2xs text-muted-foreground">
-            <span>{t("modelTargetPicker.remoteGateHint")}</span>
-            {/* 同步按钮在行内；这里只承诺「同步会复制 API Key、需要明确确认」。 */}
-            {onSyncProvider ? (
-              <span>{t("modelTargetPicker.syncFootnote")}</span>
-            ) : null}
+        {/* 灰色项的原因每一行自己已经写了，底部不再总述一遍；这里只承诺同步的后果
+            （mockup 远端弹层的 foot 也只有这一句）。 */}
+        {remoteGated &&
+        onSyncProvider &&
+        catalogOptions.some((o) => o.disabledHint) ? (
+          <div className="border-t border-border bg-card px-2.5 py-[7px] text-2xs text-muted-foreground">
+            {t("modelTargetPicker.syncFootnote")}
           </div>
         ) : null}
         {remoteMissing ? (
-          <div className="border-t border-border bg-secondary px-3 py-2 text-2xs text-muted-foreground">
+          <div className="border-t border-border bg-card px-2.5 py-[7px] text-2xs text-muted-foreground">
             {t("modelTargetPicker.remoteMissing")}
           </div>
         ) : null}
         {footer ? (
-          <div className="border-t border-border px-3 py-2 text-2xs text-muted-foreground">
+          <div className="border-t border-border bg-card px-2.5 py-[7px] text-2xs text-muted-foreground">
             {footer}
           </div>
         ) : null}
