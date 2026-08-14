@@ -25,7 +25,7 @@ import { RichLink } from "./rich-link";
 const CWD = "/Users/me/proj";
 
 beforeEach(() => {
-  openPathMock.mockReset();
+  openPathMock.mockReset().mockResolvedValue(undefined);
   browserOpenURLMock.mockReset();
   sonnerMocks.toast.success.mockReset();
   sonnerMocks.toast.error.mockReset();
@@ -159,35 +159,38 @@ describe("RichLink", () => {
     });
   });
 
-  describe("Unknown / fallback", () => {
-    it("renders plain anchor without icon for relative paths", () => {
+  describe("Relative local path", () => {
+    it("resolves against cwd and renders local file link affordances", () => {
       render(
         <RichLink href="relative/foo.go" cwd={CWD}>
           rel
         </RichLink>,
       );
       const link = screen.getByRole("link", { name: /rel/ });
-      expect(link).toBeInTheDocument();
-      expect(
-        screen.queryByTestId("rich-link-path-icon"),
-      ).not.toBeInTheDocument();
-      expect(
-        screen.queryByTestId("rich-link-open-icon"),
-      ).not.toBeInTheDocument();
+      expect(link).toHaveAttribute("href", "/Users/me/proj/relative/foo.go");
+      expect(screen.getByTestId("rich-link-path-icon")).toHaveAttribute(
+        "data-path-kind",
+        "file",
+      );
+      expect(screen.getByTestId("rich-link-open-icon")).toHaveAttribute(
+        "data-link-kind",
+        "local-internal",
+      );
     });
 
-    it("relative path click goes through default navigation (no mock called)", () => {
+    it("opens the cwd-resolved absolute path", () => {
       render(
         <RichLink href="relative/foo.go" cwd={CWD}>
           rel
         </RichLink>,
       );
-      const link = screen.getByRole("link", { name: /rel/ });
-      link.addEventListener("click", (event) => event.preventDefault());
 
-      fireEvent.click(link);
+      fireEvent.click(screen.getByRole("link", { name: /rel/ }));
+
+      expect(openPathMock).toHaveBeenCalledWith(
+        "/Users/me/proj/relative/foo.go",
+      );
       expect(browserOpenURLMock).not.toHaveBeenCalled();
-      expect(openPathMock).not.toHaveBeenCalled();
     });
   });
 
