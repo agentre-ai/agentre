@@ -2162,7 +2162,7 @@ function BackendEditor({
           <DefaultPermissionModeField
             value={defaultPermissionMode}
             onChange={setDefaultPermissionMode}
-            isRemote={deviceId !== ""}
+            isRemote={remoteExecution}
             hasIsSandbox={envEntries.some(
               (e) => e.key.trim() === "IS_SANDBOX" && e.value.trim() !== "",
             )}

@@ -421,35 +421,44 @@ export function useProviderPill({
     [executionLocation, localFingerprint, remoteDevices],
   );
   const remoteDeviceID = executionDevice.pairedDeviceId;
+  // 换目标后旧一轮的迟到结果直接丢弃，否则上一台机器的目录会盖住当前目标的门控。
+  const remoteRequestRef = React.useRef(0);
   const fetchRemote = React.useCallback(async () => {
+    const request = ++remoteRequestRef.current;
+    const stale = () => remoteRequestRef.current !== request;
     if (executionLocation === "") {
       setLocalFingerprint("");
       setRemoteDevices([]);
       setRemoteProviders([]);
       return;
     }
+    // 两个 RPC 各自结算：配对目录拉取失败不该连带丢掉已经读到的本机指纹，否则本机
+    // 自身的 canonical fingerprint 会被当成另一台机器（resolveExecutionDevice 的
+    // 「未定」分支只在指纹真的未知时才该出现）。
+    const [fingerprint, dvRows] = await Promise.all([
+      RemoteDeviceFingerprint().catch(() => ""),
+      RemoteDeviceList().catch(() => null),
+    ]);
+    if (stale()) return;
+    const devices = (dvRows ?? []) as unknown as DeviceView[];
+    setLocalFingerprint(fingerprint ?? "");
+    setRemoteDevices(devices);
+    const resolved = resolveExecutionDevice(
+      executionLocation,
+      fingerprint ?? "",
+      devices,
+    );
+    if (!resolved.remote || resolved.pairedDeviceId <= 0) {
+      setRemoteProviders([]);
+      return;
+    }
     try {
-      const [fingerprint, dvRows] = await Promise.all([
-        RemoteDeviceFingerprint(),
-        RemoteDeviceList(),
-      ]);
-      const devices = (dvRows ?? []) as unknown as DeviceView[];
-      setLocalFingerprint(fingerprint ?? "");
-      setRemoteDevices(devices);
-      const resolved = resolveExecutionDevice(
-        executionLocation,
-        fingerprint ?? "",
-        devices,
-      );
-      if (!resolved.remote || resolved.pairedDeviceId <= 0) {
-        setRemoteProviders([]);
-        return;
-      }
       const provRows = await RemoteDeviceListProviders(resolved.pairedDeviceId);
+      if (stale()) return;
       setRemoteProviders((provRows ?? []) as unknown as ProviderSummary[]);
     } catch {
       // daemon 离线 / 拉取失败 → 目录视为空：未验证的 fixed-model 无法选（严格）。
-      setRemoteDevices([]);
+      if (stale()) return;
       setRemoteProviders([]);
     }
   }, [executionLocation]);

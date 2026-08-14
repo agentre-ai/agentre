@@ -45,4 +45,26 @@ describe("execution device identity", () => {
       resolveExecutionDevice("sha256:unknown", localFingerprint, devices),
     ).toEqual({ local: false, remote: true, pairedDeviceId: 0 });
   });
+
+  it("Given this installation's own fingerprint is not known yet, When resolving an unpaired fingerprint, Then it is undetermined rather than asserted remote", () => {
+    // localFingerprint === "" means the identity RPC has not answered (or
+    // failed). Nothing has been learned about the target, so claiming "remote"
+    // would gate this machine's own canonical fingerprint as another machine.
+    expect(resolveExecutionDevice("sha256:local-desktop", "", devices)).toEqual(
+      { local: false, remote: false, pairedDeviceId: 0 },
+    );
+  });
+
+  it("Given this installation's own fingerprint is not known yet, When the target is a paired daemon, Then it is still provably remote", () => {
+    // A paired agentred row is another machine by construction — that verdict
+    // never depends on knowing our own fingerprint.
+    expect(resolveExecutionDevice("sha256:remote-daemon", "", devices)).toEqual(
+      { local: false, remote: true, pairedDeviceId: 7 },
+    );
+    expect(resolveExecutionDevice("7", "", devices)).toEqual({
+      local: false,
+      remote: true,
+      pairedDeviceId: 7,
+    });
+  });
 });

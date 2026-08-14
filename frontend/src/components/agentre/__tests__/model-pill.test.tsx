@@ -974,6 +974,104 @@ describe("ProviderPill · 远端执行（gap 1：chat Picker 接收 daemon 能�
     expect(opus).toHaveAttribute("aria-disabled", "true");
   });
 
+  it("Given execution stays on this machine and the device-identity RPC fails, When the picker opens, Then local fixed models are not gated as remote", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER],
+    });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [
+        model("mk-sonnet", "claude-sonnet-4-5"),
+        model("mk-opus", "claude-opus-4-5"),
+      ],
+    });
+    // R13 canonicalization stores this installation's own fingerprint on local
+    // backends, so a purely local session carries a sha256: executionLocation.
+    appMocks.RemoteDeviceFingerprint.mockRejectedValue(
+      new Error("remote device service unavailable"),
+    );
+    appMocks.RemoteDeviceList.mockResolvedValue([]);
+    render(
+      <Harness
+        backendType="builtin"
+        executionLocation="sha256:local-desktop"
+      />,
+    );
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+    const user = userEvent.setup();
+    await user.click(pill);
+
+    const listbox = screen.getByRole("listbox");
+    expect(providerDefaultOption(listbox)).not.toBeDisabled();
+    const opus = within(listbox).getByRole("option", {
+      name: /claude-opus-4-5/,
+    });
+    expect(opus).not.toHaveAttribute("aria-disabled", "true");
+    expect(appMocks.RemoteDeviceListProviders).not.toHaveBeenCalled();
+  });
+
+  it("Given the execution target changes while its catalog request is in flight, When the previous device answers last, Then it cannot replace the current catalog", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER, CHAT_PROVIDER],
+    });
+    appMocks.RemoteDeviceList.mockResolvedValue([
+      device({ id: 7, name: "old-daemon", daemonFingerprint: "sha256:old" }),
+      device({
+        id: 8,
+        name: "current-daemon",
+        daemonFingerprint: "sha256:current",
+      }),
+    ]);
+    const stale = deferred<unknown[]>();
+    appMocks.RemoteDeviceListProviders.mockReset();
+    appMocks.RemoteDeviceListProviders.mockImplementation((id: number) =>
+      id === 7 ? stale.promise : Promise.resolve([remoteProvider()]),
+    );
+
+    const { rerender } = render(
+      <Harness
+        backendType="builtin"
+        executionLocation="sha256:old"
+        sessionId={42}
+        persistedProviderKey="acme-chat"
+      />,
+    );
+    await waitFor(() =>
+      expect(appMocks.RemoteDeviceListProviders).toHaveBeenCalledWith(7),
+    );
+    rerender(
+      <Harness
+        backendType="builtin"
+        executionLocation="sha256:current"
+        sessionId={42}
+        persistedProviderKey="acme-chat"
+      />,
+    );
+    await waitFor(() =>
+      expect(appMocks.RemoteDeviceListProviders).toHaveBeenCalledWith(8),
+    );
+
+    // The stale device answers last, claiming it does have the selected provider.
+    await act(async () => {
+      stale.resolve([remoteProvider({ key: "acme-chat", name: "Acme Chat" })]);
+      await stale.promise;
+    });
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+    const user = userEvent.setup();
+    await user.click(pill);
+
+    // The current device (8) does not publish acme-chat, so the missing-provider
+    // notice must survive the late answer from device 7.
+    expect(
+      screen.getByText(
+        "Target device is missing this provider. Sync it first.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("远端 daemon 无 llm-model-target-v1 能力位（旧/离线）→ 全部 fixed-model 禁用，provider-default 仍可选", async () => {
     appMocks.ListLLMProviders.mockResolvedValue({
       items: [ANTHROPIC_PROVIDER],

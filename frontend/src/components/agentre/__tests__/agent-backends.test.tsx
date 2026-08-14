@@ -1959,6 +1959,52 @@ describe("AgentBackendsPanel", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("Given a bypass backend pinned to this machine's own fingerprint, When the editor opens, Then the remote agentred root hint is not shown", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      ListAgentBackends: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 16,
+              type: "claudecode",
+              name: "self bypass",
+              deviceId: "sha256:local-desktop",
+              deviceName: "",
+              defaultPermissionMode: "bypassPermissions",
+              llmProviderKey: "",
+              llmModelKey: "",
+              cliPath: "claude",
+              modelRoutes: {},
+              envJson: "{}",
+              agentCount: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+
+    const row = (await screen.findByText("self bypass")).closest(
+      '[role="listitem"]',
+    ) as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /Edit/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole("combobox", { name: "Runtime Device" }),
+      ).toHaveTextContent("Local"),
+    );
+    // The hint is about agentred running as root on another machine; the R13
+    // canonical fingerprint of this desktop is not another machine.
+    expect(within(dialog).queryByText(/remote agentred runs as root/i)).toBe(
+      null,
+    );
+  });
+
   it("Given a fixed remote binding, When the picker's sync entry is opened and canceled, Then the draft binding is untouched", async () => {
     const user = userEvent.setup();
     installAppMock({
