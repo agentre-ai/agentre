@@ -2,9 +2,7 @@
 
 <!-- File: docs/specs/2026-08-09-new-session-provider-select.md -->
 
-> Status: Approved（决策 2 的「不可事后修改」与决策 7 已被
-> [2026-08-10 已有会话切换 LLM 供应商](./2026-08-10-session-provider-switch.md) 取代，
-> 见下方逐条标注；其余部分仍然有效）
+> Status: Approved（已有会话切换供应商由 [2026-08-10 已有会话切换 LLM 供应商](./2026-08-10-session-provider-switch.md) 定稿）
 > Owner: chat experience / backend
 > Last updated: 2026-08-09
 
@@ -17,7 +15,7 @@
 3. **`chat_messages.model` 保留**：仍是每轮实际运行模型的观测字段（transcript 展示），它不是 #26 模型切换的一部分。
 4. **新 UI 文案全部走 i18n**：新增 key 同时覆盖 `zh-CN/common.json` 与 `en/common.json`；`i18n.test.ts` 校验通过。控件用 shadcn `Popover`，不引入原生 `<select>`。
 5. **远端 agentred 执行同样生效**：会话级 provider 选择随 wire 透传，daemon 按 key 从自己的配置自解。
-6. ~~**已有会话不再有模型/供应商切换器，也不显示只读供应商徽标**（用户决策：最干净，观测靠 transcript 每消息 `model` 字段）。~~ **被 [2026-08-10 规格](./2026-08-10-session-provider-switch.md) 取代**：已有会话在 composer 常显供应商选择器（不可切时 disabled + tooltip），切换自下一轮生效。本规格其余不变量仍然有效。
+6. **已有会话在 composer 常显供应商选择器**：不可切换时 `disabled` + tooltip 说明原因，切换自下一轮生效；每轮实际运行的模型仍靠 transcript 每消息 `model` 字段观测。
 
 ## Problem
 
@@ -37,12 +35,12 @@
 | # | Decision | Basis and rejected option |
 |---|---|---|
 | 1 | **整体移除 #26 会话级模型切换**：删 `model_override` 列、`SetChatSessionModel`、`SendRequest.ModelOverride`、模型偏离提示、四后端 `ModelOverride` 消费、远端 wire `ModelOverride` | 用户决策 B：未发版清理干净；能力被本特性覆盖。拒绝保留 `model_override` 与供应商选择并存——两套选择器复杂且无必要 |
-| 2 | **新增会话级 `provider_key`（text，`''`=跟随 agent 绑定）**，新建会话随首条消息落库，~~**不可事后修改**~~ → **可事后修改**（「不可事后修改」这一条被 [2026-08-10 规格](./2026-08-10-session-provider-switch.md) 决策 1 取代：新增单列更新 `UpdateProviderKey` + `chat_svc.SetChatSessionProvider`，切换自下一轮生效；本行其余部分不变） | 会话需要一个稳定的供应商归属，类比被移除的 `model_override` 但粒度更粗。拒绝写回 agent 绑定——会全局污染其它会话 |
+| 2 | **新增会话级 `provider_key`（text，`''`=跟随 agent 绑定）**，新建会话随首条消息落库，**可事后修改**：`chat_repo.UpdateModelTarget` 单独写该列，入口 `chat_svc.SetChatSessionModelTarget`，切换自下一轮生效 | 会话需要一个稳定的供应商归属，类比被移除的 `model_override` 但粒度更粗。拒绝写回 agent 绑定——会全局污染其它会话 |
 | 3 | **供应商解析：会话 `provider_key` > agent 绑定**，在 `resolveAgentBackend` 同一解析点生效 | 现状 `prov` 由 `be.LLMProviderKey` 解析（`internal/service/chat_svc/chat.go`）；插一层会话优先即可。拒绝为会话 clone 改写共享实体 |
 | 4 | **新建会话 pill = 供应商选择器，只列与后端兼容的供应商**：builtin→全部；claudecode→anthropic；codex→openai-response；piagent→anthropic/openai-chat/openai-response；openclaw 不渲染 | 兼容性是后端硬约束（`ProviderTypeMatch`，`internal/model/entity/agent_backend_entity/kinds.go`），列不兼容项必然失败。拒绝列全部再报错 |
 | 5 | **未绑供应商（CLI 登录态）的新建会话也显示供应商选择器**（用户 Q1） | 让 CLI 后端的新会话可选 agentre 供应商接管；不选则保持 CLI 登录态。拒绝保留自由输入模型 id——模型选择在新建会话消失 |
 | 6 | **模型 = 所选供应商默认模型（`provider.Model`）**，新建会话不再有模型选择 | 用户 Option C："选完就用该供应商的默认模型（最简，不涉及模型选择）" |
-| 7 | ~~**已有会话不渲染任何切换器，也不显示只读供应商徽标**（用户决策 b）~~ **被 [2026-08-10 规格](./2026-08-10-session-provider-switch.md) 决策 10 取代**：已有会话渲染同一颗 pill，不可切换时 `disabled` + tooltip 说明原因 | 原基础（用户决策 b：最干净，观测靠 transcript 每消息 `model`）已被推翻——隐藏让用户以为功能消失 |
+| 7 | **已有会话渲染同一颗 pill**（同一组件、同一弹层、同一位置），不可切换时 `disabled` + tooltip 说明原因 | 隐藏会让用户以为功能消失；每轮实际运行的模型靠 transcript 每消息 `model` 观测，与是否渲染切换器无关 |
 | 8 | **会话 `provider_key` 指向的供应商被删/停用 → 回退 agent 绑定 + transcript 一条持久 notice**（复用既有 `NoticeBlock` 渲染，不是被删的模型偏离提示） | 用户 Q3；避免会话永久卡死（`ChatAgentNotChattable` 会把会话堵死）。notice 每次回退都追加，与 #26 偏离提示"每次发生都提示"先例一致 |
 | 9 | **远端透传**：remote `RunRequest.LLMProviderKey` 改为 effectiveProviderKey（会话 `provider_key` 优先），daemon 按 key 自解 | 现状已按 `LLMProviderKey` 透传（`chat.go` remote 路径），替换为 effective 即可；daemon 自家 `ProviderLookup` 与 gateway 不变 |
 | 10 | **迁移做法 1（改基线）**：直接改 `migrations/202608080006_chat.go`，删 `model_override` 列、加 `provider_key` 列 | 未发版 + 迁移历史已压平 + gormigrate 无 checksum；用户豁免"不修改既有迁移"硬规则；本地 dev 库需删除重建。拒绝追加 DROP patch——留"建→删"不干净 |
@@ -52,21 +50,21 @@
 
 - `chat_sessions`：`model_override` 删除，新增 `provider_key TEXT NOT NULL DEFAULT ''`（在基线迁移 `202608080006_chat.go` 内直接改，见决策 10；本地 dev 库需重建）。
 - `chat_entity.Session`：删 `ModelOverride`，加 `ProviderKey`（gorm column `provider_key`）。
-- `chat_svc.SendRequest.ProviderKey string`：仅新建会话生效，随首条消息与 Session 一同 Create 落库；已有会话在 `Send` 里仍忽略该字段——改供应商走 [2026-08-10 规格](./2026-08-10-session-provider-switch.md) 的 `SetChatSessionProvider`（原文「不允许事后改，无 Setter」已被取代）。
+- `chat_svc.SendRequest.ProviderKey string`：仅新建会话（`SessionID=0`）生效，随首条消息与 Session 一同 Create 落库；已有会话在 `Send` 里忽略该字段——改供应商走 `chat_svc.SetChatSessionModelTarget`。
 - `agentruntime.RunRequest`：删 `ModelOverride`；remote 路径 `LLMProviderKey` 改为 effectiveProviderKey。
 - 前端：删 `useModelPill` 的模型列表 / 自由输入 / `SetChatSessionModel` 调用；新建会话改为供应商选择器；`ChatSessionDetail` 移除 `ModelOverride` / `ProviderDefaultModel` / `LLMProviderKey`——三者仅被旧 pill 消费（已核实 session 级 `llmProviderKey` 唯一消费者是 chat-panel 的 ModelPill）；`LLMProviderType` 保留（仍有 Usage token 语义）。
 
 ## 会话创建与解析流程
 
 - **新建会话（Send）**：`SendRequest.ProviderKey` 非空时校验——供应商必须存在、`IsActive()` 且与后端 kind 兼容（`ProviderTypeMatch`），否则 Send 报错（复用不可对话的错误语义，不在落库后才发现）。校验通过后与 Session 一起 Create 落库。
-- **已有会话**：解析 `effectiveProviderKey = firstNonEmpty(sess.ProviderKey, be.LLMProviderKey)`（「无任何切换器」已被 [2026-08-10 规格](./2026-08-10-session-provider-switch.md) 取代：composer 常显选择器，切换自下一轮生效）。
+- **已有会话**：解析 `effectiveProviderKey = firstNonEmpty(sess.ProviderKey, be.LLMProviderKey)`；composer 常显选择器，切换自下一轮生效。
 - **本地**：在 `resolveAgentBackend` 同一解析点按 effectiveProviderKey 解析 `prov`；builtin 仍要求有可用供应商（否则不可对话，走既有 `NewSessionChatGuard`）。
 - **远端**：wire 透传 effectiveProviderKey；daemon 从自家配置按 key 解析；daemon 缺该 key / 非 active → 回退 agent 绑定并回传信号，桌面端据此追加 notice（与本地 Q3 一致）。
 - **回退（Q3）**：会话 `provider_key` 指向的供应商缺失或非 active → 本轮改用 agent 绑定解析，transcript 追加一条持久 notice：「所选供应商 X 不可用，已回退 agent 绑定」。`provider_key` 不清除（供应商恢复后自动回到会话所选）。
 
-## UI（新建会话供应商选择器）
+## UI（供应商选择器）
 
-- 摆放：composer 动作行原 ModelPill 位置；后端为 builtin / claudecode / codex / piagent 时渲染；openclaw 不渲染（不消费 agentre provider）。（原文的「**仅 `sessionId===0`（新建会话）**」已被 [2026-08-10 规格](./2026-08-10-session-provider-switch.md) 决策 10 取代：已有会话同样渲染，不可切换时 disabled + tooltip。）
+- 摆放：composer 动作行原 ModelPill 位置；新建会话与已有会话共用同一颗 pill，不可切换时 `disabled` + tooltip 说明原因。后端为 builtin / claudecode / codex / piagent 时可选，openclaw 不消费 agentre provider。
 - 形态：沿用 pill + `Popover` 模式（`h-6 rounded-md border px-2 text-2xs font-medium` + caret，图标用供应商/立方体图标，供应商名等宽字体截断）。
 - 弹层：头部"供应商"标题；列表第一项"跟随 agent 绑定"（未选时该项高亮；选中具体供应商后点击可清回；未绑 agent 时该项语义为"不选，走 CLI 登录态"）；其下兼容供应商列表（名称 + 类型 + 默认模型 `provider.Model`），当前选中项高亮（`primary-soft` + 实心点徽标）。
 - 未选时 pill 标签：agent 已绑 → 显示 agent 绑定供应商名；未绑 → "选择供应商"占位文案。
@@ -83,7 +81,6 @@
 
 ## Out of scope
 
-- ~~**已有会话改供应商/模型**：B 明确禁止；会话建好后不可换（换需新建会话）。~~ 改**供应商**已由 [2026-08-10 规格](./2026-08-10-session-provider-switch.md) 实现；改**模型**仍不在范围内（会话固定用所选供应商的默认模型）。
 - **回退时自动清除 `provider_key`**：保留，供应商恢复后自动回到会话所选。
 - **openclaw 供应商选择**：openclaw 不消费 agentre provider。
 - **模型列表 / 自由输入模型 id UI**：新建会话不再有模型概念。
