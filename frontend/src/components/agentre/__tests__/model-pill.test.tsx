@@ -452,7 +452,12 @@ describe("ProviderPill · 新建会话 ModelTarget 选择器", () => {
     expect(pill).toHaveTextContent("Follow agent binding");
     expect(pill).toHaveTextContent("Acme Claude");
     expect(pill).not.toHaveTextContent("claude-sonnet-4-5");
-    expect(screen.getByTestId("follow-agent-icon")).toBeInTheDocument();
+    const followAgentIcon = screen.getByTestId("follow-agent-icon");
+    expect(followAgentIcon).toBeInTheDocument();
+    // Mockup uses a plain person silhouette (no brand/VCS glyph) for the
+    // follow-agent state — must not render lucide's GitBranch icon.
+    expect(followAgentIcon).toHaveClass("lucide-user-round");
+    expect(followAgentIcon).not.toHaveClass("lucide-git-branch");
   });
 });
 

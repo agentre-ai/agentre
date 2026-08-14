@@ -255,14 +255,21 @@ describe("ModelTargetPicker", () => {
     expect(options[0]).toHaveTextContent(/CLI login state/);
     // provider-default 首项：强调底色 + 动态图标 + 「当前 = ×××」。
     expect(options[1]).toHaveAttribute("data-kind", "provider-default");
-    expect(options[1]).toHaveClass("bg-secondary");
+    // 核心语义分歧：跟随默认用 primary-soft 底 + primary-text 标题，与固定模型两态可分。
+    expect(options[1]).toHaveClass("bg-primary-soft");
     expect(options[1]).toHaveTextContent(/Follow this provider's default/);
     expect(options[1]).toHaveTextContent(/Current = claude-sonnet-4-6/);
     expect(
+      within(options[1] as HTMLElement).getByText(
+        "Follow this provider's default",
+      ),
+    ).toHaveClass("text-primary-text");
+    expect(
       within(options[1] as HTMLElement).getByTestId("provider-default-icon"),
     ).toBeInTheDocument();
-    // fixed-model 紧随其后（包括当前默认模型的固定目标）。
+    // fixed-model 紧随其后（包括当前默认模型的固定目标）；固定态不共用强调底色。
     expect(options[2]).toHaveTextContent("claude-sonnet-4-6");
+    expect(options[2]).not.toHaveClass("bg-primary-soft");
     expect(options[3]).toHaveTextContent("claude-opus-4-8");
     // 停用模型不可选。
     expect(options[4]).toHaveAttribute("aria-disabled", "true");
@@ -520,6 +527,31 @@ describe("ModelTargetPicker", () => {
     expect(onChange).toHaveBeenCalled();
   });
 
+  it("失效的当前选择行内写出「当前选择 · 已失效」与失效标记，不只靠顶部横幅", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelTargetPicker
+        scenario="route"
+        aria-label="LLM Provider"
+        backendType="claudecode"
+        selected={{ providerKey: "k-gone", modelKey: "mk-gone" }}
+        onChange={vi.fn()}
+        catalog={catalog()}
+        invalid
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "LLM Provider" }));
+    const list = await screen.findByRole("listbox", { name: "LLM Provider" });
+    const preserved = within(list)
+      .getAllByRole("option")
+      .find((o) => o.textContent?.includes("k-gone"));
+    expect(preserved).toBeDefined();
+    expect(preserved).toHaveTextContent("Current selection · no longer valid");
+    expect(
+      within(preserved as HTMLElement).getByText("Invalid"),
+    ).toBeInTheDocument();
+  });
+
   it("route 场景顶部特殊项是继承主绑定，recent 只展示兼容项（chip）", async () => {
     const user = userEvent.setup();
     recordRecentTarget("route", "", {
@@ -594,6 +626,44 @@ describe("ModelTargetPicker", () => {
     expect(
       screen.queryByRole("button", { name: "claude-opus-4-8" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("最近使用排在顶部特殊项之后、供应商分组之前，并带「最近使用」标签", async () => {
+    const user = userEvent.setup();
+    recordRecentTarget("backend", "", {
+      providerKey: "k-anthropic",
+      modelKey: "mk-opus",
+    });
+    render(
+      <ModelTargetPicker
+        scenario="backend"
+        aria-label="LLM Provider"
+        backendType="claudecode"
+        selected={null}
+        onChange={vi.fn()}
+        catalog={catalog()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "LLM Provider" }));
+    const list = await screen.findByRole("listbox", { name: "LLM Provider" });
+    const special = within(list).getByRole("option", {
+      name: /CLI login state/,
+    });
+    const chips = within(list).getByTestId("recent-chips");
+    const providerDefault = within(list).getByRole("option", {
+      name: /Follow this provider's default/,
+    });
+    // 顺序：特殊项 → 最近使用 → 供应商分组。
+    expect(
+      special.compareDocumentPosition(chips) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      chips.compareDocumentPosition(providerDefault) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // chip 横条自带标签，不再是一排无名 chip。
+    expect(within(chips).getByText("Recently used")).toBeInTheDocument();
   });
 
   it("recent chip 里非默认但启用的固定模型仍可选", async () => {
@@ -831,6 +901,126 @@ describe("ModelTargetPicker remote gating (task 6)", () => {
     expect(
       screen.getByRole("button", { name: "Sync Anthropic to this device" }),
     ).toBeInTheDocument();
+  });
+
+  it("远端场景顶部说明以目标设备的配置为准，设备上已有的供应商组带标记；未传设备名时不渲染说明", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(
+      <ModelTargetPicker
+        scenario="backend"
+        aria-label="LLM Provider"
+        backendType="piagent"
+        selected={null}
+        onChange={vi.fn()}
+        catalog={catalog()}
+        executionLocation="7"
+        supportsFixedModel
+        remoteCatalog={remoteCatalogWith()}
+        deviceLabel="build-01"
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "LLM Provider" }));
+    const header = await screen.findByTestId("remote-device-header");
+    expect(header).toHaveTextContent("build-01");
+    expect(header).toHaveTextContent(/configuration/i);
+    // 设备上已有的供应商组标注，只在设备上真有的那一组出现。
+    const list = screen.getByRole("listbox", { name: "LLM Provider" });
+    const groups = within(list).getAllByTestId("picker-group");
+    const anthropic = groups.find(
+      (g) => g.getAttribute("data-provider-key") === "k-anthropic",
+    );
+    const openai = groups.find(
+      (g) => g.getAttribute("data-provider-key") === "k-openai",
+    );
+    expect(
+      within(anthropic as HTMLElement).getByText("Already on this device"),
+    ).toBeInTheDocument();
+    expect(
+      within(openai as HTMLElement).queryByText("Already on this device"),
+    ).not.toBeInTheDocument();
+    unmount();
+
+    // 本机 / 未传设备名 → 不渲染设备说明（既有消费方保持原形态）。
+    render(
+      <ModelTargetPicker
+        scenario="backend"
+        aria-label="LLM Provider"
+        backendType="piagent"
+        selected={null}
+        onChange={vi.fn()}
+        catalog={catalog()}
+        executionLocation="7"
+        supportsFixedModel
+        remoteCatalog={remoteCatalogWith()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "LLM Provider" }));
+    await screen.findByRole("listbox", { name: "LLM Provider" });
+    expect(
+      screen.queryByTestId("remote-device-header"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("「同步过去」落在需要同步的那一行内，而不是列表底部聚合", async () => {
+    const user = userEvent.setup();
+    const onSyncProvider = vi.fn();
+    render(
+      <ModelTargetPicker
+        scenario="backend"
+        aria-label="LLM Provider"
+        backendType="piagent"
+        selected={null}
+        onChange={vi.fn()}
+        onSyncProvider={onSyncProvider}
+        catalog={catalog()}
+        executionLocation="7"
+        supportsFixedModel
+        remoteCatalog={remoteCatalogWith()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "LLM Provider" }));
+    const list = await screen.findByRole("listbox", { name: "LLM Provider" });
+    // 按钮在列表里、与它会修复的那一行同处一个 li；每个供应商只出现一次。
+    const syncs = within(list).getAllByRole("button", {
+      name: "Sync OpenAI to this device",
+    });
+    expect(syncs).toHaveLength(1);
+    const row = syncs[0].closest("li") as HTMLElement;
+    expect(within(row).getByRole("option")).toHaveTextContent(
+      "Follow this provider's default",
+    );
+    expect(within(row).getByRole("option")).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await user.click(syncs[0]);
+    expect(onSyncProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ providerKey: "k-openai" }),
+    );
+  });
+
+  it("没有真实同步入口（未传 onSyncProvider）时不渲染任何同步按钮", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelTargetPicker
+        scenario="backend"
+        aria-label="LLM Provider"
+        backendType="piagent"
+        selected={null}
+        onChange={vi.fn()}
+        catalog={catalog()}
+        executionLocation="7"
+        supportsFixedModel
+        remoteCatalog={remoteCatalogWith()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "LLM Provider" }));
+    await screen.findByRole("listbox", { name: "LLM Provider" });
+    expect(
+      screen.queryByRole("button", { name: /Sync .* to this device/ }),
+    ).not.toBeInTheDocument();
   });
 
   it("本机（无 remoteCatalog）fixed-model 照常可选，不受门控影响", async () => {

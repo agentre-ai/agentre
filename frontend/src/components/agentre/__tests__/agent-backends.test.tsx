@@ -337,6 +337,21 @@ describe("AgentBackendsPanel", () => {
       within(followRow).getByRole("img", { name: "Anthropic" }),
     ).toBeInTheDocument();
 
+    // 绑定是元数据行上的一段面包屑，与运行设备 / 引用数同处一行，不再是独立的第三层块。
+    const followMeta = within(followRow).getByTestId("backend-meta");
+    const followBinding = within(followRow).getByTestId("backend-binding");
+    expect(followMeta).toContainElement(followBinding);
+    expect(followBinding).toHaveTextContent("Anthropic");
+    expect(followBinding).toHaveTextContent("claude-sonnet-4-6");
+    expect(followBinding).toHaveTextContent("Follow default");
+    expect(followMeta).toHaveTextContent(/Local/);
+    expect(followMeta).toHaveTextContent(/2 agents in use/);
+    // 后端类型回到名字旁的 chip，不再降级成元数据行里的纯文本。
+    expect(
+      within(followRow).getByTestId("backend-type-chip"),
+    ).toHaveTextContent("Claude Code CLI");
+    expect(followMeta).not.toHaveTextContent(/Claude Code CLI/);
+
     const fixedRow = screen
       .getByText("Fixed backend")
       .closest('[role="listitem"]') as HTMLElement;
@@ -355,8 +370,9 @@ describe("AgentBackendsPanel", () => {
       within(invalidRow).getByText(/binding is invalid/i),
     ).toBeInTheDocument();
     const invalidChange = within(invalidRow).getByRole("button", {
-      name: "Change binding for Invalid backend",
+      name: "Reselect binding for Invalid backend",
     });
+    expect(invalidChange).toHaveTextContent("Reselect");
     expect(invalidChange).toHaveAttribute("data-variant", "default");
 
     await user.click(
@@ -399,6 +415,8 @@ describe("AgentBackendsPanel", () => {
     expect(
       within(block).getByRole("heading", { name: "Model binding" }),
     ).toBeInTheDocument();
+    // 区块标题「模型绑定」只出现一次；紧随其后的就是 Picker 触发器，没有同名字段标签。
+    expect(within(block).getAllByText("Model binding")).toHaveLength(1);
     const routesToggle = within(block).getByRole("button", {
       name: /Model tier routes/,
     });
@@ -406,6 +424,9 @@ describe("AgentBackendsPanel", () => {
     expect(routesToggle).toHaveTextContent(/OPUS.*main binding/i);
     expect(routesToggle).toHaveTextContent(/SONNET.*main binding/i);
     expect(routesToggle).toHaveTextContent(/HAIKU.*main binding/i);
+    // 折叠头的右槽是一句短提示 chip，不再塞实现术语的环境变量名。
+    expect(routesToggle).not.toHaveTextContent(/ANTHROPIC_DEFAULT/);
+    expect(routesToggle).toHaveTextContent(/no change needed/i);
     expect(within(block).getByLabelText("Custom Model")).toBeInTheDocument();
     expect(
       within(block).getByText(/only applies with CLI login/i),
@@ -625,8 +646,18 @@ describe("AgentBackendsPanel", () => {
     const summary = within(dialog).getByTestId("effective-config-summary");
     expect(summary).toHaveTextContent(/Local/);
     expect(summary).toHaveTextContent(/CLI login state/);
-    expect(summary).toHaveTextContent(/Can save/);
+    // 校验通过时给一条正向结论行，而不是一个"可保存"小徽标。
+    expect(summary).toHaveTextContent(/Ready to save · all checks passed/i);
     expect(summary).toHaveTextContent(/0 agents/);
+
+    // 运行位置要说清"到底会跑哪个可执行文件"，自定义 CLI 路径必须回显。
+    await user.type(
+      within(dialog).getByPlaceholderText("/usr/local/bin/claude"),
+      "/opt/homebrew/bin/claude",
+    );
+    expect(within(summary).getByTestId("summary-runtime")).toHaveTextContent(
+      "/opt/homebrew/bin/claude",
+    );
 
     await user.click(
       within(dialog).getByRole("combobox", { name: "Runtime Device" }),

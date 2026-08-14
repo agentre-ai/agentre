@@ -72,14 +72,15 @@ type FailureKind =
   | "generic";
 
 // 把上游错误归类成可理解的失败原因；原始文本只用于折叠区，不作为主文案。
+// 状态码一路带到标题里（「认证失败（401）」），不要在归类时丢掉。
 function discoverFailure(err: unknown): { kind: FailureKind; code?: string } {
   const msg = errMessage(err);
   const status = msg.match(/http\s+(\d{3})/i)?.[1];
   if (status) {
     const code = Number(status);
-    if (code === 401 || code === 403) return { kind: "auth" };
-    if (code === 404) return { kind: "endpoint" };
-    if (code >= 500) return { kind: "server" };
+    if (code === 401 || code === 403) return { kind: "auth", code: status };
+    if (code === 404) return { kind: "endpoint", code: status };
+    if (code >= 500) return { kind: "server", code: status };
     return { kind: "status", code: status };
   }
   if (
@@ -281,12 +282,22 @@ export function DiscoverDialog({
     >
       <DialogContent className="max-w-[640px]">
         <DialogHeader>
-          <DialogTitle>
-            {t("llmProviders.discover.title", { name: providerName })}
-          </DialogTitle>
-          <DialogDescription>
-            {t("llmProviders.discover.description")}
-          </DialogDescription>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <DialogTitle>
+                {t("llmProviders.discover.title", { name: providerName })}
+              </DialogTitle>
+              <DialogDescription>
+                {t("llmProviders.discover.description")}
+              </DialogDescription>
+            </div>
+            {/* 读取成功的状态 chip：读到了什么在头部一眼可见 */}
+            {!loading && !fetchError && items.length > 0 ? (
+              <span className="shrink-0 rounded-sm bg-status-running/10 px-1.5 py-0.5 text-2xs font-medium text-status-running">
+                {t("llmProviders.discover.readOk")}
+              </span>
+            ) : null}
+          </div>
         </DialogHeader>
 
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-5 py-3">
@@ -323,11 +334,19 @@ export function DiscoverDialog({
                   className="mt-0.5 size-4 shrink-0"
                   aria-hidden="true"
                 />
-                <span className="leading-relaxed">
-                  {t(`llmProviders.discover.error.${failure.kind}`, {
-                    code: failure.code,
-                  })}
-                </span>
+                {/* 标题一句话说清是什么失败，解释单独一段 */}
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <span className="font-semibold">
+                    {t(`llmProviders.discover.errorTitle.${failure.kind}`, {
+                      code: failure.code,
+                    })}
+                  </span>
+                  <span className="text-2xs leading-relaxed">
+                    {t(`llmProviders.discover.error.${failure.kind}`, {
+                      code: failure.code,
+                    })}
+                  </span>
+                </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Button

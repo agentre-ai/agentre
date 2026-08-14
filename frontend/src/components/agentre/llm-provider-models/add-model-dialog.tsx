@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, Plus } from "lucide-react";
+import { Info, Loader2, Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -53,6 +53,7 @@ export function AddModelDialog({
   const [maxOutput, setMaxOutput] = React.useState<number>(0);
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [catalogFilledId, setCatalogFilledId] = React.useState("");
   const lastFilledIdRef = React.useRef("");
 
   React.useEffect(() => {
@@ -62,6 +63,7 @@ export function AddModelDialog({
     setContextWindow(0);
     setMaxOutput(0);
     setError(null);
+    setCatalogFilledId("");
     lastFilledIdRef.current = "";
   }, [open]);
 
@@ -77,10 +79,15 @@ export function AddModelDialog({
       setContextWindow(resp.contextWindow >= 0 ? resp.contextWindow : 0);
       setMaxOutput(resp.maxOutput >= 0 ? resp.maxOutput : 0);
       lastFilledIdRef.current = id;
+      // 自动改写用户看得见的字段，必须当场说明来源，否则就是静默覆盖。
+      setCatalogFilledId(id);
     } catch {
       // 目录查询失败不阻塞手动添加：保留用户已填写的值。
     }
   }, [modelId]);
+
+  const catalogMatched =
+    catalogFilledId !== "" && catalogFilledId === modelId.trim();
 
   const submit = React.useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
@@ -149,6 +156,12 @@ export function AddModelDialog({
                 aria-label={t("llmProviders.modelEdit.modelId")}
               />
             </Field>
+            {catalogMatched ? (
+              <p className="flex items-start gap-2 rounded-md border border-border bg-secondary px-3 py-2.5 text-2xs leading-relaxed text-muted-foreground">
+                <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+                {t("llmProviders.addModel.catalogMatched")}
+              </p>
+            ) : null}
             <Field label={t("llmProviders.modelEdit.name")}>
               <Input
                 value={name}

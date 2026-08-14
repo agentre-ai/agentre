@@ -146,17 +146,15 @@ export function ModelEditDialog({
           <DialogBody className="space-y-4">
             <label className="flex flex-col gap-1.5">
               <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                {t("llmProviders.modelEdit.modelKey")}
+                {t("llmProviders.modelEdit.name")}
               </span>
               <Input
-                readOnly
-                value={model ? model.modelKey : ""}
-                className="h-9 font-mono text-xs"
-                aria-label={t("llmProviders.modelEdit.modelKey")}
+                value={name}
+                placeholder={t("llmProviders.modelEdit.namePlaceholder")}
+                onChange={(e) => setName(e.currentTarget.value)}
+                className="h-9 text-sm"
+                aria-label={t("llmProviders.modelEdit.name")}
               />
-              <span className="text-2xs leading-relaxed text-muted-foreground">
-                {t("llmProviders.modelEdit.modelKeyHint")}
-              </span>
             </label>
 
             <label className="flex flex-col gap-1.5">
@@ -171,18 +169,40 @@ export function ModelEditDialog({
               />
             </label>
 
-            <label className="flex flex-col gap-1.5">
-              <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                {t("llmProviders.modelEdit.name")}
-              </span>
-              <Input
-                value={name}
-                placeholder={t("llmProviders.modelEdit.namePlaceholder")}
-                onChange={(e) => setName(e.currentTarget.value)}
-                className="h-9 text-sm"
-                aria-label={t("llmProviders.modelEdit.name")}
-              />
-            </label>
+            {/* 改 ID 的影响提示紧跟着模型 ID，读到哪里就在哪里生效 */}
+            {needsConfirm && counts ? (
+              <div
+                role="alert"
+                className="flex flex-col gap-2 rounded-md border border-status-waiting/40 bg-status-waiting/10 px-3 py-2.5"
+              >
+                <div className="flex items-start gap-2 text-xs text-status-waiting">
+                  <AlertTriangle
+                    className="mt-0.5 size-4 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <div className="flex flex-col gap-0.5">
+                    <span className="font-semibold">
+                      {t("llmProviders.modelEdit.referenceImpactTitle")}
+                    </span>
+                    <span className="text-2xs leading-relaxed">
+                      {t("llmProviders.modelEdit.referenceImpactDescription", {
+                        backends: counts.backends,
+                        sessions: counts.sessions,
+                        routes: counts.routes,
+                      })}
+                    </span>
+                  </div>
+                </div>
+                <label className="flex items-start gap-2 text-2xs text-foreground">
+                  <Checkbox
+                    checked={checkedRefs}
+                    onCheckedChange={(next) => setCheckedRefs(next === true)}
+                    aria-label={t("llmProviders.modelEdit.confirmLabel")}
+                  />
+                  {t("llmProviders.modelEdit.confirmLabel")}
+                </label>
+              </div>
+            ) : null}
 
             <div className="grid grid-cols-2 gap-4">
               <label className="flex flex-col gap-1.5">
@@ -225,39 +245,21 @@ export function ModelEditDialog({
               </label>
             </div>
 
-            {needsConfirm && counts ? (
-              <div
-                role="alert"
-                className="flex flex-col gap-2 rounded-md border border-status-waiting/40 bg-status-waiting/10 px-3 py-2.5"
+            {/* Model Key 归到最后：它是给机器看的稳定引用，只读、可选中复制 */}
+            <div className="flex flex-col gap-1.5">
+              <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                {t("llmProviders.modelEdit.modelKey")}
+              </span>
+              <code
+                data-selectable-text="true"
+                className="rounded-md bg-secondary px-2.5 py-1.5 font-mono text-2xs text-muted-foreground"
               >
-                <div className="flex items-start gap-2 text-xs text-status-waiting">
-                  <AlertTriangle
-                    className="mt-0.5 size-4 shrink-0"
-                    aria-hidden="true"
-                  />
-                  <div className="flex flex-col gap-0.5">
-                    <span className="font-semibold">
-                      {t("llmProviders.modelEdit.referenceImpactTitle")}
-                    </span>
-                    <span className="text-2xs leading-relaxed">
-                      {t("llmProviders.modelEdit.referenceImpactDescription", {
-                        backends: counts.backends,
-                        sessions: counts.sessions,
-                        routes: counts.routes,
-                      })}
-                    </span>
-                  </div>
-                </div>
-                <label className="flex items-start gap-2 text-2xs text-foreground">
-                  <Checkbox
-                    checked={checkedRefs}
-                    onCheckedChange={(next) => setCheckedRefs(next === true)}
-                    aria-label={t("llmProviders.modelEdit.confirmLabel")}
-                  />
-                  {t("llmProviders.modelEdit.confirmLabel")}
-                </label>
-              </div>
-            ) : null}
+                {model ? model.modelKey : ""}
+              </code>
+              <span className="text-2xs leading-relaxed text-muted-foreground">
+                {t("llmProviders.modelEdit.modelKeyHint")}
+              </span>
+            </div>
 
             {error ? (
               <p className="text-2xs text-status-error">{error}</p>

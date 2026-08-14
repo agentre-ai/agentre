@@ -7,6 +7,7 @@ import {
   ChevronRight,
   ExternalLink,
   Loader2,
+  Lock,
   Pencil,
   Plus,
   Puzzle,
@@ -754,6 +755,104 @@ function Toolbar({
   );
 }
 
+// 一行后端的绑定面包屑有四种形态：网关托管 / 走 CLI 自身登录 / 绑定失效 / 正常绑定。
+type BindingVariant = "openclaw" | "cli-login" | "invalid" | "bound";
+
+// 绑定长在元数据行上（供应商 › 模型 + 跟随默认/固定），不再独立成块 —— 一眼看清绑了什么。
+function BackendRowBinding({
+  backend,
+  variant,
+}: {
+  backend: Backend;
+  variant: BindingVariant;
+}) {
+  const { t } = useTranslation();
+  const providerKey =
+    (backend as unknown as { llmProviderKey?: string }).llmProviderKey ?? "";
+  const modelKey =
+    (backend as unknown as { llmModelKey?: string }).llmModelKey ?? "";
+  const follow = modelKey === "";
+  return (
+    <span
+      data-testid="backend-binding"
+      className={cn(
+        "inline-flex min-w-0 shrink items-center gap-1 rounded-md px-1.5 py-0.5",
+        variant === "invalid"
+          ? "bg-status-waiting-bg text-status-waiting"
+          : "bg-secondary text-foreground",
+      )}
+    >
+      {variant === "openclaw" ? (
+        <>
+          <LlmModelLogo
+            providerType="openclaw"
+            model={
+              backend.openClawDefaultModel ||
+              backend.openClawAgentId ||
+              "openclaw"
+            }
+            className="size-3.5 shrink-0"
+          />
+          <span className="truncate">
+            {backend.openClawDefaultModel ||
+              backend.openClawAgentId ||
+              t("agentBackends.openclaw.modelGatewayDefault")}
+          </span>
+        </>
+      ) : variant === "cli-login" ? (
+        <>
+          <Lock className="size-3 shrink-0" aria-hidden="true" />
+          <span className="truncate">
+            {t("agentBackends.row.bindingCliLogin")}
+          </span>
+        </>
+      ) : variant === "invalid" ? (
+        <>
+          <AlertCircle className="size-3 shrink-0" aria-hidden="true" />
+          <span className="shrink-0 font-medium">
+            {t("agentBackends.row.bindingInvalid")}
+          </span>
+          <span className="text-subtle-foreground" aria-hidden="true">
+            ·
+          </span>
+          <span className="truncate">
+            {t("agentBackends.row.bindingInvalidReason", {
+              provider: backend.llmProviderName || providerKey,
+              model: backend.llmProviderModel || modelKey,
+            })}
+          </span>
+        </>
+      ) : (
+        <>
+          <LlmProviderLogo
+            providerType={backend.llmProviderType ?? ""}
+            providerName={backend.llmProviderName ?? ""}
+            className="size-3.5 shrink-0"
+          />
+          <span className="truncate">{backend.llmProviderName}</span>
+          <span className="shrink-0 text-subtle-foreground" aria-hidden="true">
+            ›
+          </span>
+          <span className="truncate font-mono">
+            {backend.llmProviderModel || t("agentBackends.provider.noModel")}
+          </span>
+          <Badge
+            variant="secondary"
+            className={cn(
+              "shrink-0 rounded-sm px-1 py-0 text-2xs font-normal",
+              follow && "bg-primary-soft text-primary-text",
+            )}
+          >
+            {follow
+              ? t("agentBackends.binding.modeFollow")
+              : t("agentBackends.binding.modeFixed")}
+          </Badge>
+        </>
+      )}
+    </span>
+  );
+}
+
 function BackendRow({
   backend,
   testing,
@@ -780,25 +879,28 @@ function BackendRow({
   // 未关联 provider 的 CLI 后端 = 走 CLI 自身 login，不算需处理。
   const providerKey =
     (backend as unknown as { llmProviderKey?: string }).llmProviderKey ?? "";
-  const modelKey =
-    (backend as unknown as { llmModelKey?: string }).llmModelKey ?? "";
   const unlinkedCli = cliBased && providerKey === "";
   const warning = !openClaw && !unlinkedCli && !backend.llmProviderActive;
-  const bindingMode = modelKey === "" ? "provider-default" : "fixed";
+  const bindingVariant: BindingVariant = openClaw
+    ? "openclaw"
+    : unlinkedCli
+      ? "cli-login"
+      : warning
+        ? "invalid"
+        : "bound";
 
-  // 实现元数据与模型绑定拆层：类型 / 路径 / 引用留在弱化行，绑定摘要独立承载品牌、
-  // Provider、Model 和动态/固定语义。
-  const metaParts: string[] = [t(`agentBackends.backendType.${typ}.label`)];
-  if (openClaw && backend.openClawGatewayUrl) {
-    metaParts.push(backend.openClawGatewayUrl);
-  } else if (cliBased && backend.cliPath) {
-    metaParts.push(backend.cliPath);
-  }
-  metaParts.push(
+  // 类型回到名字旁的 chip;元数据行只留「绑定面包屑 · 运行位置 · 引用数」，一行说清
+  // 「绑了谁、在哪跑、谁在用」。
+  const metaTail: string[] = [
+    openClaw && backend.openClawGatewayUrl
+      ? backend.openClawGatewayUrl
+      : // deviceName 为空 = 未关联远端设备 = 跑在本机。
+        (backend.deviceName || "").trim() ||
+        t("agentBackends.device.localShort"),
     backend.agentCount > 0
       ? t("agentBackends.row.agentCount", { count: backend.agentCount })
       : t("agentBackends.row.unused"),
-  );
+  ];
 
   return (
     <div
@@ -811,39 +913,71 @@ function BackendRow({
     >
       <div className="flex min-w-0 items-center gap-2.5">
         <AgentBackendLogo backendType={typ} className="size-7 rounded-md" />
-        <span
-          data-selectable-text="true"
-          className="min-w-0 truncate text-sm font-semibold"
-        >
-          {backend.name}
-        </span>
-        {warning ? (
-          <Badge
-            variant="secondary"
-            className="shrink-0 rounded-sm bg-status-waiting-bg px-1.5 py-0 font-mono text-2xs text-status-waiting"
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span
+              data-selectable-text="true"
+              className="min-w-0 truncate text-sm font-semibold"
+            >
+              {backend.name}
+            </span>
+            <Badge
+              data-testid="backend-type-chip"
+              variant="secondary"
+              className="shrink-0 rounded-sm px-1.5 py-0 text-2xs font-normal"
+            >
+              {t(`agentBackends.backendType.${typ}.label`)}
+            </Badge>
+            {warning ? (
+              <Badge
+                variant="secondary"
+                className="shrink-0 rounded-sm bg-status-waiting-bg px-1.5 py-0 font-mono text-2xs text-status-waiting"
+              >
+                {t("agentBackends.row.needsAction")}
+              </Badge>
+            ) : null}
+          </div>
+          <div
+            data-testid="backend-meta"
+            className="flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground"
           >
-            {t("agentBackends.row.needsAction")}
-          </Badge>
-        ) : unlinkedCli ? (
-          <Badge
-            variant="secondary"
-            className="shrink-0 rounded-sm bg-secondary px-1.5 py-0 font-mono text-2xs text-secondary-foreground"
-          >
-            {t("agentBackends.row.cliLogin")}
-          </Badge>
-        ) : null}
-        <div className="ml-auto flex shrink-0 items-center gap-1">
+            <BackendRowBinding backend={backend} variant={bindingVariant} />
+            <span className="min-w-0 truncate">
+              {metaTail.map((part, i) => (
+                <React.Fragment key={i}>
+                  <span
+                    className="mx-1 text-subtle-foreground"
+                    aria-hidden="true"
+                  >
+                    ·
+                  </span>
+                  {part}
+                </React.Fragment>
+              ))}
+            </span>
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
           {!openClaw ? (
             <Button
               type="button"
               variant={warning ? "default" : "outline"}
               size="xs"
-              aria-label={t("agentBackends.actions.changeBindingNamed", {
-                name: backend.name,
-              })}
+              // 绑定已失效时这不是「换一个」而是「必须重选」，动词跟着状态走。
+              aria-label={
+                warning
+                  ? t("agentBackends.actions.rebindNamed", {
+                      name: backend.name,
+                    })
+                  : t("agentBackends.actions.changeBindingNamed", {
+                      name: backend.name,
+                    })
+              }
               onClick={onChangeBinding}
             >
-              {t("agentBackends.actions.changeBinding")}
+              {warning
+                ? t("agentBackends.actions.rebind")
+                : t("agentBackends.actions.changeBinding")}
             </Button>
           ) : null}
           <Button
@@ -902,93 +1036,6 @@ function BackendRow({
           >
             <Trash2 data-icon="only" aria-hidden="true" />
           </Button>
-        </div>
-      </div>
-      <div className="flex min-w-0 items-center gap-1.5 pl-[38px] font-mono text-2xs text-muted-foreground">
-        {metaParts.map((part, i) => (
-          <span key={i} className="min-w-0 truncate">
-            {i > 0 ? (
-              <span
-                className="mx-1.5 text-subtle-foreground"
-                aria-hidden="true"
-              >
-                ·
-              </span>
-            ) : null}
-            {part}
-          </span>
-        ))}
-      </div>
-      <div
-        className={cn(
-          "ml-[38px] flex min-w-0 items-center gap-2 rounded-md border px-2.5 py-2 text-xs",
-          warning
-            ? "border-status-waiting/40 bg-status-waiting-bg text-status-waiting"
-            : "border-border bg-secondary/40 text-foreground",
-        )}
-      >
-        {openClaw ? (
-          <LlmModelLogo
-            providerType="openclaw"
-            model={
-              backend.openClawDefaultModel ||
-              backend.openClawAgentId ||
-              "openclaw"
-            }
-            className="size-4"
-          />
-        ) : unlinkedCli ? (
-          <AgentBackendLogo backendType={typ} className="size-4" />
-        ) : (
-          <LlmProviderLogo
-            providerType={backend.llmProviderType ?? ""}
-            providerName={backend.llmProviderName ?? ""}
-            className="size-4"
-          />
-        )}
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          {openClaw ? (
-            <span className="truncate">
-              {backend.openClawDefaultModel ||
-                backend.openClawAgentId ||
-                t("agentBackends.openclaw.modelGatewayDefault")}
-            </span>
-          ) : unlinkedCli ? (
-            <span>{t("agentBackends.row.bindingCliLogin")}</span>
-          ) : warning ? (
-            <>
-              <span className="truncate font-medium">
-                {t("agentBackends.row.bindingInvalid")}
-              </span>
-              <span className="truncate text-2xs">
-                {t("agentBackends.row.bindingInvalidReason", {
-                  provider: backend.llmProviderName || providerKey,
-                  model: backend.llmProviderModel || modelKey,
-                })}
-              </span>
-            </>
-          ) : (
-            <div className="flex min-w-0 items-center gap-1.5">
-              <span className="truncate font-medium">
-                {backend.llmProviderName}
-              </span>
-              <span className="text-subtle-foreground" aria-hidden="true">
-                ·
-              </span>
-              <span className="truncate font-mono text-2xs">
-                {backend.llmProviderModel ||
-                  t("agentBackends.provider.noModel")}
-              </span>
-              <Badge
-                variant="secondary"
-                className="shrink-0 rounded-sm px-1.5 py-0 text-2xs"
-              >
-                {bindingMode === "provider-default"
-                  ? t("agentBackends.binding.modeFollow")
-                  : t("agentBackends.binding.modeFixed")}
-              </Badge>
-            </div>
-          )}
         </div>
       </div>
     </div>
@@ -2194,6 +2241,7 @@ function BackendEditor({
         <EffectiveConfigSummary
           type={type}
           deviceName={deviceDisplayName(deviceId)}
+          cliPath={cliBased ? cliPath : ""}
           resolvedMainTarget={resolvedMainTarget}
           customModel={defaultModel}
           routes={routes}
@@ -2585,9 +2633,17 @@ function ModelBindingSection({
       className="flex flex-col gap-3 rounded-lg border border-border bg-secondary/30 p-3"
     >
       <div className="flex flex-col gap-0.5">
-        <h3 className="text-xs font-semibold">
-          {t("agentBackends.binding.label")}
-        </h3>
+        {/* 区块标题就是这项配置的唯一标题，下面的 Picker 直接是它的第一项，不再重复一遍字段名。 */}
+        <div className="flex min-w-0 items-center gap-1.5">
+          <h3 className="text-xs font-semibold">
+            {t("agentBackends.binding.label")}
+          </h3>
+          {isCliBackend(type) ? (
+            <span className="font-mono text-2xs text-muted-foreground">
+              {t("agentBackends.provider.optionalSuffix")}
+            </span>
+          ) : null}
+        </div>
         <p className="text-2xs text-muted-foreground">
           {t("agentBackends.binding.description")}
         </p>
@@ -2695,11 +2751,6 @@ function ModelTargetField({
   if (empty && !optional) {
     return (
       <div className="flex flex-col gap-1.5 text-xs">
-        <div className="flex items-center justify-between">
-          <span className="font-medium">
-            {t("agentBackends.binding.label")}
-          </span>
-        </div>
         <Alert className="border-status-waiting/40 bg-status-waiting-bg text-xs">
           <AlertCircle className="size-4" aria-hidden="true" />
           <AlertTitle className="text-xs">
@@ -2718,16 +2769,6 @@ function ModelTargetField({
 
   return (
     <div className="flex flex-col gap-1.5 text-xs">
-      <div className="flex items-center justify-between">
-        <span className="font-medium">
-          {t("agentBackends.binding.label")}
-          {optional ? (
-            <span className="ml-1 font-mono text-2xs text-muted-foreground">
-              {t("agentBackends.provider.optionalSuffix")}
-            </span>
-          ) : null}
-        </span>
-      </div>
       {stale ? (
         <Alert className="border-status-waiting/40 bg-status-waiting-bg text-xs">
           <AlertCircle className="size-4" aria-hidden="true" />
@@ -2890,35 +2931,32 @@ function ModelRoutesField({
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        className="flex min-w-0 items-start justify-between gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+        className="flex min-w-0 items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
       >
-        <span className="flex min-w-0 items-start gap-1.5">
-          {open ? (
-            <ChevronDown
-              className="mt-0.5 size-3.5 shrink-0"
-              aria-hidden="true"
-            />
-          ) : (
-            <ChevronRight
-              className="mt-0.5 size-3.5 shrink-0"
-              aria-hidden="true"
-            />
-          )}
-          <span className="flex min-w-0 flex-col gap-0.5">
-            <span className="font-medium">
-              {t("agentBackends.modelRoutes.label")}
-            </span>
-            <span className="truncate text-2xs text-muted-foreground">
-              {summary}
-            </span>
-          </span>
+        {open ? (
+          <ChevronDown className="size-3.5 shrink-0" aria-hidden="true" />
+        ) : (
+          <ChevronRight className="size-3.5 shrink-0" aria-hidden="true" />
+        )}
+        {/* 标签不换行、摘要吃掉剩余宽度：默认状态下摘要才是这一行真正要读的内容。 */}
+        <span className="shrink-0 font-medium">
+          {t("agentBackends.modelRoutes.label")}
         </span>
-        <span className="shrink-0 font-mono text-2xs text-muted-foreground">
-          {t("agentBackends.modelRoutes.hint")}
+        <span className="min-w-0 flex-1 truncate text-2xs text-muted-foreground">
+          {summary}
         </span>
+        <Badge
+          variant="secondary"
+          className="shrink-0 rounded-sm px-1.5 py-0 text-2xs font-normal"
+        >
+          {t("agentBackends.modelRoutes.defaultChip")}
+        </Badge>
       </button>
       {open ? (
         <div className="flex flex-col gap-1.5 pt-1.5">
+          <p className="text-2xs text-muted-foreground">
+            {t("agentBackends.modelRoutes.hint")}
+          </p>
           {CLAUDE_TIERS.map((tier) => {
             const route = routes[tier] ?? { providerKey: "", modelKey: "" };
             const tierInvalid =
@@ -3072,6 +3110,7 @@ function ApprovalField({
 function EffectiveConfigSummary({
   type,
   deviceName,
+  cliPath,
   resolvedMainTarget,
   customModel,
   routes,
@@ -3082,6 +3121,7 @@ function EffectiveConfigSummary({
 }: {
   type: BackendType;
   deviceName: string;
+  cliPath: string;
   resolvedMainTarget: ResolvedModelTarget;
   customModel: string;
   routes: Record<ClaudeTier, RouteTarget>;
@@ -3123,22 +3163,26 @@ function EffectiveConfigSummary({
         "flex flex-col gap-2 rounded-lg border px-3 py-3 text-xs",
         saveBlockedReason
           ? "border-status-waiting/40 bg-status-waiting-bg"
-          : "border-primary-text/30 bg-primary-soft",
+          : "border-border bg-secondary/30",
       )}
     >
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="font-semibold">{t("agentBackends.summary.title")}</h3>
-        <Badge variant="secondary" className="rounded-sm px-1.5 py-0 text-2xs">
-          {saveBlockedReason
-            ? t("agentBackends.summary.cannotSave")
-            : t("agentBackends.summary.canSave")}
-        </Badge>
-      </div>
+      <h3 className="font-semibold">{t("agentBackends.summary.title")}</h3>
       <dl className="grid grid-cols-[110px_minmax(0,1fr)] gap-x-2 gap-y-1 text-2xs">
         <dt className="text-muted-foreground">
           {t("agentBackends.summary.runtime")}
         </dt>
-        <dd className="truncate">{deviceName}</dd>
+        {/* 运行位置要能回答「到底跑哪个可执行文件」，自定义 CLI 路径必须一起显示。 */}
+        <dd data-testid="summary-runtime" className="truncate">
+          {deviceName}
+          {cliPath.trim() !== "" ? (
+            <>
+              <span className="mx-1 text-subtle-foreground" aria-hidden="true">
+                ·
+              </span>
+              <span className="font-mono">{cliPath.trim()}</span>
+            </>
+          ) : null}
+        </dd>
         <dt className="text-muted-foreground">
           {t("agentBackends.summary.source")}
         </dt>
@@ -3176,13 +3220,20 @@ function EffectiveConfigSummary({
           {t("agentBackends.summary.referenceCount", { count: referenceCount })}
         </dd>
       </dl>
+      {/* 校验结论独立成一整行:通过时给正向确认，不通过时把原因说完整。 */}
       {saveBlockedReason ? (
-        <p className="text-2xs text-status-waiting">
+        <p className="flex items-center gap-1.5 rounded-md bg-status-waiting-bg px-2 py-1.5 text-2xs text-status-waiting">
+          <AlertCircle className="size-3 shrink-0" aria-hidden="true" />
           {t("agentBackends.summary.cannotSaveReason", {
             reason: saveBlockedReason,
           })}
         </p>
-      ) : null}
+      ) : (
+        <p className="flex items-center gap-1.5 rounded-md bg-status-running-bg px-2 py-1.5 text-2xs font-medium text-status-running">
+          <CheckCircle2 className="size-3 shrink-0" aria-hidden="true" />
+          {t("agentBackends.summary.saveReady")}
+        </p>
+      )}
     </section>
   );
 }

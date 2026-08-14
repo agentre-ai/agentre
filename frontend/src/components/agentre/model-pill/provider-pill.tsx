@@ -1,5 +1,5 @@
 import * as React from "react";
-import { GitBranch, Loader2, RefreshCw } from "lucide-react";
+import { Loader2, RefreshCw, UserRound } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
@@ -98,7 +98,7 @@ export function ProviderPill({
   const triggerSub = pillState.resolutionLabel || undefined;
   const triggerIcon =
     pillState.mode === "follow-agent" ? (
-      <GitBranch
+      <UserRound
         data-testid="follow-agent-icon"
         className="size-3.5 shrink-0 text-muted-foreground"
         aria-hidden="true"

@@ -187,6 +187,17 @@ export function ProviderWorkspace({
   }
   const refsText = refParts.join(" · ");
 
+  // 供应商删除与模型行同一条规则：做不到的操作在点击之前就禁用并写明原因。
+  // 引用计数未知（仍在加载）时不抢先禁用，弹窗会再复查一次。
+  const providerRefTotal = totalReferences(providerRefCounts);
+  const providerDeleteBlocked =
+    providerRefCounts !== null && providerRefTotal > 0;
+  const providerDeleteBlockedReason = providerDeleteBlocked
+    ? t("llmProviders.workspace.deleteBlockedReferenced", {
+        count: providerRefTotal,
+      })
+    : undefined;
+
   return (
     <div
       role="region"
@@ -205,11 +216,11 @@ export function ProviderWorkspace({
               baseUrl={provider.baseUrl}
               className="size-8 shrink-0 rounded-md"
             />
-            <div className="flex min-w-0 flex-col gap-0.5">
+            <div className="flex min-w-0 items-center gap-1.5">
               <span className="truncate text-sm font-semibold">
                 {provider.name}
               </span>
-              <span className="w-fit rounded-sm bg-secondary px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
+              <span className="shrink-0 rounded-sm bg-secondary px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
                 {meta
                   ? t(`llmProviders.providerType.${provider.type}.label`)
                   : provider.type}
@@ -309,6 +320,8 @@ export function ProviderWorkspace({
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   variant="destructive"
+                  disabled={providerDeleteBlocked}
+                  title={providerDeleteBlockedReason}
                   onSelect={onDeleteProvider}
                 >
                   <Trash2 className="size-3.5" aria-hidden="true" />
@@ -425,6 +438,21 @@ export function ProviderWorkspace({
               className="h-8 w-full rounded-md border border-input bg-transparent pl-8 pr-3 text-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
             />
           </div>
+          {/* 手动添加常驻工具栏：有模型之后也必须够得着 */}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 shrink-0 gap-1.5 px-3 text-xs"
+            onClick={onAddModel}
+          >
+            <Plus
+              className="size-3.5"
+              data-icon="inline-start"
+              aria-hidden="true"
+            />
+            {t("llmProviders.workspace.addModelManual")}
+          </Button>
           <span className="shrink-0 font-mono text-2xs text-muted-foreground">
             {t("llmProviders.workspace.modelCount", {
               shown: visible.length,
@@ -475,6 +503,7 @@ export function ProviderWorkspace({
           <p className="max-w-xs text-2xs leading-relaxed text-muted-foreground">
             {t("llmProviders.workspace.noModelsDescription")}
           </p>
+          {/* 手动添加已常驻工具栏，空态只留「发现模型」这一条主路径 */}
           <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
             <Button
               type="button"
@@ -489,20 +518,6 @@ export function ProviderWorkspace({
                 aria-hidden="true"
               />
               {t("llmProviders.workspace.discoverModels")}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-[30px] gap-1.5 px-3 text-xs"
-              onClick={onAddModel}
-            >
-              <Plus
-                className="size-3.5"
-                data-icon="inline-start"
-                aria-hidden="true"
-              />
-              {t("llmProviders.workspace.addModelManual")}
             </Button>
           </div>
         </div>
@@ -577,7 +592,11 @@ export function ProviderWorkspace({
                 return (
                   <TableRow
                     key={model.id}
-                    className="align-top hover:bg-accent/45"
+                    className={cn(
+                      "align-top hover:bg-accent/45",
+                      // 停用的模型整行压暗，与行内「已停用」徽标一起给出状态
+                      !model.enabled && "opacity-55",
+                    )}
                   >
                     <TableCell className="px-4 py-2.5">
                       <Checkbox
@@ -614,6 +633,11 @@ export function ProviderWorkspace({
                                 {t("llmProviders.modelsTable.defaultBadge")}
                               </span>
                             ) : null}
+                            {model.enabled ? null : (
+                              <span className="shrink-0 rounded-sm bg-status-waiting/10 px-1.5 py-0.5 text-2xs font-medium text-status-waiting">
+                                {t("llmProviders.modelsTable.disabled")}
+                              </span>
+                            )}
                           </span>
                           <span className="truncate font-mono text-2xs text-muted-foreground">
                             {model.modelId}

@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, Lock, Trash2 } from "lucide-react";
+import { AlertTriangle, Loader2, Lock, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -106,6 +106,8 @@ export function BatchDeleteDialog({
   }, [groups.deletable, onDone]);
 
   const deletableCount = groups.deletable.length;
+  const protectedCount = groups.protectedItems.length;
+  const selectedCount = deletableCount + protectedCount;
   const noneDeletable = deletableCount === 0;
 
   return (
@@ -117,9 +119,18 @@ export function BatchDeleteDialog({
     >
       <DialogContent className="max-w-[440px]">
         <DialogHeader>
-          <DialogTitle>{t("llmProviders.batchDelete.title")}</DialogTitle>
+          <DialogTitle>
+            {t("llmProviders.batchDelete.title", { count: selectedCount })}
+          </DialogTitle>
           <DialogDescription>
-            {t("llmProviders.batchDelete.description")}
+            {protectedCount > 0
+              ? t("llmProviders.batchDelete.descriptionWithProtected", {
+                  protectedCount,
+                  deletableCount,
+                })
+              : t("llmProviders.batchDelete.descriptionAllDeletable", {
+                  count: selectedCount,
+                })}
           </DialogDescription>
         </DialogHeader>
 
@@ -168,6 +179,15 @@ export function BatchDeleteDialog({
               </ul>
             </div>
           ) : null}
+
+          {/* 后端只有单条 DeleteLLMModel：逐个调用，不是事务，必须先说清楚 */}
+          <div className="flex items-start gap-2 rounded-md border border-status-waiting/40 bg-status-waiting/10 px-3 py-2.5 text-2xs leading-relaxed text-status-waiting">
+            <AlertTriangle
+              className="mt-0.5 size-3.5 shrink-0"
+              aria-hidden="true"
+            />
+            <span>{t("llmProviders.batchDelete.notTransactional")}</span>
+          </div>
         </DialogBody>
 
         <DialogFooter>

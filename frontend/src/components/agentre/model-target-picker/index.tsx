@@ -14,13 +14,14 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import {
+  AlertTriangle,
   Check,
   ChevronDown,
   GitBranch,
   Loader2,
+  Monitor,
   RefreshCw,
   Search,
-  ShieldAlert,
   Upload,
   X,
 } from "lucide-react";
@@ -77,6 +78,10 @@ export type ModelTargetPickerProps = {
   // 未传 = 本机（不启用远端门控）。传了以后，desktop 目录里在 daemon 上不存在的
   // Provider/Model 被禁用并标注「需同步」，绝不保存一个未经验证的远端目标。
   remoteCatalog?: PickerProvider[];
+  // deviceLabel：目标执行设备的人读名字。传了以后弹层顶部说明「在该设备上执行、以该设备
+  // 的配置为准」，并给设备上已有的供应商组打标记；未传（本机 / 消费方还没解析出名字）
+  // 时整块不渲染。
+  deviceLabel?: string;
   // specialSublabel：顶部特殊项的解析结果副行（chat/route 由消费方解析后传入，
   // 写出「供应商 · 模型」或「跟随该 Agent 绑定的供应商」）。backend 场景未传时
   // 回落「由 CLI 自身的登录账号决定」。
@@ -159,6 +164,7 @@ export function ModelTargetPicker({
   remoteMissing = false,
   supportsFixedModel = true,
   remoteCatalog,
+  deviceLabel,
   specialSublabel,
   onSyncProvider,
   footer,
@@ -214,6 +220,9 @@ export function ModelTargetPicker({
     for (const p of remoteCatalog) m.set(p.providerKey, p);
     return m;
   }, [remoteCatalog]);
+
+  // remoteGated：远端执行 + 已知 daemon 目录 → 组头标注「设备上已有」、行内同步入口生效。
+  const remoteGated = remoteByKey != null && executionLocation !== "";
 
   // 最近使用（按执行位置指纹隔离）。只展示当前 backend 兼容的项；失效项禁用并给原因。
   const recents = React.useMemo(() => {
@@ -430,6 +439,19 @@ export function ModelTargetPicker({
     return base.filter(match);
   }, [search, specialLabel, specialResolution, invalidOption, catalogOptions]);
 
+  // 同步入口落点：每个「本机独有 / 目录过期」的供应商，只在它第一条待修复的行内挂一个
+  // 「同步过去」，而不是在列表底部聚合。没有真实同步路由（未传 onSyncProvider）时一个都不挂。
+  const syncAnchorByProvider = React.useMemo(() => {
+    const anchors = new Map<string, string>();
+    if (!onSyncProvider) return anchors;
+    for (const o of flatOptions) {
+      if (o.disabledHint !== remoteSyncHint) continue;
+      if (anchors.has(o.target.providerKey)) continue;
+      anchors.set(o.target.providerKey, o.key);
+    }
+    return anchors;
+  }, [flatOptions, onSyncProvider, remoteSyncHint]);
+
   const showChips = search.trim() === "" && recents.length > 0;
 
   const handleRemoveRecent = React.useCallback(
@@ -495,6 +517,51 @@ export function ModelTargetPicker({
 
   const triggerText = triggerLabel ?? selectedLabel;
 
+  // 最近使用横条：紧跟在顶部特殊项之后、供应商分组之前（mockup 的列表次序），
+  // 自带「最近使用」标签，单行横向可移除 chip，不占竖列表位。
+  const recentChipsRow = showChips ? (
+    <li role="none" className="px-1 pt-1">
+      <div
+        data-testid="recent-chips"
+        className="flex flex-nowrap items-center gap-1 overflow-x-auto py-0.5"
+      >
+        <span className="shrink-0 pr-0.5 text-2xs uppercase tracking-wide text-subtle-foreground">
+          {t("modelTargetPicker.recentLabel")}
+        </span>
+        {recents.map((r) => (
+          <span
+            key={r.key}
+            className="flex shrink-0 items-center gap-0.5 rounded-full border border-border bg-secondary/40 px-1.5 py-0.5 text-2xs"
+          >
+            <button
+              type="button"
+              disabled={r.disabled}
+              title={r.title}
+              className="max-w-[10rem] truncate text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => {
+                if (r.disabled) return;
+                onChange(r.target);
+                setOpen(false);
+              }}
+            >
+              {r.label}
+            </button>
+            <button
+              type="button"
+              aria-label={t("modelTargetPicker.removeRecent", {
+                label: r.label,
+              })}
+              className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground"
+              onClick={() => handleRemoveRecent(r.target)}
+            >
+              <X className="size-3" aria-hidden="true" />
+            </button>
+          </span>
+        ))}
+      </div>
+    </li>
+  ) : null;
+
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
@@ -525,7 +592,7 @@ export function ModelTargetPicker({
         >
           <span className="flex min-w-0 items-center gap-1.5">
             {invalid ? (
-              <ShieldAlert
+              <AlertTriangle
                 className={cn("size-3.5 shrink-0 text-status-waiting")}
                 aria-hidden="true"
               />
@@ -568,13 +635,28 @@ export function ModelTargetPicker({
             data-testid="invalid-banner"
             className="flex items-start gap-2 border-b border-border bg-status-waiting-bg px-3 py-2 text-2xs text-status-waiting"
           >
-            <ShieldAlert
+            <AlertTriangle
               className="mt-px size-3.5 shrink-0"
               aria-hidden="true"
             />
             <span>
               {t("modelTargetPicker.invalidTarget", {
                 target: selected ? resolveTargetLabel(selected, catalog) : "",
+              })}
+            </span>
+          </div>
+        ) : null}
+
+        {/* 远端场景：说明以目标设备的配置为准（未传设备名 = 本机，不渲染）。 */}
+        {deviceLabel ? (
+          <div
+            data-testid="remote-device-header"
+            className="flex items-center gap-1.5 border-b border-border px-3 py-2 text-2xs text-muted-foreground"
+          >
+            <Monitor className="size-3.5 shrink-0" aria-hidden="true" />
+            <span className="truncate">
+              {t("modelTargetPicker.remoteDeviceHeader", {
+                device: deviceLabel,
               })}
             </span>
           </div>
@@ -649,53 +731,25 @@ export function ModelTargetPicker({
                   (i === 0 ||
                     flatOptions[i - 1].kind !== "fixed" ||
                     flatOptions[i - 1].group !== opt.group);
+                // 远端：组头标注该供应商在目标设备上已存在（不代表模型齐全，行内另有原因）。
+                const groupOnDevice =
+                  remoteGated && remoteByKey.has(opt.target.providerKey);
+                // 行内同步入口：只挂在该供应商第一条待同步的行上。
+                const syncProvider =
+                  syncAnchorByProvider.get(opt.target.providerKey) === opt.key
+                    ? compatible.find(
+                        (p) => p.providerKey === opt.target.providerKey,
+                      )
+                    : undefined;
                 return (
                   <React.Fragment key={opt.key}>
-                    {opt.kind === "special" && showChips ? (
-                      <li role="none" className="px-1 pt-1">
-                        <div
-                          data-testid="recent-chips"
-                          className="flex flex-nowrap items-center gap-1 overflow-x-auto py-0.5"
-                        >
-                          {recents.map((r) => (
-                            <span
-                              key={r.key}
-                              className="flex shrink-0 items-center gap-0.5 rounded-full border border-border bg-secondary/40 px-1.5 py-0.5 text-2xs"
-                            >
-                              <button
-                                type="button"
-                                disabled={r.disabled}
-                                title={r.title}
-                                className="max-w-[10rem] truncate text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                                onClick={() => {
-                                  if (r.disabled) return;
-                                  onChange(r.target);
-                                  setOpen(false);
-                                }}
-                              >
-                                {r.label}
-                              </button>
-                              <button
-                                type="button"
-                                aria-label={t(
-                                  "modelTargetPicker.removeRecent",
-                                  {
-                                    label: r.label,
-                                  },
-                                )}
-                                className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground"
-                                onClick={() => handleRemoveRecent(r.target)}
-                              >
-                                <X className="size-3" aria-hidden="true" />
-                              </button>
-                            </span>
-                          ))}
-                        </div>
-                      </li>
-                    ) : null}
                     <li role="none">
                       {showGroup ? (
-                        <div className="sticky top-0 z-10 flex items-center gap-1.5 bg-background px-2.5 pb-0.5 pt-2 text-2xs font-medium uppercase tracking-wide text-subtle-foreground">
+                        <div
+                          data-testid="picker-group"
+                          data-provider-key={opt.target.providerKey}
+                          className="sticky top-0 z-10 flex items-center gap-1.5 bg-background px-2.5 pb-0.5 pt-2 text-2xs font-medium uppercase tracking-wide text-subtle-foreground"
+                        >
                           {opt.groupType ? (
                             <LlmProviderLogo
                               providerType={opt.groupType}
@@ -704,6 +758,11 @@ export function ModelTargetPicker({
                             />
                           ) : null}
                           <span>{opt.group}</span>
+                          {groupOnDevice ? (
+                            <span className="ml-auto rounded-full bg-status-running-bg px-1.5 py-0.5 text-2xs font-medium normal-case tracking-normal text-status-running">
+                              {t("modelTargetPicker.providerOnDevice")}
+                            </span>
+                          ) : null}
                         </div>
                       ) : null}
                       {showFixedSection ? (
@@ -711,103 +770,142 @@ export function ModelTargetPicker({
                           {t("modelTargetPicker.fixedSection")}
                         </div>
                       ) : null}
-                      <button
-                        type="button"
-                        role="option"
-                        aria-selected={selectedNow}
-                        aria-disabled={opt.disabled}
-                        data-option-index={i}
-                        data-kind={opt.kind}
-                        disabled={opt.disabled}
-                        title={
-                          opt.kind === "invalid"
-                            ? t("modelTargetPicker.invalidHint")
-                            : opt.disabledHint
-                        }
-                        onMouseEnter={() => setActiveIndex(i)}
-                        onClick={() => {
-                          if (opt.disabled) return;
-                          onChange(opt.target);
-                          setOpen(false);
-                        }}
-                        className={cn(
-                          "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
-                          "focus-visible:outline-none",
-                          active
-                            ? "bg-accent"
-                            : opt.kind === "provider-default"
-                              ? "bg-secondary"
-                              : "hover:bg-accent/60",
-                          "disabled:cursor-not-allowed disabled:opacity-50",
-                        )}
-                      >
-                        <span className="flex min-w-0 flex-1 items-center gap-2">
-                          {opt.kind === "special" ? (
-                            <GitBranch
-                              className="size-3.5 shrink-0 text-muted-foreground"
-                              aria-hidden="true"
-                            />
-                          ) : opt.kind === "invalid" ? (
-                            <ShieldAlert
-                              className="size-3.5 shrink-0 text-status-waiting"
-                              aria-hidden="true"
-                            />
-                          ) : opt.kind === "provider-default" ? (
-                            <RefreshCw
-                              data-testid="provider-default-icon"
-                              className="size-3.5 shrink-0 text-primary-text"
-                              aria-hidden="true"
-                            />
-                          ) : opt.kind === "fixed" && opt.modelId ? (
-                            <LlmModelLogo
-                              model={opt.modelId}
-                              providerType={opt.groupType ?? ""}
-                              providerName={opt.group}
-                              className="size-4"
-                            />
-                          ) : null}
-                          <span className="flex min-w-0 flex-1 flex-col">
-                            <span
-                              className={cn(
-                                "truncate",
-                                opt.kind === "special"
-                                  ? "font-medium text-foreground"
-                                  : "text-foreground",
-                              )}
-                            >
-                              {opt.label}
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={selectedNow}
+                          aria-disabled={opt.disabled}
+                          data-option-index={i}
+                          data-kind={opt.kind}
+                          disabled={opt.disabled}
+                          title={
+                            opt.kind === "invalid"
+                              ? t("modelTargetPicker.invalidHint")
+                              : opt.disabledHint
+                          }
+                          onMouseEnter={() => setActiveIndex(i)}
+                          onClick={() => {
+                            if (opt.disabled) return;
+                            onChange(opt.target);
+                            setOpen(false);
+                          }}
+                          className={cn(
+                            "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
+                            "focus-visible:outline-none",
+                            // 核心语义分歧：跟随默认（动态）用 primary-soft 强调底，
+                            // 固定到具体模型保持中性底，两态一眼可分。
+                            opt.kind === "provider-default"
+                              ? cn(
+                                  "bg-primary-soft",
+                                  active && "ring-1 ring-ring/40",
+                                )
+                              : opt.kind === "invalid"
+                                ? "border border-dashed border-status-waiting/60"
+                                : active
+                                  ? "bg-accent"
+                                  : "hover:bg-accent/60",
+                            "disabled:cursor-not-allowed disabled:opacity-50",
+                          )}
+                        >
+                          <span className="flex min-w-0 flex-1 items-center gap-2">
+                            {opt.kind === "special" ? (
+                              <GitBranch
+                                className="size-3.5 shrink-0 text-muted-foreground"
+                                aria-hidden="true"
+                              />
+                            ) : opt.kind === "invalid" ? (
+                              <AlertTriangle
+                                className="size-3.5 shrink-0 text-status-waiting"
+                                aria-hidden="true"
+                              />
+                            ) : opt.kind === "provider-default" ? (
+                              <RefreshCw
+                                data-testid="provider-default-icon"
+                                className="size-3.5 shrink-0 text-primary-text"
+                                aria-hidden="true"
+                              />
+                            ) : opt.kind === "fixed" && opt.modelId ? (
+                              <LlmModelLogo
+                                model={opt.modelId}
+                                providerType={opt.groupType ?? ""}
+                                providerName={opt.group}
+                                className="size-4"
+                              />
+                            ) : null}
+                            <span className="flex min-w-0 flex-1 flex-col">
+                              <span
+                                className={cn(
+                                  "truncate",
+                                  opt.kind === "special"
+                                    ? "font-medium text-foreground"
+                                    : opt.kind === "provider-default"
+                                      ? "font-medium text-primary-text"
+                                      : "text-foreground",
+                                )}
+                              >
+                                {opt.label}
+                              </span>
+                              {opt.sublabel ? (
+                                <span className="truncate font-mono text-2xs text-muted-foreground">
+                                  {opt.sublabel}
+                                </span>
+                              ) : null}
+                              {opt.kind === "invalid" ? (
+                                <span className="truncate text-2xs text-status-waiting">
+                                  {t("modelTargetPicker.invalidCurrent")}
+                                </span>
+                              ) : null}
+                              {opt.disabled &&
+                              opt.disabledHint &&
+                              opt.kind !== "invalid" ? (
+                                <span className="truncate text-2xs text-status-waiting">
+                                  {opt.disabledHint}
+                                </span>
+                              ) : null}
                             </span>
-                            {opt.sublabel ? (
-                              <span className="truncate font-mono text-2xs text-muted-foreground">
-                                {opt.sublabel}
+                            {opt.kind === "invalid" ? (
+                              <span className="shrink-0 rounded-full bg-status-waiting-bg px-1.5 py-0.5 text-2xs font-medium text-status-waiting">
+                                {t("modelTargetPicker.invalidChip")}
                               </span>
                             ) : null}
-                            {opt.disabled &&
-                            opt.disabledHint &&
-                            opt.kind !== "invalid" ? (
-                              <span className="truncate text-2xs text-status-waiting">
-                                {opt.disabledHint}
+                            {opt.kind === "fixed" &&
+                            (opt.contextWindow || opt.maxOutput) ? (
+                              <span className="shrink-0 font-mono text-2xs text-muted-foreground">
+                                {t("modelTargetPicker.contextOutput", {
+                                  ctx: formatTokens(opt.contextWindow ?? 0),
+                                  out: formatTokens(opt.maxOutput ?? 0),
+                                })}
                               </span>
                             ) : null}
                           </span>
-                          {opt.kind === "fixed" &&
-                          (opt.contextWindow || opt.maxOutput) ? (
-                            <span className="shrink-0 font-mono text-2xs text-muted-foreground">
-                              {t("modelTargetPicker.contextOutput", {
-                                ctx: formatTokens(opt.contextWindow ?? 0),
-                                out: formatTokens(opt.maxOutput ?? 0),
-                              })}
-                            </span>
+                          {selectedNow ? (
+                            <Check
+                              className="size-3.5 shrink-0 text-primary-text"
+                              aria-hidden="true"
+                            />
                           ) : null}
-                        </span>
-                        {selectedNow ? (
-                          <Check
-                            className="size-3.5 shrink-0 text-primary-text"
-                            aria-hidden="true"
-                          />
+                        </button>
+                        {/* 同步入口就放在它会修复的那一行内（消费方负责确认与凭证复制）。 */}
+                        {syncProvider && onSyncProvider ? (
+                          <button
+                            type="button"
+                            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-1.5 py-1 text-2xs text-primary-text transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                            aria-label={t(
+                              "modelTargetPicker.syncProviderNamed",
+                              {
+                                provider: syncProvider.name,
+                              },
+                            )}
+                            onClick={() => onSyncProvider(syncProvider)}
+                          >
+                            <Upload className="size-3" aria-hidden="true" />
+                            {t("modelTargetPicker.syncInline")}
+                          </button>
                         ) : null}
-                      </button>
+                      </div>
                     </li>
+                    {opt.kind === "special" ? recentChipsRow : null}
                   </React.Fragment>
                 );
               })}
@@ -815,37 +913,13 @@ export function ModelTargetPicker({
           ) : null}
         </div>
 
-        {remoteByKey != null &&
-        executionLocation !== "" &&
-        catalogOptions.some((o) => o.disabledHint) ? (
-          <div className="flex flex-col gap-2 border-t border-border bg-secondary px-3 py-2 text-2xs text-muted-foreground">
+        {remoteGated && catalogOptions.some((o) => o.disabledHint) ? (
+          <div className="flex flex-col gap-1 border-t border-border bg-secondary px-3 py-2 text-2xs text-muted-foreground">
             <span>{t("modelTargetPicker.remoteGateHint")}</span>
-            {onSyncProvider
-              ? compatible
-                  .filter((provider) =>
-                    catalogOptions.some(
-                      (option) =>
-                        option.target.providerKey === provider.providerKey &&
-                        option.disabledHint === remoteSyncHint,
-                    ),
-                  )
-                  .map((provider) => (
-                    <button
-                      key={provider.providerKey}
-                      type="button"
-                      className="inline-flex w-fit items-center gap-1 rounded text-primary-text underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-                      aria-label={t("modelTargetPicker.syncProviderNamed", {
-                        provider: provider.name,
-                      })}
-                      onClick={() => onSyncProvider(provider)}
-                    >
-                      <Upload className="size-3" aria-hidden="true" />
-                      {t("modelTargetPicker.syncProvider", {
-                        provider: provider.name,
-                      })}
-                    </button>
-                  ))
-              : null}
+            {/* 同步按钮在行内；这里只承诺「同步会复制 API Key、需要明确确认」。 */}
+            {onSyncProvider ? (
+              <span>{t("modelTargetPicker.syncFootnote")}</span>
+            ) : null}
           </div>
         ) : null}
         {remoteMissing ? (
