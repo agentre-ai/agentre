@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/cago-frame/cago/pkg/utils/httputils"
 	"github.com/google/uuid"
 	"github.com/smartystreets/goconvey/convey"
@@ -150,6 +151,39 @@ func TestCreateProvider(t *testing.T) {
 		convey.Convey("不支持的类型被拒绝", func() {
 			_, err := svc.Create(ctx, &CreateProviderRequest{Type: "google", Name: "x"})
 			assertCode(t, err, code.LLMProviderInvalidType)
+		})
+	})
+}
+
+func TestListProviders(t *testing.T) {
+	convey.Convey("List providers", t, func() {
+		ctx, mockRepo, _, svc := setupSvcTest(t)
+
+		convey.Convey("返回全部供应商并按 provider 计数填充 ModelCount", func() {
+			mockRepo.EXPECT().List(gomock.Any()).Return([]*llm_provider_entity.LLMProvider{
+				{ID: 1, ProviderKey: "pk-1", Name: "one", Status: consts.ACTIVE},
+				{ID: 2, ProviderKey: "pk-2", Name: "two", Status: consts.ACTIVE},
+			}, nil)
+			mockRepo.EXPECT().CountModelsByProvider(gomock.Any(), []int64{1, 2}).
+				Return(map[int64]int64{1: 3, 2: 0}, nil).
+				Times(1)
+
+			resp, err := svc.List(ctx, &ListProvidersRequest{})
+			assert.NoError(t, err)
+			assert.Len(t, resp.Items, 2)
+			assert.Equal(t, int64(3), resp.Items[0].ModelCount)
+			assert.Equal(t, int64(0), resp.Items[1].ModelCount)
+		})
+
+		convey.Convey("计数查询失败时透传错误", func() {
+			mockRepo.EXPECT().List(gomock.Any()).Return([]*llm_provider_entity.LLMProvider{
+				{ID: 1, ProviderKey: "pk-1", Name: "one", Status: consts.ACTIVE},
+			}, nil)
+			mockRepo.EXPECT().CountModelsByProvider(gomock.Any(), []int64{1}).
+				Return(nil, errors.New("count boom"))
+
+			_, err := svc.List(ctx, &ListProvidersRequest{})
+			assert.EqualError(t, err, "count boom")
 		})
 	})
 }

@@ -14,12 +14,17 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { TooltipProvider } from "@/components/ui/tooltip";
+import i18n from "@/i18n";
+
 const appMocks = vi.hoisted(() => ({
   ListLLMProviders: vi.fn(),
   ListLLMModels: vi.fn().mockResolvedValue({ items: [] }),
   SetChatSessionModelTarget: vi.fn(),
+  RemoteDeviceFingerprint: vi.fn().mockResolvedValue("sha256:local-desktop"),
   RemoteDeviceList: vi.fn().mockResolvedValue([]),
   RemoteDeviceListProviders: vi.fn().mockResolvedValue([]),
+  RemoteDeviceSyncProvider: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../../../../wailsjs/go/app/App", () => appMocks);
@@ -31,14 +36,21 @@ import {
   useProviderPill,
 } from "../model-pill";
 import { recentStorageKey } from "../model-target-picker/recents";
+import {
+  TranscriptRenderContext,
+  TranscriptRowView,
+} from "../transcript-row-view";
 import type { UseProviderPillOptions } from "../model-pill";
+import type { TranscriptRow } from "../transcript-rows";
 
 beforeEach(() => {
   vi.clearAllMocks();
   appMocks.ListLLMProviders.mockResolvedValue({ items: [] });
   appMocks.ListLLMModels.mockResolvedValue({ items: [] });
+  appMocks.RemoteDeviceFingerprint.mockResolvedValue("sha256:local-desktop");
   appMocks.RemoteDeviceList.mockResolvedValue([]);
   appMocks.RemoteDeviceListProviders.mockResolvedValue([]);
+  appMocks.RemoteDeviceSyncProvider.mockResolvedValue(undefined);
 });
 
 function Harness(props: UseProviderPillOptions) {
@@ -52,6 +64,65 @@ function deferred<T>() {
     resolve = r;
   });
   return { promise, resolve };
+}
+
+function providerDefaultOption(listbox: HTMLElement, index = 0) {
+  return within(listbox).getAllByRole("option", {
+    name: /Follow this provider's default/i,
+  })[index];
+}
+
+type SwitchNotice = {
+  providerKey: string;
+  providerName?: string;
+  modelKey?: string;
+  modelName?: string;
+};
+
+function renderSwitchNotice(block: SwitchNotice) {
+  const row = {
+    key: "message:9:notice:0",
+    messageId: 9,
+    message: {
+      id: 9,
+      role: "assistant",
+      blocks: [{ type: "notice", noticeKind: "switch", ...block }],
+      createtime: 0,
+      durationMs: 0,
+      model: "",
+      promptTokens: 0,
+      completionTokens: 0,
+      cachedTokens: 0,
+      cacheCreationTokens: 0,
+      reasoningTokens: 0,
+    },
+    item: {
+      type: "notice",
+      uiStateKey: "message:9:notice:0",
+      block: { type: "notice", noticeKind: "switch", ...block },
+    },
+    isFirstOfMessage: true,
+    isLastOfMessage: true,
+    autonomous: false,
+  } as unknown as TranscriptRow;
+
+  render(
+    <TooltipProvider>
+      <TranscriptRenderContext.Provider
+        value={{ agentName: "Agentre", agentColor: "agent-1", sessionId: 42 }}
+      >
+        <TranscriptRowView
+          row={row}
+          liveTail=""
+          liveBlocks={undefined}
+          liveRetry={null}
+          showIndicator={false}
+          compacting={false}
+          reconnecting={false}
+        />
+      </TranscriptRenderContext.Provider>
+    </TooltipProvider>,
+  );
 }
 
 const ANTHROPIC_PROVIDER = {
@@ -165,15 +236,10 @@ describe("ProviderPill · 新建会话 ModelTarget 选择器", () => {
     await user.click(pill);
 
     const listbox = screen.getByRole("listbox");
-    expect(
-      within(listbox).getByRole("option", { name: /Acme Claude/ }),
-    ).toBeInTheDocument();
-    expect(
-      within(listbox).queryByRole("option", { name: /Acme Chat/ }),
-    ).not.toBeInTheDocument();
-    expect(
-      within(listbox).queryByRole("option", { name: /Acme Resp/ }),
-    ).not.toBeInTheDocument();
+    expect(providerDefaultOption(listbox)).toBeInTheDocument();
+    expect(within(listbox).getByText("Acme Claude")).toBeInTheDocument();
+    expect(within(listbox).queryByText("Acme Chat")).not.toBeInTheDocument();
+    expect(within(listbox).queryByText("Acme Resp")).not.toBeInTheDocument();
   });
 
   it("builtin 弹层列出全部供应商", async () => {
@@ -188,14 +254,13 @@ describe("ProviderPill · 新建会话 ModelTarget 选择器", () => {
 
     const listbox = screen.getByRole("listbox");
     expect(
-      within(listbox).getByRole("option", { name: /Acme Claude/ }),
-    ).toBeInTheDocument();
-    expect(
-      within(listbox).getByRole("option", { name: /Acme Chat/ }),
-    ).toBeInTheDocument();
-    expect(
-      within(listbox).getByRole("option", { name: /Acme Resp/ }),
-    ).toBeInTheDocument();
+      within(listbox).getAllByRole("option", {
+        name: /Follow this provider's default/i,
+      }),
+    ).toHaveLength(3);
+    expect(within(listbox).getByText("Acme Claude")).toBeInTheDocument();
+    expect(within(listbox).getByText("Acme Chat")).toBeInTheDocument();
+    expect(within(listbox).getByText("Acme Resp")).toBeInTheDocument();
   });
 
   it("未绑 agent（CLI 登录态）也显示选择器，顶部特殊项为「跟随 agent 绑定」", async () => {
@@ -219,14 +284,13 @@ describe("ProviderPill · 新建会话 ModelTarget 选择器", () => {
     expect(follow).toHaveAttribute("aria-selected", "true");
     // 兼容供应商仍全部列出。
     expect(
-      within(listbox).getByRole("option", { name: /Acme Claude/ }),
-    ).toBeInTheDocument();
-    expect(
-      within(listbox).getByRole("option", { name: /Acme Chat/ }),
-    ).toBeInTheDocument();
-    expect(
-      within(listbox).getByRole("option", { name: /Acme Resp/ }),
-    ).toBeInTheDocument();
+      within(listbox).getAllByRole("option", {
+        name: /Follow this provider's default/i,
+      }),
+    ).toHaveLength(3);
+    expect(within(listbox).getByText("Acme Claude")).toBeInTheDocument();
+    expect(within(listbox).getByText("Acme Chat")).toBeInTheDocument();
+    expect(within(listbox).getByText("Acme Resp")).toBeInTheDocument();
   });
 
   it("选中 provider-default → pill 显示供应商名 · 当前默认模型；点「跟随 agent 绑定」清回", async () => {
@@ -369,6 +433,189 @@ describe("ProviderPill · 新建会话 ModelTarget 选择器", () => {
       ),
     ).toBeInTheDocument();
   });
+
+  it("chat 弹层给出两条互不替代的说明：列表上方 ↻ 图例（会不会变）+ 底部「自下一轮生效」（何时生效）", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({ items: ALL_PROVIDERS });
+    render(<Harness backendType="builtin" />);
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+
+    const user = userEvent.setup();
+    await user.click(pill);
+
+    const legend = await screen.findByTestId("dynamic-legend");
+    expect(legend).toHaveTextContent(
+      "Follow this provider's default — can change from the next turn; a fixed model never changes.",
+    );
+    const switchNote = screen.getByText(
+      "Switching takes effect from the next turn; the turn in progress is unaffected",
+    );
+    // 两条说的是不同的事，谁都不能顶掉谁；且不叠成一堵字墙 —— 图例贴着它解释的选项列表，
+    // 切换说明留在弹层底部。
+    const list = screen.getByRole("listbox");
+    expect(
+      legend.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      list.compareDocumentPosition(switchNote) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("Given a new session follows an agent provider without a model key, when the catalog resolves a default, then the pill promises only that provider", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER],
+    });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [model("mk-sonnet", "claude-sonnet-4-5")],
+    });
+
+    render(
+      <Harness backendType="claudecode" boundProviderKey="acme-anthropic" />,
+    );
+
+    const pill = await screen.findByTestId("provider-pill");
+    await waitFor(() => expect(pill).not.toBeDisabled());
+
+    expect(pill).toHaveTextContent("Follow agent binding");
+    expect(pill).toHaveTextContent("Acme Claude");
+    expect(pill).not.toHaveTextContent("claude-sonnet-4-5");
+    const followAgentIcon = screen.getByTestId("follow-agent-icon");
+    expect(followAgentIcon).toBeInTheDocument();
+    // Mockup uses a plain person silhouette (no brand/VCS glyph) for the
+    // follow-agent state — must not render lucide's GitBranch icon.
+    expect(followAgentIcon).toHaveClass("lucide-user-round");
+    expect(followAgentIcon).not.toHaveClass("lucide-git-branch");
+  });
+});
+
+describe("ProviderPill · Composer 四态", () => {
+  it("Given an existing session follows an agent fixed binding, when the bound model resolves, then the pill shows the follow marker and resolved model", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER],
+    });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [model("mk-sonnet", "claude-sonnet-4-5")],
+    });
+
+    render(
+      <Harness
+        backendType="claudecode"
+        sessionId={42}
+        boundProviderKey="acme-anthropic"
+        boundModelKey="mk-sonnet"
+      />,
+    );
+
+    const pill = await screen.findByTestId("provider-pill");
+    await waitFor(() => expect(pill).toHaveTextContent("claude-sonnet-4-5"));
+    expect(pill).toHaveTextContent("Follow agent binding");
+    expect(screen.getByTestId("follow-agent-icon")).toBeInTheDocument();
+  });
+
+  it("Given an existing session follows an agent provider default, when the default resolves, then the pill shows the resolved model with a dynamic marker", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER],
+    });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [model("mk-sonnet", "claude-sonnet-4-5")],
+    });
+
+    render(
+      <Harness
+        backendType="claudecode"
+        sessionId={42}
+        boundProviderKey="acme-anthropic"
+        boundModelKey=""
+      />,
+    );
+
+    const pill = await screen.findByTestId("provider-pill");
+    await waitFor(() => expect(pill).toHaveTextContent("claude-sonnet-4-5"));
+    expect(pill).toHaveTextContent("Follow agent binding");
+    expect(
+      screen.getByTestId("provider-pill-dynamic-icon"),
+    ).toBeInTheDocument();
+  });
+
+  it("Given provider-default is selected, when the default resolves, then the pill shows the model logo and dynamic marker", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({ items: [RESPONSE_PROVIDER] });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [
+        model("mk-gpt5-default", "gpt-5"),
+        model("mk-fixed", "gpt-5-codex"),
+      ],
+    });
+
+    render(
+      <Harness
+        backendType="codex"
+        sessionId={42}
+        persistedProviderKey="acme-response"
+      />,
+    );
+
+    const pill = await screen.findByTestId("provider-pill");
+    await waitFor(() => expect(pill).toHaveTextContent("gpt-5"));
+    expect(pill).toHaveTextContent("Follow provider default");
+    expect(
+      screen.getByTestId("provider-pill-dynamic-icon"),
+    ).toBeInTheDocument();
+    expect(
+      within(pill).getByRole("img", { name: "OpenAI" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Given a fixed model is selected, when it resolves, then the pill marks it fixed without a dynamic icon", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({ items: [RESPONSE_PROVIDER] });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [
+        model("mk-gpt5-default", "gpt-5"),
+        model("mk-fixed", "gpt-5-codex"),
+      ],
+    });
+
+    render(
+      <Harness
+        backendType="codex"
+        sessionId={42}
+        persistedProviderKey="acme-response"
+        persistedModelKey="mk-fixed"
+      />,
+    );
+
+    const pill = await screen.findByTestId("provider-pill");
+    await waitFor(() => expect(pill).toHaveTextContent("gpt-5-codex"));
+    expect(pill).toHaveTextContent("Fixed model");
+    expect(
+      screen.queryByTestId("provider-pill-dynamic-icon"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Given the selected model is missing, when the catalog finishes loading, then the pill keeps the target and labels it no longer valid", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER],
+    });
+    appMocks.ListLLMModels.mockResolvedValue({ items: [] });
+
+    render(
+      <Harness
+        backendType="claudecode"
+        sessionId={42}
+        persistedProviderKey="acme-anthropic"
+        persistedModelKey="mk-deleted"
+      />,
+    );
+
+    const pill = await screen.findByTestId("provider-pill");
+    await waitFor(() => expect(pill).toHaveTextContent("mk-deleted"));
+    expect(pill).toHaveTextContent("No longer valid");
+    expect(pill).toHaveClass(
+      "border-status-waiting/60",
+      "bg-status-waiting-bg",
+    );
+  });
 });
 
 describe("ProviderPill · 已有会话（决策 1/9/10：选择立即持久化 + 切换 notice）", () => {
@@ -418,11 +665,7 @@ describe("ProviderPill · 已有会话（决策 1/9/10：选择立即持久化 +
 
     const user = userEvent.setup();
     await user.click(pill);
-    await user.click(
-      within(screen.getByRole("listbox")).getByRole("option", {
-        name: /Acme Claude/,
-      }),
-    );
+    await user.click(providerDefaultOption(screen.getByRole("listbox")));
 
     expect(appMocks.SetChatSessionModelTarget).toHaveBeenCalledWith({
       sessionId: 42,
@@ -493,11 +736,7 @@ describe("ProviderPill · 已有会话（决策 1/9/10：选择立即持久化 +
 
     const user = userEvent.setup();
     await user.click(pill);
-    await user.click(
-      within(screen.getByRole("listbox")).getByRole("option", {
-        name: /Acme Claude/,
-      }),
-    );
+    await user.click(providerDefaultOption(screen.getByRole("listbox")));
 
     await waitFor(() =>
       expect(screen.getByTestId("provider-pill")).toHaveTextContent(
@@ -572,6 +811,42 @@ describe("ProviderPill · 已有会话（决策 1/9/10：选择立即持久化 +
   });
 });
 
+describe("ProviderPill · switch transcript notice", () => {
+  it.each([
+    [
+      "fixed",
+      {
+        providerKey: "acme-anthropic",
+        providerName: "Acme Claude",
+        modelKey: "mk-sonnet",
+        modelName: "claude-sonnet-4-5",
+      },
+      "Fixed model",
+    ],
+    [
+      "provider-default",
+      { providerKey: "acme-anthropic", providerName: "Acme Claude" },
+      "Follow provider default",
+    ],
+    ["agent", { providerKey: "" }, "Follow agent binding"],
+  ])(
+    "Given a successful %s switch, when its notice renders, then it uses the same mode wording as the pill",
+    (_mode, block, wording) => {
+      renderSwitchNotice(block);
+
+      const notice = screen.getByTestId("transcript-notice");
+      expect(notice).toHaveTextContent(wording);
+      expect(i18n.t("providerPill.mode.fixed")).toBe("Fixed model");
+      expect(i18n.t("providerPill.mode.followDefault")).toBe(
+        "Follow provider default",
+      );
+      expect(i18n.t("modelTargetPicker.special.chat")).toBe(
+        "Follow agent binding",
+      );
+    },
+  );
+});
+
 describe("ProviderPill · 远端执行（gap 1：chat Picker 接收 daemon 能力/目录门控）", () => {
   it("远端 daemon 支持 llm-model-target-v1 且目录含 Provider → 该 provider 可选；desktop 独有 Provider 禁用 + 需同步提示", async () => {
     appMocks.ListLLMProviders.mockResolvedValue({
@@ -595,10 +870,7 @@ describe("ProviderPill · 远端执行（gap 1：chat Picker 接收 daemon 能�
 
     const listbox = screen.getByRole("listbox");
     // daemon 目录里有 acme-anthropic → provider-default 可选（首项）。
-    const claudeOptions = within(listbox).getAllByRole("option", {
-      name: /Acme Claude/,
-    });
-    expect(claudeOptions[0]).not.toBeDisabled();
+    expect(providerDefaultOption(listbox)).not.toBeDisabled();
     // 不在 daemon 模型目录里的 fixed-model（claude-opus-4-5）→ 需同步禁用。
     const opusOptions = within(listbox).getAllByRole("option", {
       name: /claude-opus-4-5/,
@@ -611,22 +883,225 @@ describe("ProviderPill · 远端执行（gap 1：chat Picker 接收 daemon 能�
         "Local only — sync to this device first",
       );
     }
-    // desktop 独有的 Provider（Acme Chat）→ 全部目标（default + fixed）需同步禁用。
-    const chatOptions = within(listbox).getAllByRole("option", {
-      name: /Acme Chat/,
-    });
-    expect(chatOptions.length).toBeGreaterThan(0);
-    for (const chat of chatOptions) {
-      expect(chat).toHaveAttribute("aria-disabled", "true");
-      expect(chat).toHaveAttribute(
-        "title",
-        "Local only — sync to this device first",
-      );
-    }
+    // desktop 独有的 Provider（Acme Chat）→ provider-default 需同步禁用。
+    const chatDefault = providerDefaultOption(listbox, 1);
+    expect(chatDefault).toHaveAttribute("aria-disabled", "true");
+    expect(chatDefault).toHaveAttribute(
+      "title",
+      "Local only — sync to this device first",
+    );
     // 弹层底部出现远端门控说明。
     expect(
       screen.getByText(
         "Disabled items need sync to the device or an unsupported capability",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("远端缺少供应商时提供显式同步入口，确认后复制凭证并刷新目录", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({ items: [CHAT_PROVIDER] });
+    appMocks.RemoteDeviceList.mockResolvedValue([device({ id: 7 })]);
+    appMocks.RemoteDeviceListProviders.mockResolvedValueOnce(
+      [],
+    ).mockResolvedValueOnce([
+      remoteProvider({
+        key: "acme-chat",
+        name: "Acme Chat",
+        type: "openai-chat",
+        models: [],
+      }),
+    ]);
+    render(<Harness backendType="builtin" executionLocation="7" />);
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+
+    const user = userEvent.setup();
+    await user.click(pill);
+    const listbox = screen.getByRole("listbox");
+    const chatDefault = providerDefaultOption(listbox);
+    expect(chatDefault).toBeDisabled();
+
+    await user.click(
+      screen.getByRole("button", { name: "Sync Acme Chat to this device" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Sync provider to device",
+    });
+    expect(dialog).toHaveTextContent(/API key/i);
+    await user.click(
+      within(dialog).getByRole("button", { name: "Confirm sync" }),
+    );
+
+    await waitFor(() =>
+      expect(appMocks.RemoteDeviceSyncProvider).toHaveBeenCalledWith(
+        7,
+        "acme-chat",
+      ),
+    );
+    await waitFor(() =>
+      expect(appMocks.RemoteDeviceListProviders).toHaveBeenCalledTimes(2),
+    );
+  });
+
+  it("Given a remote target with no paired row on this machine, When the picker opens, Then no sync entry is offered for it", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({ items: [CHAT_PROVIDER] });
+    appMocks.RemoteDeviceList.mockResolvedValue([]);
+    render(
+      <Harness backendType="builtin" executionLocation="sha256:peer-desktop" />,
+    );
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+
+    const user = userEvent.setup();
+    await user.click(pill);
+    expect(providerDefaultOption(screen.getByRole("listbox"))).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: "Sync Acme Chat to this device" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Given a canonical remote fingerprint, When the Composer picker loads target capabilities, Then it resolves the local paired row and keeps remote fixed-model gating", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER],
+    });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [
+        model("mk-sonnet", "claude-sonnet-4-5"),
+        model("mk-opus", "claude-opus-4-5"),
+      ],
+    });
+    appMocks.RemoteDeviceList.mockResolvedValue([
+      device({
+        id: 7,
+        daemonFingerprint: "sha256:remote-daemon",
+        supportsLLMModelTarget: false,
+      }),
+    ]);
+    appMocks.RemoteDeviceListProviders.mockResolvedValue([
+      remoteProvider({
+        models: [
+          remoteModel("mk-sonnet", "claude-sonnet-4-5"),
+          remoteModel("mk-opus", "claude-opus-4-5"),
+        ],
+      }),
+    ]);
+    render(
+      <Harness
+        backendType="builtin"
+        executionLocation="sha256:remote-daemon"
+      />,
+    );
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+    const user = userEvent.setup();
+    await user.click(pill);
+
+    await waitFor(() =>
+      expect(appMocks.RemoteDeviceListProviders).toHaveBeenCalledWith(7),
+    );
+    const opus = within(screen.getByRole("listbox")).getByRole("option", {
+      name: /claude-opus-4-5/,
+    });
+    expect(opus).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("Given execution stays on this machine and the device-identity RPC fails, When the picker opens, Then local fixed models are not gated as remote", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER],
+    });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [
+        model("mk-sonnet", "claude-sonnet-4-5"),
+        model("mk-opus", "claude-opus-4-5"),
+      ],
+    });
+    // R13 canonicalization stores this installation's own fingerprint on local
+    // backends, so a purely local session carries a sha256: executionLocation.
+    appMocks.RemoteDeviceFingerprint.mockRejectedValue(
+      new Error("remote device service unavailable"),
+    );
+    appMocks.RemoteDeviceList.mockResolvedValue([]);
+    render(
+      <Harness
+        backendType="builtin"
+        executionLocation="sha256:local-desktop"
+      />,
+    );
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+    const user = userEvent.setup();
+    await user.click(pill);
+
+    const listbox = screen.getByRole("listbox");
+    expect(providerDefaultOption(listbox)).not.toBeDisabled();
+    const opus = within(listbox).getByRole("option", {
+      name: /claude-opus-4-5/,
+    });
+    expect(opus).not.toHaveAttribute("aria-disabled", "true");
+    expect(appMocks.RemoteDeviceListProviders).not.toHaveBeenCalled();
+  });
+
+  it("Given the execution target changes while its catalog request is in flight, When the previous device answers last, Then it cannot replace the current catalog", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER, CHAT_PROVIDER],
+    });
+    appMocks.RemoteDeviceList.mockResolvedValue([
+      device({ id: 7, name: "old-daemon", daemonFingerprint: "sha256:old" }),
+      device({
+        id: 8,
+        name: "current-daemon",
+        daemonFingerprint: "sha256:current",
+      }),
+    ]);
+    const stale = deferred<unknown[]>();
+    appMocks.RemoteDeviceListProviders.mockReset();
+    appMocks.RemoteDeviceListProviders.mockImplementation((id: number) =>
+      id === 7 ? stale.promise : Promise.resolve([remoteProvider()]),
+    );
+
+    const { rerender } = render(
+      <Harness
+        backendType="builtin"
+        executionLocation="sha256:old"
+        sessionId={42}
+        persistedProviderKey="acme-chat"
+      />,
+    );
+    await waitFor(() =>
+      expect(appMocks.RemoteDeviceListProviders).toHaveBeenCalledWith(7),
+    );
+    rerender(
+      <Harness
+        backendType="builtin"
+        executionLocation="sha256:current"
+        sessionId={42}
+        persistedProviderKey="acme-chat"
+      />,
+    );
+    await waitFor(() =>
+      expect(appMocks.RemoteDeviceListProviders).toHaveBeenCalledWith(8),
+    );
+
+    // The stale device answers last, claiming it does have the selected provider.
+    await act(async () => {
+      stale.resolve([remoteProvider({ key: "acme-chat", name: "Acme Chat" })]);
+      await stale.promise;
+    });
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+    const user = userEvent.setup();
+    await user.click(pill);
+
+    // The current device (8) does not publish acme-chat, so the missing-provider
+    // notice must survive the late answer from device 7.
+    expect(
+      screen.getByText(
+        "Target device is missing this provider. Sync it first.",
       ),
     ).toBeInTheDocument();
   });
@@ -644,6 +1119,7 @@ describe("ProviderPill · 远端执行（gap 1：chat Picker 接收 daemon 能�
     appMocks.RemoteDeviceList.mockResolvedValue([
       device({ id: 7, supportsLLMModelTarget: false }),
     ]);
+    appMocks.RemoteDeviceListProviders.mockReset();
     appMocks.RemoteDeviceListProviders.mockResolvedValue([
       remoteProvider({
         models: [
@@ -662,10 +1138,7 @@ describe("ProviderPill · 远端执行（gap 1：chat Picker 接收 daemon 能�
 
     const listbox = screen.getByRole("listbox");
     // provider-default 仍可选（目录里存在且能力位只影响 fixed-model）。
-    const claudeOptions = within(listbox).getAllByRole("option", {
-      name: /Acme Claude/,
-    });
-    expect(claudeOptions[0]).not.toBeDisabled();
+    expect(providerDefaultOption(listbox)).not.toBeDisabled();
     // fixed-model 一律禁用：daemon 不支持，绝不静默降级。
     const opus = within(listbox).getByRole("option", {
       name: /claude-opus-4-5/,

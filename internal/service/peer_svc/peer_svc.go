@@ -175,6 +175,8 @@ func (s *service) RunFresh(ctx context.Context, req RunFreshRequest) (wire.RunAc
 		Title:          req.Title,
 		UserText:       req.UserText,
 		PermissionMode: req.PermissionMode,
+		LLMProviderKey: req.ProviderKey,
+		LLMModelKey:    req.ModelKey,
 		SourceDevice:   fp,
 	})
 }

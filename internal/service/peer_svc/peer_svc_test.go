@@ -121,6 +121,8 @@ func TestPeerSvc_GivenFreshDispatch_WhenRunFresh_ThenResolvesAgentAndCwdAndRetur
 			assert.Equal(t, "01HXAGENTIDENTITY0000000000", p.AgentSyncID)
 			assert.Equal(t, "/Users/wyz/agentre", p.Cwd)
 			assert.Equal(t, "帮我看看这个项目", p.UserText)
+			assert.Equal(t, "provider-key", p.LLMProviderKey, "the transient provider target must cross the desktop peer boundary")
+			assert.Equal(t, "model-key", p.LLMModelKey, "the transient fixed model target must cross the desktop peer boundary")
 			assert.Equal(t, "sha256:local-desktop", p.SourceDevice, "self fingerprint must travel as the source device")
 			return wire.RunAck{SessionID: 42}, nil
 		})
@@ -133,6 +135,8 @@ func TestPeerSvc_GivenFreshDispatch_WhenRunFresh_ThenResolvesAgentAndCwdAndRetur
 		ProjectID:   9,
 		Title:       "帮我看看这个项目",
 		UserText:    "帮我看看这个项目",
+		ProviderKey: "provider-key",
+		ModelKey:    "model-key",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int64(42), ack.SessionID, "the executing machine's real session id must reach the dispatcher")

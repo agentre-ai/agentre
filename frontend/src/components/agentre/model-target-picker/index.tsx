@@ -5,23 +5,27 @@
 //   - chat：顶部特殊项 = 跟随 Agent 绑定（inherit-agent）；
 //   - route：顶部特殊项 = 继承主绑定（inherit-main）。
 //
-// 主体交互：搜索、最近使用（localStorage，按执行位置指纹隔离）、Provider 分组、
-// provider-default 首项、fixed-model 列表、兼容性过滤（effective backend type）、
-// loading/empty/error/invalid/remote 状态、键盘导航（方向键 / Enter / Esc / focus ring）。
+// 主体交互：搜索、最近使用（localStorage，按执行位置指纹隔离，单行横向可移除 chip）、
+// Provider 分组（sticky 组头承载品牌标识 + 供应商名）、provider-default 首项（强调底色 +
+// 动态图标 + 当前解析模型）、fixed-model 列表（display name + 上下文/最大输出）、
+// 兼容性过滤（effective backend type）、loading/empty/error/invalid/remote 状态、
+// 键盘导航（方向键 / Enter / Esc / focus ring）。
 // 只通过 onChange 发射 providerKey/modelKey，绝不发射名称 / ModelID / 凭据。
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import {
+  AlertTriangle,
   Check,
   ChevronDown,
-  History,
+  GitBranch,
   Loader2,
+  Monitor,
+  RefreshCw,
   Search,
-  ShieldAlert,
+  Upload,
   X,
 } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import {
   Popover,
@@ -30,7 +34,9 @@ import {
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
-import { readRecentTargets } from "./recents";
+import { LlmModelLogo, LlmProviderLogo } from "../ai-brand-logo";
+import { formatTokens } from "../llm-provider-models";
+import { readRecentTargets, removeRecentTarget } from "./recents";
 import {
   isNativeTarget,
   providerCompatibleForBackend,
@@ -58,6 +64,8 @@ export type ModelTargetPickerProps = {
   error?: boolean;
   errorText?: string;
   disabled?: boolean;
+  // openOnMount：直达更换绑定等入口打开消费方时，同时展开选择器。
+  openOnMount?: boolean;
   // invalid：当前选中的 target 在目录里解析不出来（Provider/Model 缺失/停用/被删）。
   invalid?: boolean;
   // remoteMissing：目标执行设备上缺少所选 Provider（远端场景提示，task 6 深化）。
@@ -70,6 +78,16 @@ export type ModelTargetPickerProps = {
   // 未传 = 本机（不启用远端门控）。传了以后，desktop 目录里在 daemon 上不存在的
   // Provider/Model 被禁用并标注「需同步」，绝不保存一个未经验证的远端目标。
   remoteCatalog?: PickerProvider[];
+  // deviceLabel：目标执行设备的人读名字。传了以后弹层顶部说明「在该设备上执行、以该设备
+  // 的配置为准」，并给设备上已有的供应商组打标记；未传（本机 / 消费方还没解析出名字）
+  // 时整块不渲染。
+  deviceLabel?: string;
+  // specialSublabel：顶部特殊项的解析结果副行（chat/route 由消费方解析后传入，
+  // 写出「供应商 · 模型」或「跟随该 Agent 绑定的供应商」）。backend 场景未传时
+  // 回落「由 CLI 自身的登录账号决定」。
+  specialSublabel?: string;
+  // 远端目录缺少本机 Provider 时的显式同步入口；消费方负责确认与执行凭证复制。
+  onSyncProvider?: (provider: PickerProvider) => void;
   // footer：弹层底部常显说明（chat 场景的「自下一轮生效」等），随弹层一起出现。
   footer?: React.ReactNode;
   // compact：表单内嵌（claude tier 路由）用小号触发按钮。
@@ -77,25 +95,60 @@ export type ModelTargetPickerProps = {
   align?: "start" | "end";
   className?: string;
   title?: string;
-  // triggerLabel：覆盖触发按钮文案。chat 场景「未选但 agent 已绑 provider」时显示
+  // triggerLabel：覆盖触发按钮主行。chat 场景「未选但 agent 已绑 provider」时显示
   // 绑定供应商名，而不是顶部特殊项「跟随 Agent 绑定」；undefined 时按目录解析。
-  triggerLabel?: string;
+  // 可以是节点（backend 编辑器的主行 = 品牌标识 + 供应商名 + 跟随/固定徽标）；此时
+  // 按钮的无障碍名改由 aria-label 决定，节点内容不参与名字计算（见 triggerAriaLabel）。
+  triggerLabel?: React.ReactNode;
+  // triggerSub：可选触发按钮副行。后端编辑器用它展示当前解析出的生效模型与模式后果；
+  // 未传时保持 model-pill / chat 等既有消费方的单行形态。
+  triggerSub?: React.ReactNode;
   "data-testid"?: string;
   "aria-label"?: string;
 };
 
 type Option = {
   key: string;
-  kind: "special" | "recent" | "provider-default" | "fixed";
+  kind: "special" | "invalid" | "provider-default" | "fixed";
   label: string;
   sublabel?: string;
   target: ModelTarget;
   disabled: boolean;
   group?: string;
-  // disabledHint 远端门控的禁用原因（task 6）：桌面目录里 daemon 上没有的
-  // Provider/Model，或旧 daemon 不支持的 fixed-model。
+  groupType?: string;
+  // disabledHint 不可选项的行内原因：模型停用 / 供应商停用 / 远端需同步 / 不支持固定模型。
   disabledHint?: string;
+  // fixed 行专属：modelId 供 LlmModelLogo 判定品牌，contextWindow/maxOutput 供右侧展示。
+  modelId?: string;
+  contextWindow?: number;
+  maxOutput?: number;
 };
+
+type RecentChip = {
+  key: string;
+  label: string;
+  target: ModelTarget;
+  disabled: boolean;
+  title?: string;
+};
+
+// resolveTargetLabel 把 target 解析成人读摘要（供应商 · 模型）；目录里解析不出来时
+// 回落原始 providerKey/modelKey。供触发按钮、失效警示与失效保留项共用。
+function resolveTargetLabel(
+  target: ModelTarget,
+  catalog: PickerProvider[],
+): string {
+  const p = catalog.find((x) => x.providerKey === target.providerKey);
+  const providerLabel = p?.name ?? target.providerKey;
+  if (!target.modelKey) {
+    return p?.defaultModel
+      ? `${providerLabel} · ${p.defaultModel.modelId}`
+      : providerLabel;
+  }
+  const m = p?.models.find((x) => x.modelKey === target.modelKey);
+  const modelLabel = m ? m.name || m.modelId : target.modelKey;
+  return `${providerLabel} · ${modelLabel}`;
+}
 
 export function ModelTargetPicker({
   scenario,
@@ -108,41 +161,42 @@ export function ModelTargetPicker({
   error = false,
   errorText,
   disabled = false,
+  openOnMount = false,
   invalid = false,
   remoteMissing = false,
   supportsFixedModel = true,
   remoteCatalog,
+  deviceLabel,
+  specialSublabel,
+  onSyncProvider,
   footer,
   compact = false,
   align = "start",
   className,
   title,
   triggerLabel,
+  triggerSub,
   "data-testid": testId,
   "aria-label": ariaLabel,
 }: ModelTargetPickerProps) {
   const { t } = useTranslation();
-  const [open, setOpen] = React.useState(false);
+  const [open, setOpen] = React.useState(openOnMount);
   const [search, setSearch] = React.useState("");
   const [activeIndex, setActiveIndex] = React.useState(0);
+  const [recentTick, setRecentTick] = React.useState(0);
   const searchRef = React.useRef<HTMLInputElement>(null);
   const listRef = React.useRef<HTMLUListElement>(null);
 
   const specialLabel = t(`modelTargetPicker.special.${scenario}`);
+  const specialResolution =
+    specialSublabel ??
+    (scenario === "backend"
+      ? t("modelTargetPicker.special.backendSublabel")
+      : undefined);
+
   const selectedLabel = React.useMemo(() => {
-    if (isNativeTarget(selected)) return specialLabel;
-    if (!selected) return specialLabel;
-    const p = catalog.find((x) => x.providerKey === selected.providerKey);
-    if (!p) return selected.providerKey;
-    if (!selected.modelKey) {
-      // provider-default：摘要必须显示 Provider 与实际模型（当前默认模型的解析结果），
-      // 不得只显示 Provider 名称（spec「Backend and Route flow」）。默认模型缺失/停用
-      // 时无实际模型可展示，回落 Provider 名。
-      const dm = p.defaultModel;
-      return dm ? `${p.name} · ${dm.modelId}` : p.name;
-    }
-    const m = p.models.find((x) => x.modelKey === selected.modelKey);
-    return m ? `${p.name} · ${m.modelId}` : p.name;
+    if (!selected || isNativeTarget(selected)) return specialLabel;
+    return resolveTargetLabel(selected, catalog);
   }, [catalog, selected, specialLabel]);
 
   // 兼容目录：按 effective backend type 过滤。
@@ -152,11 +206,34 @@ export function ModelTargetPicker({
     [catalog, backendType],
   );
 
-  // 最近使用（按执行位置指纹隔离）。只展示当前 backend 兼容的项；失效项禁用。
+  // 行内禁用原因文案（t 派生）。
+  const remoteSyncHint = t("modelTargetPicker.remoteSyncNeeded");
+  const remoteFixedHint = t("modelTargetPicker.fixedModelUnsupported");
+  const disabledModelHint = t("modelTargetPicker.disabledModel");
+  const disabledProviderHint = t("modelTargetPicker.disabledProvider");
+  const followDefaultLabel = t("modelTargetPicker.followDefault");
+  const noDefaultModelLabel = t("modelTargetPicker.noDefaultModel");
+
+  // remoteByKey：daemon 目录的 Provider/Model 存在性索引（task 6 决策 12）。
+  // providerKey → provider（含其 models 的 modelKey 集合）。
+  const remoteByKey = React.useMemo(() => {
+    if (!remoteCatalog) return null;
+    const m = new Map<string, PickerProvider>();
+    for (const p of remoteCatalog) m.set(p.providerKey, p);
+    return m;
+  }, [remoteCatalog]);
+
+  // remoteGated：远端执行 + 已知 daemon 目录 → 组头标注「设备上已有」、行内同步入口生效。
+  const remoteGated = remoteByKey != null && executionLocation !== "";
+
+  // 最近使用（按执行位置指纹隔离）。只展示当前 backend 兼容的项；失效项禁用并给原因。
   const recents = React.useMemo(() => {
+    // recentTick 仅在移除 chip 后递增，强制重新读取 localStorage；读取仍走 localStorage
+    // 而不是内存态，保证多实例/刷新后一致。
+    void recentTick;
     const all = readRecentTargets(scenario, executionLocation);
     const seen = new Set<string>();
-    const out: Option[] = [];
+    const out: RecentChip[] = [];
     for (const r of all) {
       const p = compatible.find((x) => x.providerKey === r.providerKey);
       if (!p) continue; // 当前 backend 不兼容 → 隐藏
@@ -168,39 +245,59 @@ export function ModelTargetPicker({
         p.models.some((m) => m.modelKey === r.modelKey && m.enabled);
       const target: ModelTarget = {
         providerKey: r.providerKey,
-        modelKey: r.modelKey === p.defaultModel?.modelKey ? "" : r.modelKey,
+        modelKey: r.modelKey,
       };
+      const remoteProvider =
+        executionLocation !== "" ? remoteByKey?.get(p.providerKey) : undefined;
+      const remoteTargetOk =
+        remoteByKey == null || executionLocation === ""
+          ? true
+          : target.modelKey === ""
+            ? remoteProvider?.defaultModel?.modelKey ===
+              p.defaultModel?.modelKey
+            : supportsFixedModel &&
+              remoteProvider?.models.some(
+                (model) => model.modelKey === target.modelKey && model.enabled,
+              ) === true;
       const dedupeKey = `${target.providerKey}\u0000${target.modelKey}`;
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
+      const label = target.modelKey
+        ? (p.models.find((m) => m.modelKey === target.modelKey)?.modelId ??
+          target.modelKey)
+        : p.name;
       out.push({
         key: `recent-${dedupeKey}`,
-        kind: "recent",
-        label: target.modelKey
-          ? (p.models.find((m) => m.modelKey === target.modelKey)?.modelId ??
-            target.modelKey)
-          : p.name,
-        sublabel: target.modelKey
-          ? p.name
-          : t("modelTargetPicker.defaultLabel"),
+        label,
         target,
-        disabled: !p.enabled || !modelOk,
+        disabled: !p.enabled || !modelOk || !remoteTargetOk,
+        title: !p.enabled
+          ? disabledProviderHint
+          : !modelOk
+            ? disabledModelHint
+            : !remoteTargetOk
+              ? !supportsFixedModel && target.modelKey
+                ? remoteFixedHint
+                : remoteSyncHint
+              : target.modelKey
+                ? undefined
+                : t("modelTargetPicker.defaultLabel"),
       });
     }
     return out.slice(0, 5);
-  }, [compatible, executionLocation, scenario, t]);
-
-  // remoteByKey：daemon 目录的 Provider/Model 存在性索引（task 6 决策 12）。
-  // providerKey → provider（含其 models 的 modelKey 集合）。
-  const remoteByKey = React.useMemo(() => {
-    if (!remoteCatalog) return null;
-    const m = new Map<string, PickerProvider>();
-    for (const p of remoteCatalog) m.set(p.providerKey, p);
-    return m;
-  }, [remoteCatalog]);
-
-  const remoteSyncHint = t("modelTargetPicker.remoteSyncNeeded");
-  const remoteFixedHint = t("modelTargetPicker.fixedModelUnsupported");
+  }, [
+    compatible,
+    executionLocation,
+    scenario,
+    recentTick,
+    disabledProviderHint,
+    disabledModelHint,
+    remoteByKey,
+    supportsFixedModel,
+    remoteFixedHint,
+    remoteSyncHint,
+    t,
+  ]);
 
   // 目录选项（provider-default 首项，再 fixed-model 列表）。
   const catalogOptions = React.useMemo(() => {
@@ -214,23 +311,37 @@ export function ModelTargetPicker({
           : undefined;
       const providerSyncNeeded =
         remoteByKey != null && executionLocation !== "" && !remoteProvider;
-      // provider-default 首项：当前默认模型解析结果（可能缺失 = 目标已失效，但仍可选，
-      // 由后端/父组件按 kind 决定是否阻止保存）。
+      // provider-default 的运行语义由 Provider 当前 defaultModelKey 决定；远端目录里的
+      // 默认 key 不一致时，即使同名 Provider 已存在也必须重新同步后才能保存。
       const defaultModel = p.defaultModel;
+      const defaultSyncNeeded =
+        remoteByKey != null &&
+        executionLocation !== "" &&
+        remoteProvider != null &&
+        remoteProvider.defaultModel?.modelKey !== defaultModel?.modelKey;
       out.push({
         key: `default-${p.providerKey}`,
         kind: "provider-default",
         group: groupLabel,
-        label: p.name,
-        sublabel:
-          defaultModel?.modelId ?? t("modelTargetPicker.noDefaultModel"),
+        groupType: p.type,
+        label: followDefaultLabel,
+        // 副行只写解析到的模型标识 —— 它回答「到底跑哪个模型」，必须完整可读。
+        // 「默认变了会自动跟着变」这条后果对每一行都一样，交给弹层里唯一一条图例
+        // （+ ↻ 图标 + 「固定到具体模型」分段）承担，不逐行重复把副行挤到截断。
+        sublabel: defaultModel ? defaultModel.modelId : noDefaultModelLabel,
         target: { providerKey: p.providerKey, modelKey: "" },
-        disabled: !p.enabled || providerSyncNeeded,
-        disabledHint: providerSyncNeeded ? remoteSyncHint : undefined,
+        disabled: !p.enabled || providerSyncNeeded || defaultSyncNeeded,
+        disabledHint:
+          providerSyncNeeded || defaultSyncNeeded
+            ? remoteSyncHint
+            : !p.enabled
+              ? disabledProviderHint
+              : undefined,
       });
       // fixed-model 列表。
       for (const m of p.models) {
-        if (m.modelKey === defaultModel?.modelKey) continue;
+        // 当前默认模型仍需作为 fixed-model 候选保留：provider-default 表达动态跟随，
+        // 而选择这里的同一 ModelKey 表达锁定当前模型、以后不随 Provider 默认变化。
         // 远端门控：模型在 daemon 上不存在 / 停用 → 需同步；daemon 不支持
         // fixed-model（旧协议）→ 一律禁用，绝不静默降级。
         const remoteModelOk =
@@ -251,8 +362,12 @@ export function ModelTargetPicker({
           key: `fixed-${p.providerKey}-${m.modelKey}`,
           kind: "fixed",
           group: groupLabel,
-          label: p.name,
+          groupType: p.type,
+          label: m.name || m.modelId,
           sublabel: m.modelId,
+          modelId: m.modelId,
+          contextWindow: m.contextWindow,
+          maxOutput: m.maxOutput,
           target: { providerKey: p.providerKey, modelKey: m.modelKey },
           disabled:
             !p.enabled ||
@@ -264,30 +379,56 @@ export function ModelTargetPicker({
             ? remoteFixedHint
             : providerSyncNeeded || fixedSyncNeeded
               ? remoteSyncHint
-              : undefined,
+              : !p.enabled
+                ? disabledProviderHint
+                : !m.enabled
+                  ? disabledModelHint
+                  : undefined,
         });
       }
     }
     return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [compatible, executionLocation, remoteByKey, supportsFixedModel, t]);
+  }, [
+    compatible,
+    executionLocation,
+    remoteByKey,
+    supportsFixedModel,
+    followDefaultLabel,
+    noDefaultModelLabel,
+    remoteSyncHint,
+    remoteFixedHint,
+    disabledProviderHint,
+    disabledModelHint,
+  ]);
 
-  // 特殊项（native / inherit）。
-  const specialOption: Option = {
-    key: SPECIAL_ITEM_KEY,
-    kind: "special",
-    label: specialLabel,
-    target: { providerKey: "", modelKey: "" },
-    disabled: false,
-  };
+  // 失效目标：以禁用项保留在列表顶部（不被清除），目标本身即当前 selected。
+  const invalidOption = React.useMemo((): Option | null => {
+    if (!invalid || !selected || isNativeTarget(selected)) return null;
+    return {
+      key: "invalid-selected",
+      kind: "invalid",
+      label: resolveTargetLabel(selected, catalog),
+      target: selected,
+      disabled: true,
+    };
+  }, [invalid, selected, catalog]);
 
-  // 搜索过滤：匹配 provider 名 / model id / 特殊项。
+  // 搜索过滤：匹配 provider 名 / model id / 特殊项。chips（最近使用）只在未搜索时显示。
   const flatOptions = React.useMemo(() => {
+    // 特殊项（native / inherit）内联到 memo 内，避免每渲染新对象身份成为依赖。
+    const specialOption: Option = {
+      key: SPECIAL_ITEM_KEY,
+      kind: "special",
+      label: specialLabel,
+      sublabel: specialResolution,
+      target: { providerKey: "", modelKey: "" },
+      disabled: false,
+    };
     const q = search.trim().toLowerCase();
     const base: Option[] = [];
+    if (invalidOption) base.push(invalidOption);
     if (q === "") {
       base.push(specialOption);
-      base.push(...recents);
     } else if (specialLabel.toLowerCase().includes(q)) {
       base.push(specialOption);
     }
@@ -296,7 +437,30 @@ export function ModelTargetPicker({
     const match = (o: Option) =>
       (o.label + " " + (o.sublabel ?? "")).toLowerCase().includes(q);
     return base.filter(match);
-  }, [search, specialOption, recents, catalogOptions, specialLabel]);
+  }, [search, specialLabel, specialResolution, invalidOption, catalogOptions]);
+
+  // 同步入口落点：每个「本机独有 / 目录过期」的供应商，只在它第一条待修复的行内挂一个
+  // 「同步过去」，而不是在列表底部聚合。没有真实同步路由（未传 onSyncProvider）时一个都不挂。
+  const syncAnchorByProvider = React.useMemo(() => {
+    const anchors = new Map<string, string>();
+    if (!onSyncProvider) return anchors;
+    for (const o of flatOptions) {
+      if (o.disabledHint !== remoteSyncHint) continue;
+      if (anchors.has(o.target.providerKey)) continue;
+      anchors.set(o.target.providerKey, o.key);
+    }
+    return anchors;
+  }, [flatOptions, onSyncProvider, remoteSyncHint]);
+
+  const showChips = search.trim() === "" && recents.length > 0;
+
+  const handleRemoveRecent = React.useCallback(
+    (target: ModelTarget) => {
+      removeRecentTarget(scenario, executionLocation, target);
+      setRecentTick((x) => x + 1);
+    },
+    [scenario, executionLocation],
+  );
 
   // 打开时重置搜索与活动索引（优先定位当前选中项）。
   const handleOpenChange = React.useCallback(
@@ -351,9 +515,59 @@ export function ModelTargetPicker({
     el?.scrollIntoView({ block: "nearest" });
   }, [activeIndex]);
 
-  const hasCatalog = catalogOptions.length > 0;
-
   const triggerText = triggerLabel ?? selectedLabel;
+  // 主行是纯文本时按钮可以继续靠内容拿无障碍名（既有消费方形态不变）；主行是节点时
+  // 内容里有品牌标识（role=img，自带品牌名）和模式徽标，让它们参与名字计算会念出
+  // 重复且不稳定的名字 —— 所以名字只认显式字符串：aria-label 优先，其次目录解析结果。
+  const isTextTriggerLabel =
+    typeof triggerText === "string" || typeof triggerText === "number";
+  const triggerAriaLabel =
+    ariaLabel ?? (isTextTriggerLabel ? undefined : selectedLabel);
+
+  // 最近使用横条：紧跟在顶部特殊项之后、供应商分组之前（mockup 的列表次序），
+  // 自带「最近使用」标签，单行横向可移除 chip，不占竖列表位。
+  const recentChipsRow = showChips ? (
+    <li role="none" className="px-1 pt-1">
+      <div
+        data-testid="recent-chips"
+        className="flex flex-nowrap items-center gap-1 overflow-x-auto py-0.5"
+      >
+        <span className="shrink-0 pr-0.5 text-2xs uppercase tracking-wide text-subtle-foreground">
+          {t("modelTargetPicker.recentLabel")}
+        </span>
+        {recents.map((r) => (
+          <span
+            key={r.key}
+            className="flex shrink-0 items-center gap-0.5 rounded-full border border-border bg-secondary/40 px-1.5 py-0.5 text-2xs"
+          >
+            <button
+              type="button"
+              disabled={r.disabled}
+              title={r.title}
+              className="max-w-[10rem] truncate text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => {
+                if (r.disabled) return;
+                onChange(r.target);
+                setOpen(false);
+              }}
+            >
+              {r.label}
+            </button>
+            <button
+              type="button"
+              aria-label={t("modelTargetPicker.removeRecent", {
+                label: r.label,
+              })}
+              className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground"
+              onClick={() => handleRemoveRecent(r.target)}
+            >
+              <X className="size-3" aria-hidden="true" />
+            </button>
+          </span>
+        ))}
+      </div>
+    </li>
+  ) : null;
 
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
@@ -363,14 +577,20 @@ export function ModelTargetPicker({
           disabled={disabled}
           data-testid={testId}
           title={title}
-          aria-label={ariaLabel}
+          aria-label={triggerAriaLabel}
           aria-expanded={open}
           aria-haspopup="listbox"
           className={cn(
             "inline-flex w-full items-center justify-between gap-2 rounded-md border border-border bg-background text-xs transition-colors",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
             "disabled:cursor-not-allowed disabled:opacity-60",
-            compact ? "h-7 px-2" : "h-9 px-2.5",
+            triggerSub
+              ? compact
+                ? "min-h-9 px-2 py-1"
+                : "min-h-11 px-2.5 py-1.5"
+              : compact
+                ? "h-7 px-2"
+                : "h-9 px-2.5",
             invalid
               ? "border-status-waiting/60 bg-status-waiting-bg"
               : "hover:bg-secondary/60",
@@ -379,18 +599,33 @@ export function ModelTargetPicker({
         >
           <span className="flex min-w-0 items-center gap-1.5">
             {invalid ? (
-              <ShieldAlert
+              <AlertTriangle
                 className={cn("size-3.5 shrink-0 text-status-waiting")}
                 aria-hidden="true"
               />
             ) : null}
-            <span
-              className={cn(
-                "min-w-0 truncate",
-                invalid ? "text-status-waiting" : "text-foreground",
-              )}
-            >
-              {triggerText}
+            <span className="flex min-w-0 flex-col items-start gap-0.5">
+              <span
+                className={cn(
+                  "max-w-full",
+                  // 节点主行自己是一排图标 + 文字 + 徽标，得撑成 flex 行；纯文本主行
+                  // 保持既有的单行截断。
+                  isTextTriggerLabel
+                    ? "truncate"
+                    : "flex min-w-0 items-center gap-1.5",
+                  invalid ? "text-status-waiting" : "text-foreground",
+                )}
+              >
+                {triggerText}
+              </span>
+              {triggerSub ? (
+                <span
+                  data-testid="model-target-trigger-sub"
+                  className="max-w-full truncate text-2xs text-muted-foreground"
+                >
+                  {triggerSub}
+                </span>
+              ) : null}
             </span>
           </span>
           <ChevronDown
@@ -403,9 +638,45 @@ export function ModelTargetPicker({
         align={align}
         side="bottom"
         sideOffset={6}
-        className="w-[340px] p-0"
+        // 348px = mockup .pop 的 CSS 宽度（index.html data-view="picker"），让
+        // provider-default / 特殊项副行放得下有意义的解析结果；min(...) 在极窄
+        // 视口兜底收缩，不会把弹层推出屏幕（860×640 最小窗口下恒等于 348px）。
+        className="w-[min(348px,calc(100vw-2rem))] p-0"
         onKeyDown={handleKeyDown}
       >
+        {/* 失效目标顶部警示（弹层内上方，不是底部 footer）。 */}
+        {invalid ? (
+          <div
+            data-testid="invalid-banner"
+            className="flex items-start gap-2 border-b border-border bg-status-waiting-bg px-3 py-2 text-2xs text-status-waiting"
+          >
+            <AlertTriangle
+              className="mt-px size-3.5 shrink-0"
+              aria-hidden="true"
+            />
+            <span>
+              {t("modelTargetPicker.invalidTarget", {
+                target: selected ? resolveTargetLabel(selected, catalog) : "",
+              })}
+            </span>
+          </div>
+        ) : null}
+
+        {/* 远端场景：说明以目标设备的配置为准（未传设备名 = 本机，不渲染）。 */}
+        {deviceLabel ? (
+          <div
+            data-testid="remote-device-header"
+            className="flex items-center gap-1.5 border-b border-border px-3 py-2 text-2xs text-muted-foreground"
+          >
+            <Monitor className="size-3.5 shrink-0" aria-hidden="true" />
+            <span className="truncate">
+              {t("modelTargetPicker.remoteDeviceHeader", {
+                device: deviceLabel,
+              })}
+            </span>
+          </div>
+        ) : null}
+
         {/* 搜索框 */}
         <div className="flex items-center gap-1.5 border-b border-border px-2.5 py-2">
           <Search
@@ -437,6 +708,24 @@ export function ModelTargetPicker({
           ) : null}
         </div>
 
+        {/* ↻ 图例：整颗弹层只说一次「跟随默认会变、固定模型不会变」，选项行因此只留
+            解析到的模型标识。贴着它解释的选项列表放（底部留给消费方 footer 的
+            「何时生效」，两条说的是不同的事，不叠在一起）。列表里没有跟随默认项时不渲染。 */}
+        {!loading &&
+        !error &&
+        flatOptions.some((o) => o.kind === "provider-default") ? (
+          <div
+            data-testid="dynamic-legend"
+            className="flex items-start gap-1.5 border-b border-border px-3 py-1.5 text-2xs text-muted-foreground"
+          >
+            <RefreshCw
+              className="mt-px size-3 shrink-0 text-primary-text"
+              aria-hidden="true"
+            />
+            <span>{t("modelTargetPicker.dynamicLegend")}</span>
+          </div>
+        ) : null}
+
         <div className="max-h-64 overflow-y-auto p-1.5">
           {loading ? (
             <div className="flex items-center gap-2 px-2.5 py-3 text-xs text-muted-foreground">
@@ -447,9 +736,13 @@ export function ModelTargetPicker({
             <div className="px-2.5 py-3 text-xs text-status-waiting">
               {errorText ?? t("modelTargetPicker.error")}
             </div>
-          ) : !hasCatalog && isNativeTarget(selected) ? (
+          ) : catalog.length === 0 && isNativeTarget(selected) ? (
             <div className="px-2.5 py-3 text-xs text-muted-foreground">
               {t("modelTargetPicker.empty")}
+            </div>
+          ) : catalog.length > 0 && compatible.length === 0 ? (
+            <div className="px-2.5 py-3 text-xs text-muted-foreground">
+              {t("modelTargetPicker.noCompatibleProviders")}
             </div>
           ) : null}
 
@@ -466,99 +759,209 @@ export function ModelTargetPicker({
                 const showGroup =
                   opt.group &&
                   (i === 0 || flatOptions[i - 1].group !== opt.group);
+                const showFixedSection =
+                  opt.kind === "fixed" &&
+                  (i === 0 ||
+                    flatOptions[i - 1].kind !== "fixed" ||
+                    flatOptions[i - 1].group !== opt.group);
+                // 远端：组头标注该供应商在目标设备上已存在（不代表模型齐全，行内另有原因）。
+                const groupOnDevice =
+                  remoteGated && remoteByKey.has(opt.target.providerKey);
+                // 行内同步入口：只挂在该供应商第一条待同步的行上。
+                const syncProvider =
+                  syncAnchorByProvider.get(opt.target.providerKey) === opt.key
+                    ? compatible.find(
+                        (p) => p.providerKey === opt.target.providerKey,
+                      )
+                    : undefined;
                 return (
-                  <li key={opt.key} role="none">
-                    {showGroup ? (
-                      <div className="px-2.5 pb-0.5 pt-2 text-2xs font-medium uppercase tracking-wide text-subtle-foreground">
-                        {opt.group}
-                      </div>
-                    ) : null}
-                    <button
-                      type="button"
-                      role="option"
-                      aria-selected={selectedNow}
-                      aria-disabled={opt.disabled}
-                      data-option-index={i}
-                      disabled={opt.disabled}
-                      title={opt.disabledHint}
-                      onMouseEnter={() => setActiveIndex(i)}
-                      onClick={() => {
-                        if (opt.disabled) return;
-                        onChange(opt.target);
-                        setOpen(false);
-                      }}
-                      className={cn(
-                        "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
-                        "focus-visible:outline-none",
-                        active
-                          ? "bg-accent"
-                          : opt.kind === "recent"
-                            ? "bg-secondary/40"
-                            : "hover:bg-accent/60",
-                        "disabled:cursor-not-allowed disabled:opacity-50",
-                      )}
-                    >
-                      <span className="flex min-w-0 flex-1 items-center gap-2">
-                        {opt.kind === "recent" ? (
-                          <History
-                            className="size-3 shrink-0 text-muted-foreground"
-                            aria-hidden="true"
-                          />
-                        ) : opt.kind === "special" ? (
-                          <span className="inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm bg-secondary text-[9px] font-semibold text-muted-foreground">
-                            A
-                          </span>
-                        ) : null}
-                        <span className="flex min-w-0 flex-1 flex-col">
-                          <span
-                            className={cn(
-                              "truncate",
-                              opt.kind === "special"
-                                ? "font-medium text-foreground"
-                                : "text-foreground",
-                            )}
-                          >
-                            {opt.label}
-                          </span>
-                          {opt.sublabel ? (
-                            <span className="truncate font-mono text-2xs text-muted-foreground">
-                              {opt.sublabel}
+                  <React.Fragment key={opt.key}>
+                    <li role="none">
+                      {showGroup ? (
+                        <div
+                          data-testid="picker-group"
+                          data-provider-key={opt.target.providerKey}
+                          className="sticky top-0 z-10 flex items-center gap-1.5 bg-background px-2.5 pb-0.5 pt-2 text-2xs font-medium uppercase tracking-wide text-subtle-foreground"
+                        >
+                          {opt.groupType ? (
+                            <LlmProviderLogo
+                              providerType={opt.groupType}
+                              providerName={opt.group}
+                              className="size-3.5"
+                            />
+                          ) : null}
+                          <span>{opt.group}</span>
+                          {groupOnDevice ? (
+                            <span className="ml-auto rounded-full bg-status-running-bg px-1.5 py-0.5 text-2xs font-medium normal-case tracking-normal text-status-running">
+                              {t("modelTargetPicker.providerOnDevice")}
                             </span>
                           ) : null}
-                        </span>
-                        {opt.kind === "provider-default" ? (
-                          <Badge
-                            variant="secondary"
-                            className="shrink-0 rounded-sm px-1 py-0 font-mono text-2xs"
-                          >
-                            {t("modelTargetPicker.defaultBadge")}
-                          </Badge>
-                        ) : null}
-                      </span>
-                      {selectedNow ? (
-                        <Check
-                          className="size-3.5 shrink-0 text-primary-text"
-                          aria-hidden="true"
-                        />
+                        </div>
                       ) : null}
-                    </button>
-                  </li>
+                      {showFixedSection ? (
+                        <div className="px-2.5 pb-0.5 pt-1 text-2xs font-medium text-subtle-foreground">
+                          {t("modelTargetPicker.fixedSection")}
+                        </div>
+                      ) : null}
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={selectedNow}
+                          aria-disabled={opt.disabled}
+                          data-option-index={i}
+                          data-kind={opt.kind}
+                          disabled={opt.disabled}
+                          title={
+                            opt.kind === "invalid"
+                              ? t("modelTargetPicker.invalidHint")
+                              : opt.disabledHint
+                          }
+                          onMouseEnter={() => setActiveIndex(i)}
+                          onClick={() => {
+                            if (opt.disabled) return;
+                            onChange(opt.target);
+                            setOpen(false);
+                          }}
+                          className={cn(
+                            "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
+                            "focus-visible:outline-none",
+                            // 核心语义分歧：跟随默认（动态）用 primary-soft 强调底，
+                            // 固定到具体模型保持中性底，两态一眼可分。
+                            opt.kind === "provider-default"
+                              ? cn(
+                                  "bg-primary-soft",
+                                  active && "ring-1 ring-ring/40",
+                                )
+                              : opt.kind === "invalid"
+                                ? "border border-dashed border-status-waiting/60"
+                                : active
+                                  ? "bg-accent"
+                                  : "hover:bg-accent/60",
+                            "disabled:cursor-not-allowed disabled:opacity-50",
+                          )}
+                        >
+                          <span className="flex min-w-0 flex-1 items-center gap-2">
+                            {opt.kind === "special" ? (
+                              <GitBranch
+                                className="size-3.5 shrink-0 text-muted-foreground"
+                                aria-hidden="true"
+                              />
+                            ) : opt.kind === "invalid" ? (
+                              <AlertTriangle
+                                className="size-3.5 shrink-0 text-status-waiting"
+                                aria-hidden="true"
+                              />
+                            ) : opt.kind === "provider-default" ? (
+                              <RefreshCw
+                                data-testid="provider-default-icon"
+                                className="size-3.5 shrink-0 text-primary-text"
+                                aria-hidden="true"
+                              />
+                            ) : opt.kind === "fixed" && opt.modelId ? (
+                              <LlmModelLogo
+                                model={opt.modelId}
+                                providerType={opt.groupType ?? ""}
+                                providerName={opt.group}
+                                className="size-4"
+                              />
+                            ) : null}
+                            <span className="flex min-w-0 flex-1 flex-col">
+                              <span
+                                className={cn(
+                                  "truncate",
+                                  opt.kind === "special"
+                                    ? "font-medium text-foreground"
+                                    : opt.kind === "provider-default"
+                                      ? "font-medium text-primary-text"
+                                      : "text-foreground",
+                                )}
+                              >
+                                {opt.label}
+                              </span>
+                              {opt.sublabel ? (
+                                <span
+                                  className={cn(
+                                    "font-mono text-2xs text-muted-foreground",
+                                    // 跟随默认行的副行 = 解析到的模型标识，是「到底跑哪个
+                                    // 模型」的答案；宁可折行也不许截断。
+                                    opt.kind === "provider-default"
+                                      ? "break-all"
+                                      : "truncate",
+                                  )}
+                                >
+                                  {opt.sublabel}
+                                </span>
+                              ) : null}
+                              {opt.kind === "invalid" ? (
+                                <span className="truncate text-2xs text-status-waiting">
+                                  {t("modelTargetPicker.invalidCurrent")}
+                                </span>
+                              ) : null}
+                              {opt.disabled &&
+                              opt.disabledHint &&
+                              opt.kind !== "invalid" ? (
+                                <span className="truncate text-2xs text-status-waiting">
+                                  {opt.disabledHint}
+                                </span>
+                              ) : null}
+                            </span>
+                            {opt.kind === "invalid" ? (
+                              <span className="shrink-0 rounded-full bg-status-waiting-bg px-1.5 py-0.5 text-2xs font-medium text-status-waiting">
+                                {t("modelTargetPicker.invalidChip")}
+                              </span>
+                            ) : null}
+                            {opt.kind === "fixed" &&
+                            (opt.contextWindow || opt.maxOutput) ? (
+                              <span className="shrink-0 font-mono text-2xs text-muted-foreground">
+                                {t("modelTargetPicker.contextOutput", {
+                                  ctx: formatTokens(opt.contextWindow ?? 0),
+                                  out: formatTokens(opt.maxOutput ?? 0),
+                                })}
+                              </span>
+                            ) : null}
+                          </span>
+                          {selectedNow ? (
+                            <Check
+                              className="size-3.5 shrink-0 text-primary-text"
+                              aria-hidden="true"
+                            />
+                          ) : null}
+                        </button>
+                        {/* 同步入口就放在它会修复的那一行内（消费方负责确认与凭证复制）。 */}
+                        {syncProvider && onSyncProvider ? (
+                          <button
+                            type="button"
+                            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-1.5 py-1 text-2xs text-primary-text transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                            aria-label={t(
+                              "modelTargetPicker.syncProviderNamed",
+                              {
+                                provider: syncProvider.name,
+                              },
+                            )}
+                            onClick={() => onSyncProvider(syncProvider)}
+                          >
+                            <Upload className="size-3" aria-hidden="true" />
+                            {t("modelTargetPicker.syncInline")}
+                          </button>
+                        ) : null}
+                      </div>
+                    </li>
+                    {opt.kind === "special" ? recentChipsRow : null}
+                  </React.Fragment>
                 );
               })}
             </ul>
           ) : null}
         </div>
 
-        {invalid ? (
-          <div className="border-t border-border bg-status-waiting-bg px-3 py-2 text-2xs text-status-waiting">
-            {t("modelTargetPicker.invalidHint")}
-          </div>
-        ) : null}
-        {remoteByKey != null &&
-        executionLocation !== "" &&
-        catalogOptions.some((o) => o.disabledHint) ? (
-          <div className="border-t border-border bg-secondary px-3 py-2 text-2xs text-muted-foreground">
-            {t("modelTargetPicker.remoteGateHint")}
+        {remoteGated && catalogOptions.some((o) => o.disabledHint) ? (
+          <div className="flex flex-col gap-1 border-t border-border bg-secondary px-3 py-2 text-2xs text-muted-foreground">
+            <span>{t("modelTargetPicker.remoteGateHint")}</span>
+            {/* 同步按钮在行内；这里只承诺「同步会复制 API Key、需要明确确认」。 */}
+            {onSyncProvider ? (
+              <span>{t("modelTargetPicker.syncFootnote")}</span>
+            ) : null}
           </div>
         ) : null}
         {remoteMissing ? (
@@ -576,7 +979,11 @@ export function ModelTargetPicker({
   );
 }
 
-export { readRecentTargets, recordRecentTarget } from "./recents";
+export {
+  readRecentTargets,
+  recordRecentTarget,
+  removeRecentTarget,
+} from "./recents";
 export type {
   ModelTarget,
   PickerModel,

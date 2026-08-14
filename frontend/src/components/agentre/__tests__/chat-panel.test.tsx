@@ -43,6 +43,8 @@ const appMocks = vi.hoisted(() => ({
   ListLLMProviders: vi.fn().mockResolvedValue({ items: [] }),
   ListLLMModels: vi.fn().mockResolvedValue({ items: [] }),
   LoadChatSession: vi.fn(),
+  PeerRunFresh: vi.fn(),
+  RemoteDeviceFingerprint: vi.fn().mockResolvedValue("sha256:local-desktop"),
   RemoteDeviceList: vi.fn().mockResolvedValue([]),
   RemoteDeviceListProviders: vi.fn().mockResolvedValue([]),
   SetChatSessionProvider: vi.fn(),
@@ -93,6 +95,14 @@ const componentMocks = vi.hoisted(() => ({
   capsSwitchableDuringTurn: true,
   capsAllowedModes: ["default", "plan", "acceptEdits", "bypassPermissions"],
   capsImageInput: true,
+  effectiveExecTarget: null as null | {
+    kind: "local" | "desktop" | "daemon";
+    deviceId: string;
+    deviceName: string;
+    backendType?: string;
+    llmProviderKey?: string;
+    llmModelKey?: string;
+  },
   computeComposerContextUsage: vi.fn((..._args: unknown[]) => ({
     max: 0,
     used: 0,
@@ -235,6 +245,25 @@ vi.mock("../project-merge-dialog", () => ({
       : null,
 }));
 
+vi.mock("../session-exec-target", async () => {
+  const React = await import("react");
+  return {
+    NewSessionExecTargetLine: ({
+      onEffectiveTarget,
+    }: {
+      onEffectiveTarget?: (
+        target: typeof componentMocks.effectiveExecTarget,
+      ) => void;
+    }) => {
+      React.useEffect(() => {
+        onEffectiveTarget?.(componentMocks.effectiveExecTarget);
+      }, [onEffectiveTarget]);
+      return null;
+    },
+    SessionOfflineBanner: () => null,
+  };
+});
+
 // PermissionModePill / QueuedMessagesBar / TaskProgressBar：桩
 vi.mock("../permission-mode", async () => {
   const React = await import("react");
@@ -374,11 +403,15 @@ function resetStore() {
     "bypassPermissions",
   ];
   componentMocks.capsImageInput = true;
+  componentMocks.effectiveExecTarget = null;
   componentMocks.computeComposerContextUsage.mockClear();
   componentMocks.cycleMode.mockClear();
   componentMocks.setMode.mockClear();
   ccUsageMock.calls.length = 0;
   appMocks.SendChatMessage.mockReset();
+  appMocks.PeerRunFresh.mockReset();
+  appMocks.ListLLMModels.mockReset();
+  appMocks.ListLLMModels.mockResolvedValue({ items: [] });
   appMocks.RegenerateChatMessage.mockReset();
   appMocks.SetChatGoal.mockReset();
   appMocks.GetChatGoal.mockReset();
@@ -392,6 +425,8 @@ function resetStore() {
   appMocks.ResolveLocalCommandScope.mockImplementation(
     () => new Promise(() => undefined),
   );
+  appMocks.RemoteDeviceFingerprint.mockReset();
+  appMocks.RemoteDeviceFingerprint.mockResolvedValue("sha256:local-desktop");
   appMocks.RemoteDeviceList.mockReset();
   appMocks.RemoteDeviceList.mockResolvedValue([]);
   appMocks.RemoteDeviceListProviders.mockReset();
@@ -2896,7 +2931,7 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
     await user.click(pill);
     await user.click(
       within(screen.getByRole("listbox")).getByRole("option", {
-        name: /Acme Claude/,
+        name: /Follow this provider's default/,
       }),
     );
 
@@ -2915,6 +2950,109 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
         }),
       );
     });
+  });
+
+  it("Given a desktop peer target and a transient provider-default selection, When the first message is dispatched, Then PeerRunFresh carries the selected model target", async () => {
+    resetStore();
+    mockSessionStore.session = null;
+    componentMocks.effectiveExecTarget = {
+      kind: "desktop",
+      deviceId: "sha256:peer-desktop",
+      deviceName: "Peer Desktop",
+    };
+    appMocks.PeerRunFresh.mockResolvedValue({ sessionId: 42 });
+    appMocks.RemoteDeviceList.mockResolvedValue([
+      {
+        id: 9,
+        name: "Peer Desktop",
+        daemonFingerprint: "sha256:peer-desktop",
+        online: true,
+        supportsLLMModelTarget: true,
+      },
+    ]);
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [
+        {
+          id: 21,
+          providerId: 11,
+          providerKey: "acme-anthropic",
+          modelKey: "mk-sonnet",
+          modelId: "claude-sonnet-4-5",
+          name: "Sonnet",
+          enabled: true,
+        },
+      ],
+    });
+    appMocks.RemoteDeviceListProviders.mockResolvedValue([
+      {
+        key: "acme-anthropic",
+        name: "Acme Claude",
+        type: "anthropic",
+        enabled: true,
+        defaultModelKey: "mk-sonnet",
+        models: [
+          {
+            key: "mk-sonnet",
+            modelId: "claude-sonnet-4-5",
+            name: "Sonnet",
+            enabled: true,
+          },
+        ],
+      },
+    ]);
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [
+        {
+          id: 11,
+          providerKey: "acme-anthropic",
+          name: "Acme Claude",
+          type: "anthropic",
+          enabled: true,
+          defaultModelKey: "mk-sonnet",
+          model: "claude-sonnet-4-5",
+        },
+      ],
+    });
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Eng",
+            agentBackendId: 1,
+            backendType: "claudecode",
+            llmProviderKey: "",
+          } as never
+        }
+      />,
+    );
+
+    const pill = await screen.findByTestId("provider-pill");
+    await waitFor(() => expect(pill).not.toBeDisabled());
+    const user = userEvent.setup();
+    await user.click(pill);
+    await user.click(
+      within(screen.getByRole("listbox")).getByRole("option", {
+        name: /Follow this provider's default/,
+      }),
+    );
+
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((text: string) => void)
+      | undefined;
+    act(() => submit?.("hello peer"));
+
+    await waitFor(() => {
+      expect(appMocks.PeerRunFresh).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fingerprint: "sha256:peer-desktop",
+          providerKey: "acme-anthropic",
+          modelKey: "",
+        }),
+      );
+    });
+    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
   });
 
   it("sessionId=0 + 已绑 agent 的新建会话：未选时 pill 显示 agent 绑定供应商名", async () => {
@@ -2979,7 +3117,7 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
     expect(appMocks.ListLLMProviders).not.toHaveBeenCalled();
   });
 
-  it("已有会话渲染供应商选择器并显示会话当前供应商（决策 10：取代『无 pill』的旧决策 7）", async () => {
+  it("已有会话跟随 Agent 固定绑定时，组合根把 agentModelKey 交给 pill 并显示解析模型", async () => {
     resetStore();
     appMocks.ListLLMProviders.mockClear();
     appMocks.ListLLMProviders.mockResolvedValue({
@@ -2990,21 +3128,47 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
           name: "Acme",
           type: "anthropic",
           enabled: true,
-          defaultModelKey: "",
+          defaultModelKey: "mk-default",
           model: "claude-sonnet-4-5",
         },
       ],
     });
+    appMocks.ListLLMModels.mockImplementation(() =>
+      Promise.resolve({
+        items: [
+          {
+            modelKey: "mk-default",
+            modelId: "claude-haiku-4-5",
+            name: "claude-haiku-4-5",
+            enabled: true,
+          },
+          {
+            modelKey: "mk-fixed",
+            modelId: "claude-sonnet-4-5",
+            name: "claude-sonnet-4-5",
+            enabled: true,
+          },
+        ],
+      }),
+    );
     mockSessionStore.session = makeSession({
       backendType: "claudecode",
-      providerKey: "acme-anthropic",
+      providerKey: "",
+      modelKey: "",
       agentProviderKey: "acme-anthropic",
+      agentModelKey: "mk-fixed",
     });
     render(<ChatPanel sessionId={42} newSessionAgent={null} />);
 
     const pill = await screen.findByTestId("provider-pill");
-    await waitFor(() => expect(pill).not.toBeDisabled());
-    expect(pill).toHaveTextContent("Acme");
+    await waitFor(() => {
+      expect(pill).not.toBeDisabled();
+      expect(appMocks.ListLLMModels).toHaveBeenCalled();
+      expect(pill).toHaveTextContent("Acme · claude-sonnet-4-5");
+    });
+    expect(pill).toHaveTextContent("Follow agent binding");
+    expect(pill).toHaveTextContent("Acme · claude-sonnet-4-5");
+    expect(pill).not.toHaveTextContent("claude-haiku-4-5");
     expect(appMocks.ListLLMProviders).toHaveBeenCalled();
   });
 
@@ -3061,7 +3225,9 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
     const user = userEvent.setup();
     await user.click(pill);
     await user.click(
-      within(screen.getByRole("listbox")).getByRole("option", { name: /Acme/ }),
+      within(screen.getByRole("listbox")).getByRole("option", {
+        name: /Follow this provider's default/,
+      }),
     );
 
     await waitFor(() => {
@@ -4819,6 +4985,97 @@ describe("ChatPanel · 新会话 tab 输入守卫（非可对话 Agent）", () =
 });
 
 describe("ChatPanel · 远端 ModelTarget Picker 门控（gap 1：ProviderPill 接收 daemon 目录/能力）", () => {
+  it("Given the effective new-session backend has a different binding from the Agent primary backend, When the Composer loads, Then follow-binding resolves from the effective backend", async () => {
+    resetStore();
+    mockSessionStore.session = null;
+    componentMocks.effectiveExecTarget = {
+      kind: "local",
+      deviceId: "",
+      deviceName: "Local",
+      backendType: "claudecode",
+      llmProviderKey: "target-provider",
+      llmModelKey: "",
+    };
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [
+        {
+          id: 11,
+          providerKey: "primary-provider",
+          name: "Primary Provider",
+          type: "anthropic",
+          enabled: true,
+          defaultModelKey: "",
+        },
+        {
+          id: 12,
+          providerKey: "target-provider",
+          name: "Target Provider",
+          type: "anthropic",
+          enabled: true,
+          defaultModelKey: "",
+        },
+      ],
+    });
+
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Eng",
+            agentBackendId: 1,
+            backendType: "claudecode",
+            llmProviderKey: "primary-provider",
+          } as never
+        }
+      />,
+    );
+
+    expect(await screen.findByTestId("provider-pill")).toHaveTextContent(
+      "Target Provider",
+    );
+  });
+
+  it("Given a new chat overrides the Agent default to another remote target, When the Composer loads, Then model gating uses the effective target", async () => {
+    resetStore();
+    mockSessionStore.session = null;
+    componentMocks.effectiveExecTarget = {
+      kind: "daemon",
+      deviceId: "sha256:target-b",
+      deviceName: "Target B",
+    };
+    appMocks.RemoteDeviceList.mockResolvedValue([
+      {
+        id: 9,
+        name: "Target B",
+        daemonFingerprint: "sha256:target-b",
+        online: true,
+        supportsLLMModelTarget: false,
+      },
+    ]);
+    appMocks.RemoteDeviceListProviders.mockResolvedValue([]);
+
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Eng",
+            agentBackendId: 1,
+            backendType: "claudecode",
+            deviceID: "sha256:target-a",
+          } as never
+        }
+      />,
+    );
+
+    await waitFor(() => {
+      expect(appMocks.RemoteDeviceListProviders).toHaveBeenCalledWith(9);
+    });
+  });
+
   it("Given 会话绑定了远端设备, When 渲染 composer, Then ProviderPill 按该设备拉取 daemon 目录/能力做远端门控", async () => {
     resetStore();
     mockSessionStore.session = makeSession({

@@ -1,7 +1,9 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Copy,
   Loader2,
+  MoreHorizontal,
   Pencil,
   Plus,
   RefreshCw,
@@ -12,6 +14,14 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -26,15 +36,23 @@ import {
 import { LlmModelLogo, LlmProviderLogo } from "../ai-brand-logo";
 import { cn } from "@/lib/utils";
 import {
+  type BatchDeleteResult,
+  BatchDeleteDialog,
+} from "./batch-delete-dialog";
+import {
   type Model,
   type Provider,
+  type ReferenceCounts,
   endpointFor,
   formatTokens,
+  modelDeleteability,
   providerTypeMeta,
+  totalReferences,
 } from "./index";
 
 export type WorkspaceHandlers = {
   onAddModel: () => void;
+  onCopyProviderKey: () => void;
   onDeleteModel: (model: Model) => void;
   onDeleteProvider: () => void;
   onDiscover: () => void;
@@ -46,6 +64,8 @@ export type WorkspaceHandlers = {
   onTestProvider: () => void;
   onToggleModelEnabled: (model: Model) => void;
   onToggleProviderEnabled: () => void;
+  onBatchToggleEnabled: (models: Model[], enabled: boolean) => Promise<void>;
+  onBatchDeleteCompleted: (result: BatchDeleteResult) => void;
 };
 
 export function ProviderWorkspace({
@@ -59,14 +79,21 @@ export function ProviderWorkspace({
   onDeleteProvider,
   onDiscover,
   onAddModel,
+  onCopyProviderKey,
   onSetDefault,
   onToggleModelEnabled,
   onEditModel,
   onDeleteModel,
   onToggleProviderEnabled,
+  onBatchToggleEnabled,
+  onBatchDeleteCompleted,
   onRetryModels,
   testingDefault,
   testingModelId,
+  passedModelTests,
+  providerRefCounts,
+  modelRefCounts,
+  modelRefsLoading,
 }: {
   provider: Provider;
   models: Model[];
@@ -74,9 +101,22 @@ export function ProviderWorkspace({
   modelsLoading: boolean;
   testingDefault: boolean;
   testingModelId: number | null;
+  // 会话内瞬时的「已通过」：model.id → 本次测试耗时；不持久化，刷新即消失。
+  passedModelTests: ReadonlyMap<number, string>;
+  providerRefCounts: ReferenceCounts | null;
+  modelRefCounts: Map<string, ReferenceCounts>;
+  modelRefsLoading: boolean;
 } & WorkspaceHandlers) {
   const { t } = useTranslation();
   const [search, setSearch] = React.useState("");
+  const [selected, setSelected] = React.useState<Set<number>>(new Set());
+  const [batchDelete, setBatchDelete] = React.useState<Model[] | null>(null);
+
+  React.useEffect(() => {
+    setSearch("");
+    setSelected(new Set());
+    setBatchDelete(null);
+  }, [provider.id]);
 
   const meta =
     provider.type in providerTypeMeta
@@ -94,6 +134,26 @@ export function ProviderWorkspace({
       )
     : models;
 
+  const selectedModels = visible.filter((m) => selected.has(m.id));
+  const selectedDeleteabilityKnown = selectedModels.every(
+    (model) =>
+      model.modelKey === provider.defaultModelKey ||
+      modelRefCounts.has(model.modelKey),
+  );
+  const allVisibleSelected =
+    visible.length > 0 && visible.every((m) => selected.has(m.id));
+
+  const handleBatchToggle = async (enabled: boolean) => {
+    if (selectedModels.length === 0) return;
+    await onBatchToggleEnabled(selectedModels, enabled);
+    setSelected(new Set());
+  };
+
+  const handleBatchDelete = () => {
+    if (selectedModels.length === 0) return;
+    setBatchDelete(selectedModels);
+  };
+
   // Provider 启用需要属于它的启用默认模型
   const defaultModel = models.find(
     (m) => m.modelKey === provider.defaultModelKey,
@@ -105,6 +165,42 @@ export function ProviderWorkspace({
     ? undefined
     : t("llmProviders.workspace.cannotEnableNoDefault");
 
+  // 元信息行：当前默认模型（无则占位）与供应商被引用计数。
+  const defaultModelName = defaultModel?.modelId ?? "—";
+  const refCounts = providerRefCounts ?? {
+    backends: 0,
+    sessions: 0,
+    routes: 0,
+  };
+  const refParts: string[] = [];
+  if (refCounts.backends > 0) {
+    refParts.push(
+      t("llmProviders.workspace.refBackends", { count: refCounts.backends }),
+    );
+  }
+  if (refCounts.sessions > 0) {
+    refParts.push(
+      t("llmProviders.workspace.refSessions", { count: refCounts.sessions }),
+    );
+  }
+  if (refCounts.routes > 0) {
+    refParts.push(
+      t("llmProviders.workspace.refRoutes", { count: refCounts.routes }),
+    );
+  }
+  const refsText = refParts.join(" · ");
+
+  // 供应商删除与模型行同一条规则：做不到的操作在点击之前就禁用并写明原因。
+  // 引用计数未知（仍在加载）时不抢先禁用，弹窗会再复查一次。
+  const providerRefTotal = totalReferences(providerRefCounts);
+  const providerDeleteBlocked =
+    providerRefCounts !== null && providerRefTotal > 0;
+  const providerDeleteBlockedReason = providerDeleteBlocked
+    ? t("llmProviders.workspace.deleteBlockedReferenced", {
+        count: providerRefTotal,
+      })
+    : undefined;
+
   return (
     <div
       role="region"
@@ -113,185 +209,266 @@ export function ProviderWorkspace({
       })}
       className="@container flex min-w-0 flex-col overflow-hidden"
     >
-      {/* Provider header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-3 sm:px-4">
-        <div className="flex min-w-0 items-start gap-2.5">
-          <LlmProviderLogo
-            providerType={provider.type}
-            providerName={provider.name}
-            baseUrl={provider.baseUrl}
-            className="mt-0.5 size-8 rounded-md"
-          />
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <span className="truncate text-sm font-semibold">
-              {provider.name}
-            </span>
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs text-muted-foreground">
-              <span className="rounded-sm bg-secondary px-1.5 py-0.5 font-mono">
+      {/* Provider header：身份行 + 元信息行 */}
+      <div className="border-b border-border px-3 py-3 sm:px-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <LlmProviderLogo
+              providerType={provider.type}
+              providerName={provider.name}
+              baseUrl={provider.baseUrl}
+              className="size-8 shrink-0 rounded-md"
+            />
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate text-sm font-semibold">
+                {provider.name}
+              </span>
+              <span className="shrink-0 rounded-sm bg-secondary px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
                 {meta
                   ? t(`llmProviders.providerType.${provider.type}.label`)
                   : provider.type}
               </span>
-              <span className="hidden truncate font-mono lg:inline">
-                {endpoint}
-              </span>
-              <span className="hidden truncate font-mono lg:inline">
-                {provider.hasApiKey
-                  ? provider.maskedApiKey
-                  : t("llmProviders.row.noApiKey")}
-              </span>
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1 font-medium",
-                  provider.enabled
-                    ? "text-status-running"
-                    : "text-status-waiting",
-                )}
-              >
-                <span
-                  className={cn(
-                    "size-1.5 rounded-full",
-                    provider.enabled
-                      ? "bg-status-running"
-                      : "bg-status-waiting",
-                  )}
-                  aria-hidden="true"
-                />
-                {provider.enabled
-                  ? t("llmProviders.nav.enabled")
-                  : t("llmProviders.nav.disabled")}
-              </span>
             </div>
           </div>
-        </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
-          <label
-            className={cn(
-              "flex items-center gap-1.5 text-2xs text-muted-foreground",
-              !hasEnabledDefault && "cursor-not-allowed",
-            )}
-            title={enableDisabledReason}
-          >
-            <Switch
-              checked={provider.enabled}
-              disabled={!hasEnabledDefault}
-              onCheckedChange={() => onToggleProviderEnabled()}
-              size="sm"
+          <div className="flex flex-wrap items-center gap-1.5">
+            <label
+              className={cn(
+                "flex items-center gap-1.5 text-2xs text-muted-foreground",
+                !hasEnabledDefault && "cursor-not-allowed",
+              )}
               title={enableDisabledReason}
-              aria-label={t("llmProviders.workspace.enableNamed", {
+            >
+              <Switch
+                checked={provider.enabled}
+                disabled={!hasEnabledDefault}
+                onCheckedChange={() => onToggleProviderEnabled()}
+                size="sm"
+                title={enableDisabledReason}
+                aria-label={t("llmProviders.workspace.enableNamed", {
+                  name: provider.name,
+                })}
+              />
+              {provider.enabled
+                ? t("llmProviders.workspace.enabledShort")
+                : t("llmProviders.workspace.disabledShort")}
+            </label>
+            {/* 状态与操作分档：enable 开关是一档，测试/发现/更多是另一档 */}
+            <span
+              className="h-[18px] w-px shrink-0 bg-border"
+              aria-hidden="true"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-[30px] gap-1.5 px-3 text-xs"
+              onClick={onTestProvider}
+              disabled={testingDefault}
+              aria-label={t("llmProviders.workspace.testNamed", {
                 name: provider.name,
               })}
-            />
-            {provider.enabled
-              ? t("llmProviders.workspace.enabledShort")
-              : t("llmProviders.workspace.disabledShort")}
-          </label>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-[30px] gap-1.5 px-3 text-xs"
-            onClick={onTestProvider}
-            disabled={testingDefault}
-            aria-label={t("llmProviders.workspace.testNamed", {
-              name: provider.name,
-            })}
-            title={t("llmProviders.workspace.testTitle")}
-          >
-            {testingDefault ? (
-              <Loader2
-                className="size-3.5 animate-spin"
-                data-icon="inline-start"
-                aria-hidden="true"
-              />
-            ) : (
-              <SendHorizontal
+              title={t("llmProviders.workspace.testTitle")}
+            >
+              {testingDefault ? (
+                <Loader2
+                  className="size-3.5 animate-spin"
+                  data-icon="inline-start"
+                  aria-hidden="true"
+                />
+              ) : (
+                <SendHorizontal
+                  className="size-3.5"
+                  data-icon="inline-start"
+                  aria-hidden="true"
+                />
+              )}
+              {t("llmProviders.workspace.testConnection")}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-[30px] gap-1.5 px-3 text-xs"
+              onClick={onDiscover}
+              aria-label={t("llmProviders.workspace.discoverNamed", {
+                name: provider.name,
+              })}
+            >
+              <RefreshCw
                 className="size-3.5"
                 data-icon="inline-start"
                 aria-hidden="true"
               />
-            )}
-            {t("llmProviders.workspace.test")}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-[30px] gap-1.5 px-3 text-xs text-status-error"
-            onClick={onDeleteProvider}
-            aria-label={t("llmProviders.workspace.deleteNamed", {
-              name: provider.name,
-            })}
-            title={t("llmProviders.workspace.deleteTitle")}
-          >
-            <Trash2
-              className="size-3.5"
-              data-icon="inline-start"
-              aria-hidden="true"
-            />
-            {t("llmProviders.workspace.delete")}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-[30px] gap-1.5 px-3 text-xs"
-            onClick={onEditConnection}
-            aria-label={t("llmProviders.workspace.editConnectionNamed", {
-              name: provider.name,
-            })}
-          >
-            <Pencil
-              className="size-3.5"
-              data-icon="inline-start"
-              aria-hidden="true"
-            />
-            {t("llmProviders.workspace.editConnection")}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-[30px] gap-1.5 px-3 text-xs"
-            onClick={onDiscover}
-            aria-label={t("llmProviders.workspace.discoverNamed", {
-              name: provider.name,
-            })}
-          >
-            <RefreshCw
-              className="size-3.5"
-              data-icon="inline-start"
-              aria-hidden="true"
-            />
-            {t("llmProviders.workspace.discover")}
-          </Button>
+              {t("llmProviders.workspace.discover")}
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label={t("llmProviders.workspace.more")}
+                  title={t("llmProviders.workspace.more")}
+                >
+                  <MoreHorizontal data-icon="only" aria-hidden="true" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={onEditConnection}>
+                  <Pencil className="size-3.5" aria-hidden="true" />
+                  {t("llmProviders.workspace.editConnectionNamed", {
+                    name: provider.name,
+                  })}
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={onCopyProviderKey}>
+                  <Copy className="size-3.5" aria-hidden="true" />
+                  {t("llmProviders.fields.copyProviderKey")}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  variant="destructive"
+                  disabled={providerDeleteBlocked}
+                  title={providerDeleteBlockedReason}
+                  onSelect={onDeleteProvider}
+                >
+                  <Trash2 className="size-3.5" aria-hidden="true" />
+                  {t("llmProviders.workspace.deleteNamed", {
+                    name: provider.name,
+                  })}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+
+        {/* 元信息行：endpoint / 掩码 key / 默认模型 / 被引用 */}
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-2xs text-muted-foreground">
+          <span className="truncate">{endpoint}</span>
+          <span className="truncate">
+            {provider.hasApiKey
+              ? provider.maskedApiKey
+              : t("llmProviders.row.noApiKey")}
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="text-subtle-foreground">
+              {t("llmProviders.workspace.metaDefaultModel")}
+            </span>
+            <span>{defaultModelName}</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="text-subtle-foreground">
+              {t("llmProviders.workspace.metaReferenced")}
+            </span>
+            <span>{refsText || "—"}</span>
+          </span>
         </div>
       </div>
 
-      {/* Model tools */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 sm:px-4">
-        <div className="relative min-w-0 flex-1">
-          <Search
-            className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
-            aria-hidden="true"
-          />
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.currentTarget.value)}
-            placeholder={t("llmProviders.workspace.searchPlaceholder")}
-            aria-label={t("llmProviders.workspace.searchAria")}
-            className="h-8 w-full rounded-md border border-input bg-transparent pl-8 pr-3 text-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
-          />
+      {/* Model tools：选择态原地替换为操作条 */}
+      {selected.size > 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 sm:px-4">
+          <span className="shrink-0 font-mono text-2xs text-muted-foreground">
+            {t("llmProviders.modelsTable.batch.selectedCount", {
+              selected: selected.size,
+              total: visible.length,
+            })}
+          </span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-[30px] gap-1.5 px-3 text-xs"
+              onClick={() => setSelected(new Set(visible.map((m) => m.id)))}
+            >
+              {t("llmProviders.modelsTable.batch.selectAll")}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-[30px] gap-1.5 px-3 text-xs"
+              onClick={() => setSelected(new Set())}
+            >
+              {t("llmProviders.modelsTable.batch.clearSelection")}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-[30px] gap-1.5 px-3 text-xs"
+              onClick={() => void handleBatchToggle(true)}
+            >
+              {t("llmProviders.modelsTable.batch.enable")}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-[30px] gap-1.5 px-3 text-xs"
+              onClick={() => void handleBatchToggle(false)}
+            >
+              {t("llmProviders.modelsTable.batch.disable")}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              className="h-[30px] gap-1.5 px-3 text-xs"
+              onClick={handleBatchDelete}
+              disabled={modelRefsLoading || !selectedDeleteabilityKnown}
+              title={
+                modelRefsLoading
+                  ? t("llmProviders.modelsTable.batch.referencesPending")
+                  : !selectedDeleteabilityKnown
+                    ? t("llmProviders.modelsTable.batch.referencesUnavailable")
+                    : undefined
+              }
+            >
+              {t("llmProviders.modelsTable.batch.delete")}
+            </Button>
+          </div>
         </div>
-        <span className="shrink-0 font-mono text-2xs text-muted-foreground">
-          {t("llmProviders.workspace.modelCount", {
-            shown: visible.length,
-            total: models.length,
-          })}
-        </span>
-      </div>
+      ) : (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 sm:px-4">
+          <div className="relative min-w-0 flex-1">
+            <Search
+              className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.currentTarget.value)}
+              placeholder={t("llmProviders.workspace.searchPlaceholder")}
+              aria-label={t("llmProviders.workspace.searchAria")}
+              className="h-8 w-full rounded-md border border-input bg-transparent pl-8 pr-3 text-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            />
+          </div>
+          {/* 手动添加常驻工具栏：有模型之后也必须够得着 */}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 shrink-0 gap-1.5 px-3 text-xs"
+            onClick={onAddModel}
+          >
+            <Plus
+              className="size-3.5"
+              data-icon="inline-start"
+              aria-hidden="true"
+            />
+            {t("llmProviders.workspace.addModelManual")}
+          </Button>
+          <span className="shrink-0 font-mono text-2xs text-muted-foreground">
+            {t("llmProviders.workspace.modelCount", {
+              shown: visible.length,
+              total: models.length,
+            })}
+          </span>
+        </div>
+      )}
 
       {/* Model table */}
       {modelsError ? (
@@ -334,6 +511,7 @@ export function ProviderWorkspace({
           <p className="max-w-xs text-2xs leading-relaxed text-muted-foreground">
             {t("llmProviders.workspace.noModelsDescription")}
           </p>
+          {/* 手动添加已常驻工具栏，空态只留「发现模型」这一条主路径 */}
           <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
             <Button
               type="button"
@@ -349,20 +527,6 @@ export function ProviderWorkspace({
               />
               {t("llmProviders.workspace.discoverModels")}
             </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-[30px] gap-1.5 px-3 text-xs"
-              onClick={onAddModel}
-            >
-              <Plus
-                className="size-3.5"
-                data-icon="inline-start"
-                aria-hidden="true"
-              />
-              {t("llmProviders.workspace.addModelManual")}
-            </Button>
           </div>
         </div>
       ) : (
@@ -373,8 +537,21 @@ export function ProviderWorkspace({
           >
             <TableHeader>
               <TableRow className="bg-secondary hover:bg-secondary">
+                <TableHead className="w-[40px] px-4">
+                  <Checkbox
+                    aria-label={t("llmProviders.modelsTable.selectAll")}
+                    checked={allVisibleSelected}
+                    onCheckedChange={(checked) => {
+                      if (checked === true) {
+                        setSelected(new Set(visible.map((m) => m.id)));
+                      } else {
+                        setSelected(new Set());
+                      }
+                    }}
+                  />
+                </TableHead>
                 <TableHead className="px-4 font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                  {t("llmProviders.modelsTable.modelId")}
+                  {t("llmProviders.modelsTable.model")}
                 </TableHead>
                 <TableHead className="w-[88px] @max-[640px]:hidden font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                   {t("llmProviders.modelsTable.context")}
@@ -382,10 +559,16 @@ export function ProviderWorkspace({
                 <TableHead className="w-[88px] @max-[640px]:hidden font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                   {t("llmProviders.modelsTable.maxOutput")}
                 </TableHead>
-                <TableHead className="w-[80px] font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                <TableHead className="w-[64px] font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  {t("llmProviders.modelsTable.references")}
+                </TableHead>
+                <TableHead className="w-[64px] font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                   {t("llmProviders.modelsTable.default")}
                 </TableHead>
-                <TableHead className="w-[60px]" />
+                <TableHead className="w-[56px] font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  {t("llmProviders.modelsTable.enableColumn")}
+                </TableHead>
+                <TableHead className="w-[88px]" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -393,11 +576,53 @@ export function ProviderWorkspace({
                 const isDefault = model.modelKey === provider.defaultModelKey;
                 const canDisable = !isDefault;
                 const canSetDefault = model.enabled && !isDefault;
+                const refCount = totalReferences(
+                  modelRefCounts.get(model.modelKey),
+                );
+                const passedDuration = passedModelTests.get(model.id);
+                const del = modelDeleteability(
+                  model,
+                  provider.defaultModelKey,
+                  modelRefCounts,
+                );
+                const deleteBlocked = del.kind !== "ok";
+                const deleteBlockedReason =
+                  del.kind === "default"
+                    ? t("llmProviders.modelsTable.deleteBlockedDefault")
+                    : del.kind === "referenced"
+                      ? t("llmProviders.modelsTable.deleteBlockedReferenced", {
+                          count: del.count,
+                        })
+                      : del.kind === "references-unknown"
+                        ? t(
+                            "llmProviders.modelsTable.batch.referencesUnavailable",
+                          )
+                        : undefined;
                 return (
                   <TableRow
                     key={model.id}
-                    className="align-top hover:bg-accent/45"
+                    className={cn(
+                      "align-top hover:bg-accent/45",
+                      // 停用的模型整行压暗，与行内「已停用」徽标一起给出状态
+                      !model.enabled && "opacity-55",
+                    )}
                   >
+                    <TableCell className="px-4 py-2.5">
+                      <Checkbox
+                        aria-label={t("llmProviders.modelsTable.selectModel", {
+                          model: model.modelId,
+                        })}
+                        checked={selected.has(model.id)}
+                        onCheckedChange={(checked) => {
+                          setSelected((prev) => {
+                            const next = new Set(prev);
+                            if (checked === true) next.add(model.id);
+                            else next.delete(model.id);
+                            return next;
+                          });
+                        }}
+                      />
+                    </TableCell>
                     <TableCell className="px-4 py-2.5">
                       <div className="flex min-w-0 items-start gap-2">
                         <LlmModelLogo
@@ -409,27 +634,63 @@ export function ProviderWorkspace({
                         />
                         <div className="flex min-w-0 flex-col gap-0.5">
                           <span className="flex min-w-0 items-center gap-1.5">
-                            <span className="truncate font-mono text-xs">
-                              {model.modelId}
+                            <span className="truncate text-xs">
+                              {model.name || model.modelId}
                             </span>
                             {isDefault ? (
                               <span className="shrink-0 rounded-sm bg-primary-soft px-1.5 py-0.5 text-2xs font-medium text-primary-text">
                                 {t("llmProviders.modelsTable.defaultBadge")}
                               </span>
                             ) : null}
-                          </span>
-                          <span className="flex items-center gap-1.5 text-2xs text-muted-foreground">
-                            {model.modelKey}
-                            {model.enabled ? (
-                              <span className="text-status-running">
-                                {t("llmProviders.modelsTable.enabled")}
-                              </span>
-                            ) : (
-                              <span className="text-status-waiting">
+                            {model.enabled ? null : (
+                              <span className="shrink-0 rounded-sm bg-status-waiting/10 px-1.5 py-0.5 text-2xs font-medium text-status-waiting">
                                 {t("llmProviders.modelsTable.disabled")}
                               </span>
                             )}
                           </span>
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <span className="truncate font-mono text-2xs text-muted-foreground">
+                              {model.modelId}
+                            </span>
+                            {passedDuration ? (
+                              <span
+                                className="shrink-0 rounded-sm bg-status-running/10 px-1.5 py-0.5 text-2xs font-medium text-status-running"
+                                title={t(
+                                  "llmProviders.modelsTable.testPassedHint",
+                                  { duration: passedDuration },
+                                )}
+                              >
+                                {t("llmProviders.modelsTable.testPassed")}
+                              </span>
+                            ) : null}
+                          </span>
+                          {selected.has(model.id) ? (
+                            <span
+                              className={cn(
+                                "text-2xs",
+                                del.kind === "ok"
+                                  ? "text-status-running"
+                                  : "text-status-error",
+                              )}
+                            >
+                              {del.kind === "ok"
+                                ? t(
+                                    "llmProviders.modelsTable.batch.rowCanDelete",
+                                  )
+                                : del.kind === "default"
+                                  ? t(
+                                      "llmProviders.modelsTable.batch.rowDefaultBlocked",
+                                    )
+                                  : del.kind === "referenced"
+                                    ? t(
+                                        "llmProviders.modelsTable.batch.rowReferencedBlocked",
+                                        { count: del.count },
+                                      )
+                                    : t(
+                                        "llmProviders.modelsTable.batch.referencesUnavailable",
+                                      )}
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                     </TableCell>
@@ -438,6 +699,9 @@ export function ProviderWorkspace({
                     </TableCell>
                     <TableCell className="py-2.5 @max-[640px]:hidden font-mono text-2xs text-muted-foreground">
                       {formatTokens(model.maxOutput)}
+                    </TableCell>
+                    <TableCell className="py-2.5 font-mono text-2xs text-muted-foreground">
+                      {refCount > 0 ? refCount : "—"}
                     </TableCell>
                     <TableCell className="py-2.5">
                       <RadioGroup
@@ -463,6 +727,24 @@ export function ProviderWorkspace({
                           }
                         />
                       </RadioGroup>
+                    </TableCell>
+                    <TableCell className="py-2.5">
+                      <Switch
+                        checked={model.enabled}
+                        disabled={!canDisable}
+                        onCheckedChange={() => onToggleModelEnabled(model)}
+                        size="sm"
+                        title={
+                          canDisable
+                            ? undefined
+                            : t(
+                                "llmProviders.modelsTable.disableBlockedDefault",
+                              )
+                        }
+                        aria-label={t("llmProviders.modelsTable.enableNamed", {
+                          model: model.modelId,
+                        })}
+                      />
                     </TableCell>
                     <TableCell className="px-4 py-2.5">
                       <div className="flex justify-end gap-1">
@@ -510,52 +792,46 @@ export function ProviderWorkspace({
                         >
                           <Pencil data-icon="only" aria-hidden="true" />
                         </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-xs"
-                          className="size-[26px] text-status-error"
-                          aria-label={t(
-                            "llmProviders.modelsTable.deleteModelNamed",
-                            {
-                              model: model.modelId,
-                            },
-                          )}
-                          title={
-                            isDefault
-                              ? t(
-                                  "llmProviders.modelsTable.deleteBlockedDefault",
-                                )
-                              : t("llmProviders.modelsTable.deleteTitle")
-                          }
-                          onClick={() => onDeleteModel(model)}
-                          disabled={isDefault}
-                        >
-                          <Trash2 data-icon="only" aria-hidden="true" />
-                        </Button>
-                        <label
-                          className="flex items-center"
-                          title={
-                            canDisable
-                              ? undefined
-                              : t(
-                                  "llmProviders.modelsTable.disableBlockedDefault",
-                                )
-                          }
-                        >
-                          <Switch
-                            checked={model.enabled}
-                            disabled={!canDisable}
-                            onCheckedChange={() => onToggleModelEnabled(model)}
-                            size="sm"
-                            aria-label={t(
-                              "llmProviders.modelsTable.enableNamed",
-                              {
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-xs"
+                              className="size-[26px] text-muted-foreground"
+                              aria-label={t(
+                                "llmProviders.modelsTable.moreModelNamed",
+                                {
+                                  model: model.modelId,
+                                },
+                              )}
+                              title={t(
+                                "llmProviders.modelsTable.moreModelNamed",
+                                {
+                                  model: model.modelId,
+                                },
+                              )}
+                            >
+                              <MoreHorizontal
+                                data-icon="only"
+                                aria-hidden="true"
+                              />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              variant="destructive"
+                              disabled={deleteBlocked}
+                              onSelect={() => onDeleteModel(model)}
+                              title={deleteBlockedReason}
+                            >
+                              <Trash2 className="size-3.5" aria-hidden="true" />
+                              {t("llmProviders.modelsTable.deleteModelNamed", {
                                 model: model.modelId,
-                              },
-                            )}
-                          />
-                        </label>
+                              })}
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -565,6 +841,18 @@ export function ProviderWorkspace({
           </Table>
         </div>
       )}
+
+      <BatchDeleteDialog
+        models={batchDelete}
+        defaultModelKey={provider.defaultModelKey}
+        modelRefCounts={modelRefCounts}
+        onClose={() => setBatchDelete(null)}
+        onDone={(result) => {
+          setBatchDelete(null);
+          setSelected(new Set());
+          onBatchDeleteCompleted(result);
+        }}
+      />
     </div>
   );
 }

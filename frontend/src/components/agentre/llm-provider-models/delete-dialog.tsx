@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, Lock, Trash2 } from "lucide-react";
+import { Loader2, Lock, PowerOff, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -18,6 +18,8 @@ import {
   DeleteLLMProvider,
   LLMModelRefCounts,
   LLMProviderRefCounts,
+  SetLLMModelEnabled,
+  SetLLMProviderEnabled,
 } from "../../../../wailsjs/go/app/App";
 import { llm_provider_svc } from "../../../../wailsjs/go/models";
 import {
@@ -36,7 +38,8 @@ export type DeleteState =
   | { phase: "loading" }
   | { phase: "blocked"; counts: ReferenceCounts }
   | { phase: "confirm"; counts: ReferenceCounts }
-  | { phase: "deleting" };
+  | { phase: "deleting" }
+  | { phase: "disabling" };
 
 function refsDetail(
   counts: ReferenceCounts,
@@ -59,10 +62,13 @@ export function DeleteDialog({
   target,
   onClose,
   onDeleted,
+  onDisabled,
 }: {
   target: DeleteTarget | null;
   onClose: () => void;
   onDeleted: (target: DeleteTarget) => void;
+  // 被引用无法删除时的第三条出路：停用（保留引用、可恢复）。
+  onDisabled?: (target: DeleteTarget) => void;
 }) {
   const { t } = useTranslation();
   const [state, setState] = React.useState<DeleteState>({ phase: "loading" });
@@ -149,15 +155,49 @@ export function DeleteDialog({
     }
   }, [onClose, onDeleted, target]);
 
+  // 被引用挡住删除时的替代动作：停用保留全部引用，之后可恢复。
+  const disableInstead = React.useCallback(async () => {
+    if (!target) return;
+    setState({ phase: "disabling" });
+    setError(null);
+    try {
+      if (target.kind === "provider") {
+        await SetLLMProviderEnabled(
+          new llm_provider_svc.SetProviderEnabledRequest({
+            id: target.provider.id,
+            enabled: false,
+          }),
+        );
+      } else {
+        await SetLLMModelEnabled(
+          new llm_provider_svc.SetModelEnabledRequest({
+            id: target.model.id,
+            enabled: false,
+          }),
+        );
+      }
+      onDisabled?.(target);
+      onClose();
+    } catch (err) {
+      setError(errMessage(err));
+      setState({
+        phase: "blocked",
+        counts: { backends: 0, sessions: 0, routes: 0 },
+      });
+    }
+  }, [onClose, onDisabled, target]);
+
   const name = provider ? provider.name : model ? model.modelId : "";
   const deleting = state.phase === "deleting";
+  const disabling = state.phase === "disabling";
   const blocked = state.phase === "blocked";
+  const busy = deleting || disabling;
 
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next && !deleting) onClose();
+        if (!next && !busy) onClose();
       }}
     >
       <DialogContent className="max-w-[440px]">
@@ -214,44 +254,87 @@ export function DeleteDialog({
           )}
         </DialogBody>
 
-        <DialogFooter>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-8 text-xs"
-            onClick={onClose}
-            disabled={deleting}
-          >
-            {t("common.cancel")}
-          </Button>
-          {state.phase === "confirm" ? (
+        <DialogFooter className={blocked ? "justify-between gap-2" : undefined}>
+          {blocked ? (
             <Button
               type="button"
-              variant="destructive"
+              variant="outline"
               size="sm"
               className="h-8 gap-1.5 text-xs"
-              onClick={() => void confirmDelete()}
-              disabled={deleting}
+              onClick={() => void disableInstead()}
+              disabled={busy}
+              title={t("llmProviders.delete.disableInsteadHint")}
             >
-              {deleting ? (
+              {disabling ? (
                 <Loader2
                   className="size-3.5 animate-spin"
                   data-icon="inline-start"
                   aria-hidden="true"
                 />
               ) : (
-                <Trash2
+                <PowerOff
                   className="size-3.5"
                   data-icon="inline-start"
                   aria-hidden="true"
                 />
               )}
-              {target?.kind === "provider"
-                ? t("llmProviders.delete.providerConfirmButton")
-                : t("llmProviders.delete.modelConfirmButton")}
+              {t("llmProviders.delete.disableInstead")}
             </Button>
           ) : null}
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 text-xs"
+              onClick={onClose}
+              disabled={busy}
+            >
+              {t("common.cancel")}
+            </Button>
+            {state.phase === "confirm" || blocked || disabling ? (
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                className="h-8 gap-1.5 text-xs"
+                onClick={() => void confirmDelete()}
+                // 被引用时删除按钮保留但禁用 + 写明原因，而不是消失
+                disabled={busy || blocked}
+                title={
+                  blocked
+                    ? target?.kind === "provider"
+                      ? t("llmProviders.delete.blockedProviderDetail")
+                      : t("llmProviders.delete.blockedModelDetail", {
+                          refs: refsDetail(
+                            state.phase === "blocked"
+                              ? state.counts
+                              : { backends: 0, sessions: 0, routes: 0 },
+                            t,
+                          ),
+                        })
+                    : undefined
+                }
+              >
+                {deleting ? (
+                  <Loader2
+                    className="size-3.5 animate-spin"
+                    data-icon="inline-start"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <Trash2
+                    className="size-3.5"
+                    data-icon="inline-start"
+                    aria-hidden="true"
+                  />
+                )}
+                {target?.kind === "provider"
+                  ? t("llmProviders.delete.providerConfirmButton")
+                  : t("llmProviders.delete.modelConfirmButton")}
+              </Button>
+            ) : null}
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

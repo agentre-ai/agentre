@@ -514,6 +514,33 @@ func TestLLMProviderRepo_ListModels(t *testing.T) {
 	})
 }
 
+func TestLLMProviderRepo_CountModelsByProvider(t *testing.T) {
+	convey.Convey("CountModelsByProvider", t, func() {
+		ctx, mock, repo := setupLLMProviderRepoTest(t)
+
+		convey.Convey("按 provider 分组计数 status=ACTIVE 的模型，返回 map", func() {
+			mock.ExpectQuery("SELECT provider_id, COUNT\\(\\*\\) as count FROM `llm_provider_models` WHERE status = \\? AND provider_id IN \\(\\?,\\?\\) GROUP BY `provider_id`").
+				WithArgs(consts.ACTIVE, int64(1), int64(2)).
+				WillReturnRows(sqlmock.NewRows([]string{"provider_id", "count"}).
+					AddRow(int64(1), int64(3)).
+					AddRow(int64(2), int64(0)))
+
+			got, err := repo.CountModelsByProvider(ctx, []int64{1, 2})
+			assert.NoError(t, err)
+			assert.Equal(t, map[int64]int64{1: 3, 2: 0}, got)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+
+		convey.Convey("空 providerIDs 直接返回空 map，不发查询", func() {
+			got, err := repo.CountModelsByProvider(ctx, []int64{})
+			assert.NoError(t, err)
+			assert.NotNil(t, got)
+			assert.Empty(t, got)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	})
+}
+
 func TestLLMProviderRepo_DeleteModel(t *testing.T) {
 	convey.Convey("DeleteModel", t, func() {
 		ctx, mock, repo := setupLLMProviderRepoTest(t)
