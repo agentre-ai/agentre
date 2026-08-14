@@ -89,7 +89,6 @@ export function AgentredOnboarding({
             number={3}
             active={step === 3}
             disabled={submitting}
-            finished={finishedSteps.includes(3)}
             onSelect={() => setStep(3)}
             title={t("remoteDevices.onboarding.steps.pair.title")}
             subtitle={t("remoteDevices.onboarding.steps.pair.subtitle")}
@@ -385,8 +384,8 @@ function StepHeader({
 }: {
   active: boolean;
   disabled: boolean;
-  finished: boolean;
-  /** 省略即这一步没有「已完成」的说法 —— 配对是终点,没有下一步可点。 */
+  /** 两者一同省略即这一步没有「已完成」的说法 —— 配对是终点,没有下一步可点。 */
+  finished?: boolean;
   finishedSubtitle?: string;
   number: OnboardingStep;
   onSelect: () => void;

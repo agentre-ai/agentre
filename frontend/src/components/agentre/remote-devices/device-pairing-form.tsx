@@ -26,7 +26,7 @@ export type AddRequest = {
   tlsCertPEM?: string;
 };
 
-export const URL_RE = /^wss?:\/\/[^/]+\/rpc$/;
+const URL_RE = /^wss?:\/\/[^/]+\/rpc$/;
 
 function limitCode(raw: string): string {
   return raw.toUpperCase().slice(0, 6);
@@ -37,7 +37,7 @@ type UseDevicePairingFormOptions = {
   onSubmittingChange?: (submitting: boolean) => void;
 };
 
-export function useDevicePairingForm({
+function useDevicePairingForm({
   onSubmit,
   onSubmittingChange,
 }: UseDevicePairingFormOptions) {
@@ -123,7 +123,7 @@ type DevicePairingFieldsProps = {
   pairing: DevicePairingController;
 };
 
-export function DevicePairingFields({ pairing }: DevicePairingFieldsProps) {
+function DevicePairingFields({ pairing }: DevicePairingFieldsProps) {
   const { t } = useTranslation();
   const fieldId = useId();
   const urlId = `${fieldId}-url`;
@@ -280,7 +280,7 @@ export function DevicePairingForm({
   );
 }
 
-export function PairingSubmitButton({
+function PairingSubmitButton({
   canSubmit,
   submitLabel,
   submitting,
