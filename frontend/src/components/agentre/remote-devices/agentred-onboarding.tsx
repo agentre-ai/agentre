@@ -29,8 +29,19 @@ export function AgentredOnboarding({
 }: AgentredOnboardingProps) {
   const { t } = useTranslation();
   const [step, setStep] = useState<OnboardingStep>(1);
+  // 只记用户真的点过「下一步」的步骤 —— 跳过去的步骤没有资格自称完成。
+  const [finishedSteps, setFinishedSteps] = useState<readonly OnboardingStep[]>(
+    [],
+  );
   const [remoteOS, setRemoteOS] = useState<RemoteOS>("linux");
   const [runMode, setRunMode] = useState<RunMode>("background");
+
+  const finishStep = (finished: OnboardingStep, next: OnboardingStep) => {
+    setFinishedSteps((previous) =>
+      previous.includes(finished) ? previous : [...previous, finished],
+    );
+    setStep(next);
+  };
 
   const commands = {
     daemonRunning: t("remoteDevices.onboarding.commands.daemonRunning"),
@@ -53,27 +64,27 @@ export function AgentredOnboarding({
         <ol className="grid min-w-0 flex-1 grid-cols-1 sm:grid-cols-3">
           <StepHeader
             number={1}
-            activeStep={step}
+            active={step === 1}
+            finished={finishedSteps.includes(1)}
+            onSelect={() => setStep(1)}
             title={t("remoteDevices.onboarding.steps.install.title")}
-            subtitle={
-              step > 1
-                ? t("remoteDevices.onboarding.steps.install.done")
-                : t("remoteDevices.onboarding.steps.install.subtitle")
-            }
+            subtitle={t("remoteDevices.onboarding.steps.install.subtitle")}
+            finishedSubtitle={t("remoteDevices.onboarding.steps.install.done")}
           />
           <StepHeader
             number={2}
-            activeStep={step}
+            active={step === 2}
+            finished={finishedSteps.includes(2)}
+            onSelect={() => setStep(2)}
             title={t("remoteDevices.onboarding.steps.service.title")}
-            subtitle={
-              step > 2
-                ? t("remoteDevices.onboarding.steps.service.done")
-                : t("remoteDevices.onboarding.steps.service.subtitle")
-            }
+            subtitle={t("remoteDevices.onboarding.steps.service.subtitle")}
+            finishedSubtitle={t("remoteDevices.onboarding.steps.service.done")}
           />
           <StepHeader
             number={3}
-            activeStep={step}
+            active={step === 3}
+            finished={finishedSteps.includes(3)}
+            onSelect={() => setStep(3)}
             title={t("remoteDevices.onboarding.steps.pair.title")}
             subtitle={t("remoteDevices.onboarding.steps.pair.subtitle")}
           />
@@ -197,7 +208,7 @@ export function AgentredOnboarding({
                   {t("remoteDevices.onboarding.install.manual")}
                 </a>
               </Button>
-              <Button type="button" onClick={() => setStep(2)}>
+              <Button type="button" onClick={() => finishStep(1, 2)}>
                 {t("remoteDevices.onboarding.install.next")}
                 <ArrowRight data-icon="inline-end" aria-hidden="true" />
               </Button>
@@ -324,7 +335,7 @@ export function AgentredOnboarding({
 
             <Separator />
             <div className="flex justify-end">
-              <Button type="button" onClick={() => setStep(3)}>
+              <Button type="button" onClick={() => finishStep(2, 3)}>
                 {t("remoteDevices.onboarding.service.next")}
                 <ArrowRight data-icon="inline-end" aria-hidden="true" />
               </Button>
@@ -355,44 +366,53 @@ export function AgentredOnboarding({
 }
 
 function StepHeader({
-  activeStep,
+  active,
+  finished,
+  finishedSubtitle,
   number,
+  onSelect,
   subtitle,
   title,
 }: {
-  activeStep: OnboardingStep;
+  active: boolean;
+  finished: boolean;
+  /** 省略即这一步没有「已完成」的说法 —— 配对是终点,没有下一步可点。 */
+  finishedSubtitle?: string;
   number: OnboardingStep;
+  onSelect: () => void;
   subtitle: string;
   title: string;
 }) {
-  const complete = number < activeStep;
-  const active = number === activeStep;
-
   return (
-    <li
-      aria-current={active ? "step" : undefined}
-      className="flex min-w-0 items-start gap-3 border-b border-border p-4 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0"
-    >
-      <span
-        aria-hidden="true"
-        className={cn(
-          "flex size-6 shrink-0 items-center justify-center rounded-full bg-muted font-mono text-2xs font-semibold text-muted-foreground",
-          active && "bg-primary text-primary-foreground",
-          complete && "bg-status-running-bg text-status-running",
-        )}
+    <li className="flex min-w-0 border-b border-border last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0">
+      <Button
+        type="button"
+        variant="ghost"
+        aria-current={active ? "step" : undefined}
+        className="h-auto min-w-0 flex-1 items-start justify-start gap-3 rounded-none p-4 text-left font-normal"
+        onClick={onSelect}
       >
-        {complete ? (
-          <Check className="size-3" />
-        ) : (
-          String(number).padStart(2, "0")
-        )}
-      </span>
-      <span className="min-w-0">
-        <span className="block truncate text-xs font-semibold">{title}</span>
-        <span className="mt-0.5 block truncate text-2xs text-muted-foreground">
-          {subtitle}
+        <span
+          aria-hidden="true"
+          className={cn(
+            "flex size-6 shrink-0 items-center justify-center rounded-full bg-muted font-mono text-2xs font-semibold text-muted-foreground",
+            finished && "bg-status-running-bg text-status-running",
+            active && "bg-primary text-primary-foreground",
+          )}
+        >
+          {finished ? (
+            <Check className="size-3" />
+          ) : (
+            String(number).padStart(2, "0")
+          )}
         </span>
-      </span>
+        <span className="min-w-0">
+          <span className="block truncate text-xs font-semibold">{title}</span>
+          <span className="mt-0.5 block truncate text-2xs text-muted-foreground">
+            {finished && finishedSubtitle ? finishedSubtitle : subtitle}
+          </span>
+        </span>
+      </Button>
     </li>
   );
 }
