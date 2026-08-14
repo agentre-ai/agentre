@@ -53,8 +53,25 @@ describe("tokenizeMarkdownAutoLinks", () => {
     expect(visibleText(text, CWD)).toBe(text);
   });
 
-  it("Given an unquoted path containing spaces, when tokenized, then no misleading partial filename is linked", () => {
+  it("Given an unquoted relative path containing spaces, when tokenized, then no misleading partial filename is linked", () => {
     expect(linkValues("Open docs/My Guide.md now", CWD)).toEqual([]);
+  });
+
+  it("Given unquoted absolute paths containing spaces, when tokenized, then no misleading partial absolute target is linked", () => {
+    for (const text of [
+      "Open /Users/me/My Guide.md now",
+      "Open C:\\work\\My Guide.md now",
+      "Open file:///Users/me/My Guide.md now",
+    ]) {
+      expect(linkValues(text, CWD)).toEqual([]);
+    }
+  });
+
+  it("Given targets followed by an ASCII colon or closing angle bracket, when tokenized, then the peripheral punctuation remains outside each link", () => {
+    const text = "README.md:next https://example.com>";
+
+    expect(linkValues(text, CWD)).toEqual(["README.md", "https://example.com"]);
+    expect(visibleText(text, CWD)).toBe(text);
   });
 
   it("Given ambiguous or unsafe text, when tokenized, then it remains plain text", () => {

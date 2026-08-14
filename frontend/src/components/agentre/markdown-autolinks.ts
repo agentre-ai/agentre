@@ -53,6 +53,7 @@ const HARD_END_BOUNDARY = new Set([
   "）",
   "】",
   "》",
+  ">",
 ]);
 const TRAILING_PUNCTUATION = /[.?:]+$/;
 
@@ -82,12 +83,14 @@ function isRelativeTarget(value: string, cwd?: string): boolean {
 
 function isMarkdownAutoLinkTarget(value: string, cwd?: string): boolean {
   if (value === "") return false;
+  if (URL_PREFIX.test(value) || WWW_PREFIX.test(value)) {
+    return !/\s/.test(value);
+  }
   const firstWhitespace = value.search(/\s/);
   if (firstWhitespace >= 0) {
     const firstSeparator = value.search(/[\\/]/);
     if (firstSeparator < 0 || firstWhitespace < firstSeparator) return false;
   }
-  if (URL_PREFIX.test(value) || WWW_PREFIX.test(value)) return true;
   if (
     FILE_PROTOCOL.test(value) ||
     ABS_POSIX.test(value) ||
@@ -116,16 +119,54 @@ function isStartBoundary(text: string, index: number): boolean {
   if (index === 0) return true;
   const previous = text[index - 1];
   return (
-    /\s/.test(previous) || previous === ":" || isBoundaryPunctuation(previous)
+    /\s/.test(previous) ||
+    previous === ":" ||
+    previous === "?" ||
+    isBoundaryPunctuation(previous)
+  );
+}
+
+function isCandidateBoundary(text: string, index: number): boolean {
+  if (index >= text.length) return true;
+  const char = text[index];
+  return (
+    /\s/.test(char) ||
+    char === '"' ||
+    char === "'" ||
+    HARD_END_BOUNDARY.has(char) ||
+    TRAILING_PUNCTUATION.test(char)
   );
 }
 
 function candidateEnd(text: string, start: number): number {
+  const source = text.slice(start);
+  const urlTarget = URL_PREFIX.test(source) || WWW_PREFIX.test(source);
+  const fileTarget = FILE_PROTOCOL.test(source);
+  const windowsTarget = ABS_WINDOWS.test(source);
   let end = start;
   while (end < text.length) {
     const char = text[end];
     if (/\s/.test(char) || char === '"' || char === "'") break;
     if (end > start && HARD_END_BOUNDARY.has(char)) break;
+    if (!urlTarget && (char === ":" || char === "?")) {
+      const schemeColon = fileTarget && end === start + "file".length;
+      const driveColon = windowsTarget && end === start + 1;
+      if (schemeColon || driveColon) {
+        end += 1;
+        continue;
+      }
+      if (char === ":") {
+        const lineSuffix = /^:\d+(?::\d+)?/.exec(text.slice(end));
+        if (
+          lineSuffix &&
+          isCandidateBoundary(text, end + lineSuffix[0].length)
+        ) {
+          end += lineSuffix[0].length;
+          continue;
+        }
+      }
+      break;
+    }
     end += 1;
   }
   return end;
@@ -149,6 +190,24 @@ function followsUnquotedPathFragment(text: string, start: number): boolean {
     index -= 1;
   }
   return /[\\/]/.test(text.slice(index + 1, end));
+}
+
+function precedesUnquotedPathFragment(
+  text: string,
+  value: string,
+  end: number,
+): boolean {
+  const path = pathWithoutLineSuffix(value);
+  if (/[\\/]$/.test(path) || previewKind(path) !== null) return false;
+
+  let index = end;
+  if (index >= text.length || !/\s/.test(text[index])) return false;
+  while (index < text.length && /\s/.test(text[index])) index += 1;
+  const fragmentEnd = candidateEnd(text, index);
+  const fragment = trimCandidate(text.slice(index, fragmentEnd));
+  if (fragment === "") return false;
+  const fragmentPath = pathWithoutLineSuffix(fragment);
+  return /[\\/]/.test(fragmentPath) || previewKind(fragmentPath) !== null;
 }
 
 function quotedTargetAt(
@@ -202,9 +261,10 @@ export function tokenizeMarkdownAutoLinks(
     const raw = text.slice(index, rawEnd);
     const candidate = trimCandidate(raw);
     const candidateEndIndex = index + candidate.length;
-    const relativeCandidate =
-      !URL_PREFIX.test(candidate) &&
-      !WWW_PREFIX.test(candidate) &&
+    const pathCandidate =
+      !URL_PREFIX.test(candidate) && !WWW_PREFIX.test(candidate);
+    const relativePathCandidate =
+      pathCandidate &&
       !FILE_PROTOCOL.test(candidate) &&
       !ABS_POSIX.test(candidate) &&
       !ABS_WINDOWS.test(candidate);
@@ -212,7 +272,10 @@ export function tokenizeMarkdownAutoLinks(
     if (
       candidate !== "" &&
       isMarkdownAutoLinkTarget(candidate, cwd) &&
-      !(relativeCandidate && followsUnquotedPathFragment(text, index))
+      !(
+        (relativePathCandidate && followsUnquotedPathFragment(text, index)) ||
+        (pathCandidate && precedesUnquotedPathFragment(text, candidate, rawEnd))
+      )
     ) {
       flushPlain(index);
       segments.push({ type: "link", value: candidate, href: candidate });

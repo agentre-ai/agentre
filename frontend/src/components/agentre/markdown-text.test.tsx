@@ -122,7 +122,7 @@ describe("MarkdownText automatic RichLinks", () => {
     const { container } = render(
       <MarkdownText
         text={
-          "Run `cat frontend/src/chat.tsx` instead.\n\n```sh\ncat frontend/src/chat.tsx\n```\n"
+          "Run `cat frontend/src/chat.tsx` or `https://example.com --verbose` instead.\n\n```sh\ncat frontend/src/chat.tsx\n```\n"
         }
         cwd="/work/proj"
       />,
@@ -130,6 +130,7 @@ describe("MarkdownText automatic RichLinks", () => {
 
     expect(container.querySelectorAll("a")).toHaveLength(0);
     expect(container.textContent).toContain("cat frontend/src/chat.tsx");
+    expect(container.textContent).toContain("https://example.com --verbose");
   });
 
   it("Given no cwd, when relative targets appear, then they remain non-interactive text", () => {
