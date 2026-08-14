@@ -7,13 +7,12 @@ import { test } from "node:test";
 import {
   ProcessSupervisor,
   appEnvironment,
-  changedDatabaseMetadata,
+  assertRemoteDeviceCredentialPersisted,
   createRunContext,
   fakePeerEnvironment,
   playwrightEnvironment,
   preserveFailureArtifacts,
   reserveDistinctLoopbackPorts,
-  snapshotDatabaseMetadata,
 } from "./run-context.mjs";
 
 test("Given two launches, when run contexts are created, then each gets private random storage, token, manifest, and loopback dynamic ports", async (t) => {
@@ -121,27 +120,31 @@ test("Given a private run and a secret-bearing parent environment, when Playwrig
   assert.equal(env.AGENTRE_PROXY_PORT, undefined);
 });
 
-test("Given protected production/development DB files, when only metadata is snapshotted, then existence, size, and mtime pollution is detected without reading contents", async (t) => {
-  const root = await createRunContext();
-  t.after(() => root.remove());
-  const protectedRoot = join(root.runRoot, "protected-agentre");
-  await mkdir(protectedRoot, { recursive: true });
-  const db = join(protectedRoot, "agentre.db");
-  await writeFile(db, "real-data-must-not-be-opened");
+test("Given a generated remote credential, when runner-owned file-keychain evidence is checked, then only a matching regular file inside the run keychain passes without exposing the token", async (t) => {
+  const run = await createRunContext();
+  t.after(() => run.remove());
+  run.remoteIdentity = { deviceToken: `remote-device-${run.token}` };
 
-  const before = await snapshotDatabaseMetadata([protectedRoot]);
-  assert.deepEqual(Object.keys(before).sort(), [
-    db,
-    `${db}-shm`,
-    `${db}-wal`,
-  ].sort());
-  assert.equal(before[db].exists, true);
-  assert.equal(before[db].size, 28);
-  assert.equal("contents" in before[db], false);
+  await writeFile(join(run.runRoot, "outside-keychain"), run.remoteIdentity.deviceToken);
+  await assert.rejects(
+    assertRemoteDeviceCredentialPersisted(run),
+    (error) => {
+      assert.equal(error.message.includes(run.remoteIdentity.deviceToken), false);
+      return /runner file keychain/.test(error.message);
+    },
+  );
 
-  await writeFile(db, "polluted");
-  const after = await snapshotDatabaseMetadata([protectedRoot]);
-  assert.deepEqual(changedDatabaseMetadata(before, after), [db]);
+  await writeFile(join(run.keychainDir, "wrong-credential"), "wrong-token");
+  await assert.rejects(
+    assertRemoteDeviceCredentialPersisted(run),
+    (error) => {
+      assert.equal(error.message.includes(run.remoteIdentity.deviceToken), false);
+      return /runner file keychain/.test(error.message);
+    },
+  );
+
+  await writeFile(join(run.keychainDir, "remote-device-credential"), run.remoteIdentity.deviceToken);
+  await assert.doesNotReject(assertRemoteDeviceCredentialPersisted(run));
 });
 
 test("Given supervised children and an unrelated process, when cleanup runs, then only recorded child trees are terminated once", async () => {

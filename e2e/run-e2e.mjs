@@ -11,13 +11,11 @@ import {
   ProcessSupervisor,
   REPO_ROOT,
   appEnvironment,
-  changedDatabaseMetadata,
+  assertRemoteDeviceCredentialPersisted,
   createRunContext,
   fakePeerEnvironment,
   playwrightEnvironment,
   preserveFailureArtifacts,
-  productionAndDevelopmentRoots,
-  snapshotDatabaseMetadata,
   spawnLogged,
   waitForURL,
 } from "./lib/run-context.mjs";
@@ -77,13 +75,9 @@ function appCommand(run) {
 async function main() {
   await runNodeGuards();
 
-  const before = await snapshotDatabaseMetadata(productionAndDevelopmentRoots());
   const run = await createRunContext();
   run.remoteRecorderPath = join(run.logsDir, "fake-remote-recorder.json");
   run.remoteReadyPath = join(run.runRoot, "fake-remote-ready.json");
-  writeFileSync(run.protectedMetadataBefore, `${JSON.stringify(before, null, 2)}\n`, {
-    mode: 0o600,
-  });
   const supervisor = new ProcessSupervisor();
   let fakeSync;
   let exitCode = 1;
@@ -238,6 +232,7 @@ async function main() {
           : `Playwright failed with exit ${result.code}`,
       );
     }
+    await assertRemoteDeviceCredentialPersisted(run);
     exitCode = 0;
   } catch (error) {
     failure = error;
@@ -270,21 +265,6 @@ async function main() {
       await fakeSync.close();
     }
     for (const [signal, handler] of handlers) process.removeListener(signal, handler);
-
-    const after = await snapshotDatabaseMetadata(productionAndDevelopmentRoots());
-    writeFileSync(run.protectedMetadataAfter, `${JSON.stringify(after, null, 2)}\n`, {
-      mode: 0o600,
-    });
-    const polluted = changedDatabaseMetadata(before, after);
-    if (polluted.length > 0) {
-      exitCode = 1;
-      const isolationFailure = new Error(
-        `storage isolation violation: protected SQLite metadata changed:\n${polluted.join("\n")}`,
-      );
-      failure = failure
-        ? new Error(`${failure.message}\n${isolationFailure.message}`)
-        : isolationFailure;
-    }
 
     if (exitCode === 0) {
       await run.remove();

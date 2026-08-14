@@ -1,8 +1,13 @@
+import { realpathSync } from "node:fs";
+import { join } from "node:path";
+
 import { expect, test, type Page } from "@playwright/test";
 
 import {
   assistantMessageCountContaining,
+  e2eDataDir,
   errorSessionCountContaining,
+  mainDatabaseFileFromPragma,
   runningSessionCount,
   userMessageCountContaining,
 } from "../fixtures/db";
@@ -41,6 +46,7 @@ test.describe.serial("desktop smoke", () => {
     await expect.poll(() => runningSessionCount()).toBe(0);
     expect(userMessageCountContaining(SUCCESS_PROMPT)).toBe(1);
     expect(assistantMessageCountContaining(`e2e-fake-reply: ${SUCCESS_PROMPT}`)).toBe(1);
+    expect(mainDatabaseFileFromPragma()).toBe(realpathSync(join(e2eDataDir(), "agentre.db")));
 
     await page.reload();
     await expect(page.getByText(SUCCESS_PROMPT, { exact: true }).first()).toBeVisible();

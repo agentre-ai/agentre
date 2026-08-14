@@ -67,6 +67,34 @@ test("Given the unified harness, when current entries and guides are inspected, 
   }
 });
 
+test("Given the isolated E2E harness, when runner storage contracts are inspected, then production database metadata is never accessed", () => {
+  const inspectedPaths = [
+    "e2e/run-e2e.mjs",
+    "e2e/lib/run-context.mjs",
+    "e2e/README.md",
+  ];
+  const forbiddenMetadataContracts = [
+    "productionAndDevelopmentRoots",
+    "snapshotDatabaseMetadata",
+    "changedDatabaseMetadata",
+    "protected-db-",
+    "snapshots installed/development database metadata",
+    "protected database metadata",
+    "The runner snapshots",
+  ];
+
+  for (const path of inspectedPaths) {
+    const source = read(path);
+    for (const contract of forbiddenMetadataContracts) {
+      assert.equal(
+        source.includes(contract),
+        false,
+        `${path} still contains protected metadata contract ${contract}`,
+      );
+    }
+  }
+});
+
 test("Given the replacement suite, when its public entries are inspected, then only unified automation and real verification remain", () => {
   assert.deepEqual(
     readdirSync(join(REPO_ROOT, "e2e", "tests")).filter((name) => name.endsWith(".spec.ts")).sort(),

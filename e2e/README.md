@@ -20,18 +20,20 @@ Prerequisites are Go, Node 24+, pnpm, the Wails CLI, Chromium, and the platform 
 
 1. Runs the Node isolation/contract guards before launching any process.
 2. Creates a random private run root with private data, keychain, browser, log, Playwright, manifest, and token paths.
-3. Reserves dynamic loopback ports and snapshots installed/development database metadata.
+3. Reserves dynamic loopback ports.
 4. Starts the loopback fake sync HTTP server and loopback fake remote WebSocket peer.
-5. Starts Vite and the independent app under `e2e/app/`; the app validates the manifest/token/path contract before bootstrap.
-6. Runs Playwright with one worker and exactly three specs.
-7. Stops only processes owned by the run and checks that protected database metadata did not change.
-8. Deletes successful run state; on failure, copies a sanitized per-run directory to `e2e/artifacts/<run-id>/` and removes browser/keychain/token-bearing files.
+5. Starts Vite and the independent app under `e2e/app/`; before bootstrap, the app validates the manifest/token/path contract and attests that the canonical bootstrap `AppDataDir` equals the manifest data directory.
+6. After bootstrap and before E2E composition, the app attests that the runtime's canonical data directory still equals the manifest data directory.
+7. Runs Playwright with one worker and exactly three specs; the desktop smoke uses SQLite `PRAGMA database_list` plus unique UI-written rows to prove the read-only oracle opened the manifest's `agentre.db`.
+8. After Playwright succeeds, checks only the runner-owned file keychain and requires a regular file containing the generated remote device credential.
+9. Stops only processes owned by the run.
+10. Deletes successful run state; on failure, copies a sanitized per-run directory to `e2e/artifacts/<run-id>/` and removes browser/keychain/token-bearing files.
 
 ### Committed coverage
 
 | Spec | Boundary and outcome |
 |---|---|
-| `tests/desktop.spec.ts` | Real UI/IPC/service/repository/migration path; deterministic streamed reply survives reload; runtime failure reaches an error terminal state. |
+| `tests/desktop.spec.ts` | Real UI/IPC/service/repository/migration path; unique persisted messages and SQLite `PRAGMA database_list` prove the oracle reads the manifest's `agentre.db`; deterministic streamed reply survives reload; runtime failure reaches an error terminal state. |
 | `tests/sync-client.spec.ts` | Desktop sync client against a loopback protocol recorder; push/pull identity, payload, version/cursor and UI/SQLite convergence; rejection/invalid-response queue retention and visible error state. |
 | `tests/remote-peer.spec.ts` | Desktop direct remote transport against a loopback JSON-RPC/WebSocket peer; auth/capability/session/run protocol, streamed persistence, reconnect/disconnect terminal state, protocol-error terminal state, and credential redaction. |
 
@@ -45,9 +47,11 @@ The independent E2E app is not the production entrypoint. `e2e/preflight` valida
 - the run root, data directory, and keychain directory are private and contained by the run root;
 - symlink/path escapes, unsafe permissions, and production/development roots are rejected.
 
+Before bootstrap can initialize logs, SQLite, or the file keychain, the E2E app calls the same `bootstrap.AppDataDir` resolver as normal startup and requires its canonical existing path to equal the validated manifest data directory. Immediately after bootstrap and before composition or Wails, it repeats the attestation against `bootstrap.Runtime.DataDir()`.
+
 The runner strips inherited E2E/data/keychain variables before injecting its own values. `AGENTRE_DATA_DIR`, `AGENTRE_KEYCHAIN_DIR`, browser state, ports, fake identities, logs, traces, screenshots, and SQLite all belong to the random run. Formal `agentre` and `agentred` dependency graphs do not import this composition; `internal/guard/production_dependencies_test.go` enforces that separation and the absence of E2E build-tag seams.
 
-The runner snapshots `agentre.db`, `agentre.db-wal`, and `agentre.db-shm` metadata under installed and development roots before and after the run. Any change fails the suite and preserves sanitized artifacts.
+The runner never enumerates, stats, opens, or compares SQLite, WAL, or SHM files outside its random run root, so the suite coexists with a running installed Agentre without touching its storage. Its post-Playwright credential check likewise searches only regular files directly inside the run's file-keychain directory and never queries a system keychain or prints the generated token.
 
 ### Artifacts and privacy
 
@@ -76,7 +80,7 @@ The canonical full check remains `make e2e`; passing only a focused fake or runn
 | `composition/` | E2E-only dependency composition and run-scoped fake identity seeding. |
 | `fakes/` | Deterministic local runtime and login fixtures used only by the independent composition. |
 | `fakepeer/`, `cmd/fake-peer/` | Loopback remote JSON-RPC/WebSocket peer and executable. |
-| `lib/run-context.mjs` | Random run allocation, dynamic ports, process ownership, metadata checks, artifact sanitization. |
+| `lib/run-context.mjs` | Random run allocation, dynamic ports, process ownership, run-scoped evidence, artifact sanitization. |
 | `lib/fake-sync-server.mjs` | Loopback sync protocol fake and recorder. |
 | `lib/app-overlay.mjs` | Run-local deterministic failure directive for the E2E runtime source. |
 | `playwright.config.ts` | Single serial Playwright configuration and exact committed spec list. |

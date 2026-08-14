@@ -7,34 +7,16 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
-  rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(here, "..", "..");
-const DATABASE_FILES = ["agentre.db", "agentre.db-wal", "agentre.db-shm"];
-
-export function productionAndDevelopmentRoots(env = process.env) {
-  const production = [];
-  if (process.platform === "darwin") {
-    production.push(join(homedir(), "Library", "Application Support", "agentre"));
-  } else if (process.platform === "win32") {
-    for (const base of [env.APPDATA, env.LOCALAPPDATA]) {
-      if (base) production.push(join(base, "agentre"));
-    }
-  } else {
-    production.push(join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agentre"));
-  }
-  return [...production, ...production.map((root) => `${root}-dev`)];
-}
-
 function makePrivateDir(path) {
   mkdirSync(path, { recursive: true, mode: 0o700 });
   if (process.platform !== "win32") chmodSync(path, 0o700);
@@ -96,8 +78,6 @@ export async function createRunContext({ prefix = "agentre-e2e-" } = {}) {
     controlToken: randomBytes(32).toString("hex"),
     syncRecorderPath: join(logsDir, "fake-sync-recorder.json"),
     appLog: join(logsDir, "app.log"),
-    protectedMetadataBefore: join(runRoot, "protected-db-before.json"),
-    protectedMetadataAfter: join(runRoot, "protected-db-after.json"),
     env: {
       AGENTRE_E2E_MANIFEST: manifestPath,
       AGENTRE_E2E_TOKEN: token,
@@ -161,32 +141,19 @@ export function playwrightEnvironment(run, parentEnv = process.env) {
   };
 }
 
-export async function snapshotDatabaseMetadata(roots = productionAndDevelopmentRoots()) {
-  const snapshot = {};
-  for (const root of roots) {
-    for (const name of DATABASE_FILES) {
-      const path = join(root, name);
-      try {
-        const info = statSync(path);
-        snapshot[path] = {
-          exists: true,
-          size: info.size,
-          mtimeMs: info.mtimeMs,
-        };
-      } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-        snapshot[path] = { exists: false, size: 0, mtimeMs: 0 };
-      }
-    }
+export async function assertRemoteDeviceCredentialPersisted(run) {
+  const expectedToken = run?.remoteIdentity?.deviceToken;
+  if (!run?.keychainDir || !expectedToken) {
+    throw new Error("remote device credential evidence is unavailable for the runner file keychain");
   }
-  return snapshot;
-}
 
-export function changedDatabaseMetadata(before, after) {
-  const paths = new Set([...Object.keys(before), ...Object.keys(after)]);
-  return [...paths]
-    .filter((path) => JSON.stringify(before[path]) !== JSON.stringify(after[path]))
-    .sort();
+  const entries = await readdir(run.keychainDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const content = await readFile(join(run.keychainDir, entry.name), "utf8");
+    if (content === expectedToken) return;
+  }
+  throw new Error("remote device credential was not persisted in the runner file keychain");
 }
 
 export async function waitForURL(url, { timeoutMs = 240_000, intervalMs = 250 } = {}) {

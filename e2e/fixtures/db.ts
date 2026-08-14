@@ -1,5 +1,6 @@
+import { realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { join } from "node:path";
 
 export const e2eDataDir = () => {
   const value = process.env.AGENTRE_DATA_DIR;
@@ -21,6 +22,16 @@ function query<T>(sql: string, ...params: Array<string | number>): T[] {
 
 function queryCount(sql: string, ...params: Array<string | number>): number {
   return query<{ n: number }>(sql, ...params)[0].n;
+}
+
+export function mainDatabaseFileFromPragma(): string {
+  const mainRows = query<{ name: string; file: string }>("PRAGMA database_list").filter(
+    (row) => row.name === "main",
+  );
+  if (mainRows.length !== 1 || !mainRows[0].file) {
+    throw new Error("SQLite oracle must expose exactly one main database file");
+  }
+  return realpathSync(resolve(mainRows[0].file));
 }
 
 export type DesktopProject = {
