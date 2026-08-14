@@ -141,12 +141,22 @@ export function playwrightEnvironment(run, parentEnv = process.env) {
   };
 }
 
+const credentialEvidenceFailures = Object.freeze({
+  unavailable: "remote device credential evidence is unavailable for the runner file keychain",
+  canonicalization: "runner file keychain cannot be canonicalized",
+  outside: "remote device credential evidence is outside the runner file keychain",
+  inspection: "runner file keychain cannot be inspected",
+  missing: "remote device credential was not persisted in the runner file keychain",
+});
+
+function credentialEvidenceError(reason) {
+  return new Error(`${credentialEvidenceFailures[reason]}; use make e2e (the E2E runner)`);
+}
+
 export async function assertRemoteDeviceCredentialPersisted(run) {
   const expectedToken = run?.remoteIdentity?.deviceToken;
   if (!run?.runRoot || !run?.keychainDir || !expectedToken) {
-    throw new Error(
-      "remote device credential evidence is unavailable for the runner file keychain; use make e2e (the E2E runner)",
-    );
+    throw credentialEvidenceError("unavailable");
   }
 
   let canonicalRunRoot;
@@ -157,9 +167,7 @@ export async function assertRemoteDeviceCredentialPersisted(run) {
       realpath(run.keychainDir),
     ]);
   } catch {
-    throw new Error(
-      "runner file keychain cannot be canonicalized; use make e2e (the E2E runner)",
-    );
+    throw credentialEvidenceError("canonicalization");
   }
   const keychainRelative = relative(canonicalRunRoot, canonicalKeychainDir);
   if (
@@ -168,9 +176,7 @@ export async function assertRemoteDeviceCredentialPersisted(run) {
     keychainRelative.startsWith(`..${sep}`) ||
     isAbsolute(keychainRelative)
   ) {
-    throw new Error(
-      "remote device credential evidence is outside the runner file keychain; use make e2e (the E2E runner)",
-    );
+    throw credentialEvidenceError("outside");
   }
 
   try {
@@ -181,11 +187,9 @@ export async function assertRemoteDeviceCredentialPersisted(run) {
       if (content === expectedToken) return;
     }
   } catch {
-    throw new Error(
-      "runner file keychain cannot be inspected; use make e2e (the E2E runner)",
-    );
+    throw credentialEvidenceError("inspection");
   }
-  throw new Error("remote device credential was not persisted in the runner file keychain");
+  throw credentialEvidenceError("missing");
 }
 
 export async function waitForURL(url, { timeoutMs = 240_000, intervalMs = 250 } = {}) {

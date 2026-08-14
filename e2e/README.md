@@ -18,7 +18,7 @@ Prerequisites are Go, Node 24+, pnpm, the Wails CLI, Chromium, and the platform 
 
 `run-e2e.mjs` performs the complete lifecycle:
 
-1. Runs the Node isolation/contract guards before launching any process.
+1. Runs only the safe automated Node guards (`run-context`, app-overlay, fake-sync, and current-contract) before launching any process. It does not run the formal verification target guard, because that tool derives installed/development roots.
 2. Creates a random private run root with private data, keychain, browser, log, Playwright, manifest, and token paths.
 3. Reserves dynamic loopback ports.
 4. Starts the loopback fake sync HTTP server and loopback fake remote WebSocket peer.
@@ -69,7 +69,7 @@ go test ./e2e/preflight ./e2e/composition ./e2e/fakepeer ./e2e/app
 cd e2e && pnpm exec tsc --noEmit
 ```
 
-The canonical full check remains `make e2e`; passing only a focused fake or runner test does not establish the desktop smoke.
+The canonical automated check remains `make e2e`; passing only a focused fake or runner test does not establish the desktop smoke. `make e2e` intentionally reaches only the safe automated guard set. The explicit `cd e2e && pnpm run test:guards` command runs that set plus `lib/target.test.mjs` for the separate formal verification tool; those target guards are not reached by `make e2e`.
 
 ### File map
 

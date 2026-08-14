@@ -76,7 +76,7 @@ func runE2E(ctx context.Context, env preflight.Environment, deps e2eDependencies
 		},
 	}); err != nil {
 		if errors.Is(err, errStorageIsolation) {
-			return err
+			return storageIsolation("desktop bootstrap rejected unsafe storage")
 		}
 		return fmt.Errorf("desktop run: %w", err)
 	}

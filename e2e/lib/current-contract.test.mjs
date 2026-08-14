@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import {
   existsSync,
   mkdtempSync,
@@ -13,62 +14,149 @@ import { extname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 
-import { GUARD_TESTS } from "./guard-suite.mjs";
+import * as guardSuite from "./guard-suite.mjs";
 import { REPO_ROOT } from "./run-context.mjs";
 
 const read = (path) => readFileSync(join(REPO_ROOT, path), "utf8");
 
-function localModuleSpecifiers(source) {
-  const specifiers = new Set();
-  const patterns = [
+function localModuleDependencies(source) {
+  const dependencies = new Map();
+  const esmPatterns = [
     /(?:^|\n)\s*import\s+(?:[^"';()]*?\s+from\s+)?["']([^"']+)["']/gs,
     /(?:^|\n)\s*export\s+[^"';()]*?\s+from\s+["']([^"']+)["']/gs,
     /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
   ];
-  for (const pattern of patterns) {
+  for (const pattern of esmPatterns) {
     for (const match of source.matchAll(pattern)) {
-      if (match[1].startsWith(".")) specifiers.add(match[1]);
+      if (match[1].startsWith(".")) dependencies.set(`esm:${match[1]}`, {
+        kind: "ESM",
+        specifier: match[1],
+      });
     }
   }
-  return [...specifiers];
+  for (const match of source.matchAll(/\brequire\s*\(\s*["']([^"']+)["']\s*\)/g)) {
+    if (match[1].startsWith(".")) dependencies.set(`commonjs:${match[1]}`, {
+      kind: "CommonJS",
+      specifier: match[1],
+    });
+  }
+  return [...dependencies.values()];
 }
 
-function collectLocalModuleGraph(entryPath) {
-  const pending = [resolve(entryPath)];
+function collectLocalModuleGraph(entryPaths) {
+  const roots = Array.isArray(entryPaths) ? entryPaths : [entryPaths];
+  const pending = roots.map((entryPath) => resolve(entryPath));
   const graph = new Map();
 
   while (pending.length > 0) {
     const modulePath = pending.pop();
     if (graph.has(modulePath)) continue;
-    assert.equal(existsSync(modulePath), true, `local ESM module is missing: ${modulePath}`);
-    assert.equal(statSync(modulePath).isFile(), true, `local ESM import is not a file: ${modulePath}`);
+    assert.equal(existsSync(modulePath), true, `local module is missing: ${modulePath}`);
+    assert.equal(statSync(modulePath).isFile(), true, `local module is not a file: ${modulePath}`);
 
     const source = readFileSync(modulePath, "utf8");
     graph.set(modulePath, source);
-    for (const specifier of localModuleSpecifiers(source)) {
-      const moduleURL = new URL(specifier, pathToFileURL(modulePath));
-      assert.equal(moduleURL.protocol, "file:", `${modulePath} has a non-file local import ${specifier}`);
+    for (const dependency of localModuleDependencies(source)) {
+      const moduleURL = new URL(dependency.specifier, pathToFileURL(modulePath));
+      assert.equal(
+        moduleURL.protocol,
+        "file:",
+        `${modulePath} has a non-file local ${dependency.kind} dependency ${dependency.specifier}`,
+      );
       const dependencyPath = fileURLToPath(moduleURL);
       assert.notEqual(
         extname(dependencyPath),
         "",
-        `${modulePath} local ESM import must include its extension: ${specifier}`,
+        `${modulePath} local ${dependency.kind} dependency must include its extension: ${dependency.specifier}`,
       );
+      const action = dependency.kind === "ESM" ? "imports" : "requires";
       assert.equal(
         existsSync(dependencyPath),
         true,
-        `${modulePath} imports missing local ESM module ${specifier}`,
+        `${modulePath} ${action} missing local ${dependency.kind} module ${dependency.specifier}`,
       );
       assert.equal(
         statSync(dependencyPath).isFile(),
         true,
-        `${modulePath} local ESM import is not a file: ${specifier}`,
+        `${modulePath} local ${dependency.kind} dependency is not a file: ${dependency.specifier}`,
       );
       if (!graph.has(dependencyPath)) pending.push(dependencyPath);
     }
   }
 
   return graph;
+}
+
+function importsOSAccountHomeDiscovery(source) {
+  const importsOS = /\bfrom\s*["'](?:node:)?os["']|\brequire\s*\(\s*["'](?:node:)?os["']\s*\)/.test(
+    source,
+  );
+  if (!importsOS) return false;
+  return (
+    /\bimport\s*\{[^}]*\b(?:homedir|userInfo)\b[^}]*\}\s*from\s*["'](?:node:)?os["']/s.test(
+      source,
+    ) ||
+    /\b(?:const|let|var)\s*\{[^}]*\b(?:homedir|userInfo)\b[^}]*\}\s*=\s*require\s*\(\s*["'](?:node:)?os["']\s*\)/s.test(
+      source,
+    ) ||
+    /\.(?:homedir|userInfo)\s*\(/.test(source)
+  );
+}
+
+function readsProductionRootEnvironment(source) {
+  const names = "HOME|USERPROFILE|APPDATA|LOCALAPPDATA|XDG_CONFIG_HOME";
+  const direct = new RegExp(
+    `\\bprocess\\s*\\.\\s*env\\s*(?:(?:\\?\\.)?\\s*\\.\\s*(?:${names})\\b|\\[\\s*["'](?:${names})["']\\s*\\])`,
+  );
+  const destructured = new RegExp(
+    `\\b(?:const|let|var)\\s*\\{[^}]*\\b(?:${names})\\b[^}]*\\}\\s*=\\s*process\\s*\\.\\s*env\\b`,
+    "s",
+  );
+  if (direct.test(source) || destructured.test(source)) return true;
+
+  for (const match of source.matchAll(
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*process\s*\.\s*env\b/g,
+  )) {
+    const aliasLookup = new RegExp(
+      `\\b${match[1]}\\s*(?:\\.\\s*(?:${names})\\b|\\[\\s*["'](?:${names})["']\\s*\\])`,
+    );
+    if (aliasLookup.test(source)) return true;
+  }
+  return false;
+}
+
+// guard-literal-patterns:start
+const forbiddenRootLiteralCapabilities = [
+  {
+    name: "macOS installed/development data-root literal",
+    pattern:
+      /(?:Library[\\/]Application Support[\\/]agentre(?:-dev)?|["']Library["']\s*,\s*["']Application Support["']\s*,\s*["']agentre(?:-dev)?["'])/,
+  },
+  {
+    name: "Linux installed/development data-root literal",
+    pattern: /(?:\.config[\\/]agentre(?:-dev)?|["']\.config["']\s*,\s*["']agentre(?:-dev)?["'])/,
+  },
+  {
+    name: "Windows installed/development data-root literal",
+    pattern:
+      /(?:AppData[\\/](?:Roaming|Local)[\\/]agentre(?:-dev)?|["']AppData["']\s*,\s*["'](?:Roaming|Local)["']\s*,\s*["']agentre(?:-dev)?["'])/i,
+  },
+  {
+    name: "development data-root leaf literal",
+    pattern: /["']agentre-dev["']/,
+  },
+];
+// guard-literal-patterns:end
+
+function sourceWithoutGuardLiteralPatternDefinitions(modulePath, source) {
+  if (modulePath !== fileURLToPath(import.meta.url)) return source;
+  const startMarker = "// guard-literal-patterns:start";
+  const endMarker = "// guard-literal-patterns:end";
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  assert.notEqual(start, -1, "guard literal pattern start marker is missing");
+  assert.notEqual(end, -1, "guard literal pattern end marker is missing");
+  return `${source.slice(0, start)}${source.slice(end + endMarker.length)}`;
 }
 
 const legacyPaths = [
@@ -130,45 +218,37 @@ test("Given the unified harness, when current entries and guides are inspected, 
   }
 });
 
-test("Given the automated E2E runner entry, when its complete local ESM graph is inspected, then no module can discover installed or development data roots", () => {
+test("Given the automated E2E runner entry and guard roots, when their complete local module graph is inspected, then no module can discover installed or development data roots", () => {
   const entryPath = join(REPO_ROOT, "e2e", "run-e2e.mjs");
-  const graph = collectLocalModuleGraph(entryPath);
-  assert.equal(graph.has(entryPath), true);
-  assert.equal(graph.has(join(REPO_ROOT, "e2e", "lib", "run-context.mjs")), true);
+  const automatedGuardPaths = guardSuite.AUTOMATED_GUARD_TESTS.map((path) =>
+    join(REPO_ROOT, "e2e", path),
+  );
+  const canonicalRoots = [entryPath, ...automatedGuardPaths];
+  const targetTestPath = join(REPO_ROOT, "e2e", "lib", "target.test.mjs");
+  assert.equal(canonicalRoots.includes(targetTestPath), false);
 
-  const forbiddenCapabilities = [
-    {
-      name: "OS account-home discovery",
-      pattern: /\b(?:homedir|userInfo)\b/,
-    },
-    {
-      name: "production-root environment lookup",
-      pattern: /\b(?:HOME|USERPROFILE|APPDATA|LOCALAPPDATA|XDG_CONFIG_HOME)\b/,
-    },
-    {
-      name: "macOS installed/development data-root literal",
-      pattern:
-        /(?:Library[\\/]Application Support[\\/]agentre(?:-dev)?|["']Library["']\s*,\s*["']Application Support["']\s*,\s*["']agentre(?:-dev)?["'])/,
-    },
-    {
-      name: "Linux installed/development data-root literal",
-      pattern: /(?:\.config[\\/]agentre(?:-dev)?|["']\.config["']\s*,\s*["']agentre(?:-dev)?["'])/,
-    },
-    {
-      name: "Windows installed/development data-root literal",
-      pattern:
-        /(?:AppData[\\/](?:Roaming|Local)[\\/]agentre(?:-dev)?|["']AppData["']\s*,\s*["'](?:Roaming|Local)["']\s*,\s*["']agentre(?:-dev)?["'])/i,
-    },
-    {
-      name: "development data-root leaf literal",
-      pattern: /["']agentre-dev["']/,
-    },
-  ];
+  const graph = collectLocalModuleGraph(canonicalRoots);
+  for (const rootPath of canonicalRoots) {
+    assert.equal(graph.has(rootPath), true, `${relative(REPO_ROOT, rootPath)} is not guarded`);
+  }
+  assert.equal(graph.has(join(REPO_ROOT, "e2e", "lib", "run-context.mjs")), true);
+  assert.equal(graph.has(targetTestPath), false);
 
   for (const [modulePath, source] of graph) {
-    for (const capability of forbiddenCapabilities) {
+    assert.equal(
+      importsOSAccountHomeDiscovery(source),
+      false,
+      `${relative(REPO_ROOT, modulePath)} imports OS account-home discovery`,
+    );
+    assert.equal(
+      readsProductionRootEnvironment(source),
+      false,
+      `${relative(REPO_ROOT, modulePath)} reads production-root environment`,
+    );
+    const literalSource = sourceWithoutGuardLiteralPatternDefinitions(modulePath, source);
+    for (const capability of forbiddenRootLiteralCapabilities) {
       assert.doesNotMatch(
-        source,
+        literalSource,
         capability.pattern,
         `${relative(REPO_ROOT, modulePath)} has forbidden ${capability.name}`,
       );
@@ -176,22 +256,77 @@ test("Given the automated E2E runner entry, when its complete local ESM graph is
   }
 });
 
-test("Given local ESM imports, when the runner graph is collected, then extension-bearing dependencies are followed and missing modules fail loudly", (t) => {
+test("Given local ESM imports and literal relative CommonJS requires, when the runner graph is collected, then extension-bearing dependencies are followed and missing modules fail loudly", (t) => {
   const fixtureRoot = mkdtempSync(join(tmpdir(), "agentre-runner-graph-"));
   t.after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
-  const dependencyPath = join(fixtureRoot, "dependency.mjs");
+  const esmDependencyPath = join(fixtureRoot, "dependency.mjs");
+  const cjsDependencyPath = join(fixtureRoot, "dependency.cjs");
   const entryPath = join(fixtureRoot, "entry.mjs");
-  writeFileSync(dependencyPath, "export const dependency = true;\n");
-  writeFileSync(entryPath, 'import { dependency } from "./dependency.mjs";\nvoid dependency;\n');
+  writeFileSync(esmDependencyPath, "export const dependency = true;\n");
+  writeFileSync(cjsDependencyPath, "module.exports = true;\n");
+  writeFileSync(
+    entryPath,
+    [
+      'import { dependency } from "./dependency.mjs";\n',
+      "const cjs = require",
+      '("./dependency.cjs");\nvoid dependency;\nvoid cjs;\n',
+    ].join(""),
+  );
 
   const graph = collectLocalModuleGraph(entryPath);
-  assert.equal(graph.has(dependencyPath), true);
+  assert.equal(graph.has(esmDependencyPath), true);
+  assert.equal(graph.has(cjsDependencyPath), true);
 
   writeFileSync(entryPath, 'import "./missing.mjs";\n');
   assert.throws(
     () => collectLocalModuleGraph(entryPath),
     /imports missing local ESM module \.\/missing\.mjs/,
   );
+
+  writeFileSync(entryPath, ["require", '("./missing.cjs");\n'].join(""));
+  assert.throws(
+    () => collectLocalModuleGraph(entryPath),
+    /requires missing local CommonJS module \.\/missing\.cjs/,
+  );
+});
+
+test("Given automated E2E and formal verification guards, when their test lists are inspected, then only the explicit full suite reaches target discovery", () => {
+  assert.deepEqual([...guardSuite.AUTOMATED_GUARD_TESTS].sort(), [
+    "lib/app-overlay.test.mjs",
+    "lib/current-contract.test.mjs",
+    "lib/fake-sync-server.test.mjs",
+    "lib/run-context.test.mjs",
+  ]);
+  assert.equal(guardSuite.AUTOMATED_GUARD_TESTS.includes("lib/target.test.mjs"), false);
+  assert.deepEqual([...guardSuite.FULL_GUARD_TESTS].sort(), [
+    "lib/app-overlay.test.mjs",
+    "lib/current-contract.test.mjs",
+    "lib/fake-sync-server.test.mjs",
+    "lib/run-context.test.mjs",
+    "lib/target.test.mjs",
+  ]);
+});
+
+test("Given the canonical runner uses the guard-suite default, when guards are spawned, then only automated roots execute", async () => {
+  let spawnedArgs;
+  await guardSuite.runNodeGuards({
+    cwd: join(REPO_ROOT, "e2e"),
+    spawnProcess(_command, args) {
+      spawnedArgs = args;
+      const child = new EventEmitter();
+      queueMicrotask(() => child.emit("exit", 0, null));
+      return child;
+    },
+  });
+
+  assert.deepEqual(spawnedArgs, ["--test", ...guardSuite.AUTOMATED_GUARD_TESTS]);
+  assert.equal(spawnedArgs.includes("lib/target.test.mjs"), false);
+});
+
+test("Given the explicit guard entry, when it invokes the suite, then it requests every formal verification guard", () => {
+  const guardRunner = read("e2e/run-guards.mjs");
+  assert.match(guardRunner, /FULL_GUARD_TESTS/);
+  assert.match(guardRunner, /runNodeGuards\(\{\s*tests:\s*FULL_GUARD_TESTS\s*\}\)/);
 });
 
 test("Given the replacement suite, when its public entries are inspected, then only unified automation and real verification remain", () => {
@@ -213,15 +348,10 @@ test("Given the replacement suite, when its public entries are inspected, then o
   assert.equal(pkg.scripts["test:guards"], "node run-guards.mjs");
 
   const runner = read("e2e/run-e2e.mjs");
-  assert.match(runner, /runNodeGuards/);
+  assert.match(runner, /await runNodeGuards\(\)/);
+  assert.equal(runner.includes("FULL_GUARD_TESTS"), false);
+  assert.equal(runner.includes("target.test.mjs"), false);
   assert.equal(runner.includes('"lib\/run-context.test.mjs"'), false);
-  assert.deepEqual([...GUARD_TESTS].sort(), [
-    "lib/app-overlay.test.mjs",
-    "lib/current-contract.test.mjs",
-    "lib/fake-sync-server.test.mjs",
-    "lib/run-context.test.mjs",
-    "lib/target.test.mjs",
-  ]);
 
   const verify = read("e2e/verify.mjs");
   assert.match(verify, /spawn\(wailsBin\(\), wailsArgs, \{[\s\S]*cwd: repoRoot,/);

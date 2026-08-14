@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,6 +83,41 @@ func TestRunE2ERejectsBootstrapResolverMismatchBeforeDesktopBootstrap(t *testing
 	}
 }
 
+func TestRunE2ERedactsBootstrapResolverErrorsBeforeDesktopBootstrap(t *testing.T) {
+	runRoot := t.TempDir()
+	manifestDataDir := filepath.Join(runRoot, "manifest-data")
+	keychainDir := filepath.Join(runRoot, "keychain")
+	for _, path := range []string{manifestDataDir, keychainDir} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatalf("Mkdir(%q): %v", path, err)
+		}
+	}
+	secret := "resolver-secret-must-not-leak"
+	secretPath := filepath.Join(runRoot, secret, "bootstrap-data")
+	desktopCalled := false
+
+	err := runE2E(context.Background(), preflight.Environment{}, e2eDependencies{
+		validate: func(preflight.Environment) (preflight.Config, error) {
+			return preflight.Config{
+				RunRoot:     runRoot,
+				DataDir:     manifestDataDir,
+				KeychainDir: keychainDir,
+			}, nil
+		},
+		resolveDataDir: func() (string, error) {
+			return "", fmt.Errorf("resolver failed for %s with %s", secretPath, secret)
+		},
+		runDesktop: func(context.Context, desktop.Options) error {
+			desktopCalled = true
+			return nil
+		},
+	})
+	assertSafeStorageIsolationError(t, err, manifestDataDir, secretPath, secret)
+	if desktopCalled {
+		t.Fatal("desktop bootstrap must not run when bootstrap storage resolution fails")
+	}
+}
+
 func TestRunE2ERejectsRuntimeDataDirMismatchBeforeComposition(t *testing.T) {
 	runRoot := t.TempDir()
 	manifestDataDir := filepath.Join(runRoot, "manifest-data")
@@ -115,6 +151,67 @@ func TestRunE2ERejectsRuntimeDataDirMismatchBeforeComposition(t *testing.T) {
 	if compositionCalled {
 		t.Fatal("composition must not run when bootstrap runtime disagrees with the manifest")
 	}
+}
+
+func TestRunE2ERejectsUncanonicalRuntimeDataDirWithoutDisclosingFilesystemDetails(t *testing.T) {
+	runRoot := t.TempDir()
+	manifestDataDir := filepath.Join(runRoot, "manifest-data")
+	keychainDir := filepath.Join(runRoot, "keychain")
+	for _, path := range []string{manifestDataDir, keychainDir} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatalf("Mkdir(%q): %v", path, err)
+		}
+	}
+	secret := "runtime-secret-must-not-leak"
+	missingRuntimeDataDir := filepath.Join(runRoot, secret, "missing-runtime-data")
+	compositionCalled := false
+
+	err := runE2E(context.Background(), preflight.Environment{}, e2eDependencies{
+		validate: func(preflight.Environment) (preflight.Config, error) {
+			return preflight.Config{
+				RunRoot:     runRoot,
+				DataDir:     manifestDataDir,
+				KeychainDir: keychainDir,
+			}, nil
+		},
+		resolveDataDir: func() (string, error) { return manifestDataDir, nil },
+		runtimeDataDir: func(*bootstrap.Runtime) string { return missingRuntimeDataDir },
+		install: func(context.Context, preflight.Config) error {
+			compositionCalled = true
+			return nil
+		},
+		runDesktop: func(ctx context.Context, opts desktop.Options) error {
+			return opts.AfterBootstrap(ctx, &bootstrap.Runtime{})
+		},
+	})
+	assertSafeStorageIsolationError(t, err, manifestDataDir, missingRuntimeDataDir, secret)
+	if compositionCalled {
+		t.Fatal("composition must not run when bootstrap runtime storage cannot be canonicalized")
+	}
+}
+
+func TestRunE2ERedactsWrappedStorageIsolationErrorsFromDesktop(t *testing.T) {
+	runRoot := t.TempDir()
+	dataDir := filepath.Join(runRoot, "data")
+	keychainDir := filepath.Join(runRoot, "keychain")
+	for _, path := range []string{dataDir, keychainDir} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatalf("Mkdir(%q): %v", path, err)
+		}
+	}
+	secret := "desktop-storage-secret-must-not-leak"
+	secretPath := filepath.Join(runRoot, secret, "unsafe-data")
+
+	err := runE2E(context.Background(), preflight.Environment{}, e2eDependencies{
+		validate: func(preflight.Environment) (preflight.Config, error) {
+			return preflight.Config{RunRoot: runRoot, DataDir: dataDir, KeychainDir: keychainDir}, nil
+		},
+		resolveDataDir: func() (string, error) { return dataDir, nil },
+		runDesktop: func(context.Context, desktop.Options) error {
+			return fmt.Errorf("desktop rejected %s containing %s: %w", secretPath, secret, errStorageIsolation)
+		},
+	})
+	assertSafeStorageIsolationError(t, err, dataDir, secretPath, secret)
 }
 
 func TestRunE2ERejectsUncanonicalBootstrapDataDirWithoutDisclosingFilesystemDetails(t *testing.T) {

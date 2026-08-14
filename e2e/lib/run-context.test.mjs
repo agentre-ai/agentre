@@ -120,6 +120,45 @@ test("Given a private run and a secret-bearing parent environment, when Playwrig
   assert.equal(env.AGENTRE_PROXY_PORT, undefined);
 });
 
+test("Given remote credential evidence context is unavailable, when persistence is checked, then the failure exposes no path or token and directs callers to make e2e", async () => {
+  const secret = "unavailable-context-token-must-not-leak";
+  const secretPath = join("private", secret, "keychain");
+
+  await assert.rejects(
+    assertRemoteDeviceCredentialPersisted({
+      keychainDir: secretPath,
+      remoteIdentity: { deviceToken: secret },
+    }),
+    (error) => assertSafeCredentialEvidenceError(error, secretPath, secret),
+  );
+});
+
+test("Given remote credential paths cannot be canonicalized, when persistence is checked, then the failure exposes no path or token and directs callers to make e2e", async (t) => {
+  const run = await createRunContext();
+  t.after(() => run.remove());
+  const secret = `canonicalization-token-${run.token}`;
+  const missingKeychainDir = join(run.runRoot, secret, "missing-keychain");
+  run.keychainDir = missingKeychainDir;
+  run.remoteIdentity = { deviceToken: secret };
+
+  await assert.rejects(
+    assertRemoteDeviceCredentialPersisted(run),
+    (error) => assertSafeCredentialEvidenceError(error, missingKeychainDir, secret),
+  );
+});
+
+test("Given no persisted remote credential matches, when persistence is checked, then the failure exposes no token and directs callers to make e2e", async (t) => {
+  const run = await createRunContext();
+  t.after(() => run.remove());
+  run.remoteIdentity = { deviceToken: `missing-remote-device-${run.token}` };
+  await writeFile(join(run.keychainDir, "wrong-credential"), "wrong-token");
+
+  await assert.rejects(
+    assertRemoteDeviceCredentialPersisted(run),
+    (error) => assertSafeCredentialEvidenceError(error, run.remoteIdentity.deviceToken),
+  );
+});
+
 test("Given a generated remote credential, when runner-owned file-keychain evidence is checked, then only a matching regular file inside the run keychain passes without exposing the token", async (t) => {
   const run = await createRunContext();
   t.after(() => run.remove());
@@ -128,19 +167,13 @@ test("Given a generated remote credential, when runner-owned file-keychain evide
   await writeFile(join(run.runRoot, "outside-keychain"), run.remoteIdentity.deviceToken);
   await assert.rejects(
     assertRemoteDeviceCredentialPersisted(run),
-    (error) => {
-      assert.equal(error.message.includes(run.remoteIdentity.deviceToken), false);
-      return /runner file keychain/.test(error.message);
-    },
+    (error) => assertSafeCredentialEvidenceError(error, run.remoteIdentity.deviceToken),
   );
 
   await writeFile(join(run.keychainDir, "wrong-credential"), "wrong-token");
   await assert.rejects(
     assertRemoteDeviceCredentialPersisted(run),
-    (error) => {
-      assert.equal(error.message.includes(run.remoteIdentity.deviceToken), false);
-      return /runner file keychain/.test(error.message);
-    },
+    (error) => assertSafeCredentialEvidenceError(error, run.remoteIdentity.deviceToken),
   );
 
   await writeFile(join(run.keychainDir, "remote-device-credential"), run.remoteIdentity.deviceToken);
@@ -161,11 +194,8 @@ test("Given an outside keychain directory containing the generated credential, w
 
   await assert.rejects(
     assertRemoteDeviceCredentialPersisted(run),
-    (error) => {
-      assert.equal(error.message.includes(outsideDir), false);
-      assert.equal(error.message.includes(run.remoteIdentity.deviceToken), false);
-      return /runner file keychain/.test(error.message);
-    },
+    (error) =>
+      assertSafeCredentialEvidenceError(error, outsideDir, run.remoteIdentity.deviceToken),
   );
 });
 
@@ -190,13 +220,19 @@ test("Given a run-root keychain symlink escaping to a credential outside the run
 
   await assert.rejects(
     assertRemoteDeviceCredentialPersisted(run),
-    (error) => {
-      assert.equal(error.message.includes(outsideDir), false);
-      assert.equal(error.message.includes(run.remoteIdentity.deviceToken), false);
-      return /runner file keychain/.test(error.message);
-    },
+    (error) =>
+      assertSafeCredentialEvidenceError(error, outsideDir, run.remoteIdentity.deviceToken),
   );
 });
+
+function assertSafeCredentialEvidenceError(error, ...sensitiveValues) {
+  assert.match(error.message, /runner file keychain/);
+  assert.match(error.message, /make e2e/);
+  for (const sensitive of sensitiveValues) {
+    if (sensitive) assert.equal(error.message.includes(sensitive), false);
+  }
+  return true;
+}
 
 test("Given supervised children and an unrelated process, when cleanup runs, then only recorded child trees are terminated once", async () => {
   const calls = [];

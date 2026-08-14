@@ -5,17 +5,25 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const e2eRoot = resolve(here, "..");
 
-export const GUARD_TESTS = [
+export const AUTOMATED_GUARD_TESTS = [
   "lib/run-context.test.mjs",
   "lib/app-overlay.test.mjs",
   "lib/fake-sync-server.test.mjs",
-  "lib/target.test.mjs",
   "lib/current-contract.test.mjs",
 ];
 
-export function runNodeGuards({ cwd = e2eRoot, spawnProcess = spawn } = {}) {
+export const FULL_GUARD_TESTS = [
+  ...AUTOMATED_GUARD_TESTS,
+  "lib/target.test.mjs",
+];
+
+export function runNodeGuards({
+  tests = AUTOMATED_GUARD_TESTS,
+  cwd = e2eRoot,
+  spawnProcess = spawn,
+} = {}) {
   return new Promise((resolveRun, reject) => {
-    const child = spawnProcess(process.execPath, ["--test", ...GUARD_TESTS], {
+    const child = spawnProcess(process.execPath, ["--test", ...tests], {
       cwd,
       stdio: "inherit",
     });
