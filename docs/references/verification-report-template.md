@@ -1,4 +1,4 @@
-<!-- Copy into the scenario directory as report.md before running. Headings stay English; write the record in the user's language. Delete unused sections and this comment. -->
+<!-- Copy into e2e/scratch/<scenario>/report.md before running. Headings stay English; write the record in the user's language. Delete unused sections and this comment. -->
 
 # Local verification: <scenario>
 
@@ -12,49 +12,46 @@
 
 ## Environment
 
-<!-- What the run drove, so a reader can tell a hermetic run from a keep-alive one. -->
-
-- Form and entry point: `<binary / driven app (make verify-up + drive.mjs) / scratch spec / make e2e-sync>`
-- Data directory and devserver: `<$AGENTRE_DATA_DIR and port, never the real ~/Library path>`
-- Build under test: `<commit sha, and the flavor: fake = -tags e2e deterministic runtime, real = real CLI runtimes>`
+- Form and entry point: `<formal binary / formal desktop (make verify-up + drive.mjs)>`
+- Isolated data/keychain and bridge: `<paths and port printed by make verify-status; never installed/development state>`
+- Build under test: `<commit sha>`
+- Real dependencies configured: `<Server / daemon / agent CLI / none; names and versions, never secrets>`
 
 ## Verdict
 
-<!-- Fill last. Keep verdicts only here. One row per criterion — split a compound one rather than averaging it. Where `not observed` came from unconfigured environment, "How observed" names the service and the absent variable names, never values. -->
+<!-- Fill last. Keep verdict labels only here. An unavailable real dependency is failed or not observed, never silently substituted. -->
 
-| # | Criterion / bug claim | Verdict | Real / substituted | How observed | Check it yourself |
+| # | Criterion / bug claim | Verdict | Dependency actually exercised | How observed | Check it yourself |
 |---|---|---|---|---|---|
-| V1 | `<copied verbatim from the spec>` | holds / does not hold / not observed | real, or `substituted: <what stood in> — <what it does not cover>` | `<the runtime observation that decides it>` | `<command, or launch command plus steps>` |
+| V1 | `<copied verbatim from the spec>` | holds / does not hold / not observed | `<real local desktop, Server, daemon, CLI, platform>` | `<deciding runtime observation>` | `<command, or launch command plus steps>` |
 
-Summary: <what holds, the deciding observation, every not-observed/failed item and shipping implication>.
+Summary: <what holds, the deciding observation, every failed/not-observed item and shipping implication>.
 
 | Label | Use it when | Requires |
 |---|---|---|
-| `holds` | you observed the behaviour at runtime | the deciding observation, and how a reader reaches it |
-| `does not hold` | you observed it failing, or the bug reproducing | the failing output, assertion diff or error screenshot |
-| `not observed` | you never reached the check | what stopped it |
-
-An unreached check is never `holds`; a run that verified two of three criteria is reported as two of three.
+| `holds` | the behavior was observed at runtime | deciding observation and reproducible route |
+| `does not hold` | it failed or the bug reproduced | failing output, assertion diff, or screenshot |
+| `not observed` | the check was never reached | exact blocker, including missing dependency/configuration names but no values |
 
 ## Authorization
 
-<!-- Keep only when a real dependency was substituted or an external effect was authorized. The build-tag fake runtime is a substitution: name what it does not establish, such as a real claude-code subprocess. -->
+<!-- Keep when the run creates an external/destructive/paid effect. Record authorization before execution. -->
 
-| # | Substitute or effect | The user's authorization, verbatim |
-|---|---|---|
-| V1 | `<what stood in for what, or the effect and what it touches>` | `<sentence>` |
+| # | External or destructive effect | Scope and cleanup | The user's authorization, verbatim |
+|---|---|---|---|
+| V1 | `<effect>` | `<systems/data touched and cleanup>` | `<sentence>` |
 
 ## Reproduction steps
 
-<!-- Keep for bug reproduction; state whether the assertion encodes the expected behaviour (stays red) or the current buggy contract (green until the fix flips it). Include the smallest input that triggers it. -->
+<!-- Keep for bug reproduction; state whether the committed assertion encodes expected behavior or current buggy behavior. -->
 
 1. `<clean-checkout-to-observation steps>`
 
 ## Acceptance evidence
 
-<!-- One `###` per verdict row, holding everything that decides it in the order observed. No verdict labels here. A row with no section is `not observed`. -->
+<!-- One ### per verdict row. A row without deciding evidence is not observed. -->
 
-### V1 · `<the criterion, verbatim>`
+### V1 · `<criterion, verbatim>`
 
 ```console
 $ <command>   # cwd and relevant redacted environment
@@ -65,13 +62,13 @@ $ echo $?
 
 <What this proves>. Full output: `logs/<file>`.
 
-**Independent side-effect check.** <The DB read back through `fixtures/db.ts` or a read-only query against the temp `agentre.db` — asserting the UI updated is necessary but not sufficient, and a failed write behind a cheerful UI is exactly what this catches.>
+**Independent side-effect check.** <A read-only database/status/peer observation not shared by the driven surface.>
 
 ```text
-<the row, count or event line, redacted>
+<row, count, status, or redacted event line>
 ```
 
-<!-- UI only; pair before/after or light/dark in one table so the comparison is one glance. A recording carries a verdict only alongside the stills captured during the run. -->
+<!-- UI only. Pair comparisons in one table. -->
 
 | Before | After |
 |---|---|
@@ -79,21 +76,21 @@ $ echo $?
 
 ## Evidence index
 
-- Commands/logs: `<inline deciding output plus optional full-file links; a driven run's action ledger is logs/drive.log>`
+- Commands/logs: `<inline deciding output plus optional full-file links; driven actions are in logs/drive.log>`
 - Resources/data snapshots: `<paths and what each proves>`
 - Screenshots/video: `<UI only; video includes decisive stills>`
 
-A scenario with no `screenshots/` is not missing evidence — a backend, daemon or migration run normally holds only `report.md`, `logs/` and `resources/`.
+A scenario without screenshots is valid for backend, daemon, CLI, or migration verification.
 
 ## Persistent data changes
 
-<!-- Keep only when the run wrote data that outlives it — a real server, a migration against real rows. The e2e temp data directory is not one. -->
+<!-- Keep only when the run writes data outside the isolated verification directories. -->
 
 | Change | Forward | Backward/backup | Before/after query |
 |---|---|---|---|
 | `<scope/blast radius>` | `<command/exit>` | `<command/exit or irreversible plan>` | `<evidence>` |
 
-Dataset: `<source, size and representative edge values>`. Compatibility window: `<old/new readers>`.
+Dataset: `<source, size, representative edge values>`. Compatibility window: `<old/new readers>`.
 
 ## Execution record
 
@@ -105,14 +102,15 @@ Dataset: `<source, size and representative edge values>`. Compatibility window: 
 
 - Initial/final HEAD: `<sha>` / `<sha>`
 - Final `git status --porcelain=v1`: `<output>`
-- Created artifacts, processes and external data, and how each was cleaned up: `<inventory>`
-- Redaction performed: `<what was removed>`
+- Created artifacts, processes, isolated state, and external data; cleanup/retention for each: `<inventory>`
+- Redaction performed: `<tokens, cookies, credentials, personal paths, complete frames, real DB contents removed>`
 
 ## Evidence rules
 
-- Every `holds` names how the target was driven — command, or launch command plus steps — and the deciding observation.
-- Where a criterion changes state beyond the driven surface, that observation is an independent read with its own command; capture it **while the run is alive** — `make e2e` / `make e2e-scratch` delete the temp DB and logs after a passing run, and `make verify-down --wipe` removes them on request.
-- Embed decisive text and images inline; scrolling this file should reach a verdict without opening a side file. Link only archives, binaries and full captures, each with a note on what it holds.
-- Paste terminal output as text. For agent-backend behaviour, paste the specific event-kind, timing or stop-reason lines that decide it — never complete frames.
-- Keep failed and unchecked steps visible. Redact tokens, cookies, real credentials and the contents of a real `~/Library/Application Support/agentre` DB before saving, and again before embedding.
-- Keep every path relative to this file; the scenario directory, not `report.md` alone, is what you hand to a reviewer.
+- Every `holds` names how the formal target was driven and the deciding observation.
+- An unavailable Server, daemon, CLI, platform integration, or authorization is failed/blocked/`not observed`, never replaced with a fake.
+- Where a criterion changes state beyond the driven surface, include an independent read with its own command.
+- Embed decisive text and images inline; link only archives, binaries, or complete captures and say what each contains.
+- Paste terminal output as text. For agent behavior, include only deciding redacted event-kind, timing, or stop-reason lines — never complete frames.
+- Keep failed and unchecked steps visible. Redact tokens, cookies, real credentials, sibling configuration, and installed/development database contents before saving and embedding.
+- Keep paths relative to this file; the scenario directory, not `report.md` alone, is the review artifact.

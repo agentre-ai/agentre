@@ -76,3 +76,10 @@ func TestAppDataDir_DefaultProd(t *testing.T) {
 	assert.Equal(t, filepath.Join(base, AppName), dir,
 		"prod path must be unchanged when not in dev mode")
 }
+
+func TestDefaultDesktopDataDirs(t *testing.T) {
+	base, err := os.UserConfigDir()
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(base, AppName), DefaultAppDataDir(base, false))
+	assert.Equal(t, filepath.Join(base, AppNameDev), DefaultAppDataDir(base, true))
+}

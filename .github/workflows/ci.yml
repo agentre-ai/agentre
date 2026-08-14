@@ -191,13 +191,12 @@ jobs:
       - name: Run e2e
         run: xvfb-run -a make e2e
 
-      - name: Upload e2e artifacts
+      - name: Upload per-run e2e artifacts
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-artifacts
+          name: e2e-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: ignore
           path: |
-            /tmp/agentre-e2e-webserver.log
+            e2e/artifacts/*/
             e2e/playwright-report/
-            e2e/test-results/

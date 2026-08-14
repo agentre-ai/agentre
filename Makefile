@@ -1,4 +1,4 @@
-.PHONY: run dev build agrctl agentred agentred-package agentred-linux agentred-deploy agentred-deploy-restart agentred-deploy-local-coding agentred-local-coding generate test test-backend test-frontend test-cover test-agentred-packaging lint lint-backend lint-frontend lint-fix lint-fix-backend lint-fix-frontend mock install install-deps clean check e2e e2e-scratch e2e-sync verify-up verify-status verify-down
+.PHONY: run dev build agrctl agentred agentred-package agentred-linux agentred-deploy agentred-deploy-restart agentred-deploy-local-coding agentred-local-coding generate test test-backend test-frontend test-cover test-agentred-packaging lint lint-backend lint-frontend lint-fix lint-fix-backend lint-fix-frontend mock install install-deps clean check e2e e2e-app verify-up verify-status verify-down
 
 APP_NAME := Agentre
 VERSION ?= 0.1.0
@@ -18,8 +18,9 @@ VERSION_PKG := github.com/cago-frame/cago/configs
 BUILDINFO_PKG := github.com/agentre-ai/agentre/internal/buildinfo
 LDFLAGS := -s -w -X $(VERSION_PKG).Version=$(VERSION) -X $(BUILDINFO_PKG).CommitID=$(COMMIT_ID)
 FRONTEND_DIR := frontend
-BACKEND_PKGS := . ./cmd/... ./internal/... ./migrations ./pkg/...
+BACKEND_PKGS := . ./cmd/... ./e2e/... ./internal/... ./migrations ./pkg/...
 E2E_SPEC ?=
+E2E_APP_BINARY := build/bin/agentre-e2e$(EXE)
 
 MACOS_APP_INSTALL_DIR ?= /Applications
 PREFIX ?= /usr/local
@@ -152,45 +153,32 @@ test-backend:
 test-frontend: generate
 	cd $(FRONTEND_DIR) && pnpm test
 
-# E2E:Playwright 驱动真实 wails dev(-tags e2e 的确定性 fake runtime)跑 GUI 端到端。
-# 详见 e2e/README.md。一次性装依赖+浏览器:cd e2e && pnpm run setup(CI 在独立
-# 步骤装,故这里不重复)。编排与收尾清理(回收残留 vite、删临时目录)都在 e2e/run-e2e.mjs
-# 里用 Node 跨平台完成;配方只做 shell 无关的 cd && pnpm,cmd/sh 皆可。
+# Build only the dedicated E2E composition root. Production build/package targets
+# remain rooted at main.go and never import e2e/composition or fake runtimes.
+e2e-app:
+	mkdir -p "$(AGENTRED_BUILD_DIR)"
+	go build -o "$(E2E_APP_BINARY)" ./e2e/app
+
+# Unified hermetic desktop E2E: one runner/config, three serial smoke specs.
 e2e:
 	cd e2e && pnpm test
 
-# 临时功能验证:跑 e2e/scratch/ 里的一次性 spec(不提交)。约定/用法见 e2e/README.md §6。
-# 必须显式指定目标,避免遗留 spec 被静默重跑:
-#   make e2e-scratch TASK="scratch/<task-name>/"     # 场景目录(递归拾取 verify.spec.ts)
-#   make e2e-scratch TASK="scratch/poke.spec.ts"     # 单个文件
-# 快速内循环(起一次 app、反复改 spec 重跑,不重建不起新 app)见 e2e/README.md §4:
-#   AGENTRE_E2E_REUSE=1 make e2e-scratch TASK="scratch/<task-name>/"
-e2e-scratch:
-	@test -n "$(TASK)" || { echo "error: make e2e-scratch 需要 TASK=scratch/<task-name>/ (或 scratch/ 下文件路径); 例: make e2e-scratch TASK=\"scratch/poke.spec.ts\""; exit 1; }
-	cd e2e && pnpm run test:scratch "$(TASK)"
-
-# 工作区多端同步的本地端到端:真桌面端 + 真 agentre-server + Go 模拟对端。
-# 需要 agentre-server 的 PostgreSQL / Redis 可达(不跑容器),不进 CI。见 e2e/README.md §10。
-e2e-sync:
-	cd e2e && pnpm run test:sync
-
-# 本地真实验证:起一次隔离 app + 一个连着它的无头浏览器,然后用 node e2e/drive.mjs 逐步驱动
-# (不写 spec)。数据目录 / keychain / gateway 端口全部隔离并按「当前 checkout 路径」派生,
-# 拒绝正式与 make dev 的数据目录;不同 worktree 可以同时跑,同一 checkout 同时只能起一个档位
-# (wails dev 共用 build/bin)。流程见 docs/verification.md,机制见 e2e/README.md。
-#   make verify-up                 # fake runtime(-tags e2e,确定性、无 CLI 子进程)
-#   make verify-up FLAVOR=real     # 真实 claude / codex CLI(不带 build tag)
-#   make verify-up VERIFY_FLAGS=--headed   # 想亲眼看时才开窗口
-FLAVOR ?= fake
+# Local real verification: launch the formal desktop main with checkout-scoped
+# data/keychain/browser state, then drive it one action at a time with drive.mjs.
+# External services and real agent CLIs are configured explicitly by the verifier;
+# an unavailable dependency fails or remains unverified rather than using a fake.
+#   make verify-up
+#   make verify-up VERIFY_FLAGS=--headed
 verify-up:
-	cd e2e && node verify.mjs up --flavor $(FLAVOR) $(VERIFY_FLAGS)
+	cd e2e && node verify.mjs up $(VERIFY_FLAGS)
 
 verify-status:
-	cd e2e && node verify.mjs status --flavor $(FLAVOR)
+	cd e2e && node verify.mjs status
 
-# 默认保留隔离数据目录(跑完还能查库);加 VERIFY_FLAGS=--wipe 一并删掉。
+# State is retained for investigation; VERIFY_FLAGS=--wipe removes only the
+# checkout-scoped directories validated by the launcher.
 verify-down:
-	cd e2e && node verify.mjs down --flavor $(FLAVOR) $(VERIFY_FLAGS)
+	cd e2e && node verify.mjs down $(VERIFY_FLAGS)
 
 # 测试覆盖率
 test-cover:

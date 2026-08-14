@@ -114,7 +114,7 @@ Merging requires the five jobs in [`.github/workflows/ci.yml`](../.github/workfl
 | `Go Test` | `make test-backend` |
 | `Frontend Lint` | `cd frontend && pnpm run lint` |
 | `Frontend Test` | wails binding generation + `pnpm run test` |
-| `E2E` | `xvfb-run -a make e2e` — the real app, on Ubuntu |
+| `E2E` | `xvfb-run -a make e2e` — the independent hermetic desktop app, three serial smoke boundaries, on Ubuntu |
 
 CI uses the same repository entry points documented for local runs, but pins tool/runtime versions independently. Local `make lint` uses the `golangci-lint` v2 binary on `PATH`; when reproducing a CI-only lint result, check `golangci-lint version` against CI's v2.12.2. Two known gaps are deliberate: the Go suite runs **without `-race`**, and there is no pre-commit hook.
 

@@ -40,9 +40,8 @@ Stage the files intended for the commit, then set `VERIFY_TREE="$(git write-tree
 | [`debugging.md`](./debugging.md) | Diagnosing runtime issues: SQLite / log commands, table → feature mapping, reproduction commands, common pitfalls. |
 | [`agent-backend.md`](./agent-backend.md) | The full path to wiring in a new AI Agent backend (entity / migration / runtime / translator / capability / daemon import / frontend gating). |
 | [`session-lifecycle.md`](./session-lifecycle.md) | Rules for creating and reusing `chat_sessions`, including future issue/hook dispatch and remote-execution ownership. |
-| [`../e2e/README.md`](../e2e/README.md) | The e2e / verification **harness** (root `e2e/` package): the three modes (driven app via `make verify-up` + `drive.mjs`, the committed suite, scratch specs), the `fake` / `real` flavors, the architecture and IPC bridge, the `e2e` build-tag seam that keeps the fake out of production builds, the enforced isolation guards in `lib/target.mjs` (ports, data dirs, keychain, origins), writing a committed core-flow spec, hard-won harness engineering lessons, extension seams, and the file map. Owns the **machine**; what a run must produce is [`verification.md`](./verification.md)'s. |
-| [`../e2e/scratch/README.md`](../e2e/scratch/README.md) | The scenario-directory layout, the drive commands that fill it, and when a spec is warranted at all. |
-| [`verification.md`](./verification.md) | The verification **route** and what a run must leave behind: when it is warranted, start → drive → record → stop, the `e2e/scratch/<scenario>/` evidence layout, `report.md` created before the run, honest reporting, and the one-place-only verdict table for spec acceptance. Defers all harness mechanics to [`../e2e/README.md`](../e2e/README.md). |
+| [`../e2e/README.md`](../e2e/README.md) | The E2E / verification **machine**: the independent hermetic Wails app, one automated runner/config with desktop/sync-client/remote-peer smoke boundaries, preflight/storage/process guards, protocol fakes, SQLite oracles, sanitized per-run artifacts, and the formal-main-only driven verification launcher/driver. What a real run must record remains [`verification.md`](./verification.md)'s. |
+| [`verification.md`](./verification.md) | The formal-main real-verification **route** and what a run must leave behind: when it is warranted, start → drive → record → stop, the `e2e/scratch/<scenario>/` evidence layout, real-dependency failure/unverified handling, `report.md` created before the run, authorization/redaction, honest reporting, and the one-place-only verdict table. Defers mechanics to [`../e2e/README.md`](../e2e/README.md). |
 | [`references/verification-report-template.md`](./references/verification-report-template.md) | The `report.md` shape itself — copied verbatim into a scenario directory. Filling-in discipline and embedding rules; the *when / where* is [`verification.md`](./verification.md)'s. |
 | [`documentation.md`](./documentation.md) | This guide: doc organization rules + fact-checking / anti-drift discipline. |
 | [`README_zh.md`](./README_zh.md) / [`../README.md`](../README.md) | The user-facing Chinese / English project README — **not** a docs index; don't stuff contributor conventions into it. |
@@ -126,7 +125,7 @@ Repository-internal sources and targets come from Git's index; out-of-repository
 
 ```bash
 git ls-files --cached -- AGENTS.md CLAUDE.md CONTRIBUTING.md 'docs/*.md' 'docs/**/*.md' \
-  e2e/README.md e2e/scratch/README.md | while IFS= read -r doc; do
+  e2e/README.md | while IFS= read -r doc; do
   git show ":$doc" >/dev/null 2>&1 || { echo "BROKEN staged source $doc"; continue; }
   # Strip fenced blocks and inline code first: sample paths are not links.
   git show ":$doc" | sed '/^```/,/^```/d' | sed -E 's/`[^`]*`//g' \

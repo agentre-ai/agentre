@@ -1,0 +1,15 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "Agentre E2E",
+  "outputfilename": "AgentreE2E",
+  "projectdir": ".",
+  "build:dir": "../../build",
+  "frontend:dir": "../../frontend",
+  "wailsjsdir": "../../frontend",
+  "frontend:build": "true",
+  "frontend:dev:serverUrl": "http://127.0.0.1:1",
+  "author": {
+    "name": "Agentre E2E",
+    "email": "e2e@localhost"
+  }
+}

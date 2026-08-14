@@ -27,6 +27,8 @@ migrations/                    (gormigrate sequential migrations, filename prefi
 pkg/                           (externally reusable packages: claudecode / codex / piagent —— independently maintained CLI subprocess wrappers;
                                 agentred/protocol —— shared agentred wire protocol)
 frontend/                      (React 19 + TS + Vite + Tailwind; wailsjs/ is wails-generated, gitignored)
+e2e/                           (independent hermetic Wails app/composition + one Playwright runner/config;
+                                formal agentre/agentred dependency graphs do not import it)
 ```
 
 The `App` struct lives in `internal/app/app.go` (lifecycle + common methods), with domain methods spread across sibling files (`agent.go`, `chat.go`, …). **Keep these bindings thin — logic inside `App` is unreachable from `go test`; always put business logic in `service/`.**

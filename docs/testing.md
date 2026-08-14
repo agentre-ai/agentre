@@ -193,5 +193,5 @@ Per-task focused tests miss cross-package breakage (an entity change breaking an
 
 - The Red→Green→Refactor loop, Fix Discipline, SOLID → [`develop.md`](./develop.md)
 - Driving the real app, and what a verification run must leave behind → [`verification.md`](./verification.md)
-- The GUI e2e harness and the committed-vs-scratch split → [`../e2e/README.md`](../e2e/README.md)
+- The unified GUI e2e harness and its three committed smoke boundaries → [`../e2e/README.md`](../e2e/README.md)
 - Wiring a new agent backend, with its own TDD checklist → [`agent-backend.md`](./agent-backend.md)

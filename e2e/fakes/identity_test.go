@@ -1,10 +1,7 @@
-//go:build e2e
-
 package fakes
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -18,7 +15,6 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/server_state_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/keychain"
 	"github.com/agentre-ai/agentre/internal/repository/remote_device_repo"
-	"github.com/agentre-ai/agentre/internal/repository/remote_device_repo/mock_remote_device_repo"
 	"github.com/agentre-ai/agentre/internal/repository/server_state_repo"
 	"github.com/agentre-ai/agentre/internal/repository/server_state_repo/mock_server_state_repo"
 	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
@@ -84,7 +80,7 @@ func TestGivenDualLoginWhenHarnessInstallsAccountThenRemoteDeviceUsesLoginFinger
 	t.Setenv(e2eDeviceFPEnv, "sha256:isolated")
 	t.Setenv(e2eRefreshTokenEnv, "refresh")
 
-	installE2ELoggedInAccount(ctx)
+	require.NoError(t, installE2ELoggedInAccount(ctx))
 
 	assert.Equal(t, int32(1), refreshHits.Load())
 	fingerprint, err := remote_device_svc.Default().DeviceFingerprint()
@@ -93,41 +89,36 @@ func TestGivenDualLoginWhenHarnessInstallsAccountThenRemoteDeviceUsesLoginFinger
 	assert.True(t, remote_device_svc.IsSelfDevice(fingerprint))
 }
 
-func TestGivenLoggedInIdentityWhenRemoteAgentredSeedFailsThenSelfIdentityIsNotRebound(t *testing.T) {
-	ctx := context.Background()
-	ctrl := gomock.NewController(t)
+func TestGivenRejectedOrIncompleteRefreshWhenHarnessInstallsAccountThenStartupFailsWithoutLeakingTheCredential(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		code int
+	}{
+		{name: "rejected", code: http.StatusUnauthorized, body: `{"code":401,"msg":"rejected refresh-secret"}`},
+		{name: "missing rotated refresh token", code: http.StatusOK, body: `{"code":0,"data":{"access_token":"access"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			originalKeychain := keychain.Default()
+			keychain.SetDefault(keychain.NewMemory())
+			t.Cleanup(func() { keychain.SetDefault(originalKeychain) })
 
-	originalKeychain := keychain.Default()
-	originalRemoteDevice := remote_device_svc.Default()
-	originalPairedRepo := remote_device_repo.PairedAgentred()
-	t.Cleanup(func() {
-		keychain.SetDefault(originalKeychain)
-		remote_device_svc.SetDefault(originalRemoteDevice)
-		remote_device_repo.RegisterPairedAgentred(originalPairedRepo)
-	})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.code)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
 
-	loginKeychain := keychain.NewMemory()
-	require.NoError(t, loginKeychain.Set(keychainAccountFingerprint, "sha256:login"))
-	keychain.SetDefault(loginKeychain)
-	require.NoError(t, bootstrap.InitRemoteDevice(ctx))
+			t.Setenv(e2eServerURLEnv, server.URL)
+			t.Setenv(e2eServerUserIDEnv, "101")
+			t.Setenv(e2eDeviceIDEnv, "202")
+			t.Setenv(e2eDeviceFPEnv, "sha256:isolated")
+			t.Setenv(e2eRefreshTokenEnv, "refresh-secret")
 
-	// A later global keychain change must not matter: remote-agentred seeding owns
-	// rows only and must not silently reconstruct the already-login-bound service.
-	otherKeychain := keychain.NewMemory()
-	require.NoError(t, otherKeychain.Set(keychainAccountFingerprint, "sha256:other"))
-	keychain.SetDefault(otherKeychain)
-
-	seedErr := errors.New("stop after identity boundary")
-	pairedRepo := mock_remote_device_repo.NewMockPairedAgentredRepo(ctrl)
-	pairedRepo.EXPECT().FindByURL(gomock.Any(), "wss://agentred.example").Return(nil, seedErr)
-	remote_device_repo.RegisterPairedAgentred(pairedRepo)
-	t.Setenv(e2eAgentredFingerprintEnv, "sha256:agentred")
-	t.Setenv(e2eAgentredURLEnv, "wss://agentred.example")
-
-	installE2ERemoteAgentred(ctx)
-
-	fingerprint, err := remote_device_svc.Default().DeviceFingerprint()
-	require.NoError(t, err)
-	assert.Equal(t, "sha256:login", fingerprint)
-	assert.True(t, remote_device_svc.IsSelfDevice(fingerprint))
+			err := installE2ELoggedInAccount(context.Background())
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), "refresh-secret")
+		})
+	}
 }

@@ -1,5 +1,3 @@
-//go:build e2e
-
 package fake
 
 import (
@@ -63,7 +61,7 @@ func TestRun_RespectsContextCancellation(t *testing.T) {
 	events, _, err := r.Run(ctx, agentruntime.RunRequest{SessionID: 7, UserText: "hello world this is a long enough prompt to span several chunks"})
 	require.NoError(t, err)
 
-	// Draining a pre-cancelled run must terminate (channel closes) without hanging.
+	// Draining a pre-canceled run must terminate (channel closes) without hanging.
 	for range events { //nolint:revive // draining
 	}
 }

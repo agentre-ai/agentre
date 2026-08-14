@@ -217,6 +217,26 @@ function rowForModel(modelId: string): HTMLTableRowElement {
   return checkbox.closest("tr") as HTMLTableRowElement;
 }
 
+// 工作区 region 只证明供应商列表这一段异步结束：模型区来自随后的 ListLLMModels，
+// 此刻通常还停在「Loading models…」占位上。屏障停在 region 上、后面接同步查询，
+// 就是在赌 React 的调度顺序——CI 上已经随机红过。所以屏障一律落在模型区自己的
+// 终态上：有模型等表格，没模型等空态，两者都是正值断言，不会被中间态骗过去。
+async function waitForModelTable(
+  providerRegion: string | RegExp = / models$/,
+): Promise<HTMLElement> {
+  const workspace = await screen.findByRole("region", { name: providerRegion });
+  await within(workspace).findByRole("table", { name: "Model list" });
+  return workspace;
+}
+
+async function waitForEmptyModelSection(
+  providerRegion: string | RegExp = / models$/,
+): Promise<HTMLElement> {
+  const workspace = await screen.findByRole("region", { name: providerRegion });
+  await within(workspace).findByText("No models configured yet");
+  return workspace;
+}
+
 // 默认模型（mk-default）+ 被引用模型（mk-opus）+ 可删除模型（mk-haiku）。
 function installThreeModels(
   refs: Record<
@@ -344,9 +364,7 @@ describe("LlmProvidersPanel", () => {
     });
     render(<LlmProvidersPanel />);
 
-    const workspace = await screen.findByRole("region", {
-      name: /Anthropic models/,
-    });
+    const workspace = await waitForModelTable(/Anthropic models/);
     // 模型行由异步 ListLLMModels 渲染，等待真实模型控件出现而非 region。
     expect(
       (await within(workspace).findAllByText("claude-sonnet-4-5")).length,
@@ -386,9 +404,7 @@ describe("LlmProvidersPanel", () => {
     });
     render(<LlmProvidersPanel />);
 
-    const workspace = await screen.findByRole("region", {
-      name: /Anthropic models/,
-    });
+    const workspace = await waitForModelTable(/Anthropic models/);
     // 主行显示 display name（Sonnet），副行显示 modelId
     expect(await within(workspace).findByText("Sonnet")).toBeInTheDocument();
     expect(
@@ -544,9 +560,7 @@ describe("LlmProvidersPanel", () => {
     });
     render(<LlmProvidersPanel />);
 
-    const workspace = await screen.findByRole("region", {
-      name: /Anthropic models/,
-    });
+    const workspace = await waitForModelTable(/Anthropic models/);
     await within(workspace).findByRole("switch", {
       name: "Enable claude-opus-4-1",
     });
@@ -579,7 +593,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(screen.getByRole("button", { name: "Test Anthropic" }));
 
     await waitFor(() => {
@@ -599,7 +613,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(screen.getByRole("button", { name: "Test Anthropic" }));
 
     const alert = await screen.findByRole("alert");
@@ -706,7 +720,7 @@ describe("LlmProvidersPanel", () => {
     const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
 
     // 默认模型：启用开关禁用并给出原因（需在打开菜单前查询，Radix 菜单打开时会 aria-hidden 其余内容）
     const enableSwitch = screen.getByRole("switch", {
@@ -768,7 +782,7 @@ describe("LlmProvidersPanel", () => {
     const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(
       screen.getByRole("button", {
         name: "More actions for claude-opus-4-1",
@@ -813,7 +827,7 @@ describe("LlmProvidersPanel", () => {
     const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(
       screen.getByRole("button", {
         name: "More actions for claude-opus-4-1",
@@ -1042,7 +1056,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(screen.getByRole("button", { name: "Discover models" }));
 
     const dialog = await screen.findByRole("dialog", {
@@ -1096,7 +1110,7 @@ describe("LlmProvidersPanel", () => {
     });
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     const enableSwitch = screen.getByRole("switch", {
       name: "Enable Anthropic",
     });
@@ -1118,7 +1132,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(screen.getByRole("switch", { name: "Enable Anthropic" }));
 
     await waitFor(() => {
@@ -1143,9 +1157,7 @@ describe("LlmProvidersPanel", () => {
     const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
-    const workspace = await screen.findByRole("region", {
-      name: /Anthropic models/,
-    });
+    const workspace = await waitForModelTable(/Anthropic models/);
     // 引用计数落地后才判定：等元信息行显示出真实计数
     await within(workspace).findByText("2 backends");
 
@@ -1197,7 +1209,7 @@ describe("LlmProvidersPanel", () => {
     const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     // 表格先读到「无引用」，行内删除项因此可点
     await user.click(
       screen.getByRole("checkbox", { name: "Select claude-opus-4-1" }),
@@ -1242,7 +1254,7 @@ describe("LlmProvidersPanel", () => {
     const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(screen.getByRole("button", { name: "More" }));
     await user.click(
       await screen.findByRole("menuitem", { name: "Delete Anthropic" }),
@@ -1335,7 +1347,7 @@ describe("LlmProvidersPanel", () => {
     const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(screen.getByRole("button", { name: "More" }));
     await user.click(
       await screen.findByRole("menuitem", {
@@ -1397,7 +1409,7 @@ describe("LlmProvidersPanel", () => {
       />,
     );
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
 
     // mockup 注解①：唯一新增入口交给页头 slot 渲染，面板自己不再留一层 strip
     expect(
@@ -1430,7 +1442,7 @@ describe("LlmProvidersPanel", () => {
       />,
     );
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(
       within(screen.getByTestId("page-header")).getByRole("button", {
         name: "New Provider",
@@ -1476,9 +1488,7 @@ describe("LlmProvidersPanel", () => {
     });
     render(<LlmProvidersPanel />);
 
-    const workspace = await screen.findByRole("region", {
-      name: /Anthropic Official models/,
-    });
+    const workspace = await waitForModelTable(/Anthropic Official models/);
 
     // 身份行：名称 + 协议类型
     expect(
@@ -1540,7 +1550,7 @@ describe("LlmProvidersPanel", () => {
     const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(screen.getByRole("button", { name: "More" }));
 
     const menu = await screen.findByRole("menu");
@@ -1560,7 +1570,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(
       screen.getByRole("checkbox", { name: "Select all models" }),
     );
@@ -1587,9 +1597,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    const workspace = await screen.findByRole("region", {
-      name: /Anthropic models/,
-    });
+    const workspace = await waitForModelTable(/Anthropic models/);
     const search = within(workspace).getByRole("searchbox", {
       name: "Filter models",
     });
@@ -1636,7 +1644,7 @@ describe("LlmProvidersPanel", () => {
     });
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     expect(
       within(rowForModel("claude-opus-4-1")).getByText("Disabled"),
     ).toBeInTheDocument();
@@ -1650,7 +1658,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     expect(
       screen.getByRole("searchbox", { name: "Filter models" }),
     ).toBeInTheDocument();
@@ -1717,7 +1725,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(
       screen.getByRole("checkbox", { name: "Select claude-sonnet-4-5" }),
     );
@@ -1727,7 +1735,7 @@ describe("LlmProvidersPanel", () => {
 
     await user.click(screen.getByRole("button", { name: /OpenAI/ }));
 
-    await screen.findByRole("region", { name: /OpenAI models/ });
+    await waitForModelTable(/OpenAI models/);
     expect(
       screen.getByRole("searchbox", { name: "Filter models" }),
     ).toBeInTheDocument();
@@ -1743,7 +1751,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(
       screen.getByRole("checkbox", { name: "Select all models" }),
     );
@@ -1771,7 +1779,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(
       screen.getByRole("checkbox", { name: "Select all models" }),
     );
@@ -1809,7 +1817,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(
       screen.getByRole("checkbox", { name: "Select all models" }),
     );
@@ -1858,7 +1866,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(
       screen.getByRole("checkbox", { name: "Select all models" }),
     );
@@ -1882,7 +1890,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     // 只选中默认模型与被引用模型（均不可删除）
     await user.click(
       screen.getByRole("checkbox", { name: "Select claude-sonnet-4-5" }),
@@ -1934,7 +1942,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(
       screen.getByRole("checkbox", { name: "Select all models" }),
     );
@@ -2004,7 +2012,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(
       screen.getByRole("checkbox", { name: "Select all models" }),
     );
@@ -2033,7 +2041,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(
       screen.getByRole("checkbox", { name: "Select all models" }),
     );
@@ -2087,7 +2095,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(
       screen.getByRole("checkbox", { name: "Select all models" }),
     );
@@ -2115,7 +2123,7 @@ describe("LlmProvidersPanel", () => {
     const writeText = mockClipboard();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(screen.getByRole("button", { name: "More" }));
     // fireEvent 直接触发 Radix DropdownMenuItem onSelect（不产生 pointer-leave 关闭菜单）
     fireEvent.click(
@@ -2184,7 +2192,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(screen.getByRole("button", { name: "Discover models" }));
 
     const dialog = await screen.findByRole("dialog", { name: /Discover/ });
@@ -2258,7 +2266,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     await user.click(screen.getByRole("button", { name: "Discover models" }));
 
     const dialog = await screen.findByRole("dialog", { name: /Discover/ });
@@ -2315,7 +2323,7 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForEmptyModelSection(/Anthropic models/);
     await user.click(
       await screen.findByRole("button", { name: "Add model manually" }),
     );
@@ -2401,7 +2409,7 @@ describe("LlmProvidersPanel", () => {
     const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     const listCallsBefore = (mocks.ListLLMModels as ReturnType<typeof vi.fn>)
       .mock.calls.length;
 
@@ -2451,7 +2459,7 @@ describe("LlmProvidersPanel", () => {
     const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
+    await waitForModelTable(/Anthropic models/);
     const providerCallsBefore = (
       mocks.ListLLMProviders as ReturnType<typeof vi.fn>
     ).mock.calls.length;
@@ -2599,5 +2607,30 @@ describe("LlmProvidersPanel", () => {
     expect(
       within(rowForModel("claude-sonnet-4-5")).queryByText("Passed"),
     ).toBeNull();
+  });
+
+  // 守卫：模型表属于「供应商列表落地」之后的第二段异步。只要屏障停在工作区
+  // region 上，后面的同步查询就是在赌调度顺序——CI 上已经随机红过。这条用例
+  // 把模型列表故意排到供应商列表之后，任何退回 region 屏障的写法都会稳定失败。
+
+  it("Given the model list resolves after the provider list, When the panel is rendered, Then the shared barrier lands on the model table instead of the loading placeholder", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            setTimeout(() => resolve({ items: [makeModel()] }), 30);
+          }),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    await waitForModelTable("Anthropic models");
+
+    expect(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    ).toBeInTheDocument();
   });
 });

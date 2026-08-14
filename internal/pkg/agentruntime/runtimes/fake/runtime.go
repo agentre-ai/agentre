@@ -1,7 +1,5 @@
-//go:build e2e
-
 // Package fake 提供 e2e 专用的确定性 agent runtime:不起任何子进程,按 req.UserText
-// 回显一段固定前缀文本后正常结束。仅在 `-tags e2e` 构建中编译,生产二进制不含本包。
+// 回显一段固定前缀文本后正常结束。只有独立 E2E composition root 导入本包。
 package fake
 
 import (
