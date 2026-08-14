@@ -24,6 +24,37 @@ var newInboundPeer = func(ctx context.Context) (inboundPeer, error) {
 	return peer.NewInbound(link), nil
 }
 
+// onServerStateEvent 按登录状态的变更维护这台桌面端的入站中转登记。
+func (a *App) onServerStateEvent(payload any) {
+	state, ok := payload.(map[string]any)
+	if !ok {
+		return
+	}
+	switch state["kind"] {
+	case "logged_in":
+		// 重建而不是「已经有了就跳过」：登记在建立时就绑定了服务端地址与设备凭据，
+		// 而登录事件恰恰意味着这两样可能都变了。跳过等于继续以上一次登录的身份挂在
+		// 上一个服务端上 —— 新账号那边看不到这台桌面端，旧账号那边它还在线。
+		a.restartInboundPeer(context.Background())
+	case "logged_out":
+		// 登记挂在 context.Background() 上，不主动停就要一直活到应用退出：已经登出的
+		// 桌面端仍以旧凭据在旧服务端上保持可寻址。
+		a.stopInboundPeer(context.Background())
+	}
+}
+
+// restartInboundPeer 先停掉现有登记，再按当前登录状态重建。
+//
+// peerRestartMu 让相邻的两次登录状态变更不会交错成「停 A、起 A、停 B、起 B」之外的
+// 顺序：stopInboundPeer 与 startInboundPeer 各自只在自己的临界区里持锁，中间那一瞬
+// 若被另一个事件插入，就会留下一条没人认领的登记 —— 正是这次要修掉的东西。
+func (a *App) restartInboundPeer(ctx context.Context) {
+	a.peerRestartMu.Lock()
+	defer a.peerRestartMu.Unlock()
+	a.stopInboundPeer(ctx)
+	a.startInboundPeer(ctx)
+}
+
 // startInboundPeer begins at most one inbound relay registration for this App
 // process. A fresh login has no registration until the login event retries this
 // method; an already-persisted login may start before token refresh completes,
