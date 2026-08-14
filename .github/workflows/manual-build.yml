@@ -225,6 +225,14 @@ jobs:
           choco install nsis -y
           echo "${env:ProgramFiles(x86)}\NSIS" >> $env:GITHUB_PATH
 
+      - name: Prepare isolated keychain (Linux)
+        if: matrix.goos == 'linux'
+        env:
+          AGENTRE_KEYCHAIN_DIR: ${{ runner.temp }}/agentre-build-keychain
+        run: |
+          mkdir -m 700 "$AGENTRE_KEYCHAIN_DIR"
+          echo "AGENTRE_KEYCHAIN_DIR=$AGENTRE_KEYCHAIN_DIR" >> "$GITHUB_ENV"
+
       - name: Build desktop app
         if: matrix.goos != 'windows'
         run: |

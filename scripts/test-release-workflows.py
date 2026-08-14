@@ -20,6 +20,23 @@ def job_block(text: str, name: str) -> str:
     return text[match.start():end]
 
 
+def check_desktop_build_keychain(path: str) -> None:
+    """Given a Linux desktop build, require an isolated keychain before Wails runs."""
+    text = (ROOT / path).read_text()
+    build = job_block(text, "build-desktop")
+    for token in (
+        "- name: Prepare isolated keychain (Linux)",
+        "AGENTRE_KEYCHAIN_DIR: ${{ runner.temp }}/agentre-build-keychain",
+        "if: matrix.goos == 'linux'",
+        'mkdir -m 700 "$AGENTRE_KEYCHAIN_DIR"',
+        'echo "AGENTRE_KEYCHAIN_DIR=$AGENTRE_KEYCHAIN_DIR" >> "$GITHUB_ENV"',
+    ):
+        if token not in build:
+            raise AssertionError(f"{path} Linux desktop build missing {token!r}")
+    if build.index("Prepare isolated keychain (Linux)") > build.index("Build desktop app"):
+        raise AssertionError(f"{path} prepares the Linux keychain after the desktop build")
+
+
 def check_workflow(path: str, prefix: str) -> None:
     text = (ROOT / path).read_text()
     if "-X agentre/internal/buildinfo.CommitID" in text:
@@ -68,6 +85,12 @@ def main() -> None:
 
     check_workflow(".github/workflows/release.yml", "release")
     check_workflow(".github/workflows/nightly.yml", "nightly")
+    for path in (
+        ".github/workflows/release.yml",
+        ".github/workflows/nightly.yml",
+        ".github/workflows/manual-build.yml",
+    ):
+        check_desktop_build_keychain(path)
 
     ci = (ROOT / ".github/workflows/ci.yml").read_text()
     for token in ("scripts/test-install.sh", "scripts/test-install.ps1", "scripts/test-release-workflows.py"):
