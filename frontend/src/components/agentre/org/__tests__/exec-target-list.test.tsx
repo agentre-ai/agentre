@@ -3,7 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ExecTargetList } from "../exec-target-list";
-import type { agent_backend_svc } from "../../../../../wailsjs/go/models";
+import type {
+  agent_backend_svc,
+  chat_svc,
+} from "../../../../../wailsjs/go/models";
 
 function backend(
   overrides: Partial<agent_backend_svc.BackendItem> = {},
@@ -62,19 +65,21 @@ function availabilityStub(
     hint?: string;
   }>,
 ) {
-  const fn = vi
-    .fn()
-    .mockResolvedValue(items.map((it) => ({ reason: "", hint: "", ...it })));
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (window as any).go = {
-    app: { App: { ListAgentExecTargetAvailability: fn } },
-  };
-  return fn;
+  // 列表不再自持 useExecTargetAvailability，判定由面板下传，所以这里造的是一份
+  // 现成的 Map，而不是再去桩 Wails 绑定。
+  availability = new Map(
+    items.map((it) => [
+      it.agentBackendId,
+      { reason: "", hint: "", ...it },
+    ]) as Array<[number, chat_svc.ExecTargetAvailabilityView]>,
+  );
+  return availability;
 }
 
+let availability = new Map<number, chat_svc.ExecTargetAvailabilityView>();
+
 afterEach(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  delete (window as any).go;
+  availability = new Map();
 });
 
 describe("ExecTargetList", () => {
@@ -82,7 +87,7 @@ describe("ExecTargetList", () => {
     availabilityStub([{ agentBackendId: 51, available: true }]);
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }]}
         backends={[localBackend()]}
@@ -109,7 +114,7 @@ describe("ExecTargetList", () => {
     ]);
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend()]}
@@ -132,7 +137,7 @@ describe("ExecTargetList", () => {
     ]);
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend()]}
@@ -154,7 +159,7 @@ describe("ExecTargetList", () => {
     ]);
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }]}
         backends={[localBackend()]}
@@ -179,7 +184,7 @@ describe("ExecTargetList", () => {
     ]);
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }]}
         backends={[localBackend({ deviceId: fingerprint, deviceName: "" })]}
@@ -205,7 +210,7 @@ describe("ExecTargetList", () => {
     ]);
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend({ online: false })]}
@@ -224,7 +229,7 @@ describe("ExecTargetList", () => {
   it("empty list: shows the CTA and, when saveRejected, the rejection message", () => {
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[]}
         backends={[localBackend()]}
@@ -245,7 +250,7 @@ describe("ExecTargetList", () => {
     const onChange = vi.fn();
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }]}
         backends={[
@@ -273,7 +278,7 @@ describe("ExecTargetList", () => {
     const user = userEvent.setup();
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }]}
         backends={[
@@ -303,7 +308,7 @@ describe("ExecTargetList", () => {
     const onChange = vi.fn();
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }]}
         backends={[
@@ -329,7 +334,7 @@ describe("ExecTargetList", () => {
     const onChange = vi.fn();
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend()]}
@@ -354,7 +359,7 @@ describe("ExecTargetList", () => {
     const onReorder = vi.fn();
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend()]}
@@ -391,7 +396,7 @@ describe("ExecTargetList", () => {
     const onReorder = vi.fn();
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend()]}
@@ -424,7 +429,7 @@ describe("ExecTargetList", () => {
     const viaKeyboard = vi.fn();
     const { unmount } = render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend()]}
@@ -441,7 +446,7 @@ describe("ExecTargetList", () => {
     const viaButton = vi.fn();
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend()]}
@@ -465,7 +470,7 @@ describe("ExecTargetList", () => {
     const onReorder = vi.fn();
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend()]}
@@ -484,7 +489,7 @@ describe("ExecTargetList", () => {
   it("Given the order data has not arrived, When the list renders, Then it shows skeleton rows instead of the empty state", () => {
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[]}
         backends={[localBackend()]}
@@ -513,7 +518,7 @@ describe("ExecTargetList", () => {
     ]);
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend()]}

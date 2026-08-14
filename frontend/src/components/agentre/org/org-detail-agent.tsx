@@ -697,8 +697,8 @@ export function OrgDetailAgent(props: Props) {
           ) : null}
           {/* 执行目标区只有这一个列表：它恒等于这台电脑当前实际的派发顺序。 */}
           <ExecTargetList
-            agentId={props.agent.id}
             agentName={props.agent.name}
+            availability={availability.byBackendId}
             targets={listTargets}
             backends={backendsForList}
             onChange={handleExecTargetSetChange}

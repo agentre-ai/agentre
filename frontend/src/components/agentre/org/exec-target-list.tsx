@@ -25,11 +25,13 @@ import {
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
-import type { agent_backend_svc } from "../../../../wailsjs/go/models";
+import type {
+  agent_backend_svc,
+  chat_svc,
+} from "../../../../wailsjs/go/models";
 
 import { execTargetReasonLabel } from "./exec-target-reasons";
 import { moveItem } from "./exec-target-reorder";
-import { useExecTargetAvailability } from "./use-exec-target-availability";
 
 // ExecTargetRow 是 ExecTargetList 编辑态的一项：这里只关心 agentBackendId——
 // 技能授权（ExecTargetInputDTO.skills）由 org-detail-agent.tsx 在同一个数组元素上
@@ -39,8 +41,12 @@ import { useExecTargetAvailability } from "./use-exec-target-availability";
 export type ExecTargetRow = { agentBackendId: number };
 
 type Props = {
-  agentId: number;
   agentName: string;
+  // availability 由面板自己那一份 useExecTargetAvailability 下传，列表不再自持一份。
+  // 两处各读一次不只是白发一趟 Wails 调用：两份副本各自独立地从「加载中」走到
+  // 「落定」，列表那份先落定时会用它自己的判定渲染「全部不可用」横幅，而面板那份
+  // 还没到、行还是骨架——横幅就压在骨架之上。判定只有一个来源才不会自相矛盾。
+  availability: Map<number, chat_svc.ExecTargetAvailabilityView>;
   // targets 是这台电脑当前实际的派发顺序（后端解析后的顺序），也是唯一的一份列表：
   // 界面上不再有第二个「账号默认顺序」视图。
   targets: ExecTargetRow[];
@@ -99,16 +105,7 @@ export function ExecTargetList(props: Props) {
   const [addOpen, setAddOpen] = React.useState(false);
   const [announcement, setAnnouncement] = React.useState("");
 
-  const targetsKey = React.useMemo(
-    () =>
-      props.targets
-        .map((t) => t.agentBackendId)
-        .slice()
-        .sort((a, b) => a - b)
-        .join(","),
-    [props.targets],
-  );
-  const { byBackendId } = useExecTargetAvailability(props.agentId, targetsKey);
+  const byBackendId = props.availability;
 
   const backendById = React.useMemo(() => {
     const m = new Map<number, agent_backend_svc.BackendItem>();

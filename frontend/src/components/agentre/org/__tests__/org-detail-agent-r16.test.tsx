@@ -265,3 +265,20 @@ describe("OrgDetailAgent execution targets (single list)", () => {
     expect(screen.getAllByRole("button", { name: "Remove" })).toHaveLength(2);
   });
 });
+
+describe("exec target availability is read once per panel", () => {
+  // 面板与它内部的列表原先各自实例化一次 useExecTargetAvailability，同一个 agentId
+  // 与同一份（排序后相同的）targetsKey 因此每次都发两遍相同的 Wails 调用。除了白跑
+  // 一趟，两份副本还各自独立地经历「加载中 → 落定」：列表那份先落定时会用它自己的
+  // 判定渲染「全部不可用」横幅，而面板那份还没到，行还是骨架——横幅压在骨架之上。
+  it("Given the panel renders, When availability is read, Then the backend is called once rather than once per component", async () => {
+    const fn = availabilityStub([
+      { agentBackendId: 52, available: true },
+      { agentBackendId: 51, available: true },
+    ]);
+    renderPanel(vi.fn().mockResolvedValue(undefined));
+
+    await screen.findByTestId("exec-target-row-0");
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+});
