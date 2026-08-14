@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
@@ -145,6 +145,57 @@ test("Given a generated remote credential, when runner-owned file-keychain evide
 
   await writeFile(join(run.keychainDir, "remote-device-credential"), run.remoteIdentity.deviceToken);
   await assert.doesNotReject(assertRemoteDeviceCredentialPersisted(run));
+});
+
+test("Given an outside keychain directory containing the generated credential, when persistence evidence is checked, then the runner fails closed without disclosing the path or token", async (t) => {
+  const run = await createRunContext();
+  const outsideDir = join(dirname(run.runRoot), `${basename(run.runRoot)}-outside-keychain`);
+  t.after(async () => {
+    await run.remove();
+    await rm(outsideDir, { recursive: true, force: true });
+  });
+  await mkdir(outsideDir, { recursive: true, mode: 0o700 });
+  run.remoteIdentity = { deviceToken: `outside-remote-device-${run.token}` };
+  await writeFile(join(outsideDir, "remote-device-credential"), run.remoteIdentity.deviceToken);
+  run.keychainDir = outsideDir;
+
+  await assert.rejects(
+    assertRemoteDeviceCredentialPersisted(run),
+    (error) => {
+      assert.equal(error.message.includes(outsideDir), false);
+      assert.equal(error.message.includes(run.remoteIdentity.deviceToken), false);
+      return /runner file keychain/.test(error.message);
+    },
+  );
+});
+
+test("Given a run-root keychain symlink escaping to a credential outside the run, when persistence evidence is checked, then the runner fails closed without disclosing the path or token", async (t) => {
+  const run = await createRunContext();
+  const outsideDir = join(dirname(run.runRoot), `${basename(run.runRoot)}-symlink-target`);
+  t.after(async () => {
+    await run.remove();
+    await rm(outsideDir, { recursive: true, force: true });
+  });
+  await mkdir(outsideDir, { recursive: true, mode: 0o700 });
+  run.remoteIdentity = { deviceToken: `symlink-remote-device-${run.token}` };
+  await writeFile(join(outsideDir, "remote-device-credential"), run.remoteIdentity.deviceToken);
+  const escapeLink = join(run.runRoot, "keychain-escape");
+  try {
+    await symlink(outsideDir, escapeLink, "dir");
+  } catch (error) {
+    t.skip(`directory symlink unavailable: ${error.code ?? "unknown error"}`);
+    return;
+  }
+  run.keychainDir = escapeLink;
+
+  await assert.rejects(
+    assertRemoteDeviceCredentialPersisted(run),
+    (error) => {
+      assert.equal(error.message.includes(outsideDir), false);
+      assert.equal(error.message.includes(run.remoteIdentity.deviceToken), false);
+      return /runner file keychain/.test(error.message);
+    },
+  );
 });
 
 test("Given supervised children and an unrelated process, when cleanup runs, then only recorded child trees are terminated once", async () => {

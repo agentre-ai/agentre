@@ -73,9 +73,7 @@ func TestRunE2ERejectsBootstrapResolverMismatchBeforeDesktopBootstrap(t *testing
 			return nil
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "storage isolation") {
-		t.Fatalf("runE2E error = %v, want non-nil storage isolation error", err)
-	}
+	assertSafeStorageIsolationError(t, err, manifestDataDir, resolvedDataDir)
 	if desktopCalled {
 		t.Fatal("desktop bootstrap must not run when bootstrap resolver disagrees with the manifest")
 	}
@@ -113,11 +111,42 @@ func TestRunE2ERejectsRuntimeDataDirMismatchBeforeComposition(t *testing.T) {
 			return opts.AfterBootstrap(ctx, &bootstrap.Runtime{})
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "storage isolation") {
-		t.Fatalf("runE2E error = %v, want non-nil storage isolation error", err)
-	}
+	assertSafeStorageIsolationError(t, err, manifestDataDir, runtimeDataDir)
 	if compositionCalled {
 		t.Fatal("composition must not run when bootstrap runtime disagrees with the manifest")
+	}
+}
+
+func TestRunE2ERejectsUncanonicalBootstrapDataDirWithoutDisclosingFilesystemDetails(t *testing.T) {
+	runRoot := t.TempDir()
+	manifestDataDir := filepath.Join(runRoot, "manifest-data")
+	keychainDir := filepath.Join(runRoot, "keychain")
+	for _, path := range []string{manifestDataDir, keychainDir} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatalf("Mkdir(%q): %v", path, err)
+		}
+	}
+	secret := "runner-token-must-not-leak"
+	missingDataDir := filepath.Join(runRoot, secret, "missing-data")
+	desktopCalled := false
+
+	err := runE2E(context.Background(), preflight.Environment{}, e2eDependencies{
+		validate: func(preflight.Environment) (preflight.Config, error) {
+			return preflight.Config{
+				RunRoot:     runRoot,
+				DataDir:     manifestDataDir,
+				KeychainDir: keychainDir,
+			}, nil
+		},
+		resolveDataDir: func() (string, error) { return missingDataDir, nil },
+		runDesktop: func(context.Context, desktop.Options) error {
+			desktopCalled = true
+			return nil
+		},
+	})
+	assertSafeStorageIsolationError(t, err, manifestDataDir, missingDataDir, secret)
+	if desktopCalled {
+		t.Fatal("desktop bootstrap must not run when bootstrap storage cannot be canonicalized")
 	}
 }
 
@@ -217,5 +246,24 @@ func TestRunE2EConsumesManifestCredentialsBeforeBootstrap(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("runE2E: %v", err)
+	}
+}
+
+func assertSafeStorageIsolationError(t *testing.T, err error, sensitiveValues ...string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("runE2E error = nil, want storage isolation failure")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "storage isolation") {
+		t.Fatalf("runE2E error = %q, want failed storage isolation condition", message)
+	}
+	if !strings.Contains(message, "make e2e") {
+		t.Fatalf("runE2E error = %q, want canonical runner entry", message)
+	}
+	for _, sensitive := range sensitiveValues {
+		if sensitive != "" && strings.Contains(message, sensitive) {
+			t.Fatalf("runE2E error disclosed sensitive filesystem detail")
+		}
 	}
 }

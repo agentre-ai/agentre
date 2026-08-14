@@ -9,10 +9,10 @@ import {
   readdirSync,
   writeFileSync,
 } from "node:fs";
-import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -143,15 +143,47 @@ export function playwrightEnvironment(run, parentEnv = process.env) {
 
 export async function assertRemoteDeviceCredentialPersisted(run) {
   const expectedToken = run?.remoteIdentity?.deviceToken;
-  if (!run?.keychainDir || !expectedToken) {
-    throw new Error("remote device credential evidence is unavailable for the runner file keychain");
+  if (!run?.runRoot || !run?.keychainDir || !expectedToken) {
+    throw new Error(
+      "remote device credential evidence is unavailable for the runner file keychain; use make e2e (the E2E runner)",
+    );
   }
 
-  const entries = await readdir(run.keychainDir, { withFileTypes: true });
-  for (const entry of entries) {
-    if (!entry.isFile()) continue;
-    const content = await readFile(join(run.keychainDir, entry.name), "utf8");
-    if (content === expectedToken) return;
+  let canonicalRunRoot;
+  let canonicalKeychainDir;
+  try {
+    [canonicalRunRoot, canonicalKeychainDir] = await Promise.all([
+      realpath(run.runRoot),
+      realpath(run.keychainDir),
+    ]);
+  } catch {
+    throw new Error(
+      "runner file keychain cannot be canonicalized; use make e2e (the E2E runner)",
+    );
+  }
+  const keychainRelative = relative(canonicalRunRoot, canonicalKeychainDir);
+  if (
+    keychainRelative === "" ||
+    keychainRelative === ".." ||
+    keychainRelative.startsWith(`..${sep}`) ||
+    isAbsolute(keychainRelative)
+  ) {
+    throw new Error(
+      "remote device credential evidence is outside the runner file keychain; use make e2e (the E2E runner)",
+    );
+  }
+
+  try {
+    const entries = await readdir(canonicalKeychainDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const content = await readFile(join(canonicalKeychainDir, entry.name), "utf8");
+      if (content === expectedToken) return;
+    }
+  } catch {
+    throw new Error(
+      "runner file keychain cannot be inspected; use make e2e (the E2E runner)",
+    );
   }
   throw new Error("remote device credential was not persisted in the runner file keychain");
 }

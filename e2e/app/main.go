@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -54,11 +55,11 @@ func runE2E(ctx context.Context, env preflight.Environment, deps e2eDependencies
 
 	manifestDataDir, err := canonicalExistingPath(config.DataDir)
 	if err != nil {
-		return fmt.Errorf("storage isolation: canonicalize manifest data directory: %w", err)
+		return storageIsolation("manifest data directory is invalid")
 	}
 	resolvedDataDir, err := deps.resolveDataDir()
 	if err != nil {
-		return fmt.Errorf("storage isolation: resolve bootstrap data directory: %w", err)
+		return storageIsolation("bootstrap data directory could not be resolved")
 	}
 	if err := attestDataDir("bootstrap resolver", resolvedDataDir, manifestDataDir); err != nil {
 		return err
@@ -74,6 +75,9 @@ func runE2E(ctx context.Context, env preflight.Environment, deps e2eDependencies
 			return deps.install(ctx, config)
 		},
 	}); err != nil {
+		if errors.Is(err, errStorageIsolation) {
+			return err
+		}
 		return fmt.Errorf("desktop run: %w", err)
 	}
 	return nil
@@ -82,17 +86,18 @@ func runE2E(ctx context.Context, env preflight.Environment, deps e2eDependencies
 func attestDataDir(source, actual string, expectedCanonical string) error {
 	actualCanonical, err := canonicalExistingPath(actual)
 	if err != nil {
-		return fmt.Errorf("storage isolation: canonicalize %s data directory: %w", source, err)
+		return storageIsolation(source + " data directory is invalid")
 	}
 	if actualCanonical != expectedCanonical {
-		return fmt.Errorf(
-			"storage isolation: %s data directory %q does not match manifest data directory %q",
-			source,
-			actualCanonical,
-			expectedCanonical,
-		)
+		return storageIsolation(source + " data directory does not match the runner manifest")
 	}
 	return nil
+}
+
+var errStorageIsolation = errors.New("storage isolation")
+
+func storageIsolation(condition string) error {
+	return fmt.Errorf("%w: %s; use make e2e (the E2E runner)", errStorageIsolation, condition)
 }
 
 func canonicalExistingPath(path string) (string, error) {

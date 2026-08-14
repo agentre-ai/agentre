@@ -1,12 +1,75 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { extname, join, relative, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 
 import { GUARD_TESTS } from "./guard-suite.mjs";
 import { REPO_ROOT } from "./run-context.mjs";
 
 const read = (path) => readFileSync(join(REPO_ROOT, path), "utf8");
+
+function localModuleSpecifiers(source) {
+  const specifiers = new Set();
+  const patterns = [
+    /(?:^|\n)\s*import\s+(?:[^"';()]*?\s+from\s+)?["']([^"']+)["']/gs,
+    /(?:^|\n)\s*export\s+[^"';()]*?\s+from\s+["']([^"']+)["']/gs,
+    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      if (match[1].startsWith(".")) specifiers.add(match[1]);
+    }
+  }
+  return [...specifiers];
+}
+
+function collectLocalModuleGraph(entryPath) {
+  const pending = [resolve(entryPath)];
+  const graph = new Map();
+
+  while (pending.length > 0) {
+    const modulePath = pending.pop();
+    if (graph.has(modulePath)) continue;
+    assert.equal(existsSync(modulePath), true, `local ESM module is missing: ${modulePath}`);
+    assert.equal(statSync(modulePath).isFile(), true, `local ESM import is not a file: ${modulePath}`);
+
+    const source = readFileSync(modulePath, "utf8");
+    graph.set(modulePath, source);
+    for (const specifier of localModuleSpecifiers(source)) {
+      const moduleURL = new URL(specifier, pathToFileURL(modulePath));
+      assert.equal(moduleURL.protocol, "file:", `${modulePath} has a non-file local import ${specifier}`);
+      const dependencyPath = fileURLToPath(moduleURL);
+      assert.notEqual(
+        extname(dependencyPath),
+        "",
+        `${modulePath} local ESM import must include its extension: ${specifier}`,
+      );
+      assert.equal(
+        existsSync(dependencyPath),
+        true,
+        `${modulePath} imports missing local ESM module ${specifier}`,
+      );
+      assert.equal(
+        statSync(dependencyPath).isFile(),
+        true,
+        `${modulePath} local ESM import is not a file: ${specifier}`,
+      );
+      if (!graph.has(dependencyPath)) pending.push(dependencyPath);
+    }
+  }
+
+  return graph;
+}
 
 const legacyPaths = [
   "e2e/playwright.scratch.config.ts",
@@ -67,32 +130,68 @@ test("Given the unified harness, when current entries and guides are inspected, 
   }
 });
 
-test("Given the isolated E2E harness, when runner storage contracts are inspected, then production database metadata is never accessed", () => {
-  const inspectedPaths = [
-    "e2e/run-e2e.mjs",
-    "e2e/lib/run-context.mjs",
-    "e2e/README.md",
-  ];
-  const forbiddenMetadataContracts = [
-    "productionAndDevelopmentRoots",
-    "snapshotDatabaseMetadata",
-    "changedDatabaseMetadata",
-    "protected-db-",
-    "snapshots installed/development database metadata",
-    "protected database metadata",
-    "The runner snapshots",
+test("Given the automated E2E runner entry, when its complete local ESM graph is inspected, then no module can discover installed or development data roots", () => {
+  const entryPath = join(REPO_ROOT, "e2e", "run-e2e.mjs");
+  const graph = collectLocalModuleGraph(entryPath);
+  assert.equal(graph.has(entryPath), true);
+  assert.equal(graph.has(join(REPO_ROOT, "e2e", "lib", "run-context.mjs")), true);
+
+  const forbiddenCapabilities = [
+    {
+      name: "OS account-home discovery",
+      pattern: /\b(?:homedir|userInfo)\b/,
+    },
+    {
+      name: "production-root environment lookup",
+      pattern: /\b(?:HOME|USERPROFILE|APPDATA|LOCALAPPDATA|XDG_CONFIG_HOME)\b/,
+    },
+    {
+      name: "macOS installed/development data-root literal",
+      pattern:
+        /(?:Library[\\/]Application Support[\\/]agentre(?:-dev)?|["']Library["']\s*,\s*["']Application Support["']\s*,\s*["']agentre(?:-dev)?["'])/,
+    },
+    {
+      name: "Linux installed/development data-root literal",
+      pattern: /(?:\.config[\\/]agentre(?:-dev)?|["']\.config["']\s*,\s*["']agentre(?:-dev)?["'])/,
+    },
+    {
+      name: "Windows installed/development data-root literal",
+      pattern:
+        /(?:AppData[\\/](?:Roaming|Local)[\\/]agentre(?:-dev)?|["']AppData["']\s*,\s*["'](?:Roaming|Local)["']\s*,\s*["']agentre(?:-dev)?["'])/i,
+    },
+    {
+      name: "development data-root leaf literal",
+      pattern: /["']agentre-dev["']/,
+    },
   ];
 
-  for (const path of inspectedPaths) {
-    const source = read(path);
-    for (const contract of forbiddenMetadataContracts) {
-      assert.equal(
-        source.includes(contract),
-        false,
-        `${path} still contains protected metadata contract ${contract}`,
+  for (const [modulePath, source] of graph) {
+    for (const capability of forbiddenCapabilities) {
+      assert.doesNotMatch(
+        source,
+        capability.pattern,
+        `${relative(REPO_ROOT, modulePath)} has forbidden ${capability.name}`,
       );
     }
   }
+});
+
+test("Given local ESM imports, when the runner graph is collected, then extension-bearing dependencies are followed and missing modules fail loudly", (t) => {
+  const fixtureRoot = mkdtempSync(join(tmpdir(), "agentre-runner-graph-"));
+  t.after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
+  const dependencyPath = join(fixtureRoot, "dependency.mjs");
+  const entryPath = join(fixtureRoot, "entry.mjs");
+  writeFileSync(dependencyPath, "export const dependency = true;\n");
+  writeFileSync(entryPath, 'import { dependency } from "./dependency.mjs";\nvoid dependency;\n');
+
+  const graph = collectLocalModuleGraph(entryPath);
+  assert.equal(graph.has(dependencyPath), true);
+
+  writeFileSync(entryPath, 'import "./missing.mjs";\n');
+  assert.throws(
+    () => collectLocalModuleGraph(entryPath),
+    /imports missing local ESM module \.\/missing\.mjs/,
+  );
 });
 
 test("Given the replacement suite, when its public entries are inspected, then only unified automation and real verification remain", () => {
