@@ -71,6 +71,10 @@ type HubLinkOptions struct {
 	// Random produces [0,1] jitter. A test supplies a stable value.
 	Random func() float64
 
+	// Logf is the log sink, defaulting to log.Printf. Same seam as
+	// credentialRefresher.logf, so a test can read what the link reports.
+	Logf func(format string, args ...any)
+
 	// OnDial and OnDisconnect let the future multiplexer observe link lifecycle.
 	// Hooks must return promptly because they run on the link's goroutine.
 	OnDial       func()
@@ -117,6 +121,9 @@ func NewHubLink(opts HubLinkOptions) *HubLink {
 	if opts.Random == nil {
 		opts.Random = rand.Float64
 	}
+	if opts.Logf == nil {
+		opts.Logf = log.Printf
+	}
 	return &HubLink{opts: opts, frames: make(chan HubFrame, hubFrameBuffer)}
 }
 
@@ -132,6 +139,10 @@ func NewHubLink(opts HubLinkOptions) *HubLink {
 // silent except for the log line.
 func (l *HubLink) Run(ctx context.Context) error {
 	failures := 0
+	// 「还没有账号可连」是稳态而不是反复发生的故障：LAN-only 的 daemon 可以一直不
+	// 登录，而退避封顶 60s —— 每轮记一行就是每天上千行噪声，真正的失败会被淹掉。
+	// 只在进入这个状态时记一次，离开它（连上了，或换成别的失败）时复位。
+	unresolvedLogged := false
 	for {
 		if ctx.Err() != nil {
 			// Shutdown is Run's normal termination, not a relay failure.
@@ -147,9 +158,13 @@ func (l *HubLink) Run(ctx context.Context) error {
 			if errors.Is(err, ErrHubUnresolved) {
 				// 未认领不是故障：说成 dial failed 会把「这台机器还没登录」误导成
 				// 「登录了但连不上」，而这两者的处置完全不同。
-				log.Printf("rpc.HubLink: no account to connect to yet; waiting for login")
+				if !unresolvedLogged {
+					l.opts.Logf("rpc.HubLink: no account to connect to yet; waiting for login")
+					unresolvedLogged = true
+				}
 			} else {
-				log.Printf("rpc.HubLink: relay dial failed; retrying: %v", err)
+				unresolvedLogged = false
+				l.opts.Logf("rpc.HubLink: relay dial failed; retrying: %v", err)
 			}
 			if err := l.wait(ctx, failures); err != nil {
 				return l.stopRetrying(ctx, err)
@@ -173,8 +188,9 @@ func (l *HubLink) Run(ctx context.Context) error {
 		if renewed {
 			failures = 0
 		}
+		unresolvedLogged = false
 		l.notifyDisconnect(err)
-		log.Printf("rpc.HubLink: relay disconnected; retrying: %v", err)
+		l.opts.Logf("rpc.HubLink: relay disconnected; retrying: %v", err)
 		if err := l.wait(ctx, failures); err != nil {
 			return l.stopRetrying(ctx, err)
 		}
@@ -190,7 +206,7 @@ func (l *HubLink) stopRetrying(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
 		return nil //nolint:nilerr // the wait error is the shutdown surfacing through the clock seam; Run's contract is a clean nil exit
 	}
-	log.Printf("rpc.HubLink: relay retry clock failed; giving up: %v", err)
+	l.opts.Logf("rpc.HubLink: relay retry clock failed; giving up: %v", err)
 	return fmt.Errorf("relay retry wait: %w", err)
 }
 

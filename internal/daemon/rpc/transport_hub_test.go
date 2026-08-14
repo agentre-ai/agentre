@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -365,4 +366,47 @@ func TestHubLink_GivenServerURLProvider_WhenTheDaemonIsNotClaimedYet_ThenItWaits
 	case <-time.After(2 * time.Second):
 		t.Fatal("认领之后同一个 Run 循环应当连上去，不需要重启进程")
 	}
+}
+
+// 未认领是稳态,不是反复发生的故障:LAN-only 的 daemon 可以一直不登录,而重试退避
+// 封顶 60s —— 每轮都记一行就是每天一千多行噪声,还会把真正的失败淹掉。只在进入这个
+// 状态时记一次。
+func TestHubLink_GivenNoAccount_WhenRetryingForever_ThenSaysSoOnceNotEveryRound(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		lines []string
+	)
+	var rounds atomic.Int64
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	link := NewHubLink(HubLinkOptions{
+		ServerURLProvider: func() string {
+			rounds.Add(1)
+			return "" // 一直没有账号
+		},
+		AccessTokenProvider: func() string { return "" },
+		HeartbeatInterval:   100 * time.Millisecond,
+		RetryInitial:        time.Second,
+		RetryMax:            4 * time.Second,
+		RetryWait:           func(context.Context, time.Duration) error { return nil },
+		Random:              func() float64 { return 1 },
+		Logf: func(format string, args ...any) {
+			mu.Lock()
+			defer mu.Unlock()
+			lines = append(lines, fmt.Sprintf(format, args...))
+		},
+	})
+	runDone := make(chan error, 1)
+	go func() { runDone <- link.Run(ctx) }()
+
+	require.Eventually(t, func() bool { return rounds.Load() >= 5 }, 2*time.Second, 10*time.Millisecond,
+		"重试循环应当一直在跑")
+	cancel()
+	require.NoError(t, <-runDone)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, lines, 1, "转了 %d 轮，只该说一次「还没有账号可连」，实际记了 %d 行", rounds.Load(), len(lines))
+	assert.Contains(t, lines[0], "no account")
 }
