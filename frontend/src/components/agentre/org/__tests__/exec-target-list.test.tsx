@@ -3,7 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ExecTargetList } from "../exec-target-list";
-import type { agent_backend_svc } from "../../../../../wailsjs/go/models";
+import type {
+  agent_backend_svc,
+  chat_svc,
+} from "../../../../../wailsjs/go/models";
 
 function backend(
   overrides: Partial<agent_backend_svc.BackendItem> = {},
@@ -62,19 +65,21 @@ function availabilityStub(
     hint?: string;
   }>,
 ) {
-  const fn = vi
-    .fn()
-    .mockResolvedValue(items.map((it) => ({ reason: "", hint: "", ...it })));
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (window as any).go = {
-    app: { App: { ListAgentExecTargetAvailability: fn } },
-  };
-  return fn;
+  // 列表不再自持 useExecTargetAvailability，判定由面板下传，所以这里造的是一份
+  // 现成的 Map，而不是再去桩 Wails 绑定。
+  availability = new Map(
+    items.map((it) => [
+      it.agentBackendId,
+      { reason: "", hint: "", ...it },
+    ]) as Array<[number, chat_svc.ExecTargetAvailabilityView]>,
+  );
+  return availability;
 }
 
+let availability = new Map<number, chat_svc.ExecTargetAvailabilityView>();
+
 afterEach(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  delete (window as any).go;
+  availability = new Map();
 });
 
 describe("ExecTargetList", () => {
@@ -82,11 +87,12 @@ describe("ExecTargetList", () => {
     availabilityStub([{ agentBackendId: 51, available: true }]);
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }]}
         backends={[localBackend()]}
         onChange={vi.fn()}
+        onReorder={vi.fn()}
       />,
     );
     expect(await screen.findByText("Local machine")).toBeInTheDocument();
@@ -108,11 +114,12 @@ describe("ExecTargetList", () => {
     ]);
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend()]}
         onChange={vi.fn()}
+        onReorder={vi.fn()}
       />,
     );
     await screen.findByText("Local machine");
@@ -130,11 +137,12 @@ describe("ExecTargetList", () => {
     ]);
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend()]}
         onChange={vi.fn()}
+        onReorder={vi.fn()}
       />,
     );
     expect(await screen.findByText("Currently active")).toBeInTheDocument();
@@ -151,11 +159,12 @@ describe("ExecTargetList", () => {
     ]);
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }]}
         backends={[localBackend()]}
         onChange={vi.fn()}
+        onReorder={vi.fn()}
       />,
     );
     expect(
@@ -175,11 +184,12 @@ describe("ExecTargetList", () => {
     ]);
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }]}
         backends={[localBackend({ deviceId: fingerprint, deviceName: "" })]}
         onChange={vi.fn()}
+        onReorder={vi.fn()}
       />,
     );
 
@@ -200,11 +210,12 @@ describe("ExecTargetList", () => {
     ]);
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend({ online: false })]}
         onChange={vi.fn()}
+        onReorder={vi.fn()}
       />,
     );
     expect(
@@ -218,11 +229,12 @@ describe("ExecTargetList", () => {
   it("empty list: shows the CTA and, when saveRejected, the rejection message", () => {
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[]}
         backends={[localBackend()]}
         onChange={vi.fn()}
+        onReorder={vi.fn()}
         saveRejected
       />,
     );
@@ -238,7 +250,7 @@ describe("ExecTargetList", () => {
     const onChange = vi.fn();
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }]}
         backends={[
@@ -246,6 +258,7 @@ describe("ExecTargetList", () => {
           backend({ id: 52, name: "gpt-5-codex", type: "codex" }),
         ]}
         onChange={onChange}
+        onReorder={vi.fn()}
       />,
     );
     await screen.findByText("Local machine");
@@ -265,7 +278,7 @@ describe("ExecTargetList", () => {
     const user = userEvent.setup();
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }]}
         backends={[
@@ -278,6 +291,7 @@ describe("ExecTargetList", () => {
           }),
         ]}
         onChange={vi.fn()}
+        onReorder={vi.fn()}
       />,
     );
 
@@ -294,7 +308,7 @@ describe("ExecTargetList", () => {
     const onChange = vi.fn();
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }]}
         backends={[
@@ -302,6 +316,7 @@ describe("ExecTargetList", () => {
           backend({ id: 52, name: "gpt-5-codex", type: "codex" }),
         ]}
         onChange={onChange}
+        onReorder={vi.fn()}
       />,
     );
     await screen.findByText("Local machine");
@@ -319,11 +334,12 @@ describe("ExecTargetList", () => {
     const onChange = vi.fn();
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend()]}
         onChange={onChange}
+        onReorder={vi.fn()}
       />,
     );
     await screen.findByText("Local machine");
@@ -331,20 +347,24 @@ describe("ExecTargetList", () => {
     expect(onChange).toHaveBeenCalledWith([{ agentBackendId: 52 }]);
   });
 
-  it("keyboard equivalent: clicking Move target down reorders and announces via role=status", async () => {
+  // 重排与增删是两条写路径：重排只写本端顺序（onReorder），增删/更换写账号级执行
+  // 目标集合（onChange）。列表知道刚才发生的是哪一件事，不让调用方去猜。
+  it("keyboard equivalent: clicking Move target down reorders via onReorder (never the set) and announces via role=status", async () => {
     availabilityStub([
       { agentBackendId: 51, available: true },
       { agentBackendId: 52, available: true },
     ]);
     const user = userEvent.setup();
     const onChange = vi.fn();
+    const onReorder = vi.fn();
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend()]}
         onChange={onChange}
+        onReorder={onReorder}
       />,
     );
     await screen.findByText("Local machine");
@@ -352,10 +372,11 @@ describe("ExecTargetList", () => {
       name: /Move target down/,
     })[0];
     await user.click(moveDown);
-    expect(onChange).toHaveBeenCalledWith([
+    expect(onReorder).toHaveBeenCalledWith([
       { agentBackendId: 52 },
       { agentBackendId: 51 },
     ]);
+    expect(onChange).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(screen.getByTestId("exec-target-announcer")).not.toHaveTextContent(
         "",
@@ -372,14 +393,15 @@ describe("ExecTargetList", () => {
       { agentBackendId: 52, available: true },
     ]);
     const user = userEvent.setup();
-    const onChange = vi.fn();
+    const onReorder = vi.fn();
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend()]}
-        onChange={onChange}
+        onChange={vi.fn()}
+        onReorder={onReorder}
       />,
     );
     await screen.findByText("Local machine");
@@ -387,7 +409,7 @@ describe("ExecTargetList", () => {
     expect(handles).toHaveLength(2);
     handles[0].focus();
     await user.keyboard("{ArrowDown}");
-    expect(onChange).toHaveBeenCalledWith([
+    expect(onReorder).toHaveBeenCalledWith([
       { agentBackendId: 52 },
       { agentBackendId: 51 },
     ]);
@@ -407,11 +429,12 @@ describe("ExecTargetList", () => {
     const viaKeyboard = vi.fn();
     const { unmount } = render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend()]}
-        onChange={viaKeyboard}
+        onChange={vi.fn()}
+        onReorder={viaKeyboard}
       />,
     );
     await screen.findByText("Local machine");
@@ -423,11 +446,12 @@ describe("ExecTargetList", () => {
     const viaButton = vi.fn();
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend()]}
-        onChange={viaButton}
+        onChange={vi.fn()}
+        onReorder={viaButton}
       />,
     );
     await screen.findByText("Local machine");
@@ -443,19 +467,71 @@ describe("ExecTargetList", () => {
       { agentBackendId: 52, available: true },
     ]);
     const user = userEvent.setup();
-    const onChange = vi.fn();
+    const onReorder = vi.fn();
     render(
       <ExecTargetList
-        agentId={7}
+        availability={availability}
         agentName="开发"
         targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
         backends={[localBackend(), remoteBackend()]}
-        onChange={onChange}
+        onChange={vi.fn()}
+        onReorder={onReorder}
       />,
     );
     await screen.findByText("Local machine");
     screen.getAllByRole("button", { name: /Reorder target/ })[0].focus();
     await user.keyboard("{ArrowUp}");
-    expect(onChange).not.toHaveBeenCalled();
+    expect(onReorder).not.toHaveBeenCalled();
+  });
+
+  // 加载窗口与空态是两件事：空态说的是「这个 Agent 没有执行目标」，顺序还没到达时
+  // 说它就是假话（此前两句文案还会同时出现，互相否定）。
+  it("Given the order data has not arrived, When the list renders, Then it shows skeleton rows instead of the empty state", () => {
+    render(
+      <ExecTargetList
+        availability={availability}
+        agentName="开发"
+        targets={[]}
+        backends={[localBackend()]}
+        onChange={vi.fn()}
+        onReorder={vi.fn()}
+        loading
+      />,
+    );
+    expect(screen.getByTestId("exec-target-skeleton")).toBeInTheDocument();
+    expect(screen.queryByText("No execution targets yet")).toBeNull();
+    expect(screen.queryByText(/At least one is required/)).toBeNull();
+    // 骨架期间不给增删入口：此刻列表还不知道自己有哪些档，基于空列表的一次「添加」
+    // 会把账号级集合整份写成新加的那一项。
+    expect(screen.queryByRole("button", { name: "Add" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /Add execution target/ }),
+    ).toBeNull();
+  });
+
+  // 一个列表、一套能力：不再有「只能重排、不能增删」的第二个视图，也没有任何解释
+  // 作用域的说明行（规格决策 5）。
+  it("Given a multi-target list, Then add/remove are available and no scope explainer or restore action is rendered", async () => {
+    availabilityStub([
+      { agentBackendId: 51, available: true },
+      { agentBackendId: 52, available: true },
+    ]);
+    render(
+      <ExecTargetList
+        availability={availability}
+        agentName="开发"
+        targets={[{ agentBackendId: 51 }, { agentBackendId: 52 }]}
+        backends={[localBackend(), remoteBackend()]}
+        onChange={vi.fn()}
+        onReorder={vi.fn()}
+      />,
+    );
+    await screen.findByText("Local machine");
+    expect(screen.getByRole("button", { name: "Add" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Remove" })).toHaveLength(2);
+    expect(
+      screen.queryByRole("button", { name: /Restore account default order/ }),
+    ).toBeNull();
+    expect(screen.queryByText(/not synced to other devices/i)).toBeNull();
   });
 });

@@ -188,25 +188,22 @@ export function OrgDetailAgent(props: Props) {
     selectedBackend?.type === "builtin" &&
     !hasUsableProvider;
 
-  const patchExecTargets = (next: ExecTargetRow[]) => {
-    const skillsByBackend = new Map(
-      execTargets.map((t) => [t.agentBackendId, t.skills]),
-    );
-    const merged: ExecTargetEdit[] = next.map((r) => ({
-      agentBackendId: r.agentBackendId,
-      skills: skillsByBackend.get(r.agentBackendId) ?? [],
-    }));
-    patch({ execTargets: merged }, { immediate: true });
+  // patchExecTargetSet 把列表上的一次增删/更换落到**账号级集合**上：成员按 next
+  // 收敛，顺序取账号自己那一份（execTargets）——列表展示的是本端解析后的顺序，
+  // 照搬它会把本端排序回写成账号顺序，污染其它端看到的顺序。
+  const patchExecTargetSet = (next: ExecTargetRow[]) => {
+    const wanted = next.map((r) => r.agentBackendId);
+    const wantedIds = new Set(wanted);
+    const kept = execTargets.filter((t) => wantedIds.has(t.agentBackendId));
+    const keptIds = new Set(kept.map((t) => t.agentBackendId));
+    const added: ExecTargetEdit[] = wanted
+      .filter((id) => !keptIds.has(id))
+      .map((id) => ({ agentBackendId: id, skills: [] }));
+    patch({ execTargets: [...kept, ...added] }, { immediate: true });
   };
 
-  // ── R16：执行目标列表的作用范围切换 ──
-  // "device" = 本端顺序（拖拽只写本端覆盖，不同步）；"default" = 账号默认顺序（同步）。
-  const [scopeMode, setScopeMode] = React.useState<"device" | "default">(
-    "device",
-  );
-
   // 本端生效顺序（R14 解析后的顺序，含覆盖 / 无覆盖时本机自己提前）来自后端
-  // ListExecTargetAvailability 的返回数组顺序；hasOverride 标注是否处于本端覆盖。
+  // ListExecTargetAvailability 的返回数组顺序，它就是执行目标区唯一那份列表。
   const deviceTargetsKey = React.useMemo(
     () =>
       execTargets
@@ -220,14 +217,32 @@ export function OrgDetailAgent(props: Props) {
     props.agent.id,
     deviceTargetsKey,
   );
-  const [deviceTargets, setDeviceTargets] = React.useState<ExecTargetRow[]>([]);
+  // null = 这一轮读还没落定（顺序还在路上）；数组 = 已落定的本端顺序，读失败时是空
+  // 数组。两者必须分开，否则「读完了但没拿到」会被当成「还在路上」，列表永远停在骨架。
+  const [deviceTargets, setDeviceTargets] = React.useState<
+    ExecTargetRow[] | null
+  >(null);
   React.useEffect(() => {
     if (availability.orderedTargets.length > 0) {
       setDeviceTargets(availability.orderedTargets);
+    } else if (availability.settled) {
+      setDeviceTargets([]);
     }
-  }, [availability.orderedTargets]);
+  }, [availability.orderedTargets, availability.settled]);
 
-  // device 作用域的重排 / 恢复都只写本端覆盖（orderOverride），不碰账号默认。
+  // 顺序数据还没到达：渲染骨架而不是空态卡片（真正的空态是「这个 Agent 没有任何
+  // 执行目标」，此时 execTargets 也是空的，下面这个判断自然为假）。
+  const orderPending = execTargets.length > 0 && deviceTargets === null;
+
+  // 顺序读完了却没拿到（读失败）时列表回落到账号级集合自己的顺序：增删/更换与顺序
+  // 无关，任何状态下都得可用（规格「增删恒可用」），把列表钉死在骨架上等于把它们
+  // 一起锁掉。用户少看到的只是「本机档自动提前」那一下重排，能做的事一件不少。
+  const listTargets: ExecTargetRow[] =
+    deviceTargets && deviceTargets.length > 0
+      ? deviceTargets
+      : execTargets.map((t) => ({ agentBackendId: t.agentBackendId }));
+
+  // 重排只写本端顺序覆盖（orderOverride），不碰账号级集合、不同步。
   const writeDeviceOverride = React.useCallback(
     (order: number[]) => {
       void wrap(() =>
@@ -259,14 +274,16 @@ export function OrgDetailAgent(props: Props) {
     ],
   );
 
-  const handleDeviceReorder = (next: ExecTargetRow[]) => {
+  const handleExecTargetReorder = (next: ExecTargetRow[]) => {
     setDeviceTargets(next);
     void writeDeviceOverride(next.map((t) => t.agentBackendId));
   };
 
-  const handleRestoreDeviceOrder = () => {
-    setDeviceTargets([]);
-    void writeDeviceOverride([]);
+  // 增删/更换：列表当场跟手，账号级集合随后由 patchExecTargetSet 落库；这一批
+  // 写入不带 orderOverride，本端已有的顺序覆盖原样保留（收敛规则会补上新档）。
+  const handleExecTargetSetChange = (next: ExecTargetRow[]) => {
+    setDeviceTargets(next);
+    patchExecTargetSet(next);
   };
 
   const patchTargetSkills = (
@@ -678,51 +695,17 @@ export function OrgDetailAgent(props: Props) {
               </AlertDescription>
             </Alert>
           ) : null}
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5">
-              <Button
-                type="button"
-                variant={scopeMode === "device" ? "secondary" : "ghost"}
-                size="sm"
-                className="h-7 px-2 text-2xs"
-                onClick={() => setScopeMode("device")}
-              >
-                {t("org.agent.execTargets.scopeDevice")}
-              </Button>
-              <Button
-                type="button"
-                variant={scopeMode === "default" ? "secondary" : "ghost"}
-                size="sm"
-                className="h-7 px-2 text-2xs"
-                onClick={() => setScopeMode("default")}
-              >
-                {t("org.agent.execTargets.scopeDefault")}
-              </Button>
-            </div>
-          </div>
-          {scopeMode === "device" ? (
-            <ExecTargetList
-              agentId={props.agent.id}
-              agentName={props.agent.name}
-              targets={deviceTargets}
-              backends={backendsForList}
-              onChange={handleDeviceReorder}
-              scope="device"
-              onRestoreDeviceOrder={handleRestoreDeviceOrder}
-            />
-          ) : (
-            <ExecTargetList
-              agentId={props.agent.id}
-              agentName={props.agent.name}
-              targets={execTargets.map((t) => ({
-                agentBackendId: t.agentBackendId,
-              }))}
-              backends={backendsForList}
-              onChange={patchExecTargets}
-              saveRejected={pendingInvalid && execTargets.length === 0}
-              scope="default"
-            />
-          )}
+          {/* 执行目标区只有这一个列表：它恒等于这台电脑当前实际的派发顺序。 */}
+          <ExecTargetList
+            agentName={props.agent.name}
+            availability={availability.byBackendId}
+            targets={listTargets}
+            backends={backendsForList}
+            onChange={handleExecTargetSetChange}
+            onReorder={handleExecTargetReorder}
+            loading={orderPending}
+            saveRejected={pendingInvalid && execTargets.length === 0}
+          />
         </section>
 
         <section className="space-y-2" data-slot="agent-section-prompt">

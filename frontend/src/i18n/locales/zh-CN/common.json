@@ -2647,11 +2647,7 @@
           "offline": "离线",
           "projectPathMissing": "这台机器上没有配置这个项目的路径"
         },
-        "scopeDevice": "本设备顺序",
-        "scopeDefault": "账号默认顺序",
-        "deviceScopeHint": "这里改的是这台电脑上派发会话用的顺序，只影响本设备、不会同步到其它设备。",
-        "restoreDefault": "恢复为账号默认顺序",
-        "deviceEmptyHint": "本设备顺序尚未加载。"
+        "loading": "正在加载执行目标…"
       },
       "basicInfo": "基本信息",
       "charCount": "{{count}} 字",
