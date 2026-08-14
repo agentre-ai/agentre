@@ -178,7 +178,7 @@ type CollapsedScrollRestoreGuard = TranscriptScrollSnapshot & {
 };
 
 const TRANSCRIPT_BOTTOM_THRESHOLD = 32;
-const COLLAPSED_RESTORE_GUARD_MS = 3_000;
+export const COLLAPSED_RESTORE_GUARD_MS = 3_000;
 
 function readScrollMetrics(el: HTMLElement): ScrollMetrics {
   const { clientHeight, scrollHeight, scrollTop } = el;
@@ -993,6 +993,7 @@ function ChatPanel({
   const collapsedScrollSaveGuardRef =
     React.useRef<CollapsedScrollRestoreGuard | null>(null);
   const collapsedRestoreFrameRef = React.useRef<number | null>(null);
+  const collapsedRestoreTimerRef = React.useRef<number | null>(null);
   const sidebarOpen = useChatSidebarStore((s) => s.open);
   const setSidebarOpen = useChatSidebarStore((s) => s.setOpen);
   // 右侧 outline 高亮联动：跟踪 transcript 当前视野焦点对应的 message id。
@@ -1012,6 +1013,26 @@ function ChatPanel({
     },
     [],
   );
+
+  const cancelCollapsedRestoreTimer = React.useCallback(() => {
+    if (collapsedRestoreTimerRef.current == null) return;
+    window.clearTimeout(collapsedRestoreTimerRef.current);
+    collapsedRestoreTimerRef.current = null;
+  }, []);
+
+  // releaseCollapsedGuard 是「结束这次抑制」的唯一出口:清 guard、让转录区恢复可见、
+  // 停掉 rAF 收敛循环与期限定时器。收尾以前在两个分支里逐行重复,漏一行就会把
+  // 转录区留在 visibility:hidden 上。
+  const releaseCollapsedGuard = React.useCallback(() => {
+    collapsedScrollSaveGuardRef.current = null;
+    setTranscriptPaintSuppressed(false);
+    cancelCollapsedRestoreFrame();
+    cancelCollapsedRestoreTimer();
+  }, [
+    cancelCollapsedRestoreFrame,
+    cancelCollapsedRestoreTimer,
+    setTranscriptPaintSuppressed,
+  ]);
 
   const saveScrollSnapshot = React.useCallback(
     (snapshot: TranscriptScrollSnapshot) => {
@@ -1037,22 +1058,13 @@ function ChatPanel({
         atBottom: guard.atBottom,
         scrollTop: nextScrollTop,
       });
-      collapsedScrollSaveGuardRef.current = null;
-      setTranscriptPaintSuppressed(false);
-      cancelCollapsedRestoreFrame();
+      releaseCollapsedGuard();
       return true;
     }
     if (Date.now() <= guard.until) return false;
-    collapsedScrollSaveGuardRef.current = null;
-    setTranscriptPaintSuppressed(false);
-    cancelCollapsedRestoreFrame();
+    releaseCollapsedGuard();
     return false;
-  }, [
-    cancelCollapsedRestoreFrame,
-    scrollStateKey,
-    saveScrollSnapshot,
-    setTranscriptPaintSuppressed,
-  ]);
+  }, [releaseCollapsedGuard, scrollStateKey, saveScrollSnapshot]);
 
   const startCollapsedRestoreLoop = React.useCallback(() => {
     cancelCollapsedRestoreFrame();
@@ -1074,8 +1086,9 @@ function ChatPanel({
   React.useEffect(
     () => () => {
       cancelCollapsedRestoreFrame();
+      cancelCollapsedRestoreTimer();
     },
-    [cancelCollapsedRestoreFrame],
+    [cancelCollapsedRestoreFrame, cancelCollapsedRestoreTimer],
   );
 
   const saveBottomScrollPosition = React.useCallback(
@@ -1099,7 +1112,7 @@ function ChatPanel({
 
   const armCollapsedScrollRestore = React.useCallback(
     (saved: TranscriptScrollSnapshot) => {
-      collapsedScrollSaveGuardRef.current = {
+      const guard: CollapsedScrollRestoreGuard = {
         atBottom: saved.atBottom,
         key: scrollStateKey ?? "",
         minMaxScrollTop: Math.max(
@@ -1109,10 +1122,30 @@ function ChatPanel({
         scrollTop: saved.scrollTop,
         until: Date.now() + COLLAPSED_RESTORE_GUARD_MS,
       };
+      collapsedScrollSaveGuardRef.current = guard;
       setTranscriptPaintSuppressed(true);
       startCollapsedRestoreLoop();
+      // guard.until 只在 restoreCollapsedScrollPosition 里被比较,而那个函数只有两个
+      // 调用方:rAF 收敛循环,和用户滚动。rAF 在窗口被遮挡 / 不在前台时会整段停摆
+      // (本地实测 Chromium 停过 6.4s,同期 longtask 最长 143ms —— 是节流不是阻塞),
+      // 于是期限永远等不到被检查:转录区无限期停在 visibility:hidden,只有用户滚一下
+      // 才解除。所以期限得有自己的定时器 —— setTimeout 同样会被节流,但只是被钳到
+      // ~1s 量级,不会停摆。
+      cancelCollapsedRestoreTimer();
+      collapsedRestoreTimerRef.current = window.setTimeout(() => {
+        collapsedRestoreTimerRef.current = null;
+        // 期间又 arm 过一次(切走再切回)→ 那次有自己的定时器,这枚过期的不许收尾。
+        if (collapsedScrollSaveGuardRef.current !== guard) return;
+        releaseCollapsedGuard();
+      }, COLLAPSED_RESTORE_GUARD_MS);
     },
-    [scrollStateKey, setTranscriptPaintSuppressed, startCollapsedRestoreLoop],
+    [
+      cancelCollapsedRestoreTimer,
+      releaseCollapsedGuard,
+      scrollStateKey,
+      setTranscriptPaintSuppressed,
+      startCollapsedRestoreLoop,
+    ],
   );
 
   const handleTranscriptScroll = React.useCallback(() => {
@@ -1490,9 +1523,11 @@ function ChatPanel({
     if (!el) {
       return;
     }
-    // tab 被 display:none 隐藏时 clientHeight=0，scrollHeight 也是 0；
-    // 此时设 scrollTop=0 会让切回来时停在顶部。跳过，等切回 tab 后
-    // 由 active 切换恢复逻辑兜底滚到底部。
+    // 整个 chat 区被 display:none 收起时(App.tsx 在非 /chat·/projects 路由上这么做)
+    // clientHeight=0、scrollHeight 也是 0;此时设 scrollTop=0 会让回来时停在顶部。
+    // 跳过,等回到 /chat 后由 active 切换恢复逻辑兜底滚到底部。
+    // 注意这挡不住「隐藏 tab」—— 非活跃面板是 visibility:hidden + absolute inset-0
+    // (chat-panel-host.tsx:panelFrameClassName),照常参与布局,clientHeight 不为 0。
     if (el.clientHeight === 0) {
       return;
     }
@@ -1523,9 +1558,9 @@ function ChatPanel({
     saveBottomScrollPosition(readScrollMetrics(el));
   }, [liveByMessageId, scrollStateKey, saveBottomScrollPosition]);
 
-  // tab 从隐藏(display:none)切回可见时，上面的 useLayoutEffect 在隐藏期间
-  // 会被 clientHeight===0 跳过。这里由父层 HostedPanel 传入的 active 信号
-  // 驱动恢复：若用户切走前停在底部，就补一次 scrollTop=scrollHeight。
+  // 面板重新变成活跃 tab 时，由父层 HostedPanel 传入的 active 信号驱动恢复：
+  // 若用户切走前停在底部，就补一次 scrollTop=scrollHeight。上面那个 useLayoutEffect
+  // 在整个 chat 区被路由 display:none 收起期间会被 clientHeight===0 跳过，回来时靠这里补。
   const prevActiveRef = React.useRef(active);
   React.useLayoutEffect(() => {
     const prev = prevActiveRef.current;
@@ -1670,7 +1705,7 @@ function ChatPanel({
 
   // ── Mark-read: 仅当当前 ChatPanel 是「可见 tab」时,把 lastMessageAt 推进到
   // 服务端 last_read_at 并同步到 read overlay。chat-panel-host 会把所有 tab
-  // 都 mount(隐藏 tab 用 display:none),所以一定要 gate 在 active prop 上 ——
+  // 都 mount(隐藏 tab 用 visibility:hidden),所以一定要 gate 在 active prop 上 ——
   // 否则后台 tab 在 turn 完成 / 启动恢复时会被错误地标记为已读,未读 indicator
   // 永远不出现。
   //

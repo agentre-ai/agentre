@@ -350,7 +350,11 @@ vi.mock("../chat-panel-context-usage", () => ({
 
 // ── import after mocks ─────────────────────────────────────────────────────
 
-import { ChatPanel, computeTopVisibleAnchor } from "../chat-panel";
+import {
+  ChatPanel,
+  COLLAPSED_RESTORE_GUARD_MS,
+  computeTopVisibleAnchor,
+} from "../chat-panel";
 import { LocalCommandCard } from "../local-command/card";
 import {
   __resetCatchUpStateForTesting,
@@ -2719,6 +2723,59 @@ describe("ChatPanel · transcript scroll restoration", () => {
     await waitFor(() => {
       expect(scroller.scrollTop).toBe(7_912);
     });
+    expect(scroller.style.visibility).toBe("");
+  });
+
+  it("Given the transcript is suppressed for restore while requestAnimationFrame never fires, When the guard deadline elapses, Then it stops suppressing without waiting for a user scroll", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    let height = 8_392;
+    const view = render(
+      <ChatPanel active sessionId={42} scrollStateKey="chat-tab-raf-starved" />,
+    );
+    const scroller = transcriptScrollerWithDynamicHeight(
+      view.container,
+      () => height,
+    );
+
+    act(() => {
+      scroller.scrollTop = 7_912;
+      fireEvent.scroll(scroller);
+    });
+
+    // 窗口被遮挡 / 不在前台时 WebView 会整段停掉 rAF(本地实测 Chromium 停过 6.4s),
+    // 而 setTimeout 只被钳到 ~1s。恢复循环只挂 rAF 时,期限就永远等不到被检查 ——
+    // 转录区无限期停在 visibility:hidden,只有用户滚一下才解除。
+    vi.stubGlobal("requestAnimationFrame", () => 1);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+
+    view.rerender(
+      <ChatPanel
+        active={false}
+        sessionId={42}
+        scrollStateKey="chat-tab-raf-starved"
+      />,
+    );
+    act(() => {
+      height = 200;
+      scroller.scrollTop = 0;
+    });
+    view.rerender(
+      <ChatPanel active sessionId={42} scrollStateKey="chat-tab-raf-starved" />,
+    );
+
+    expect(scroller.style.visibility).toBe("hidden");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(COLLAPSED_RESTORE_GUARD_MS + 100);
+    });
+
     expect(scroller.style.visibility).toBe("");
   });
 
