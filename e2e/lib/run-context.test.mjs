@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { access, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 
@@ -136,7 +136,9 @@ test("Given a fresh checkout without generated frontend bindings, when the E2E r
     parentEnv: {
       PATH: "/test/bin",
       AGENTRE_DATA_DIR: "/formal-data-must-not-be-used",
+      agentre_keychain_dir: "/mixed-case-formal-keychain-must-not-be-used",
       AGENTRE_KEYCHAIN_DIR: "/formal-keychain-must-not-be-used",
+      agentre_e2e_refresh_token: "mixed-case-secret-must-not-reach-binding-generation",
       AGENTRE_E2E_TOKEN: "must-not-reach-binding-generation",
     },
     spawnProcess(command, args, options) {
@@ -148,6 +150,7 @@ test("Given a fresh checkout without generated frontend bindings, when the E2E r
         await mkdir(join(bindingsDir, "go", "app"), { recursive: true });
         await writeFile(join(bindingsDir, "runtime", "runtime.js"), "export {};\n");
         await writeFile(join(bindingsDir, "go", "app", "App.js"), "export {};\n");
+        await writeFile(join(bindingsDir, "go", "models.ts"), "export namespace app {}\n");
         child.emit("exit", 0, null);
       });
       return child;
@@ -159,8 +162,10 @@ test("Given a fresh checkout without generated frontend bindings, when the E2E r
   assert.equal(invocation.options.cwd, REPO_ROOT);
   assert.equal(invocation.options.env.PATH, "/test/bin");
   assert.equal(invocation.options.env.AGENTRE_E2E_TOKEN, undefined);
+  assert.equal(invocation.options.env.agentre_e2e_refresh_token, undefined);
   assert.equal(invocation.options.env.AGENTRE_E2E_MANIFEST, undefined);
   assert.equal(invocation.options.env.AGENTRE_E2E_SERVER_URL, undefined);
+  assert.equal(invocation.options.env.agentre_keychain_dir, undefined);
   assert.notEqual(invocation.options.env.AGENTRE_DATA_DIR, run.dataDir);
   assert.notEqual(invocation.options.env.AGENTRE_KEYCHAIN_DIR, run.keychainDir);
   for (const path of [
@@ -175,11 +180,12 @@ test("Given a fresh checkout without generated frontend bindings, when the E2E r
     invocation.options.env.TMP,
     invocation.options.env.TEMP,
   ]) {
-    assert.equal(path.startsWith(`${run.runRoot}/`), true);
+    assertPathInside(run.runRoot, path);
     await assert.rejects(access(path), { code: "ENOENT" });
   }
   await access(join(bindingsDir, "runtime", "runtime.js"));
   await access(join(bindingsDir, "go", "app", "App.js"));
+  await access(join(bindingsDir, "go", "models.ts"));
 });
 
 test("Given Wails binding generation exits unsuccessfully or omits required output, when E2E startup prepares the UI, then it fails before Vite and removes disposable generation storage", async (t) => {
@@ -235,6 +241,124 @@ test("Given Wails binding generation exits unsuccessfully or omits required outp
   for (const path of attemptedStorage) {
     await assert.rejects(access(path), { code: "ENOENT" });
   }
+});
+
+test("Given generated output is partial, when binding preparation validates the current invocation, then directories, empty files, and a missing model module fail closed", async (t) => {
+  const run = await createRunContext();
+  const bindingsDir = join(run.runRoot, "partial-wailsjs");
+  t.after(() => run.remove());
+
+  await assert.rejects(
+    generateWailsBindings(run, {
+      bindingsDir,
+      frontendDistDir: join(run.runRoot, "frontend-dist"),
+      spawnProcess() {
+        const child = new EventEmitter();
+        queueMicrotask(async () => {
+          await mkdir(join(bindingsDir, "runtime", "runtime.js"), { recursive: true });
+          await mkdir(join(bindingsDir, "go", "app"), { recursive: true });
+          await writeFile(join(bindingsDir, "go", "app", "App.js"), "");
+          child.emit("exit", 0, null);
+        });
+        return child;
+      },
+    }),
+    /required Wails bindings are missing; use make e2e/,
+  );
+});
+
+test("Given an unsafe binding deletion target, when preparation starts, then it rejects before deleting the run root or following a symlink outside it", async (t) => {
+  const run = await createRunContext();
+  const runSentinel = join(run.runRoot, "must-survive");
+  const outsideDir = join(dirname(run.runRoot), `${basename(run.runRoot)}-bindings-outside`);
+  const outsideBindingsDir = join(outsideDir, "wailsjs");
+  const outsideSentinel = join(outsideBindingsDir, "must-survive");
+  t.after(async () => {
+    await run.remove();
+    await rm(outsideDir, { recursive: true, force: true });
+  });
+  await writeFile(runSentinel, "safe");
+
+  await assert.rejects(
+    generateWailsBindings(run, {
+      bindingsDir: run.runRoot,
+      frontendDistDir: join(run.runRoot, "frontend-dist"),
+      spawnProcess() {
+        throw new Error("unsafe target reached spawn");
+      },
+    }),
+    /unsafe Wails bindings deletion target; use make e2e/,
+  );
+  await access(runSentinel);
+
+  await mkdir(outsideBindingsDir, { recursive: true });
+  await writeFile(outsideSentinel, "safe");
+  const escapeLink = join(run.runRoot, "bindings-escape");
+  try {
+    await symlink(outsideDir, escapeLink, "dir");
+  } catch (error) {
+    if (process.platform === "win32") return;
+    throw error;
+  }
+
+  await assert.rejects(
+    generateWailsBindings(run, {
+      bindingsDir: join(escapeLink, "wailsjs"),
+      frontendDistDir: join(run.runRoot, "frontend-dist"),
+      spawnProcess() {
+        throw new Error("unsafe target reached spawn");
+      },
+    }),
+    /unsafe Wails bindings deletion target; use make e2e/,
+  );
+  await access(outsideSentinel);
+});
+
+test("Given setup fails after disposable generation storage is created, when preparation unwinds, then the storage is removed and the setup error remains primary", async (t) => {
+  const run = await createRunContext();
+  const frontendDistDir = join(run.runRoot, "dist-is-a-file");
+  const generationRoot = join(run.runRoot, "wails-bindings");
+  t.after(() => run.remove());
+  await writeFile(frontendDistDir, "not a directory");
+
+  await assert.rejects(
+    generateWailsBindings(run, {
+      bindingsDir: join(run.runRoot, "generated-wailsjs"),
+      frontendDistDir,
+    }),
+    (error) => error.code === "EEXIST" && !error.message.includes("failed to clean"),
+  );
+  await assert.rejects(access(generationRoot), { code: "ENOENT" });
+});
+
+test("Given generation and disposable-storage cleanup both fail, when preparation unwinds, then neither failure masks the other", async (t) => {
+  const run = await createRunContext();
+  const generationRoot = join(run.runRoot, "wails-bindings");
+  t.after(() => run.remove());
+
+  await assert.rejects(
+    generateWailsBindings(run, {
+      bindingsDir: join(run.runRoot, "generated-wailsjs"),
+      frontendDistDir: join(run.runRoot, "frontend-dist"),
+      removePath(path, options) {
+        if (path === generationRoot) throw new Error("cleanup denied");
+        return rm(path, options);
+      },
+      spawnProcess() {
+        const child = new EventEmitter();
+        queueMicrotask(() => child.emit("error", new Error("spawn failed")));
+        queueMicrotask(() => child.emit("exit", 1, null));
+        return child;
+      },
+    }),
+    (error) => {
+      assert.equal(error instanceof AggregateError, true);
+      assert.match(error.message, /failed to generate Wails bindings/);
+      assert.match(error.message, /failed to clean disposable Wails binding storage/);
+      assert.equal(error.errors.length, 2);
+      return true;
+    },
+  );
 });
 
 test("Given remote credential evidence context is unavailable, when persistence is checked, then the failure exposes no path or token and directs callers to make e2e", async () => {
@@ -342,6 +466,14 @@ test("Given a run-root keychain symlink escaping to a credential outside the run
   );
 });
 
+function assertPathInside(parent, candidate) {
+  const child = relative(parent, candidate);
+  assert.notEqual(child, "");
+  assert.notEqual(child, "..");
+  assert.equal(child.startsWith(`..${sep}`), false);
+  assert.equal(isAbsolute(child), false);
+}
+
 function assertSafeCredentialEvidenceError(error, ...sensitiveValues) {
   assert.match(error.message, /runner file keychain/);
   assert.match(error.message, /make e2e/);
@@ -409,6 +541,11 @@ test("Given a failed run with known text secrets and unsafe state, when evidence
   await writeFile(join(run.keychainDir, "secret-entry"), "must-not-be-retained");
   await writeFile(join(run.browserDir, "browser-secret.json"), "must-not-be-retained");
   await writeFile(join(run.runRoot, "go-overlay.json"), "must-not-be-retained");
+  await mkdir(join(run.runRoot, "wails-bindings", "keychain"), { recursive: true });
+  await writeFile(
+    join(run.runRoot, "wails-bindings", "keychain", "secret-entry"),
+    "must-not-be-retained",
+  );
   const desktopControlToken = "d".repeat(43);
   await writeFile(
     join(run.dataDir, "ctl-endpoint.json"),
@@ -436,6 +573,7 @@ test("Given a failed run with known text secrets and unsafe state, when evidence
     join(preserved, "keychain"),
     join(preserved, "browser"),
     join(preserved, "go-overlay.json"),
+    join(preserved, "wails-bindings"),
   ]) {
     await assert.rejects(access(path), { code: "ENOENT" });
   }

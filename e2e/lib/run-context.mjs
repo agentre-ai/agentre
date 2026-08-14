@@ -9,7 +9,7 @@ import {
   readdirSync,
   writeFileSync,
 } from "node:fs";
-import { access, cp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -90,14 +90,25 @@ export async function createRunContext({ prefix = "agentre-e2e-" } = {}) {
   };
 }
 
+function environmentWithout(parentEnv, omitted) {
+  return Object.fromEntries(
+    Object.entries(parentEnv).filter(([name]) => !omitted(name.toUpperCase())),
+  );
+}
+
+function isRunnerStorageOrSecret(name) {
+  return (
+    name.startsWith("AGENTRE_E2E_") ||
+    name === "AGENTRE_DATA_DIR" ||
+    name === "AGENTRE_KEYCHAIN_DIR"
+  );
+}
+
 export function appEnvironment(run, parentEnv = process.env) {
-  const env = { ...parentEnv };
-  for (const name of Object.keys(env)) {
-    if (name.startsWith("AGENTRE_E2E_") || name === "AGENTRE_DATA_DIR" || name === "AGENTRE_KEYCHAIN_DIR") {
-      delete env[name];
-    }
-  }
-  return { ...env, ...run.env };
+  return {
+    ...environmentWithout(parentEnv, isRunnerStorageOrSecret),
+    ...run.env,
+  };
 }
 
 export function fakePeerEnvironment(run, parentEnv = process.env) {
@@ -108,17 +119,14 @@ export function fakePeerEnvironment(run, parentEnv = process.env) {
 }
 
 export function playwrightEnvironment(run, parentEnv = process.env) {
-  const env = { ...parentEnv };
-  for (const name of Object.keys(env)) {
-    if (
+  const env = environmentWithout(
+    parentEnv,
+    (name) =>
       name.startsWith("AGENTRE_E2E_") ||
       name === "AGENTRE_KEYCHAIN_DIR" ||
       name === "AGENTRE_ENV" ||
-      name === "AGENTRE_PROXY_PORT"
-    ) {
-      delete env[name];
-    }
-  }
+      name === "AGENTRE_PROXY_PORT",
+  );
   return {
     ...env,
     AGENTRE_DATA_DIR: run.dataDir,
@@ -156,18 +164,134 @@ function childExitResult(child) {
   });
 }
 
+function isStrictDescendant(parent, candidate) {
+  const child = relative(parent, candidate);
+  return (
+    child !== "" &&
+    child !== ".." &&
+    !child.startsWith(`..${sep}`) &&
+    !isAbsolute(child)
+  );
+}
+
+async function canonicalPotentialPath(path) {
+  let ancestor = resolve(path);
+  const missingSegments = [];
+  while (true) {
+    try {
+      return resolve(await realpath(ancestor), ...missingSegments.reverse());
+    } catch (error) {
+      if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) throw error;
+      missingSegments.push(basename(ancestor));
+      ancestor = parent;
+    }
+  }
+}
+
+async function validateBindingGenerationPaths(run, bindingsDir, frontendDistDir) {
+  if (!run?.runRoot || !run?.logsDir) {
+    throw new Error("Wails binding generation context is unavailable; use make e2e");
+  }
+
+  let canonicalTempRoot;
+  let canonicalRunRoot;
+  let canonicalLogsDir;
+  try {
+    [canonicalTempRoot, canonicalRunRoot, canonicalLogsDir] = await Promise.all([
+      realpath(tmpdir()),
+      realpath(run.runRoot),
+      realpath(run.logsDir),
+    ]);
+  } catch {
+    throw new Error("Wails binding generation context is unavailable; use make e2e");
+  }
+  if (
+    !isStrictDescendant(canonicalTempRoot, canonicalRunRoot) ||
+    !isStrictDescendant(canonicalRunRoot, canonicalLogsDir)
+  ) {
+    throw new Error("Wails binding generation context is unavailable; use make e2e");
+  }
+
+  const targets = [
+    {
+      candidate: bindingsDir,
+      expected: join(REPO_ROOT, "frontend", "wailsjs"),
+      failure: "unsafe Wails bindings deletion target; use make e2e",
+    },
+    {
+      candidate: frontendDistDir,
+      expected: join(REPO_ROOT, "frontend", "dist"),
+      failure: "unsafe Wails frontend dist target; use make e2e",
+    },
+  ];
+  for (const target of targets) {
+    if (resolve(target.candidate) === resolve(target.expected)) continue;
+    let canonicalTarget;
+    try {
+      canonicalTarget = await canonicalPotentialPath(target.candidate);
+    } catch {
+      throw new Error(target.failure);
+    }
+    if (!isStrictDescendant(canonicalRunRoot, canonicalTarget)) {
+      throw new Error(target.failure);
+    }
+  }
+}
+
+async function verifyRequiredBindings(bindingsDir) {
+  const requiredFiles = [
+    join(bindingsDir, "runtime", "runtime.js"),
+    join(bindingsDir, "go", "app", "App.js"),
+    join(bindingsDir, "go", "models.ts"),
+  ];
+  try {
+    const metadata = await Promise.all(requiredFiles.map((path) => stat(path)));
+    if (metadata.some((entry) => !entry.isFile() || entry.size === 0)) throw new Error();
+  } catch {
+    throw new Error("required Wails bindings are missing; use make e2e");
+  }
+}
+
+async function runWithBindingStorageCleanup(operation, cleanup) {
+  let operationError;
+  try {
+    await operation();
+  } catch (error) {
+    operationError = error;
+  }
+
+  let cleanupError;
+  try {
+    await cleanup();
+  } catch (error) {
+    cleanupError = new Error("failed to clean disposable Wails binding storage; use make e2e", {
+      cause: error,
+    });
+  }
+
+  if (operationError && cleanupError) {
+    throw new AggregateError(
+      [operationError, cleanupError],
+      `${operationError.message}; ${cleanupError.message}`,
+    );
+  }
+  if (operationError) throw operationError;
+  if (cleanupError) throw cleanupError;
+}
+
 export async function generateWailsBindings(
   run,
   {
     bindingsDir = join(REPO_ROOT, "frontend", "wailsjs"),
     frontendDistDir = join(REPO_ROOT, "frontend", "dist"),
     parentEnv = process.env,
+    removePath = rm,
     spawnProcess = spawnLogged,
   } = {},
 ) {
-  if (!run?.runRoot || !run?.logsDir) {
-    throw new Error("Wails binding generation context is unavailable; use make e2e");
-  }
+  await validateBindingGenerationPaths(run, bindingsDir, frontendDistDir);
 
   const generationRoot = join(run.runRoot, "wails-bindings");
   const dataDir = join(generationRoot, "data");
@@ -178,76 +302,60 @@ export async function generateWailsBindings(
   const xdgDataDir = join(generationRoot, "xdg-data");
   const xdgCacheDir = join(generationRoot, "xdg-cache");
   const tempDir = join(generationRoot, "tmp");
-  for (const path of [
-    generationRoot,
-    dataDir,
-    keychainDir,
-    appDataDir,
-    localAppDataDir,
-    xdgConfigDir,
-    xdgDataDir,
-    xdgCacheDir,
-    tempDir,
-  ]) {
-    makePrivateDir(path);
-  }
 
-  const env = { ...parentEnv };
-  for (const name of Object.keys(env)) {
-    if (
-      name.startsWith("AGENTRE_E2E_") ||
-      name === "AGENTRE_DATA_DIR" ||
-      name === "AGENTRE_KEYCHAIN_DIR"
-    ) {
-      delete env[name];
-    }
-  }
-  await rm(bindingsDir, { recursive: true, force: true });
-  await mkdir(frontendDistDir, { recursive: true, mode: 0o700 });
-  await writeFile(join(frontendDistDir, ".keep"), "", { mode: 0o600 });
+  await runWithBindingStorageCleanup(
+    async () => {
+      for (const path of [
+        generationRoot,
+        dataDir,
+        keychainDir,
+        appDataDir,
+        localAppDataDir,
+        xdgConfigDir,
+        xdgDataDir,
+        xdgCacheDir,
+        tempDir,
+      ]) {
+        makePrivateDir(path);
+      }
 
-  Object.assign(env, {
-    AGENTRE_DATA_DIR: dataDir,
-    AGENTRE_KEYCHAIN_DIR: keychainDir,
-    AGENTRE_ENV: "test",
-    AGENTRE_PROXY_PORT: "0",
-    APPDATA: appDataDir,
-    LOCALAPPDATA: localAppDataDir,
-    XDG_CONFIG_HOME: xdgConfigDir,
-    XDG_DATA_HOME: xdgDataDir,
-    XDG_CACHE_HOME: xdgCacheDir,
-    TMPDIR: tempDir,
-    TMP: tempDir,
-    TEMP: tempDir,
-  });
-
-  try {
-    let child;
-    try {
-      child = spawnProcess("wails", ["generate", "module"], {
-        cwd: REPO_ROOT,
-        env,
-        logPath: join(run.logsDir, "wails-bindings.log"),
+      const env = environmentWithout(parentEnv, isRunnerStorageOrSecret);
+      await removePath(bindingsDir, { recursive: true, force: true });
+      await mkdir(frontendDistDir, { recursive: true, mode: 0o700 });
+      await writeFile(join(frontendDistDir, ".keep"), "", { mode: 0o600 });
+      Object.assign(env, {
+        AGENTRE_DATA_DIR: dataDir,
+        AGENTRE_KEYCHAIN_DIR: keychainDir,
+        AGENTRE_ENV: "test",
+        AGENTRE_PROXY_PORT: "0",
+        APPDATA: appDataDir,
+        LOCALAPPDATA: localAppDataDir,
+        XDG_CONFIG_HOME: xdgConfigDir,
+        XDG_DATA_HOME: xdgDataDir,
+        XDG_CACHE_HOME: xdgCacheDir,
+        TMPDIR: tempDir,
+        TMP: tempDir,
+        TEMP: tempDir,
       });
-    } catch {
-      throw new Error("failed to generate Wails bindings; use make e2e");
-    }
-    const result = await childExitResult(child);
-    if (result.code !== 0 || result.signal) {
-      throw new Error("failed to generate Wails bindings; use make e2e");
-    }
 
-    try {
-      await Promise.all([
-        access(join(bindingsDir, "runtime", "runtime.js")),
-        access(join(bindingsDir, "go", "app", "App.js")),
-      ]);
-    } catch {
-      throw new Error("required Wails bindings are missing; use make e2e");
-    }
-  } finally {
-    await rm(generationRoot, { recursive: true, force: true });
-  }
+      let child;
+      try {
+        child = spawnProcess("wails", ["generate", "module"], {
+          cwd: REPO_ROOT,
+          env,
+          logPath: join(run.logsDir, "wails-bindings.log"),
+        });
+      } catch {
+        throw new Error("failed to generate Wails bindings; use make e2e");
+      }
+      const result = await childExitResult(child);
+      if (result.code !== 0 || result.signal) {
+        throw new Error("failed to generate Wails bindings; use make e2e");
+      }
+      await verifyRequiredBindings(bindingsDir);
+    },
+    () => removePath(generationRoot, { recursive: true, force: true }),
+  );
 }
 
 const credentialEvidenceFailures = Object.freeze({
@@ -425,6 +533,7 @@ export async function preserveFailureArtifacts(run, artifactBase = join(REPO_ROO
     "fake-runtime.go",
     "go-overlay.json",
     ".agentre-e2e-consumed",
+    "wails-bindings",
   ]) {
     await rm(join(artifactDir, unsafePath), { recursive: true, force: true });
   }
