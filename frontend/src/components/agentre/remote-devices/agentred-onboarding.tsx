@@ -35,6 +35,9 @@ export function AgentredOnboarding({
   );
   const [remoteOS, setRemoteOS] = useState<RemoteOS>("linux");
   const [runMode, setRunMode] = useState<RunMode>("background");
+  // 配对在途时锁住所有离开第 3 步的路。失败原因只存在于那张表单里,一旦提前卸载
+  // 它,setError 就落在已卸载的组件上,配对失败会被无声吞掉。
+  const [submitting, setSubmitting] = useState(false);
 
   const finishStep = (finished: OnboardingStep, next: OnboardingStep) => {
     setFinishedSteps((previous) =>
@@ -65,6 +68,7 @@ export function AgentredOnboarding({
           <StepHeader
             number={1}
             active={step === 1}
+            disabled={submitting}
             finished={finishedSteps.includes(1)}
             onSelect={() => setStep(1)}
             title={t("remoteDevices.onboarding.steps.install.title")}
@@ -74,6 +78,7 @@ export function AgentredOnboarding({
           <StepHeader
             number={2}
             active={step === 2}
+            disabled={submitting}
             finished={finishedSteps.includes(2)}
             onSelect={() => setStep(2)}
             title={t("remoteDevices.onboarding.steps.service.title")}
@@ -83,6 +88,7 @@ export function AgentredOnboarding({
           <StepHeader
             number={3}
             active={step === 3}
+            disabled={submitting}
             finished={finishedSteps.includes(3)}
             onSelect={() => setStep(3)}
             title={t("remoteDevices.onboarding.steps.pair.title")}
@@ -96,6 +102,7 @@ export function AgentredOnboarding({
             size="icon-sm"
             className="m-2 shrink-0"
             aria-label={t("remoteDevices.onboarding.dismiss")}
+            disabled={submitting}
             onClick={onDismiss}
           >
             <X aria-hidden="true" />
@@ -355,6 +362,7 @@ export function AgentredOnboarding({
                 cancelLabel={t("remoteDevices.onboarding.pair.back")}
                 onCancel={() => setStep(2)}
                 onSubmit={onSubmit}
+                onSubmittingChange={setSubmitting}
                 submitLabel={t("remoteDevices.onboarding.pair.submit")}
               />
             </div>
@@ -367,6 +375,7 @@ export function AgentredOnboarding({
 
 function StepHeader({
   active,
+  disabled,
   finished,
   finishedSubtitle,
   number,
@@ -375,6 +384,7 @@ function StepHeader({
   title,
 }: {
   active: boolean;
+  disabled: boolean;
   finished: boolean;
   /** 省略即这一步没有「已完成」的说法 —— 配对是终点,没有下一步可点。 */
   finishedSubtitle?: string;
@@ -390,6 +400,7 @@ function StepHeader({
         variant="ghost"
         aria-current={active ? "step" : undefined}
         className="h-auto min-w-0 flex-1 items-start justify-start gap-3 rounded-none p-4 text-left font-normal"
+        disabled={disabled}
         onClick={onSelect}
       >
         <span

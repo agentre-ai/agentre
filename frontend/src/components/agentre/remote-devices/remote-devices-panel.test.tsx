@@ -172,6 +172,14 @@ describe("RemoteDevicesPanel", () => {
     expect(
       screen.getAllByRole("button", { name: "Add agentred" }),
     ).toHaveLength(1);
+    // 这一轮把 remoteDevices.actions.continueAddLan 从两份 locale 里一并删掉了,所以
+    // 按钮若被重新加回 JSX,渲染出来的是**原始 key**而不是译文;译文断言只在「key 也
+    // 被加回来」时才可能命中,单靠它挡不住另一半。同 lanAll 那条,两边都要。
+    expect(
+      screen.queryByRole("button", {
+        name: "remoteDevices.actions.continueAddLan",
+      }),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Add another agentred/ }),
     ).not.toBeInTheDocument();
@@ -302,6 +310,53 @@ describe("RemoteDevicesPanel", () => {
     expect(
       screen.queryByRole("button", { name: "Configure Agent Backends" }),
     ).not.toBeInTheDocument();
+  });
+
+  // 收起会把整份引导连同第 3 步的表单一起卸载,而失败原因只存在于那张表单里 ——
+  // 提交在途时放行收起,配对失败就会被无声吞掉:设备没加上,用户却什么也看不到。
+  it("keeps a mid-submit pairing failure visible even if the user tries to collapse the guide", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValueOnce([
+      {
+        id: 1,
+        name: "linux-srv",
+        url: "ws://linux-srv.local:7456/rpc",
+        tlsMode: "default",
+        online: true,
+        lastSeenAt: Date.now(),
+      },
+    ] as Partial<DeviceView>[]);
+    let rejectAdd: (reason: Error) => void = () => {};
+    mockAdd.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectAdd = reject;
+        }),
+    );
+
+    render(<RemoteDevicesPanel />);
+    await screen.findByTestId("device-row");
+
+    await user.click(screen.getByRole("button", { name: "Add agentred" }));
+    await user.click(screen.getByRole("button", { name: "Installed, next" }));
+    await user.click(
+      screen.getByRole("button", { name: "Service is running" }),
+    );
+    await user.type(
+      screen.getByLabelText("Address"),
+      "ws://build-box.local:7456/rpc",
+    );
+    await user.type(screen.getByLabelText("Pairing Code"), "ABC2DE");
+    await user.click(screen.getByRole("button", { name: "Pair and verify" }));
+
+    await user.click(screen.getByRole("button", { name: "Collapse guide" }));
+
+    rejectAdd(new Error("Pairing code expired"));
+
+    expect(await screen.findByText("Pairing code expired")).toBeInTheDocument();
+    expect(screen.getByLabelText("Address")).toHaveValue(
+      "ws://build-box.local:7456/rpc",
+    );
   });
 
   it("switches installer and service commands through the approved three-step flow", async () => {

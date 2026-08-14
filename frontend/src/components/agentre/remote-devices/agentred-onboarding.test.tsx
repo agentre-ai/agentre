@@ -157,4 +157,33 @@ describe("AgentredOnboarding", () => {
     ).toBeInTheDocument();
     expect(stepCell(SERVICE_CELL)).toHaveAttribute("aria-current", "step");
   });
+
+  // 步骤条与收起都能卸载第 3 步的表单,而失败原因只存在于那张表单里 —— 提交在途
+  // 时放行任何一条离开的路,配对失败就会被无声吞掉:设备没加上,用户却什么也看不到。
+  it("never swallows a pairing failure when the user tries to leave mid-submit", async () => {
+    const user = userEvent.setup();
+    let rejectPairing: (reason: Error) => void = () => {};
+    const onSubmit = vi.fn().mockImplementation(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPairing = reject;
+        }),
+    );
+    render(<AgentredOnboarding onSubmit={onSubmit} onDismiss={vi.fn()} />);
+
+    await user.click(stepCell(PAIR_CELL));
+    await user.type(screen.getByLabelText("Address"), "ws://host:7456/rpc");
+    await user.type(screen.getByLabelText("Pairing Code"), "ABC2DE");
+    await user.click(screen.getByRole("button", { name: "Pair and verify" }));
+
+    await user.click(stepCell(INSTALL_CELL));
+    await user.click(screen.getByRole("button", { name: "Collapse guide" }));
+
+    rejectPairing(new Error("Pairing code expired"));
+
+    expect(await screen.findByText("Pairing code expired")).toBeInTheDocument();
+    // 还停在第 3 步,填过的地址与配对码都还在,用户可以直接改了重试。
+    expect(screen.getByLabelText("Address")).toHaveValue("ws://host:7456/rpc");
+    expect(screen.getByLabelText("Pairing Code")).toHaveValue("ABC2DE");
+  });
 });
