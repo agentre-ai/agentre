@@ -159,6 +159,9 @@ export interface UseProviderPillReturn {
   remoteMissing: boolean;
   /** 把本机 Provider（含 API Key）显式同步到目标设备，并刷新远端目录。 */
   syncProvider: (providerKey: string) => Promise<void>;
+  /** 本机是否真有一条通往目标设备的同步通道（已配对的 agentred 行）。为 false 时
+   *  目标设备只能被门控、不能被同步——此时不得提供同步入口（否则点了什么都不会发生）。 */
+  canSyncProvider: boolean;
   /** 目标执行位置（透传自选项，供 ProviderPill 传给共享 Picker）。 */
   executionLocation: string;
   /** 模型目录加载中 → pill 禁用。 */
@@ -528,5 +531,6 @@ export function useProviderPill({
     supportsFixedModel,
     remoteMissing,
     syncProvider,
+    canSyncProvider: remoteDeviceID > 0,
   };
 }

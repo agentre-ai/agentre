@@ -47,6 +47,7 @@ export function ProviderPill({
   supportsFixedModel = true,
   remoteMissing = false,
   syncProvider,
+  canSyncProvider = false,
 }: ProviderPillProps) {
   const { t } = useTranslation();
   const [providerToSync, setProviderToSync] = React.useState<{
@@ -128,13 +129,17 @@ export function ProviderPill({
         disabled={disabled}
         invalid={invalid}
         specialSublabel={boundResolutionLabel || undefined}
-        onSyncProvider={(provider) => {
-          setSyncError(null);
-          setProviderToSync({
-            providerKey: provider.providerKey,
-            name: provider.name,
-          });
-        }}
+        onSyncProvider={
+          canSyncProvider
+            ? (provider) => {
+                setSyncError(null);
+                setProviderToSync({
+                  providerKey: provider.providerKey,
+                  name: provider.name,
+                });
+              }
+            : undefined
+        }
         remoteCatalog={remoteCatalog}
         supportsFixedModel={supportsFixedModel}
         remoteMissing={remoteMissing}

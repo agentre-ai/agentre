@@ -1845,6 +1845,202 @@ describe("AgentBackendsPanel", () => {
     );
   });
 
+  it("Given a bound backend on an account desktop with no paired agentred row, When it is saved, Then it persists and no unusable sync entry is offered", async () => {
+    const user = userEvent.setup();
+    const mocks = installAppMock({
+      ListAgentBackends: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 14,
+              type: "claudecode",
+              name: "studio bound claude",
+              deviceId: "sha256:studio-desktop",
+              deviceName: "",
+              llmProviderKey: "key-1",
+              llmModelKey: "",
+              llmProviderName: "Anthropic",
+              llmProviderType: "anthropic",
+              llmProviderModel: "claude-sonnet-4-6",
+              llmProviderActive: true,
+              cliPath: "claude",
+              modelRoutes: {},
+              envJson: "{}",
+              agentCount: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+      RemoteDeviceList: vi.fn(() => Promise.resolve([])),
+      ServerListDevices: vi.fn(() =>
+        Promise.resolve([
+          { Fingerprint: "sha256:studio-desktop", Name: "Studio Mac" },
+        ]),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+
+    const row = (await screen.findByText("studio bound claude")).closest(
+      '[role="listitem"]',
+    ) as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /Edit/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole("combobox", { name: "Runtime Device" }),
+      ).toHaveTextContent("Studio Mac"),
+    );
+    expect(
+      within(dialog).queryByText("Remote Provider Sync"),
+    ).not.toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(mocks.UpdateAgentBackend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 14,
+          deviceId: "sha256:studio-desktop",
+          llmProviderKey: "key-1",
+        }),
+      ),
+    );
+    expect(
+      screen.queryByRole("dialog", { name: /Sync Remote LLM Provider/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Given a backend whose device id is this machine's own fingerprint, When the editor opens, Then no remote provider sync entry is offered", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      ListAgentBackends: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 15,
+              type: "claudecode",
+              name: "self claude",
+              deviceId: "sha256:local-desktop",
+              deviceName: "",
+              llmProviderKey: "key-1",
+              llmModelKey: "",
+              llmProviderName: "Anthropic",
+              llmProviderType: "anthropic",
+              llmProviderModel: "claude-sonnet-4-6",
+              llmProviderActive: true,
+              cliPath: "claude",
+              modelRoutes: {},
+              envJson: "{}",
+              agentCount: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+
+    const row = (await screen.findByText("self claude")).closest(
+      '[role="listitem"]',
+    ) as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /Edit/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole("combobox", { name: "Runtime Device" }),
+      ).toHaveTextContent("Local"),
+    );
+    expect(
+      within(dialog).queryByText("Remote Provider Sync"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Given a fixed remote binding, When the picker's sync entry is opened and canceled, Then the draft binding is untouched", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      ListAgentBackends: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 16,
+              type: "claudecode",
+              name: "remote fixed claude",
+              deviceId: "sha256:remote-daemon",
+              deviceName: "linux-srv",
+              llmProviderKey: "key-1",
+              llmModelKey: "mk-9",
+              llmProviderName: "Anthropic",
+              llmProviderType: "anthropic",
+              llmProviderModel: "claude-opus-4-5",
+              llmProviderActive: true,
+              cliPath: "claude",
+              modelRoutes: {},
+              envJson: "{}",
+              agentCount: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            mockModel(1, "mk-1", "claude-sonnet-4-6"),
+            mockModel(1, "mk-9", "claude-opus-4-5"),
+          ],
+        }),
+      ),
+      RemoteDeviceList: vi.fn(() =>
+        Promise.resolve([
+          {
+            id: 7,
+            name: "linux-srv",
+            daemonFingerprint: "sha256:remote-daemon",
+            online: true,
+            supportsLLMModelTarget: true,
+          },
+        ]),
+      ),
+      RemoteDeviceListProviders: vi.fn(() => Promise.resolve([])),
+    });
+    render(<AgentBackendsPanel />);
+
+    const row = (await screen.findByText("remote fixed claude")).closest(
+      '[role="listitem"]',
+    ) as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /Edit/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("button", { name: "Model binding" }),
+    );
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Sync Anthropic to this device",
+      }),
+    );
+    const syncDialog = await screen.findByRole("dialog", {
+      name: /Sync Remote LLM Provider/,
+    });
+    await user.click(
+      within(syncDialog).getByRole("button", { name: /Cancel/ }),
+    );
+
+    await waitFor(() =>
+      expect(
+        within(dialog).getByTestId("effective-config-summary"),
+      ).toHaveTextContent("claude-opus-4-5"),
+    );
+    expect(
+      within(dialog).getByRole("button", { name: "Model binding" }),
+    ).toHaveTextContent("claude-opus-4-5");
+  });
+
   it("保存远端 claudecode 且 provider 已在远端时直接保存，不弹同步提示", async () => {
     const user = userEvent.setup();
     const mocks = installAppMock({

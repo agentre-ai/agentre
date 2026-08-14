@@ -910,6 +910,24 @@ describe("ProviderPill · 远端执行（gap 1：chat Picker 接收 daemon 能�
     );
   });
 
+  it("Given a remote target with no paired row on this machine, When the picker opens, Then no sync entry is offered for it", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({ items: [CHAT_PROVIDER] });
+    appMocks.RemoteDeviceList.mockResolvedValue([]);
+    render(
+      <Harness backendType="builtin" executionLocation="sha256:peer-desktop" />,
+    );
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+
+    const user = userEvent.setup();
+    await user.click(pill);
+    expect(providerDefaultOption(screen.getByRole("listbox"))).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: "Sync Acme Chat to this device" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("Given a canonical remote fingerprint, When the Composer picker loads target capabilities, Then it resolves the local paired row and keeps remote fixed-model gating", async () => {
     appMocks.ListLLMProviders.mockResolvedValue({
       items: [ANTHROPIC_PROVIDER],

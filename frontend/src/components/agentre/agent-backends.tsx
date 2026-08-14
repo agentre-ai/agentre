@@ -1315,6 +1315,9 @@ function BackendEditor({
   );
   const remoteDeviceID = executionDevice.pairedDeviceId;
   const remoteExecution = executionDevice.remote;
+  // 只有存在已配对的 agentred 行时，本机才真能把供应商同步过去；本机自身指纹与
+  // 账号内其它桌面端都没有这条通道，不提供做不到的同步入口。
+  const canSyncProvider = remoteDeviceID > 0;
   const selectedDeviceValue = deviceSelectValue(
     deviceId,
     localFingerprint,
@@ -1469,8 +1472,11 @@ function BackendEditor({
       return { missingProviderKeys: [], targetIssue: null };
     }
     const deviceID = resolved.pairedDeviceId;
+    // 本机没有通往该设备的已配对行（典型是账号内另一台桌面端）：这台机器读不到它的
+    // 目录，也同步不过去。此时既不能断言"供应商缺失"，也不能拿一个做不到的同步挡住
+    // 保存 —— 未验证就是未验证，按无结论放行（门控仍在 Picker 侧禁用未验证目标）。
     if (deviceID <= 0) {
-      return { missingProviderKeys: providerKeys, targetIssue: null };
+      return { missingProviderKeys: [], targetIssue: null };
     }
 
     const remoteRaw = (await RemoteDeviceListProviders(deviceID)) as
@@ -1811,24 +1817,20 @@ function BackendEditor({
     }
   }
 
+  // 同步入口只做同步（复制凭证到目标设备），不改动草稿里的模型绑定：用户点它是为了
+  // 让某个供应商在目标设备上可用，不是为了改选它（改选走 Picker 的选项行）。
   function handlePickerProviderSync(provider: PickerProvider) {
-    setLlmProviderKey(provider.providerKey);
-    setLlmModelKey("");
     setProviderSyncError(null);
     setPendingProviderSync({
-      draft: {
-        ...buildDraft(),
-        llmProviderKey: provider.providerKey,
-        llmModelKey: "",
-      },
+      draft: buildDraft(),
       providerKeys: [provider.providerKey],
       saveAfterSync: false,
     });
   }
 
   function handleManualProviderSync() {
+    if (!canSyncProvider) return;
     const draft = buildDraft();
-    if (draft.deviceId === "") return;
     const keys = referencedProviderKeys(draft);
     if (keys.length === 0) return;
     setProviderSyncError(null);
@@ -1905,10 +1907,11 @@ function BackendEditor({
       ? t("agentBackends.summary.reasons.invalidTarget")
       : saveBlockedReason;
   const submitDisabled = submitting || effectiveSaveBlockedReason !== null;
-  const manualProviderSyncKeys =
-    deviceId !== "" ? referencedProviderKeys(buildDraft()) : [];
+  const manualProviderSyncKeys = canSyncProvider
+    ? referencedProviderKeys(buildDraft())
+    : [];
   const showManualProviderSync =
-    deviceId !== "" && manualProviderSyncKeys.length > 0;
+    canSyncProvider && manualProviderSyncKeys.length > 0;
 
   return (
     <>
@@ -2064,7 +2067,9 @@ function BackendEditor({
               setLlmProviderKey(providerKey);
               setLlmModelKey(modelKey);
             }}
-            onSyncProvider={handlePickerProviderSync}
+            onSyncProvider={
+              canSyncProvider ? handlePickerProviderSync : undefined
+            }
             invalid={mainTargetInvalid}
             piAgentModelMissing={piAgentModelMissing}
             editing={!!editing}
@@ -2554,7 +2559,7 @@ function ModelBindingSection({
   value: string;
   modelKey: string;
   onTargetChange: (target: RouteTarget) => void;
-  onSyncProvider: (provider: PickerProvider) => void;
+  onSyncProvider?: (provider: PickerProvider) => void;
   invalid: boolean;
   piAgentModelMissing: boolean;
   editing: boolean;
@@ -2662,7 +2667,7 @@ function ModelTargetField({
   value: string;
   modelKey: string;
   onTargetChange: (t: { providerKey: string; modelKey: string }) => void;
-  onSyncProvider: (provider: PickerProvider) => void;
+  onSyncProvider?: (provider: PickerProvider) => void;
   invalid: boolean;
   piAgentModelMissing: boolean;
   editing: boolean;
