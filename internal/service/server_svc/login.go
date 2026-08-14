@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"os"
 	"runtime"
 
 	"github.com/cago-frame/cago/pkg/logger"
@@ -27,6 +28,9 @@ const keychainAccountName = "agentre.server.refresh_token"
 // keychainFingerprintAccount）必须一致——R5 决策 8:账号侧不得另生成指纹。
 const accountForDeviceFingerprint = "agentre-device-fingerprint"
 
+// osHostname 是设备显示名的取值口，抽成变量供测试替换。
+var osHostname = os.Hostname
+
 // ---- request / response DTOs（私有，只在本包内用）----
 
 type deviceAuthorizeReq struct {
@@ -34,6 +38,9 @@ type deviceAuthorizeReq struct {
 	Fingerprint string `json:"fingerprint"`
 	Platform    string `json:"platform"`
 	Version     string `json:"version"`
+	// Name 是设备列表里的显示名，取本机主机名。设备流是账号侧拿到它的唯一途径：
+	// 不带上，服务端只能拿指纹缩写当名字，账号下每台机器就都长得一样了。
+	Name string `json:"name"`
 }
 
 type deviceAuthorizeResp struct {
@@ -118,11 +125,14 @@ func (s *service) StartLogin(ctx context.Context, serverURL string) (*StartLogin
 	}
 	row.ServerURL = serverURL
 
+	// 主机名取不到不影响登录：空串上报，服务端回退到指纹缩写。
+	hostname, _ := osHostname()
 	req := deviceAuthorizeReq{
 		DeviceKind:  "desktop",
 		Fingerprint: row.DeviceFingerprint,
 		Platform:    runtimePlatform(),
 		Version:     buildVersion(),
+		Name:        hostname,
 	}
 	var env envelope[deviceAuthorizeResp]
 	if _, err := s.getClient().do(ctx, http.MethodPost, "/v1/oauth/device/authorize", req, &env); err != nil {

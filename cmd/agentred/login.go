@@ -37,6 +37,9 @@ type loginDeps struct {
 	wait        func(time.Duration) error
 	platform    string
 	version     string
+	// hostname 提供设备列表里的显示名。取不到时按空串上报，由服务端回退到指纹
+	// 缩写——一个取不到的显示名不该让整次登录失败。
+	hostname func() (string, error)
 }
 
 type deviceAuthorizeResponse struct {
@@ -80,6 +83,7 @@ func newLoginCmd() *cobra.Command {
 		},
 		platform: runtime.GOOS,
 		version:  agentredBuildIdentity(),
+		hostname: os.Hostname,
 	})
 }
 
@@ -118,6 +122,13 @@ func newLoginCmdWithDeps(deps loginDeps) *cobra.Command {
 
 func login(cmd *cobra.Command, deps loginDeps, st *state.State, serverURL string) error {
 	authorize := deviceAuthorizeResponse{}
+	// 主机名取不到不影响登录：空串上报，服务端回退到指纹缩写。
+	name := ""
+	if deps.hostname != nil {
+		if got, err := deps.hostname(); err == nil {
+			name = got
+		}
+	}
 	if _, err := doLoginJSON(cmd, deps.http, http.MethodPost, serverURL+"/v1/oauth/device/authorize", map[string]any{
 		"device_kind": "agentred",
 		// 账号侧的设备指纹与 auth.pair 交给桌面端做 TOFU 的那一个是同一个东西:
@@ -129,6 +140,9 @@ func login(cmd *cobra.Command, deps loginDeps, st *state.State, serverURL string
 		"fingerprint": rpc.DaemonFingerprint(st.InstanceUUID()),
 		"platform":    deps.platform,
 		"version":     deps.version,
+		// 设备流是账号侧拿到这台机器名字的唯一途径：不带上它，设备列表里每台机器
+		// 都只能叫指纹缩写。
+		"name": name,
 	}, &authorize); err != nil {
 		return fmt.Errorf("authorize device login: %w", err)
 	}
