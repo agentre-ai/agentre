@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { access, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { EventEmitter } from "node:events";
@@ -125,11 +126,13 @@ test("Given a private run and a secret-bearing parent environment, when Playwrig
 test("Given a fresh checkout without generated frontend bindings, when the E2E runner prepares the UI, then Wails bindings are generated with disposable storage inside the run root", async (t) => {
   const run = await createRunContext();
   const bindingsDir = join(run.runRoot, "generated-wailsjs");
+  const frontendDistDir = join(run.runRoot, "frontend-dist");
   t.after(() => run.remove());
   let invocation;
 
   await generateWailsBindings(run, {
     bindingsDir,
+    frontendDistDir,
     parentEnv: {
       PATH: "/test/bin",
       AGENTRE_DATA_DIR: "/formal-data-must-not-be-used",
@@ -137,6 +140,7 @@ test("Given a fresh checkout without generated frontend bindings, when the E2E r
       AGENTRE_E2E_TOKEN: "must-not-reach-binding-generation",
     },
     spawnProcess(command, args, options) {
+      assert.equal(existsSync(join(frontendDistDir, ".keep")), true);
       invocation = { command, args, options };
       const child = new EventEmitter();
       queueMicrotask(async () => {
@@ -182,6 +186,11 @@ test("Given Wails binding generation exits unsuccessfully or omits required outp
   const run = await createRunContext();
   t.after(() => run.remove());
   const attemptedStorage = [];
+  const staleBindingsDir = join(run.runRoot, "stale-wailsjs");
+  await mkdir(join(staleBindingsDir, "runtime"), { recursive: true });
+  await mkdir(join(staleBindingsDir, "go", "app"), { recursive: true });
+  await writeFile(join(staleBindingsDir, "runtime", "runtime.js"), "stale runtime\n");
+  await writeFile(join(staleBindingsDir, "go", "app", "App.js"), "stale app\n");
 
   await assert.rejects(
     generateWailsBindings(run, {
@@ -208,6 +217,20 @@ test("Given Wails binding generation exits unsuccessfully or omits required outp
     }),
     /required Wails bindings are missing; use make e2e/,
   );
+
+  await assert.rejects(
+    generateWailsBindings(run, {
+      bindingsDir: staleBindingsDir,
+      spawnProcess(_command, _args, options) {
+        attemptedStorage.push(options.env.AGENTRE_DATA_DIR, options.env.AGENTRE_KEYCHAIN_DIR);
+        const child = new EventEmitter();
+        queueMicrotask(() => child.emit("exit", 0, null));
+        return child;
+      },
+    }),
+    /required Wails bindings are missing; use make e2e/,
+  );
+  await assert.rejects(access(staleBindingsDir), { code: "ENOENT" });
 
   for (const path of attemptedStorage) {
     await assert.rejects(access(path), { code: "ENOENT" });

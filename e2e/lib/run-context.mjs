@@ -160,6 +160,7 @@ export async function generateWailsBindings(
   run,
   {
     bindingsDir = join(REPO_ROOT, "frontend", "wailsjs"),
+    frontendDistDir = join(REPO_ROOT, "frontend", "dist"),
     parentEnv = process.env,
     spawnProcess = spawnLogged,
   } = {},
@@ -201,6 +202,10 @@ export async function generateWailsBindings(
       delete env[name];
     }
   }
+  await rm(bindingsDir, { recursive: true, force: true });
+  await mkdir(frontendDistDir, { recursive: true, mode: 0o700 });
+  await writeFile(join(frontendDistDir, ".keep"), "", { mode: 0o600 });
+
   Object.assign(env, {
     AGENTRE_DATA_DIR: dataDir,
     AGENTRE_KEYCHAIN_DIR: keychainDir,

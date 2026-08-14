@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -172,9 +172,6 @@ async function main() {
     run.remoteIdentity = remoteIdentity;
     run.env.AGENTRE_E2E_REMOTE_PEER_URL = remoteIdentity.url;
     run.env.AGENTRE_E2E_REMOTE_DAEMON_FINGERPRINT = remoteIdentity.daemonFingerprint;
-
-    mkdirSync(join(REPO_ROOT, "frontend", "dist"), { recursive: true });
-    writeFileSync(join(REPO_ROOT, "frontend", "dist", ".keep"), "");
 
     const vite = supervisor.track(
       spawnLogged("pnpm", viteCommand(run), {
