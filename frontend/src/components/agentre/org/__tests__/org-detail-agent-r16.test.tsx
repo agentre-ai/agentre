@@ -242,4 +242,26 @@ describe("OrgDetailAgent execution targets (single list)", () => {
     expect(screen.getByTestId("exec-target-skeleton")).toBeInTheDocument();
     expect(screen.queryByText("No execution targets yet")).toBeNull();
   });
+
+  // 骨架说的是「顺序还在路上」。读回来了却没拿到顺序（读失败），列表就不能再停在
+  // 骨架上：增删/更换与顺序无关，任何状态下都得可用（规格「增删恒可用」）。此时回落
+  // 账号级集合自己的顺序——列表照常有内容，用户照常能加/删/换。
+  it("Given the order read fails, When the panel renders, Then the list falls back to the account order and add/remove stay available", async () => {
+    installGo(() => Promise.reject(new Error("availability read failed")));
+    renderPanel(vi.fn().mockResolvedValue(undefined));
+
+    expect(
+      await screen.findByRole("button", { name: "Add" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("exec-target-skeleton")).toBeNull();
+    expect(screen.queryByText("No execution targets yet")).toBeNull();
+    // 账号级集合的顺序是 51,52。
+    expect(screen.getByTestId("exec-target-row-0")).toHaveTextContent(
+      "claude-51",
+    );
+    expect(screen.getByTestId("exec-target-row-1")).toHaveTextContent(
+      "claude-52",
+    );
+    expect(screen.getAllByRole("button", { name: "Remove" })).toHaveLength(2);
+  });
 });

@@ -27,6 +27,10 @@ export function useExecTargetAvailability(agentId: number, targetsKey: string) {
   >([]);
   const [hasOverride, setHasOverride] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
+  // settled 在第一次请求**落定**（成功或失败）后为真。它回答的是「这一轮读完了吗」，
+  // 而 orderedTargets 回答「读到了什么」——两者必须分开：读失败时 orderedTargets 照样
+  // 是空数组，调用方若只看它就会把「读完了但没拿到」误当成「还在路上」。
+  const [settled, setSettled] = React.useState(false);
   // 只有最新一次请求可以写状态：增删执行目标会连着触发多次拉取，先发的那次晚返回时
   // 不能把新一批判定盖回旧的（徽标会一直停在删掉那一档还在的快照上）。卸载时把代次
   // 推进一格，在飞的请求回来后不再写已卸载组件的状态。
@@ -38,6 +42,7 @@ export function useExecTargetAvailability(agentId: number, targetsKey: string) {
       setByBackendId(new Map());
       setOrderedTargets([]);
       setHasOverride(false);
+      setSettled(true);
       return;
     }
     setLoading(true);
@@ -54,7 +59,10 @@ export function useExecTargetAvailability(agentId: number, targetsKey: string) {
       if (req !== reqRef.current) return;
       console.error("[org] exec target availability load failed", e);
     } finally {
-      if (req === reqRef.current) setLoading(false);
+      if (req === reqRef.current) {
+        setLoading(false);
+        setSettled(true);
+      }
     }
     // targetsKey 只用来判断"这一批 backend id 是否变了"，值本身不进请求体。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -71,5 +79,5 @@ export function useExecTargetAvailability(agentId: number, targetsKey: string) {
     [],
   );
 
-  return { byBackendId, orderedTargets, hasOverride, loading, reload };
+  return { byBackendId, orderedTargets, hasOverride, loading, settled, reload };
 }

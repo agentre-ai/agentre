@@ -473,9 +473,13 @@ function ExecTargetRowView(props: RowProps) {
           {props.index + 1}
         </span>
       )}
+      {/* 详情面板只有 380px 宽：长机器名在行内截断，不换行把行撑高、也不把面板顶出
+          横向滚动。 */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <span className="text-xs font-semibold">{local}</span>
-        <span className="font-mono text-2xs text-muted-foreground">{sub}</span>
+        <span className="truncate text-xs font-semibold">{local}</span>
+        <span className="truncate font-mono text-2xs text-muted-foreground">
+          {sub}
+        </span>
       </div>
       {!single && (
         <div className="flex shrink-0 flex-col">

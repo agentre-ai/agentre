@@ -217,16 +217,30 @@ export function OrgDetailAgent(props: Props) {
     props.agent.id,
     deviceTargetsKey,
   );
-  const [deviceTargets, setDeviceTargets] = React.useState<ExecTargetRow[]>([]);
+  // null = 这一轮读还没落定（顺序还在路上）；数组 = 已落定的本端顺序，读失败时是空
+  // 数组。两者必须分开，否则「读完了但没拿到」会被当成「还在路上」，列表永远停在骨架。
+  const [deviceTargets, setDeviceTargets] = React.useState<
+    ExecTargetRow[] | null
+  >(null);
   React.useEffect(() => {
     if (availability.orderedTargets.length > 0) {
       setDeviceTargets(availability.orderedTargets);
+    } else if (availability.settled) {
+      setDeviceTargets([]);
     }
-  }, [availability.orderedTargets]);
+  }, [availability.orderedTargets, availability.settled]);
 
   // 顺序数据还没到达：渲染骨架而不是空态卡片（真正的空态是「这个 Agent 没有任何
-  // 执行目标」，此时后端返回空数组、下面这个判断自然为假）。
-  const orderPending = execTargets.length > 0 && deviceTargets.length === 0;
+  // 执行目标」，此时 execTargets 也是空的，下面这个判断自然为假）。
+  const orderPending = execTargets.length > 0 && deviceTargets === null;
+
+  // 顺序读完了却没拿到（读失败）时列表回落到账号级集合自己的顺序：增删/更换与顺序
+  // 无关，任何状态下都得可用（规格「增删恒可用」），把列表钉死在骨架上等于把它们
+  // 一起锁掉。用户少看到的只是「本机档自动提前」那一下重排，能做的事一件不少。
+  const listTargets: ExecTargetRow[] =
+    deviceTargets && deviceTargets.length > 0
+      ? deviceTargets
+      : execTargets.map((t) => ({ agentBackendId: t.agentBackendId }));
 
   // 重排只写本端顺序覆盖（orderOverride），不碰账号级集合、不同步。
   const writeDeviceOverride = React.useCallback(
@@ -685,7 +699,7 @@ export function OrgDetailAgent(props: Props) {
           <ExecTargetList
             agentId={props.agent.id}
             agentName={props.agent.name}
-            targets={deviceTargets}
+            targets={listTargets}
             backends={backendsForList}
             onChange={handleExecTargetSetChange}
             onReorder={handleExecTargetReorder}
