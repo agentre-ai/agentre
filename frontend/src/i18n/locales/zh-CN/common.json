@@ -2295,6 +2295,7 @@
       },
       "copyLabel": "复制{{label}}",
       "copySuccess": "命令已复制",
+      "dismiss": "收起引导",
       "install": {
         "archHint": "架构将自动识别",
         "description": "选择远端操作系统，然后在它的终端中运行安装命令。",
@@ -2344,6 +2345,7 @@
           "subtitle": "约 1 分钟",
           "title": "安装 agentred"
         },
+        "navLabel": "第 {{number}} 步:{{title}}",
         "pair": {
           "subtitle": "一次性验证码",
           "title": "配对并验证"
@@ -2357,7 +2359,6 @@
     },
     "actions": {
       "addAgentred": "添加 agentred",
-      "continueAddLan": "+ 继续添加 agentred（LAN）",
       "editTls": "编辑 TLS 信任",
       "refreshStatus": "刷新状态",
       "removeConfirm": "解除配对 \"{{name}}\"？本桌面将清空对该 agentred 的 token 与 fingerprint pin；远端 agentred 的 state.json.pairedPeers 不会自动清理。",
@@ -2367,7 +2368,6 @@
     },
     "add": {
       "advancedTls": "高级 — TLS 信任（{{mode}}）",
-      "description": "LAN 直连",
       "errors": {
         "pairFailed": "配对失败"
       },
@@ -2380,13 +2380,8 @@
         "urlInvalid": "地址需以 /rpc 结尾，例如 ws://192.168.1.100:7456/rpc",
         "codeInvalid": "配对码必须是 6 位字符"
       },
-      "instructions": {
-        "prefix": "在远端执行",
-        "suffix": "，填入打印的 URL 和 6 位配对码。"
-      },
       "pair": "配对",
-      "pairing": "配对中…",
-      "title": "添加 agentred 设备"
+      "pairing": "配对中…"
     },
     "errors": {
       "dialFailed": "连接失败：{{message}}",

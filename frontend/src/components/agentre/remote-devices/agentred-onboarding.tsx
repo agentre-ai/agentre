@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { ArrowRight, Check } from "lucide-react";
+import { ArrowRight, Check, X } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
@@ -15,17 +15,36 @@ type RunMode = "background" | "foreground";
 type OnboardingStep = 1 | 2 | 3;
 
 type AgentredOnboardingProps = {
+  /** 省略即不可收起 —— 宿主没有可回退的地方(设备列表为空)时就是这种情况。 */
+  onDismiss?: () => void;
   onSubmit: (request: AddRequest) => Promise<void>;
 };
 
 const MANUAL_INSTALL_URL =
   "https://github.com/agentre-ai/agentre/releases/latest";
 
-export function AgentredOnboarding({ onSubmit }: AgentredOnboardingProps) {
+export function AgentredOnboarding({
+  onDismiss,
+  onSubmit,
+}: AgentredOnboardingProps) {
   const { t } = useTranslation();
   const [step, setStep] = useState<OnboardingStep>(1);
+  // 只记用户真的点过「下一步」的步骤 —— 跳过去的步骤没有资格自称完成。
+  const [finishedSteps, setFinishedSteps] = useState<readonly OnboardingStep[]>(
+    [],
+  );
   const [remoteOS, setRemoteOS] = useState<RemoteOS>("linux");
   const [runMode, setRunMode] = useState<RunMode>("background");
+  // 配对在途时锁住所有离开第 3 步的路。失败原因只存在于那张表单里,一旦提前卸载
+  // 它,setError 就落在已卸载的组件上,配对失败会被无声吞掉。
+  const [submitting, setSubmitting] = useState(false);
+
+  const finishStep = (finished: OnboardingStep, next: OnboardingStep) => {
+    setFinishedSteps((previous) =>
+      previous.includes(finished) ? previous : [...previous, finished],
+    );
+    setStep(next);
+  };
 
   const commands = {
     daemonRunning: t("remoteDevices.onboarding.commands.daemonRunning"),
@@ -44,34 +63,51 @@ export function AgentredOnboarding({ onSubmit }: AgentredOnboardingProps) {
 
   return (
     <section className="overflow-hidden rounded-xl border border-border bg-card">
-      <ol className="grid grid-cols-1 border-b border-border bg-muted/50 sm:grid-cols-3">
-        <StepHeader
-          number={1}
-          activeStep={step}
-          title={t("remoteDevices.onboarding.steps.install.title")}
-          subtitle={
-            step > 1
-              ? t("remoteDevices.onboarding.steps.install.done")
-              : t("remoteDevices.onboarding.steps.install.subtitle")
-          }
-        />
-        <StepHeader
-          number={2}
-          activeStep={step}
-          title={t("remoteDevices.onboarding.steps.service.title")}
-          subtitle={
-            step > 2
-              ? t("remoteDevices.onboarding.steps.service.done")
-              : t("remoteDevices.onboarding.steps.service.subtitle")
-          }
-        />
-        <StepHeader
-          number={3}
-          activeStep={step}
-          title={t("remoteDevices.onboarding.steps.pair.title")}
-          subtitle={t("remoteDevices.onboarding.steps.pair.subtitle")}
-        />
-      </ol>
+      <div className="flex items-start border-b border-border bg-muted/50">
+        <ol className="grid min-w-0 flex-1 grid-cols-1 sm:grid-cols-3">
+          <StepHeader
+            number={1}
+            active={step === 1}
+            disabled={submitting}
+            finished={finishedSteps.includes(1)}
+            onSelect={() => setStep(1)}
+            title={t("remoteDevices.onboarding.steps.install.title")}
+            subtitle={t("remoteDevices.onboarding.steps.install.subtitle")}
+            finishedSubtitle={t("remoteDevices.onboarding.steps.install.done")}
+          />
+          <StepHeader
+            number={2}
+            active={step === 2}
+            disabled={submitting}
+            finished={finishedSteps.includes(2)}
+            onSelect={() => setStep(2)}
+            title={t("remoteDevices.onboarding.steps.service.title")}
+            subtitle={t("remoteDevices.onboarding.steps.service.subtitle")}
+            finishedSubtitle={t("remoteDevices.onboarding.steps.service.done")}
+          />
+          <StepHeader
+            number={3}
+            active={step === 3}
+            disabled={submitting}
+            onSelect={() => setStep(3)}
+            title={t("remoteDevices.onboarding.steps.pair.title")}
+            subtitle={t("remoteDevices.onboarding.steps.pair.subtitle")}
+          />
+        </ol>
+        {onDismiss ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="m-2 shrink-0"
+            aria-label={t("remoteDevices.onboarding.dismiss")}
+            disabled={submitting}
+            onClick={onDismiss}
+          >
+            <X aria-hidden="true" />
+          </Button>
+        ) : null}
+      </div>
 
       <div className="flex flex-col gap-5 p-4 sm:p-6">
         <div className="flex flex-col gap-2">
@@ -178,7 +214,7 @@ export function AgentredOnboarding({ onSubmit }: AgentredOnboardingProps) {
                   {t("remoteDevices.onboarding.install.manual")}
                 </a>
               </Button>
-              <Button type="button" onClick={() => setStep(2)}>
+              <Button type="button" onClick={() => finishStep(1, 2)}>
                 {t("remoteDevices.onboarding.install.next")}
                 <ArrowRight data-icon="inline-end" aria-hidden="true" />
               </Button>
@@ -305,7 +341,7 @@ export function AgentredOnboarding({ onSubmit }: AgentredOnboardingProps) {
 
             <Separator />
             <div className="flex justify-end">
-              <Button type="button" onClick={() => setStep(3)}>
+              <Button type="button" onClick={() => finishStep(2, 3)}>
                 {t("remoteDevices.onboarding.service.next")}
                 <ArrowRight data-icon="inline-end" aria-hidden="true" />
               </Button>
@@ -325,6 +361,7 @@ export function AgentredOnboarding({ onSubmit }: AgentredOnboardingProps) {
                 cancelLabel={t("remoteDevices.onboarding.pair.back")}
                 onCancel={() => setStep(2)}
                 onSubmit={onSubmit}
+                onSubmittingChange={setSubmitting}
                 submitLabel={t("remoteDevices.onboarding.pair.submit")}
               />
             </div>
@@ -336,44 +373,64 @@ export function AgentredOnboarding({ onSubmit }: AgentredOnboardingProps) {
 }
 
 function StepHeader({
-  activeStep,
+  active,
+  disabled,
+  finished,
+  finishedSubtitle,
   number,
+  onSelect,
   subtitle,
   title,
 }: {
-  activeStep: OnboardingStep;
+  active: boolean;
+  disabled: boolean;
+  /** 两者一同省略即这一步没有「已完成」的说法 —— 配对是终点,没有下一步可点。 */
+  finished?: boolean;
+  finishedSubtitle?: string;
   number: OnboardingStep;
+  onSelect: () => void;
   subtitle: string;
   title: string;
 }) {
-  const complete = number < activeStep;
-  const active = number === activeStep;
+  const { t } = useTranslation();
 
   return (
-    <li
-      aria-current={active ? "step" : undefined}
-      className="flex min-w-0 items-start gap-3 border-b border-border p-4 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0"
-    >
-      <span
-        aria-hidden="true"
-        className={cn(
-          "flex size-6 shrink-0 items-center justify-center rounded-full bg-muted font-mono text-2xs font-semibold text-muted-foreground",
-          active && "bg-primary text-primary-foreground",
-          complete && "bg-status-running-bg text-status-running",
-        )}
+    <li className="flex min-w-0 border-b border-border last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0">
+      <Button
+        type="button"
+        variant="ghost"
+        aria-current={active ? "step" : undefined}
+        // 序号只画在 aria-hidden 的徽标里,读屏拿不到;不自带序号的话,这一格听起来
+        // 就是配对表单的提交按钮加了个副标题尾巴。
+        aria-label={t("remoteDevices.onboarding.steps.navLabel", {
+          number,
+          title,
+        })}
+        className="h-auto min-w-0 flex-1 items-start justify-start gap-3 rounded-none p-4 text-left font-normal"
+        disabled={disabled}
+        onClick={onSelect}
       >
-        {complete ? (
-          <Check className="size-3" />
-        ) : (
-          String(number).padStart(2, "0")
-        )}
-      </span>
-      <span className="min-w-0">
-        <span className="block truncate text-xs font-semibold">{title}</span>
-        <span className="mt-0.5 block truncate text-2xs text-muted-foreground">
-          {subtitle}
+        <span
+          aria-hidden="true"
+          className={cn(
+            "flex size-6 shrink-0 items-center justify-center rounded-full bg-muted font-mono text-2xs font-semibold text-muted-foreground",
+            finished && "bg-status-running-bg text-status-running",
+            active && "bg-primary text-primary-foreground",
+          )}
+        >
+          {finished ? (
+            <Check className="size-3" />
+          ) : (
+            String(number).padStart(2, "0")
+          )}
         </span>
-      </span>
+        <span className="min-w-0">
+          <span className="block truncate text-xs font-semibold">{title}</span>
+          <span className="mt-0.5 block truncate text-2xs text-muted-foreground">
+            {finished && finishedSubtitle ? finishedSubtitle : subtitle}
+          </span>
+        </span>
+      </Button>
     </li>
   );
 }

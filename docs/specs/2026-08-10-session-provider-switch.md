@@ -52,7 +52,7 @@
 | 10 | **选择器在已有会话同样渲染，不满足条件时 `disabled` + tooltip 说明**（用户决策），取代 #33 决策 7 的「已有会话不渲染任何切换器」 | 用户决策：隐藏让用户以为功能消失（本轮起因就是这个报告）。禁用态覆盖：openclaw 后端、无兼容供应商、供应商列表加载中、列表拉取失败 |
 | 11 | **切换时复用新建会话那套校验**（存在 / `IsActive` / `ProviderTypeMatch`），不通过则拒绝写库并原样报错，会话保持原供应商 | 与 `validateNewSessionProvider`（`chat.go:1723-1743`）同一口径，避免出现「写进去了但下一轮必然失败」的会话。拒绝先落库后校验 |
 | 12 | **远端切换沿用「wire 只过 key、daemon 自解」**：每轮 run 已透传 effectiveProviderKey（`chat.go:3722`），daemon 侧把同样的 effective key 用到它自己的网关 token 路由上 | 硬不变量 7；daemon 侧已有按 effective key 解析 provider 的分支（`internal/daemon/handlers/runtime.go:349-376`），缺的只是网关 token 那一段。拒绝把 desktop 的 provider 实体下发给 daemon——密钥越线 |
-| 13 | **`docs/specs/2026-08-09-new-session-provider-select.md` 的决策 7 与「不可事后改」标注为被本规格取代**，不删除原文件 | 该规格其余部分（新建会话选择器、回退 notice、迁移）仍然有效，只有这两条被推翻。拒绝整篇 Superseded——会连带作废仍生效的决策 |
+| 13 | **`docs/specs/2026-08-09-new-session-provider-select.md` 的决策 7 与「不可事后改」由本规格推翻**，该文件里这两条直接改写为现行行为，Status 行指回本规格；不删除原文件 | 该规格其余部分（新建会话选择器、回退 notice、迁移）仍然有效，只有这两条被推翻。拒绝整篇 Superseded——会连带作废仍生效的决策 |
 
 ## 有效供应商解析（唯一口径）
 

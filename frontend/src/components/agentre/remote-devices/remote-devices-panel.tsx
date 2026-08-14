@@ -15,7 +15,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 
-import { AddDeviceDialog } from "./add-device-dialog";
 import { DesktopDeviceRow } from "./desktop-device-row";
 import { AgentredOnboarding } from "./agentred-onboarding";
 import { DeviceRow } from "./device-row";
@@ -89,7 +88,7 @@ export function RemoteDevicesPanel({
   } = useRemoteDevices();
   const serverLogin = useServerLogin();
   const [now, setNow] = useState(() => Date.now());
-  const [addOpen, setAddOpen] = useState(false);
+  const [guideRequested, setGuideRequested] = useState(false);
   const [showBackendGuide, setShowBackendGuide] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [editTLSFor, setEditTLSFor] = useState<DeviceRowModel | null>(null);
@@ -105,6 +104,10 @@ export function RemoteDevicesPanel({
   }, []);
 
   const onlineCount = devices.filter((d) => d.online).length;
+  // 决策 1:零设备时引导就是这一页(且无处可退,不给收起);已有设备时它默认收起,
+  // 由页头那唯一一个入口召唤。加载中/加载失败在下面提前返回,两种情况都到不了这里。
+  const guideDismissible = devices.length > 0;
+  const guideOpen = !guideDismissible || guideRequested;
   // 账号设备清单里的桌面端（R19）：不参与 LAN 配对行合并，单独作为可展开行。
   const desktopDevices = (accountDevices ?? []).filter(
     (d) => d.Kind === "desktop",
@@ -181,64 +184,61 @@ export function RemoteDevicesPanel({
                 .finally(reloadInBackground);
             }}
           />
-          <Button onClick={() => setAddOpen(true)}>
-            <Plus data-icon="inline-start" aria-hidden="true" />
-            {t("remoteDevices.actions.addAgentred")}
-          </Button>
+          {/* 引导开着时不渲染:这个按钮的唯一职责就是打开引导。 */}
+          {guideOpen ? null : (
+            <Button onClick={() => setGuideRequested(true)}>
+              <Plus data-icon="inline-start" aria-hidden="true" />
+              {t("remoteDevices.actions.addAgentred")}
+            </Button>
+          )}
         </div>
       </header>
 
-      {devices.length === 0 ? (
+      {guideOpen ? (
         <AgentredOnboarding
+          onDismiss={
+            guideDismissible ? () => setGuideRequested(false) : undefined
+          }
           onSubmit={async (request) => {
             await add(request);
+            setGuideRequested(false);
+            // 决策 7:每一台配对成功都衔接到 Agent 后端,不只有第一台。
             setShowBackendGuide(true);
           }}
         />
-      ) : (
-        <div className="flex flex-col gap-3">
-          {showBackendGuide ? (
-            <Alert className="border-primary/30 bg-primary-soft">
-              <CircleCheck aria-hidden="true" />
-              <AlertTitle>
-                {t("remoteDevices.onboarding.complete.title")}
-              </AlertTitle>
-              <AlertDescription className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
-                <span>
-                  {t("remoteDevices.onboarding.complete.description")}
-                </span>
-                <Button type="button" size="sm" onClick={onOpenAgentBackends}>
-                  {t("remoteDevices.onboarding.complete.action")}
-                  <ArrowRight data-icon="inline-end" aria-hidden="true" />
-                </Button>
-              </AlertDescription>
-            </Alert>
-          ) : null}
-          <div className="flex flex-col gap-2">
-            {devices.map((d) => (
-              <DeviceRow
-                key={d.id}
-                device={d}
-                now={now}
-                onRefresh={() => void refresh(d.id)}
-                onRename={() => setRenameFor({ id: d.id, draft: d.name })}
-                onEditTLS={() => setEditTLSFor(d)}
-                onRemove={() => setRemoveFor(d)}
-              />
-            ))}
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setAddOpen(true)}
-            className="self-start"
-          >
-            <Plus data-icon="inline-start" aria-hidden="true" />
-            {t("remoteDevices.actions.continueAddLan")}
-          </Button>
+      ) : null}
+
+      {showBackendGuide ? (
+        <Alert className="border-primary/30 bg-primary-soft">
+          <CircleCheck aria-hidden="true" />
+          <AlertTitle>
+            {t("remoteDevices.onboarding.complete.title")}
+          </AlertTitle>
+          <AlertDescription className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+            <span>{t("remoteDevices.onboarding.complete.description")}</span>
+            <Button type="button" size="sm" onClick={onOpenAgentBackends}>
+              {t("remoteDevices.onboarding.complete.action")}
+              <ArrowRight data-icon="inline-end" aria-hidden="true" />
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {devices.length > 0 ? (
+        <div className="flex flex-col gap-2">
+          {devices.map((d) => (
+            <DeviceRow
+              key={d.id}
+              device={d}
+              now={now}
+              onRefresh={() => void refresh(d.id)}
+              onRename={() => setRenameFor({ id: d.id, draft: d.name })}
+              onEditTLS={() => setEditTLSFor(d)}
+              onRemove={() => setRemoveFor(d)}
+            />
+          ))}
         </div>
-      )}
+      ) : null}
 
       {desktopDevices.length > 0 ? (
         <div className="flex flex-col gap-2">
@@ -344,15 +344,6 @@ export function RemoteDevicesPanel({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      <AddDeviceDialog
-        open={addOpen}
-        onClose={() => setAddOpen(false)}
-        onSubmit={async (req) => {
-          await add(req);
-          setAddOpen(false);
-        }}
-      />
 
       <TLSTrustDialog
         open={editTLSFor !== null}

@@ -138,6 +138,225 @@ describe("RemoteDevicesPanel", () => {
         "curl -fsSL https://github.com/agentre-ai/agentre/releases/latest/download/install.sh | sh",
       ),
     ).toHaveAttribute("data-selectable-text", "true");
+    // 零设备:引导本身就是这一页,没有可回退的地方 —— 不给收起控件,
+    // 也不再同屏并列一个「添加 agentred」按钮(它的唯一职责是打开引导)。
+    expect(
+      screen.queryByRole("button", { name: "Collapse guide" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Add agentred" }),
+    ).not.toBeInTheDocument();
+  });
+
+  // 决策 1/3:第 N 台从唯一入口召唤出同一份引导,列表保持可见,可收起。
+  it("summons the same guide from the single entry point once devices exist", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValueOnce([
+      {
+        id: 1,
+        name: "linux-srv",
+        url: "ws://linux-srv.local:7456/rpc",
+        tlsMode: "default",
+        online: true,
+        lastSeenAt: Date.now(),
+      },
+    ] as Partial<DeviceView>[]);
+
+    render(<RemoteDevicesPanel />);
+    await screen.findByTestId("device-row");
+
+    expect(
+      screen.queryByRole("heading", { name: "Install agentred" }),
+    ).not.toBeInTheDocument();
+    // 全页只剩一个添加入口:列表底部那个「+ 继续添加 agentred(LAN)」已删除。
+    expect(
+      screen.getAllByRole("button", { name: "Add agentred" }),
+    ).toHaveLength(1);
+    // 这一轮把 remoteDevices.actions.continueAddLan 从两份 locale 里一并删掉了,所以
+    // 按钮若被重新加回 JSX,渲染出来的是**原始 key**而不是译文;译文断言只在「key 也
+    // 被加回来」时才可能命中,单靠它挡不住另一半。同 lanAll 那条,两边都要。
+    expect(
+      screen.queryByRole("button", {
+        name: "remoteDevices.actions.continueAddLan",
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Add another agentred/ }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Add agentred" }));
+
+    // 与零设备时同形:第 1 步的安装命令一字不差。
+    expect(
+      screen.getByRole("heading", { name: "Install agentred" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "curl -fsSL https://github.com/agentre-ai/agentre/releases/latest/download/install.sh | sh",
+      ),
+    ).toHaveAttribute("data-selectable-text", "true");
+    expect(screen.getByTestId("device-row")).toBeInTheDocument();
+    // 引导开着就不该再有第二个打开它的入口。
+    expect(
+      screen.queryByRole("button", { name: "Add agentred" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Collapse guide" }));
+
+    expect(
+      screen.queryByRole("heading", { name: "Install agentred" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Add agentred" }),
+    ).toBeInTheDocument();
+  });
+
+  // 决策 7:衔接提示不再只有第一台能看到。
+  it("shows the Agent Backends follow-up after pairing a further device too", async () => {
+    const user = userEvent.setup();
+    const onOpenAgentBackends = vi.fn();
+    const first = {
+      id: 1,
+      name: "linux-srv",
+      url: "ws://linux-srv.local:7456/rpc",
+      tlsMode: "default",
+      online: true,
+      lastSeenAt: Date.now(),
+    } as Partial<DeviceView>;
+    mockList.mockResolvedValueOnce([first] as Partial<DeviceView>[]);
+    mockList.mockResolvedValueOnce([
+      first,
+      {
+        id: 2,
+        name: "build-box",
+        url: "ws://build-box.local:7456/rpc",
+        tlsMode: "default",
+        online: true,
+        lastSeenAt: Date.now(),
+      },
+    ] as Partial<DeviceView>[]);
+    mockAdd.mockResolvedValueOnce(undefined);
+
+    render(<RemoteDevicesPanel onOpenAgentBackends={onOpenAgentBackends} />);
+    await screen.findByTestId("device-row");
+
+    await user.click(screen.getByRole("button", { name: "Add agentred" }));
+    await user.click(screen.getByRole("button", { name: "Installed, next" }));
+    await user.click(
+      screen.getByRole("button", { name: "Service is running" }),
+    );
+    await user.type(
+      screen.getByLabelText("Address"),
+      "ws://build-box.local:7456/rpc",
+    );
+    await user.type(screen.getByLabelText("Pairing Code"), "ABC2DE");
+    await user.click(screen.getByRole("button", { name: "Pair and verify" }));
+
+    await waitFor(() =>
+      expect(screen.getAllByTestId("device-row")).toHaveLength(2),
+    );
+    // 配对成功后引导收起,唯一入口回到页头。
+    expect(
+      screen.queryByRole("heading", { name: "Connect this remote machine" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Add agentred" }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Configure Agent Backends" }),
+    );
+    expect(onOpenAgentBackends).toHaveBeenCalledOnce();
+  });
+
+  // 失败不算「配对成功」:引导不收起、输入不丢、也不冒出衔接提示。
+  it("keeps the summoned guide open on step 3 when pairing the further device fails", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValueOnce([
+      {
+        id: 1,
+        name: "linux-srv",
+        url: "ws://linux-srv.local:7456/rpc",
+        tlsMode: "default",
+        online: true,
+        lastSeenAt: Date.now(),
+      },
+    ] as Partial<DeviceView>[]);
+    mockAdd.mockRejectedValueOnce(new Error("Pairing code expired"));
+
+    render(<RemoteDevicesPanel />);
+    await screen.findByTestId("device-row");
+
+    await user.click(screen.getByRole("button", { name: "Add agentred" }));
+    await user.click(screen.getByRole("button", { name: "Installed, next" }));
+    await user.click(
+      screen.getByRole("button", { name: "Service is running" }),
+    );
+    await user.type(
+      screen.getByLabelText("Address"),
+      "ws://build-box.local:7456/rpc",
+    );
+    await user.type(screen.getByLabelText("Pairing Code"), "abc2de");
+    await user.click(screen.getByRole("button", { name: "Pair and verify" }));
+
+    expect(await screen.findByText("Pairing code expired")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Connect this remote machine" }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Address")).toHaveValue(
+      "ws://build-box.local:7456/rpc",
+    );
+    expect(screen.getByLabelText("Pairing Code")).toHaveValue("ABC2DE");
+    expect(
+      screen.queryByRole("button", { name: "Configure Agent Backends" }),
+    ).not.toBeInTheDocument();
+  });
+
+  // 收起会把整份引导连同第 3 步的表单一起卸载,而失败原因只存在于那张表单里 ——
+  // 提交在途时放行收起,配对失败就会被无声吞掉:设备没加上,用户却什么也看不到。
+  it("keeps a mid-submit pairing failure visible even if the user tries to collapse the guide", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValueOnce([
+      {
+        id: 1,
+        name: "linux-srv",
+        url: "ws://linux-srv.local:7456/rpc",
+        tlsMode: "default",
+        online: true,
+        lastSeenAt: Date.now(),
+      },
+    ] as Partial<DeviceView>[]);
+    let rejectAdd: (reason: Error) => void = () => {};
+    mockAdd.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectAdd = reject;
+        }),
+    );
+
+    render(<RemoteDevicesPanel />);
+    await screen.findByTestId("device-row");
+
+    await user.click(screen.getByRole("button", { name: "Add agentred" }));
+    await user.click(screen.getByRole("button", { name: "Installed, next" }));
+    await user.click(
+      screen.getByRole("button", { name: "Service is running" }),
+    );
+    await user.type(
+      screen.getByLabelText("Address"),
+      "ws://build-box.local:7456/rpc",
+    );
+    await user.type(screen.getByLabelText("Pairing Code"), "ABC2DE");
+    await user.click(screen.getByRole("button", { name: "Pair and verify" }));
+
+    await user.click(screen.getByRole("button", { name: "Collapse guide" }));
+
+    rejectAdd(new Error("Pairing code expired"));
+
+    expect(await screen.findByText("Pairing code expired")).toBeInTheDocument();
+    expect(screen.getByLabelText("Address")).toHaveValue(
+      "ws://build-box.local:7456/rpc",
+    );
   });
 
   it("switches installer and service commands through the approved three-step flow", async () => {
