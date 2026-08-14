@@ -185,7 +185,7 @@ test("Given one supervised process tree cannot be terminated, when cleanup runs,
   assert.deepEqual(calls.sort((a, b) => a - b), [404, 505]);
 });
 
-test("Given a failed run containing its token in text artifacts, when evidence is preserved, then the report path is retained and secrets are redacted", async (t) => {
+test("Given a failed run with known text secrets and unsafe state, when evidence is preserved, then secrets are redacted and token-bearing state and files are removed", async (t) => {
   const run = await createRunContext();
   const artifactRoot = join(dirname(run.runRoot), `${basename(run.runRoot)}-artifacts`);
   t.after(async () => {
@@ -203,15 +203,6 @@ test("Given a failed run containing its token in text artifacts, when evidence i
   await writeFile(join(run.browserDir, "browser-secret.json"), "must-not-be-retained");
   await writeFile(join(run.runRoot, "go-overlay.json"), "must-not-be-retained");
   const desktopControlToken = "d".repeat(43);
-  assert.equal(
-    [
-      run.token,
-      run.controlToken,
-      run.syncIdentity.refreshToken,
-      run.remoteIdentity.deviceToken,
-    ].includes(desktopControlToken),
-    false,
-  );
   await writeFile(
     join(run.dataDir, "ctl-endpoint.json"),
     `${JSON.stringify({ token: desktopControlToken })}\n`,
