@@ -11,7 +11,7 @@
 **Hard invariant:**
 
 1. 不改动 [2026-08-11 LLM Provider 多模型与统一 ModelTarget](./2026-08-11-llm-provider-models.md) 已批准的领域语义：ModelTarget 三态、引用保护、默认模型动态跟随、切换自下一轮生效、凭证执行侧本地化、远端目录门控与显式同步。
-2. 不新增后端服务方法或 Wails 绑定；本轮只重排前端已能拿到的数据。唯一例外（2026-08-13 经用户批准）：`ProviderItem` 增加只读 `modelCount` 字段，由 `ListLLMProviders` 一次 GROUP BY 按 provider 计数填充（新增 `llm_provider_repo.CountModelsByProvider` 仓储方法，不新增服务方法 / Wails 绑定），用于左栏供应商行显示模型数。
+2. 不新增后端服务方法或 Wails 绑定；本轮只重排前端已能拿到的数据。例外一（2026-08-13 经用户批准）：`ProviderItem` 增加只读 `modelCount` 字段，由 `ListLLMProviders` 一次 GROUP BY 按 provider 计数填充（新增 `llm_provider_repo.CountModelsByProvider` 仓储方法，不新增服务方法 / Wails 绑定），用于左栏供应商行显示模型数。例外二（2026-08-14 经用户批准）：`peer_svc.RunFreshRequest` 增加 `ProviderKey` / `ModelKey` 两个字段，让派到对端桌面的会话带上自己的模型目标；不新增服务方法 / Wails 绑定。
 3. 不把界面上的状态说得比后端能证明的更确定：后端不持久化的信息不得渲染成持久状态。
 
 ## Problem
@@ -68,6 +68,7 @@
 | 20 | 所有品牌标识继续走现有 `LlmProviderLogo` / `LlmModelLogo` / `AgentBackendLogo`，新增与移动的位置一并使用；模型位按 model id 判定品牌，认不出再回落供应商品牌。 | 单色/彩色/文字回落与暗色适配已由这些组件统一处理。拒绝在新位置手写色块或字母占位。 |
 | 21 | 移除面向实现的术语（如「严格匹配 · anthropic」），改为仅在没有任何兼容供应商时给出说明。 | 不兼容的供应商本来就不会出现在选择器里，常驻徽标是噪音。拒绝保留原文案。 |
 | 22 | 左栏供应商行显示「模型数」：给展示 DTO `ProviderItem` 增加只读 `modelCount` 字段，由 `ListLLMProviders` 用一次 GROUP BY 按 provider 计数填充（新增 `llm_provider_repo.CountModelsByProvider` 仓储方法，不新增服务方法 / Wails 绑定）。 | 左栏行要一眼看到供应商规模；前端 N+1 逐个拉 `ListLLMModels` 会放大调用且超出「只重排已拿到的数据」。经用户批准放宽硬不变量 #2 的 DTO 字段限制。 |
+| 23 | 派到对端桌面的会话要带上自己的模型目标：`peer_svc.RunFreshRequest` 增加 `ProviderKey` / `ModelKey` 两个字段，由派发边界填入（不新增服务方法 / Wails 绑定）。 | `wire.RunParams.LLMProviderKey / LLMModelKey` 是 2026-08-11 已批准的既有契约，桌面派发只是没填；不补这两个字段，Composer pill 与弹层底部「切换自下一轮生效」就会对派到对端的会话说谎，撞硬不变量 #3。经用户批准放宽硬不变量 #2 的 DTO 字段限制。 |
 
 ## 供应商管理页
 
