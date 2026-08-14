@@ -4,12 +4,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import { AgentredOnboarding } from "./agentred-onboarding";
 
-// 步骤条三格各自的稳定标识:第 3 格的标题与配对表单的提交按钮同名,所以用它独有的副标题认它。
-const INSTALL_CELL = /Install agentred/;
-const SERVICE_CELL = /Start the remote service/;
-const PAIR_CELL = /One-time code/;
+// 步骤条三格各自的稳定标识:序号是它们的身份,第 3 格因此不再和提交按钮同名。
+const INSTALL_CELL = "Step 1: Install agentred";
+const SERVICE_CELL = "Step 2: Start the remote service";
+const PAIR_CELL = "Step 3: Pair and verify";
 
-function stepCell(name: RegExp): HTMLElement {
+function stepCell(name: string): HTMLElement {
   return screen.getByRole("button", { name });
 }
 
@@ -118,6 +118,32 @@ describe("AgentredOnboarding", () => {
 
     expect(screen.getByText("Step 3 of 3")).toBeInTheDocument();
     expect(screen.getByLabelText("Address")).toBeInTheDocument();
+  });
+
+  // 步骤条格子是导航不是动作:序号只画在 aria-hidden 的徽标里,读屏听不到,于是
+  // 第 3 格听起来就是配对表单的提交按钮「配对并验证」加了个尾巴。可及名必须自带序号。
+  it("names each rail cell as numbered step navigation, never colliding with the submit button", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentredOnboarding onSubmit={vi.fn().mockResolvedValue(undefined)} />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Step 1: Install agentred" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Step 2: Start the remote service" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Step 3: Pair and verify" }),
+    ).toBeInTheDocument();
+
+    // 完成不改身份:序号 + 标题就是这一格的名字,不随「已完成」漂移。
+    await user.click(screen.getByRole("button", { name: "Installed, next" }));
+
+    expect(
+      screen.getByRole("button", { name: "Step 1: Install agentred" }),
+    ).toBeInTheDocument();
   });
 
   // 完成标记记录的是「用户点过这一步的下一步」,不是「走到过这一步之后」。

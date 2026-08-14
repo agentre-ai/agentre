@@ -2345,6 +2345,7 @@
           "subtitle": "About 1 minute",
           "title": "Install agentred"
         },
+        "navLabel": "Step {{number}}: {{title}}",
         "pair": {
           "subtitle": "One-time code",
           "title": "Pair and verify"

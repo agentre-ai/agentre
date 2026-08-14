@@ -393,12 +393,20 @@ function StepHeader({
   subtitle: string;
   title: string;
 }) {
+  const { t } = useTranslation();
+
   return (
     <li className="flex min-w-0 border-b border-border last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0">
       <Button
         type="button"
         variant="ghost"
         aria-current={active ? "step" : undefined}
+        // 序号只画在 aria-hidden 的徽标里,读屏拿不到;不自带序号的话,这一格听起来
+        // 就是配对表单的提交按钮加了个副标题尾巴。
+        aria-label={t("remoteDevices.onboarding.steps.navLabel", {
+          number,
+          title,
+        })}
         className="h-auto min-w-0 flex-1 items-start justify-start gap-3 rounded-none p-4 text-left font-normal"
         disabled={disabled}
         onClick={onSelect}

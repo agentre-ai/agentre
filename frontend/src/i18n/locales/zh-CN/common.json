@@ -2345,6 +2345,7 @@
           "subtitle": "约 1 分钟",
           "title": "安装 agentred"
         },
+        "navLabel": "第 {{number}} 步:{{title}}",
         "pair": {
           "subtitle": "一次性验证码",
           "title": "配对并验证"
