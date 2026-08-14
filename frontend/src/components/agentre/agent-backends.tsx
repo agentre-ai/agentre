@@ -386,9 +386,13 @@ function openClawProbeErrorMessage(
 export function AgentBackendsPanel({
   onOpenLlmProviders,
   onOpenProxySettings,
+  renderHeader,
 }: {
   onOpenLlmProviders?: () => void;
   onOpenProxySettings?: () => void;
+  // 页头由宿主渲染，面板把自己的页级操作（自动识别 / 新建后端）交进去：按钮要落在
+  // H1 行，而它们开的创建弹窗、扫描进行态仍归面板持有。
+  renderHeader?: (actions: React.ReactNode) => React.ReactNode;
 } = {}) {
   const { t } = useTranslation();
   const [backends, setBackends] = React.useState<Backend[]>([]);
@@ -560,84 +564,126 @@ export function AgentBackendsPanel({
     // reload is for explicit refreshes only; initial load runs directly
   }, []);
 
-  return (
-    <section className="min-w-0 overflow-hidden rounded-lg border border-border bg-card">
-      <Toolbar
-        count={backends.length}
-        onCreate={() => setEditor({ kind: "create" })}
-        onAutoScan={handleAutoScan}
-        scanning={scanning}
-      />
-      {flash ? (
-        <FlashBanner state={flash} onDismiss={() => setFlash(null)} />
-      ) : null}
-      <div className="flex min-w-0 flex-col">
-        {loading ? (
-          <div className="flex items-center justify-center gap-2 px-4 py-6 text-xs text-muted-foreground">
-            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-            {t("common.loading")}
-          </div>
-        ) : backends.length === 0 ? (
-          <AgentBackendsEmptyState
-            onCreate={() => setEditor({ kind: "create" })}
-            onOpenLlmProviders={onOpenLlmProviders}
+  // 页级操作落在 H1 行。「新建后端」在空态下让位给空态自带的 CTA——全页始终只有一个
+  // 新建入口；「自动识别」恰恰在空态最有用，所以一直留在标题行。
+  const headerActions = (
+    <>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="h-[30px] gap-1.5 px-3 text-xs"
+        onClick={handleAutoScan}
+        disabled={scanning}
+        title={t("agentBackends.autoScan.buttonTitle")}
+      >
+        {scanning ? (
+          <Loader2
+            className="size-3.5 animate-spin"
+            data-icon="inline-start"
+            aria-hidden="true"
           />
         ) : (
-          <div
-            role="list"
-            aria-label={t("agentBackends.list.ariaLabel")}
-            className="flex min-w-0 flex-col"
-          >
-            {backends.map((b) => (
-              <BackendRow
-                key={b.id}
-                backend={b}
-                testing={testingId === b.id}
-                testDisabled={testingId !== null}
-                onTest={() => handleTestRow(b)}
-                onCancelTest={handleCancelRow}
-                onEdit={() => setEditor({ kind: "edit", backend: b })}
-                onChangeBinding={() =>
-                  setEditor({ kind: "edit", backend: b, openBinding: true })
-                }
-                onDelete={() => setPendingDelete(b)}
-              />
-            ))}
-          </div>
+          <Radar
+            className="size-3.5"
+            data-icon="inline-start"
+            aria-hidden="true"
+          />
         )}
-      </div>
+        {scanning
+          ? t("agentBackends.autoScan.scanning")
+          : t("agentBackends.autoScan.button")}
+      </Button>
+      {loading || backends.length === 0 ? null : (
+        <Button
+          type="button"
+          size="sm"
+          data-testid="agent-backend-create"
+          className="h-[30px] gap-1.5 px-3 text-xs"
+          onClick={() => setEditor({ kind: "create" })}
+        >
+          <Plus data-icon="inline-start" aria-hidden="true" />
+          {t("agentBackends.page.add")}
+        </Button>
+      )}
+    </>
+  );
 
-      {editor.kind !== "closed" ? (
-        <BackendEditor
-          state={editor}
-          providers={providers}
-          onClose={() => setEditor({ kind: "closed" })}
-          onSaved={async (message) => {
-            setEditor({ kind: "closed" });
-            setFlash({ kind: "ok", text: message });
-            await reload();
-          }}
-          onOpenProxySettings={onOpenProxySettings}
-          onOpenLlmProviders={onOpenLlmProviders}
-        />
-      ) : null}
+  return (
+    <>
+      {renderHeader?.(headerActions)}
+      <section className="min-w-0 overflow-hidden rounded-lg border border-border bg-card">
+        {flash ? (
+          <FlashBanner state={flash} onDismiss={() => setFlash(null)} />
+        ) : null}
+        <div className="flex min-w-0 flex-col">
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 px-4 py-6 text-xs text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+              {t("common.loading")}
+            </div>
+          ) : backends.length === 0 ? (
+            <AgentBackendsEmptyState
+              onCreate={() => setEditor({ kind: "create" })}
+              onOpenLlmProviders={onOpenLlmProviders}
+            />
+          ) : (
+            <div
+              role="list"
+              aria-label={t("agentBackends.list.ariaLabel")}
+              className="flex min-w-0 flex-col"
+            >
+              {backends.map((b) => (
+                <BackendRow
+                  key={b.id}
+                  backend={b}
+                  testing={testingId === b.id}
+                  testDisabled={testingId !== null}
+                  onTest={() => handleTestRow(b)}
+                  onCancelTest={handleCancelRow}
+                  onEdit={() => setEditor({ kind: "edit", backend: b })}
+                  onChangeBinding={() =>
+                    setEditor({ kind: "edit", backend: b, openBinding: true })
+                  }
+                  onDelete={() => setPendingDelete(b)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
 
-      {pendingDelete ? (
-        <DeleteDialog
-          backend={pendingDelete}
-          onCancel={() => setPendingDelete(null)}
-          onConfirmed={async () => {
-            setPendingDelete(null);
-            setFlash({ kind: "ok", text: t("agentBackends.flash.deleted") });
-            await reload();
-          }}
-          onError={(text) => {
-            setPendingDelete(null);
-            setFlash({ kind: "err", text });
-          }}
-        />
-      ) : null}
-    </section>
+        {editor.kind !== "closed" ? (
+          <BackendEditor
+            state={editor}
+            providers={providers}
+            onClose={() => setEditor({ kind: "closed" })}
+            onSaved={async (message) => {
+              setEditor({ kind: "closed" });
+              setFlash({ kind: "ok", text: message });
+              await reload();
+            }}
+            onOpenProxySettings={onOpenProxySettings}
+            onOpenLlmProviders={onOpenLlmProviders}
+          />
+        ) : null}
+
+        {pendingDelete ? (
+          <DeleteDialog
+            backend={pendingDelete}
+            onCancel={() => setPendingDelete(null)}
+            onConfirmed={async () => {
+              setPendingDelete(null);
+              setFlash({ kind: "ok", text: t("agentBackends.flash.deleted") });
+              await reload();
+            }}
+            onError={(text) => {
+              setPendingDelete(null);
+              setFlash({ kind: "err", text });
+            }}
+          />
+        ) : null}
+      </section>
+    </>
   );
 }
 
@@ -686,70 +732,6 @@ function AgentBackendsEmptyState({
             {t("agentBackends.empty.addProvider")}
           </Button>
         ) : null}
-      </div>
-    </div>
-  );
-}
-
-function Toolbar({
-  count,
-  onCreate,
-  onAutoScan,
-  scanning,
-}: {
-  count: number;
-  onCreate: () => void;
-  onAutoScan: () => void;
-  scanning: boolean;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-3 sm:px-4">
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <span className="text-sm font-semibold">
-          {t("agentBackends.toolbar.title")}
-        </span>
-        <span className="text-2xs text-muted-foreground">
-          {t("agentBackends.toolbar.count", { count })}
-        </span>
-      </div>
-      <div className="flex items-center gap-2">
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-[30px] gap-1.5 px-3 text-xs"
-          onClick={onAutoScan}
-          disabled={scanning}
-          title={t("agentBackends.autoScan.buttonTitle")}
-        >
-          {scanning ? (
-            <Loader2
-              className="size-3.5 animate-spin"
-              data-icon="inline-start"
-              aria-hidden="true"
-            />
-          ) : (
-            <Radar
-              className="size-3.5"
-              data-icon="inline-start"
-              aria-hidden="true"
-            />
-          )}
-          {scanning
-            ? t("agentBackends.autoScan.scanning")
-            : t("agentBackends.autoScan.button")}
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          data-testid="agent-backend-create"
-          className="h-[30px] gap-1.5 px-3 text-xs"
-          onClick={onCreate}
-        >
-          <Plus data-icon="inline-start" aria-hidden="true" />
-          {t("agentBackends.toolbar.add")}
-        </Button>
       </div>
     </div>
   );

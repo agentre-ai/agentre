@@ -1146,7 +1146,8 @@ describe("App", () => {
     expect(
       within(ollama).getByText(/http:\/\/localhost:11434\/v1/),
     ).toBeInTheDocument();
-    expect(within(ollama).getByText(/0 models/)).toBeInTheDocument();
+    // 停用的供应商只出 Disabled 徽标，不再同时挂模型计数。
+    expect(within(ollama).queryByText(/0 models/)).not.toBeInTheDocument();
     expect(within(ollama).getByText("Disabled")).toBeInTheDocument();
 
     expect(

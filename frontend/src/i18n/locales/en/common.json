@@ -282,6 +282,9 @@
       "tokenSavedPlaceholder": "Token is stored securely. Enter a new value to replace it.",
       "modelOverrideUnauthorized": "This Gateway does not authorize model overrides for this operator connection, so the agent's own model is used."
     },
+    "page": {
+      "add": "New Backend"
+    },
     "permission": {
       "addIsSandbox": "Add IS_SANDBOX=1",
       "bypassWarning": "New sessions start by bypassing the permission gate. Runtime can still switch among the 4 modes. Use only in isolated sandboxes or CI.",
@@ -402,11 +405,6 @@
     },
     "test": {
       "passed": "Test passed · {{latency}}ms · {{message}}"
-    },
-    "toolbar": {
-      "add": "New Backend",
-      "count": "{{count}} total",
-      "title": "Configured Backends"
     }
   },
   "canonical": {

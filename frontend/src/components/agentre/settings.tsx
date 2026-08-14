@@ -540,17 +540,21 @@ function AgentBackendSettings({
 }) {
   const { t } = useTranslation();
 
+  // 与 LLM 供应商页同一条规则：页级操作（自动识别 / 新建后端）属于 H1 行，卡片里不再
+  // 重复一层页头。按钮开的弹窗和扫描进行态归面板自己管，所以页头交给面板渲染，
+  // 面板只把按钮塞进 actions 槽，状态不用上提。
   return (
-    <>
-      <SettingsPageHeader
-        title={t("settings.agentBackend.title")}
-        description={t("settings.agentBackend.description")}
-      />
-      <AgentBackendsPanel
-        onOpenLlmProviders={onOpenLlmProviders}
-        onOpenProxySettings={onOpenProxySettings}
-      />
-    </>
+    <AgentBackendsPanel
+      onOpenLlmProviders={onOpenLlmProviders}
+      onOpenProxySettings={onOpenProxySettings}
+      renderHeader={(actions) => (
+        <SettingsPageHeader
+          title={t("settings.agentBackend.title")}
+          description={t("settings.agentBackend.description")}
+          actions={actions}
+        />
+      )}
+    />
   );
 }
 

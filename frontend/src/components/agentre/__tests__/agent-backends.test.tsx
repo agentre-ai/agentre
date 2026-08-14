@@ -6,6 +6,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { truncateFlashText } from "../agent-backends-utils";
@@ -24,6 +25,7 @@ const appMocks = vi.hoisted(() => ({
   RemoteDeviceListProviders: vi.fn(),
   RemoteDeviceSyncProvider: vi.fn(),
   ResolveAgentBackendCLIPath: vi.fn(),
+  ScanAndCreateAgentBackends: vi.fn(),
   ServerListDevices: vi.fn(),
   TestAgentBackend: vi.fn(),
   TestOpenClawAgentBackend: vi.fn(),
@@ -33,7 +35,21 @@ const appMocks = vi.hoisted(() => ({
 
 vi.mock("../../../../wailsjs/go/app/App", () => appMocks);
 
-import { AgentBackendsPanel } from "../agent-backends";
+import { AgentBackendsPanel as AgentBackendsPanelBase } from "../agent-backends";
+
+// 页级操作(自动识别 / 新建后端)不再由面板自己摆在卡片里，而是通过 renderHeader
+// 交给宿主的 H1 行(settings.tsx 的 SettingsPageHeader actions 槽)。用例统一套一层
+// 与宿主同形的页头槽，既保留 screen.getByRole 的找法，也不必逐个用例重写 renderHeader。
+function AgentBackendsPanel(
+  props: ComponentProps<typeof AgentBackendsPanelBase>,
+) {
+  return (
+    <AgentBackendsPanelBase
+      renderHeader={(actions) => <div data-testid="page-header">{actions}</div>}
+      {...props}
+    />
+  );
+}
 
 type AnyFn = (...args: unknown[]) => unknown;
 
@@ -58,6 +74,7 @@ type AppMockShape = {
   TestOpenClawAgentBackend?: AnyFn;
   CancelTestAgentBackend?: AnyFn;
   GetGatewayStatus?: AnyFn;
+  ScanAndCreateAgentBackends?: AnyFn;
   ResolveAgentBackendCLIPath?: AnyFn;
   RemoteDeviceFingerprint?: AnyFn;
   RemoteDeviceList?: AnyFn;
@@ -183,6 +200,8 @@ function installAppMock(overrides: Partial<AppMockShape> = {}) {
     ResolveAgentBackendCLIPath: vi.fn(() =>
       Promise.resolve({ path: "", found: false }),
     ),
+    // 自动识别默认「什么都没扫到」，只有专门验证扫描的用例才覆盖它。
+    ScanAndCreateAgentBackends: vi.fn(() => Promise.resolve({ results: [] })),
     RemoteDeviceFingerprint: vi.fn(() =>
       Promise.resolve("sha256:local-desktop"),
     ),
@@ -2837,6 +2856,108 @@ describe("AgentBackendsPanel", () => {
     await waitFor(() =>
       expect(within(dialog).getByText(/401 Unauthorized/)).toBeInTheDocument(),
     );
+  });
+});
+
+// 与 LLM 供应商页同一条规则：页级操作属于 H1 标题行，卡片里不再重复一层
+// 「已配置的后端 / 共 N 个」页头。本页没有 mockup，对齐的是规则不是图。
+describe("AgentBackendsPanel page header", () => {
+  it("Given backends exist, When the panel loads, Then both page actions are handed to the page header slot and the card's own header and count line are gone", async () => {
+    installAppMock();
+    render(<AgentBackendsPanel />);
+
+    await screen.findByRole("list", { name: "Agent backend list" });
+
+    const header = screen.getByTestId("page-header");
+    expect(
+      within(header).getByRole("button", { name: /New Backend/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(header).getByRole("button", { name: /Auto Scan/ }),
+    ).toBeInTheDocument();
+    // 整页各只剩一个入口，卡片里那层 strip 不再重复渲染它们。
+    expect(screen.getAllByRole("button", { name: /New Backend/ })).toHaveLength(
+      1,
+    );
+    expect(screen.getAllByRole("button", { name: /Auto Scan/ })).toHaveLength(
+      1,
+    );
+    expect(screen.queryByText("Configured Backends")).toBeNull();
+    expect(screen.queryByText("1 total")).toBeNull();
+  });
+
+  it("Given two actions share the title row, When they render, Then New Backend stays visually primary and Auto Scan stays secondary", async () => {
+    installAppMock();
+    render(<AgentBackendsPanel />);
+
+    await screen.findByRole("list", { name: "Agent backend list" });
+
+    const header = screen.getByTestId("page-header");
+    expect(
+      within(header).getByRole("button", { name: /New Backend/ }),
+    ).toHaveClass("bg-primary");
+    expect(
+      within(header).getByRole("button", { name: /Auto Scan/ }),
+    ).not.toHaveClass("bg-primary");
+  });
+
+  it("Given the page header slot renders New Backend, When it is clicked, Then the create dialog opens", async () => {
+    const user = userEvent.setup();
+    installAppMock();
+    render(<AgentBackendsPanel />);
+
+    await screen.findByRole("list", { name: "Agent backend list" });
+    await user.click(
+      within(screen.getByTestId("page-header")).getByRole("button", {
+        name: /New Backend/,
+      }),
+    );
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("Given the page header slot renders Auto Scan, When it is clicked, Then the scan still runs from the title row", async () => {
+    const user = userEvent.setup();
+    const mocks = installAppMock({
+      ScanAndCreateAgentBackends: vi.fn(() =>
+        Promise.resolve({
+          results: [
+            { name: "Claude Code", found: true, created: true, skipped: false },
+          ],
+        }),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+
+    await screen.findByRole("list", { name: "Agent backend list" });
+    await user.click(
+      within(screen.getByTestId("page-header")).getByRole("button", {
+        name: /Auto Scan/,
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.ScanAndCreateAgentBackends).toHaveBeenCalledTimes(1),
+    );
+    expect(
+      await screen.findByText("Created 1 backend(s): Claude Code"),
+    ).toBeInTheDocument();
+  });
+
+  it("Given no backends exist, When the panel loads, Then Auto Scan stays on the title row and the empty state keeps the only add entry", async () => {
+    installAppMock({
+      ListAgentBackends: vi.fn(() => Promise.resolve({ items: [] })),
+    });
+    render(<AgentBackendsPanel />);
+
+    await screen.findByRole("button", { name: "Add First Backend" });
+
+    const header = screen.getByTestId("page-header");
+    // 自动识别在空态下最有用，留在标题行；新建入口交给空态 CTA，全页仍只有一个。
+    expect(
+      within(header).getByRole("button", { name: /Auto Scan/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /New Backend/ })).toBeNull();
   });
 });
 

@@ -282,6 +282,9 @@
       "tokenSavedPlaceholder": "Token 已安全保存；输入新值可替换。",
       "modelOverrideUnauthorized": "该 Gateway 不允许当前 operator 连接覆盖模型,实际会使用 agent 自身的模型。"
     },
+    "page": {
+      "add": "新增后端"
+    },
     "permission": {
       "addIsSandbox": "添加 IS_SANDBOX=1",
       "bypassWarning": "会话起手即跳过 permission gate；运行时可在 4 档之间自由切换。仅建议在隔离沙箱 / CI 中使用。",
@@ -402,11 +405,6 @@
     },
     "test": {
       "passed": "测试通过 · {{latency}}ms · {{message}}"
-    },
-    "toolbar": {
-      "add": "新增后端",
-      "count": "共 {{count}} 个",
-      "title": "已配置的后端"
     }
   },
   "canonical": {

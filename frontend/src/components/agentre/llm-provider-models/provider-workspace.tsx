@@ -253,6 +253,11 @@ export function ProviderWorkspace({
                 ? t("llmProviders.workspace.enabledShort")
                 : t("llmProviders.workspace.disabledShort")}
             </label>
+            {/* 状态与操作分档：enable 开关是一档，测试/发现/更多是另一档 */}
+            <span
+              className="h-[18px] w-px shrink-0 bg-border"
+              aria-hidden="true"
+            />
             <Button
               type="button"
               variant="outline"

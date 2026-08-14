@@ -640,7 +640,10 @@ export function ModelTargetPicker({
         align={align}
         side="bottom"
         sideOffset={6}
-        className="w-[340px] p-0"
+        // 348px = mockup .pop 的 CSS 宽度（index.html data-view="picker"），让
+        // provider-default / 特殊项副行放得下有意义的解析结果；min(...) 在极窄
+        // 视口兜底收缩，不会把弹层推出屏幕（860×640 最小窗口下恒等于 348px）。
+        className="w-[min(348px,calc(100vw-2rem))] p-0"
         onKeyDown={handleKeyDown}
       >
         {/* 失效目标顶部警示（弹层内上方，不是底部 footer）。 */}

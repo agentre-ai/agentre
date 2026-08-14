@@ -313,7 +313,8 @@ describe("LlmProvidersPanel", () => {
     expect(
       within(deepseek).getByText(/llm\.intra\.example/),
     ).toBeInTheDocument();
-    expect(within(deepseek).getByText(/2 models/)).toBeInTheDocument();
+    // 停用的供应商让位给「已停用」徽标：模型数不再和它抢空间
+    expect(within(deepseek).queryByText(/2 models/)).not.toBeInTheDocument();
     expect(within(deepseek).getByText("Disabled")).toBeInTheDocument();
 
     // 每个类型有独立分组标题

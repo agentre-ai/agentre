@@ -980,13 +980,14 @@ function ProviderManagement({
                           {endpointFor(p)}
                         </span>
                       </span>
-                      {/* 模型数是独立元素，不参与 endpoint 的截断 */}
-                      <span className="shrink-0 font-mono text-2xs text-muted-foreground">
-                        {t("llmProviders.nav.modelCount", {
-                          count: p.modelCount,
-                        })}
-                      </span>
-                      {p.enabled ? null : (
+                      {/* 模型数是独立元素，不参与 endpoint 的截断；停用时让位给下面的徽标 */}
+                      {p.enabled ? (
+                        <span className="shrink-0 font-mono text-2xs text-muted-foreground">
+                          {t("llmProviders.nav.modelCount", {
+                            count: p.modelCount,
+                          })}
+                        </span>
+                      ) : (
                         <span className="shrink-0 font-mono text-2xs text-status-waiting">
                           {t("llmProviders.nav.disabled")}
                         </span>
