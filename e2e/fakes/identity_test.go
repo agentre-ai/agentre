@@ -80,11 +80,45 @@ func TestGivenDualLoginWhenHarnessInstallsAccountThenRemoteDeviceUsesLoginFinger
 	t.Setenv(e2eDeviceFPEnv, "sha256:isolated")
 	t.Setenv(e2eRefreshTokenEnv, "refresh")
 
-	installE2ELoggedInAccount(ctx)
+	require.NoError(t, installE2ELoggedInAccount(ctx))
 
 	assert.Equal(t, int32(1), refreshHits.Load())
 	fingerprint, err := remote_device_svc.Default().DeviceFingerprint()
 	require.NoError(t, err)
 	assert.Equal(t, "sha256:isolated", fingerprint)
 	assert.True(t, remote_device_svc.IsSelfDevice(fingerprint))
+}
+
+func TestGivenRejectedOrIncompleteRefreshWhenHarnessInstallsAccountThenStartupFailsWithoutLeakingTheCredential(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		code int
+	}{
+		{name: "rejected", code: http.StatusUnauthorized, body: `{"code":401,"msg":"rejected refresh-secret"}`},
+		{name: "missing rotated refresh token", code: http.StatusOK, body: `{"code":0,"data":{"access_token":"access"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			originalKeychain := keychain.Default()
+			keychain.SetDefault(keychain.NewMemory())
+			t.Cleanup(func() { keychain.SetDefault(originalKeychain) })
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.code)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			t.Setenv(e2eServerURLEnv, server.URL)
+			t.Setenv(e2eServerUserIDEnv, "101")
+			t.Setenv(e2eDeviceIDEnv, "202")
+			t.Setenv(e2eDeviceFPEnv, "sha256:isolated")
+			t.Setenv(e2eRefreshTokenEnv, "refresh-secret")
+
+			err := installE2ELoggedInAccount(context.Background())
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), "refresh-secret")
+		})
+	}
 }

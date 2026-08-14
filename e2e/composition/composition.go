@@ -127,6 +127,10 @@ func Install(ctx context.Context, validated preflight.Config) error {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		_ = os.Unsetenv(syncRefreshTokenEnv)
+		_ = os.Unsetenv(remoteDeviceTokenEnv)
+	}()
 	if config.RunRoot == "" || config.DataDir == "" || config.KeychainDir == "" {
 		return fmt.Errorf("e2e composition requires validated preflight config")
 	}
@@ -148,9 +152,6 @@ func Install(ctx context.Context, validated preflight.Config) error {
 	if err := installRemotePeer(ctx, config.Remote); err != nil {
 		return err
 	}
-	// The token's durable home is the isolated file keychain. Remove the
-	// bootstrap transport variable once the keychain write succeeds.
-	_ = os.Unsetenv(remoteDeviceTokenEnv)
 	return nil
 }
 

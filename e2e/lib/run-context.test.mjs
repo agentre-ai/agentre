@@ -9,8 +9,10 @@ import {
   appEnvironment,
   changedDatabaseMetadata,
   createRunContext,
+  fakePeerEnvironment,
   playwrightEnvironment,
   preserveFailureArtifacts,
+  reserveDistinctLoopbackPorts,
   snapshotDatabaseMetadata,
 } from "./run-context.mjs";
 
@@ -51,6 +53,13 @@ test("Given two launches, when run contexts are created, then each gets private 
   }
 });
 
+test("Given the OS offers the same released port twice, when one run allocates its app and Vite ports, then the allocator retries until they are distinct", async () => {
+  const offered = [41000, 41000, 41001];
+  const ports = await reserveDistinctLoopbackPorts(async () => offered.shift());
+
+  assert.deepEqual(ports, [41000, 41001]);
+});
+
 test("Given a private run and external E2E credentials in the parent, when the app is launched, then only this run's manifest, token, and storage overrides are inherited", async (t) => {
   const run = await createRunContext();
   t.after(() => run.remove());
@@ -69,6 +78,17 @@ test("Given a private run and external E2E credentials in the parent, when the a
   assert.equal(env.AGENTRE_E2E_MANIFEST, run.manifestPath);
   assert.equal(env.AGENTRE_DATA_DIR, run.dataDir);
   assert.equal(env.AGENTRE_KEYCHAIN_DIR, run.keychainDir);
+});
+
+test("Given the remote fake needs a control secret, when process environments are built, then only the fake peer receives it", async (t) => {
+  const run = await createRunContext();
+  t.after(() => run.remove());
+
+  const appEnv = appEnvironment(run, { PATH: "/test/bin" });
+  const peerEnv = fakePeerEnvironment(run, { PATH: "/test/bin" });
+
+  assert.equal(appEnv.AGENTRE_E2E_CONTROL_TOKEN, undefined);
+  assert.equal(peerEnv.AGENTRE_E2E_CONTROL_TOKEN, run.controlToken);
 });
 
 test("Given a private run and a secret-bearing parent environment, when Playwright is launched, then browser state stays in the run root and the app token is not inherited", async (t) => {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/agentre-ai/agentre/e2e/preflight"
@@ -29,6 +30,30 @@ func TestRunE2EValidatesBeforeDesktopBootstrap(t *testing.T) {
 	}
 	if desktopCalled {
 		t.Fatal("desktop bootstrap must not run when preflight fails")
+	}
+}
+
+func TestRunE2EConsumesManifestCredentialsBeforeBootstrap(t *testing.T) {
+	t.Setenv("AGENTRE_E2E_MANIFEST", "/private/manifest.json")
+	t.Setenv("AGENTRE_E2E_TOKEN", "one-time-token")
+
+	err := runE2E(context.Background(), preflight.Environment{}, e2eDependencies{
+		validate: func(preflight.Environment) (preflight.Config, error) {
+			return preflight.Config{RunRoot: "/run", DataDir: "/run/data", KeychainDir: "/run/keychain"}, nil
+		},
+		install: func(context.Context, preflight.Config) error { return nil },
+		runDesktop: func(ctx context.Context, opts desktop.Options) error {
+			if got := os.Getenv("AGENTRE_E2E_MANIFEST"); got != "" {
+				t.Fatalf("AGENTRE_E2E_MANIFEST = %q, want consumed before bootstrap", got)
+			}
+			if got := os.Getenv("AGENTRE_E2E_TOKEN"); got != "" {
+				t.Fatalf("AGENTRE_E2E_TOKEN = %q, want consumed before bootstrap", got)
+			}
+			return opts.AfterBootstrap(ctx, &bootstrap.Runtime{})
+		},
+	})
+	if err != nil {
+		t.Fatalf("runE2E: %v", err)
 	}
 }
 

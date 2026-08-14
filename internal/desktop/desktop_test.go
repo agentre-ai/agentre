@@ -58,6 +58,30 @@ func TestRunOrdersBootstrapCompositionAndWails(t *testing.T) {
 	}
 }
 
+func TestRunBindsTheSuppliedAppInstance(t *testing.T) {
+	originalBootstrap := bootstrapDesktop
+	originalWailsRun := runWails
+	t.Cleanup(func() {
+		bootstrapDesktop = originalBootstrap
+		runWails = originalWailsRun
+	})
+
+	supplied := app.NewApp(app.RuntimeModeHeadless)
+	bootstrapDesktop = func(context.Context) (*bootstrap.Runtime, error) {
+		return &bootstrap.Runtime{}, nil
+	}
+	runWails = func(opts *options.App) error {
+		if len(opts.Bind) != 1 || opts.Bind[0] != supplied {
+			t.Fatalf("Bind = %#v, want supplied app %p", opts.Bind, supplied)
+		}
+		return nil
+	}
+
+	if err := Run(context.Background(), Options{App: supplied, Assets: fstest.MapFS{}, GOOS: "darwin"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
 func TestRunDoesNotStartWailsWhenCompositionFails(t *testing.T) {
 	originalBootstrap := bootstrapDesktop
 	originalWailsRun := runWails

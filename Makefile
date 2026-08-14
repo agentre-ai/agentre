@@ -18,7 +18,7 @@ VERSION_PKG := github.com/cago-frame/cago/configs
 BUILDINFO_PKG := github.com/agentre-ai/agentre/internal/buildinfo
 LDFLAGS := -s -w -X $(VERSION_PKG).Version=$(VERSION) -X $(BUILDINFO_PKG).CommitID=$(COMMIT_ID)
 FRONTEND_DIR := frontend
-BACKEND_PKGS := . ./cmd/... ./internal/... ./migrations ./pkg/...
+BACKEND_PKGS := . ./cmd/... ./e2e/... ./internal/... ./migrations ./pkg/...
 E2E_SPEC ?=
 E2E_APP_BINARY := build/bin/agentre-e2e$(EXE)
 

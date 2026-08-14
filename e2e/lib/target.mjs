@@ -113,7 +113,47 @@ export function readSession() {
   }
 }
 
+export function assertRecordedSession(target, session) {
+  if (!session || typeof session !== "object") {
+    throw new IsolationError("verification session is missing or invalid");
+  }
+  const expected = {
+    cdpPort: target.cdpPort,
+    cdpURL: `http://127.0.0.1:${target.cdpPort}`,
+    devserverPort: target.devserverPort,
+    baseURL: target.baseURL,
+    dataDir: target.dataDir,
+    keychainDir: target.keychainDir,
+    dbPath: target.dbPath,
+    logFile: target.logFile,
+  };
+  for (const [name, value] of Object.entries(expected)) {
+    if (session[name] !== value) {
+      throw new IsolationError(`verification session ${name} does not belong to this checkout`);
+    }
+  }
+  if (!Number.isInteger(session.appPid) || session.appPid <= 0) {
+    throw new IsolationError("verification session app PID is invalid");
+  }
+  if (
+    session.browserPid !== null &&
+    (!Number.isInteger(session.browserPid) || session.browserPid <= 0)
+  ) {
+    throw new IsolationError("verification session browser PID is invalid");
+  }
+  if (typeof session.headless !== "boolean" || Number.isNaN(Date.parse(session.startedAt))) {
+    throw new IsolationError("verification session metadata is invalid");
+  }
+  return session;
+}
+
+export function isRecordedTargetLive(target, session, bridgeUp, isAlive) {
+  assertRecordedSession(target, session);
+  return Boolean(bridgeUp && isAlive(session.appPid));
+}
+
 export function writeSession(session) {
+  assertRecordedSession(resolveTarget(), session);
   mkdirSync(INSTANCE_ROOT, { recursive: true });
   writeFileSync(sessionPath(), `${JSON.stringify(session, null, 2)}\n`, { mode: 0o600 });
 }
@@ -177,5 +217,5 @@ export function requireLiveSession() {
   if (!session) {
     throw new IsolationError("no verification app is up in this checkout. Start one: make verify-up");
   }
-  return session;
+  return assertRecordedSession(resolveTarget(), session);
 }

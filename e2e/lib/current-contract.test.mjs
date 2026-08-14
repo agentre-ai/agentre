@@ -73,6 +73,7 @@ test("Given the replacement suite, when its public entries are inspected, then o
   );
 
   const makefile = read("Makefile");
+  assert.match(makefile, /^BACKEND_PKGS := .*\.\/e2e\/\.\.\.(?: |$)/m);
   for (const target of ["e2e:", "verify-up:", "verify-status:", "verify-down:"]) {
     assert.match(makefile, new RegExp(`^${target.replace(":", "\\:")}`, "m"));
   }

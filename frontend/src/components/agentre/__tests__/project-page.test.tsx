@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type * as React from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -109,32 +115,42 @@ describe("ProjectsPage refreshes account-level project changes", () => {
     appMocks.ProjectListSessions.mockResolvedValue([]);
     appMocks.ProjectLocationList.mockResolvedValue([]);
     appMocks.RemoteDeviceList.mockResolvedValue([]);
-    appMocks.ProjectListTree.mockResolvedValueOnce([]).mockResolvedValueOnce([
-      {
-        project: {
-          color: "agent-2",
-          icon: "folder",
-          id: 2,
-          name: "Remote project",
-          parentID: 0,
-          path: "",
-          localPathMissing: true,
-        },
-        children: [],
-      },
-    ]);
   });
 
-  it("Given a remote sync applies while the projects page is mounted, When the refresh interval elapses, Then the project tree reloads without remounting", async () => {
-    renderProjectsPage();
-    await waitFor(() =>
-      expect(appMocks.ProjectListTree).toHaveBeenCalledTimes(1),
-    );
+  it("Given a project refresh is still in flight, When several polling periods pass, Then no overlapping tree reload starts", async () => {
+    vi.useFakeTimers();
+    let resolveFirst!: (value: unknown[]) => void;
+    appMocks.ProjectListTree.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveFirst = resolve;
+      }),
+    ).mockResolvedValue([]);
 
-    expect(
-      await screen.findByText("Remote project", {}, { timeout: 2_500 }),
-    ).toBeInTheDocument();
-    expect(appMocks.ProjectListTree).toHaveBeenCalledTimes(2);
+    try {
+      renderProjectsPage();
+      expect(appMocks.ProjectListTree).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(appMocks.ProjectListTree).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        resolveFirst([]);
+        await Promise.resolve();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(999);
+      });
+      expect(appMocks.ProjectListTree).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(appMocks.ProjectListTree).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

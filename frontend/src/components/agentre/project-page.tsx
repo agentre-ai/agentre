@@ -212,12 +212,20 @@ function ProjectsPage() {
   }, [reloadProjectSessions]);
 
   React.useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    let cancelled = false;
+    let timer: number | undefined;
+    const refreshThenSchedule = async () => {
+      await refresh();
+      if (!cancelled) {
+        timer = window.setTimeout(() => void refreshThenSchedule(), 1_000);
+      }
+    };
 
-  React.useEffect(() => {
-    const timer = window.setInterval(() => void refresh(), 1_000);
-    return () => window.clearInterval(timer);
+    void refreshThenSchedule();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [refresh]);
 
   const totalCount = React.useMemo(() => {

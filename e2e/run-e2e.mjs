@@ -12,6 +12,7 @@ import {
   appEnvironment,
   changedDatabaseMetadata,
   createRunContext,
+  fakePeerEnvironment,
   playwrightEnvironment,
   preserveFailureArtifacts,
   productionAndDevelopmentRoots,
@@ -155,11 +156,10 @@ async function main() {
     };
     run.env.AGENTRE_E2E_REMOTE_INSTANCE_UUID = remoteIdentity.instanceUUID;
     run.env.AGENTRE_E2E_REMOTE_DEVICE_TOKEN = remoteIdentity.deviceToken;
-    run.env.AGENTRE_E2E_CONTROL_TOKEN = run.controlToken;
     const fakePeer = supervisor.track(
       spawnLogged("go", fakePeerCommand(run), {
         cwd: REPO_ROOT,
-        env: appEnvironment(run),
+        env: fakePeerEnvironment(run),
         logPath: join(run.logsDir, "fake-peer.log"),
       }),
     );

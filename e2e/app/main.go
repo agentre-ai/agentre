@@ -37,6 +37,11 @@ func runE2E(ctx context.Context, env preflight.Environment, deps e2eDependencies
 	if err != nil {
 		return fmt.Errorf("preflight: %w", err)
 	}
+	for _, name := range []string{"AGENTRE_E2E_MANIFEST", "AGENTRE_E2E_TOKEN"} {
+		if err := os.Unsetenv(name); err != nil {
+			return fmt.Errorf("consume %s: %w", name, err)
+		}
+	}
 	if err := deps.runDesktop(ctx, desktop.Options{
 		Assets:      assets,
 		RuntimeMode: app.RuntimeModeHeadless,

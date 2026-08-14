@@ -65,7 +65,10 @@ func Run(ctx context.Context, opts Options) error {
 	if goos == "" {
 		goos = runtime.GOOS
 	}
-	appInst := app.NewApp(opts.RuntimeMode)
+	appInst := opts.App
+	if appInst == nil {
+		appInst = app.NewApp(opts.RuntimeMode)
+	}
 	if err := runWails(newWailsOptions(appInst, opts.Assets, goos, boot.DataDir())); err != nil {
 		logger.Default().Error("desktop.Run: wails run failed", zap.Error(err))
 		return fmt.Errorf("wails run: %w", err)

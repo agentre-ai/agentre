@@ -3,6 +3,7 @@ package composition
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/agentre-ai/agentre/e2e/preflight"
@@ -74,6 +75,12 @@ func TestInstallGivenFakeSetupFailureReturnsErrorToTheDedicatedEntrypoint(t *tes
 	})
 	if !errors.Is(err, want) {
 		t.Fatalf("Install error = %v, want %v", err, want)
+	}
+	if got := os.Getenv(syncRefreshTokenEnv); got != "" {
+		t.Fatalf("%s = %q, want consumed on failure", syncRefreshTokenEnv, got)
+	}
+	if got := os.Getenv(remoteDeviceTokenEnv); got != "" {
+		t.Fatalf("%s = %q, want consumed on failure", remoteDeviceTokenEnv, got)
 	}
 }
 

@@ -9,7 +9,9 @@ import {
   IsolationError,
   REPO_ROOT,
   assertIsolatedDataDir,
+  assertRecordedSession,
   clearSession,
+  isRecordedTargetLive,
   launchEnv,
   portListening,
   prepareDirs,
@@ -85,10 +87,22 @@ function alive(pid) {
 
 async function up(flags) {
   const target = resolveTarget();
-  const existing = readSession();
+  const recorded = readSession();
   const portTaken = await portListening(target.devserverPort);
+  let existing = null;
+  if (recorded) {
+    try {
+      existing = assertRecordedSession(target, recorded);
+    } catch (error) {
+      if (portTaken) {
+        console.error(`${error.message}. Refusing to adopt the process on :${target.devserverPort}.`);
+        return 1;
+      }
+      clearSession();
+    }
+  }
 
-  if (existing && portTaken) {
+  if (existing && isRecordedTargetLive(target, existing, portTaken, alive)) {
     console.log(`already up: ${target.baseURL}`);
     if (!existing.browserPid || !(await portListening(target.cdpPort))) {
       await attachBrowser(target, flags, existing);
@@ -105,7 +119,12 @@ async function up(flags) {
     return 1;
   }
 
-  if (existing) clearSession();
+  if (existing) {
+    stopPid(existing.browserPid);
+    stopPid(existing.appPid);
+    clearSession();
+    reapOrphanVite(repoRoot);
+  }
   assertIsolatedDataDir(target.dataDir);
   prepareDirs(target, { wipe: !flags.keep });
 
@@ -141,8 +160,16 @@ async function up(flags) {
     return 1;
   }
 
-  const session = newSession(target, app.pid);
-  await attachBrowser(target, flags, session);
+  const session = newSession(target, app.pid, !flags.headed);
+  writeSession(session);
+  try {
+    await attachBrowser(target, flags, session);
+  } catch (error) {
+    stopPid(app.pid);
+    clearSession();
+    reapOrphanVite(repoRoot);
+    throw error;
+  }
   console.log(`up: ${target.baseURL}  data=${target.dataDir}`);
   printNext(target);
   return 0;
@@ -155,10 +182,11 @@ async function attachBrowser(target, flags, session) {
   return session;
 }
 
-function newSession(target, appPid) {
+function newSession(target, appPid, headless) {
   return {
     appPid,
     browserPid: null,
+    headless,
     cdpPort: target.cdpPort,
     cdpURL: `http://127.0.0.1:${target.cdpPort}`,
     devserverPort: target.devserverPort,
@@ -189,7 +217,10 @@ async function startBrowser(target, flags) {
   const ready = await waitFor(() => urlReady(`http://127.0.0.1:${target.cdpPort}/json/version`), {
     timeoutMs: 30_000,
   });
-  if (!ready) throw new Error(`Chromium did not expose CDP on :${target.cdpPort}`);
+  if (!ready) {
+    stopPid(browser.pid);
+    throw new Error(`Chromium did not expose CDP on :${target.cdpPort}`);
+  }
   return browser.pid;
 }
 
@@ -224,8 +255,18 @@ function stopPid(pid) {
 
 function down(flags) {
   const target = resolveTarget();
-  const session = readSession();
-  if (!session) console.log("no verification session recorded; reaping leftovers anyway");
+  const recorded = readSession();
+  let session = null;
+  if (!recorded) {
+    console.log("no verification session recorded; reaping leftovers anyway");
+  } else {
+    try {
+      session = assertRecordedSession(target, recorded);
+    } catch (error) {
+      console.error(`${error.message}. Refusing to signal untrusted recorded PIDs.`);
+      return 1;
+    }
+  }
   stopPid(session?.browserPid);
   stopPid(session?.appPid);
   clearSession();
@@ -244,7 +285,16 @@ function down(flags) {
 
 async function status() {
   const target = resolveTarget();
-  const session = readSession();
+  const recorded = readSession();
+  let session = null;
+  let sessionError = "";
+  if (recorded) {
+    try {
+      session = assertRecordedSession(target, recorded);
+    } catch (error) {
+      sessionError = error.message;
+    }
+  }
   const bridgeUp = await portListening(target.devserverPort);
   const cdpUp = await portListening(target.cdpPort);
   const dbSize = existsSync(target.dbPath) ? statSync(target.dbPath).size : 0;
@@ -252,7 +302,7 @@ async function status() {
     [
       `checkout: ${target.instanceId} — ${REPO_ROOT}`,
       "entry:    formal desktop main",
-      `session:  ${session ? `started ${session.startedAt}` : "none"}`,
+      `session:  ${session ? `started ${session.startedAt}` : sessionError ? `invalid (${sessionError})` : "none"}`,
       `app:      ${bridgeUp ? "up" : "down"} ${target.baseURL}${session?.appPid ? ` pid=${session.appPid}${alive(session.appPid) ? "" : " (gone)"}` : ""}`,
       `browser:  ${cdpUp ? "up" : "down"} cdp=:${target.cdpPort}${session?.browserPid ? ` pid=${session.browserPid}` : ""}${session ? (session.headless ? " headless" : " headed") : ""}`,
       `data:     ${target.dataDir}`,
@@ -261,7 +311,7 @@ async function status() {
       `log:      ${target.logFile}`,
     ].join("\n"),
   );
-  return bridgeUp ? 0 : 1;
+  return session && bridgeUp && alive(session.appPid) ? 0 : 1;
 }
 
 async function main() {

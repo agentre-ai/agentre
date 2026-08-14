@@ -67,7 +67,9 @@ func (claudeSkillDiscoverer) Discover(context.Context, agentskill.DiscoverQuery)
 // Server / Remote Device 之前按 AGENTRE_KEYCHAIN_DIR 建立,这里不再覆盖。
 func Install(ctx context.Context) error {
 	// 先接账号:随后 seed 出来的 backend / agent 才会带着账号进出站队列(R3)。
-	installE2ELoggedInAccount(ctx)
+	if err := installE2ELoggedInAccount(ctx); err != nil {
+		return fmt.Errorf("seed logged-in account: %w", err)
+	}
 	agentruntime.RegisterRuntime(agent_backend_entity.TypeClaudeCode, fakert.New())
 	agentskill.RegisterDiscoverer(agent_backend_entity.TypeClaudeCode, claudeSkillDiscoverer{})
 	agentskill.RegisterDiscoverer(agent_backend_entity.TypeCodex, codexSkillDiscoverer{})

@@ -16,7 +16,9 @@ import {
   IsolationError,
   REPO_ROOT,
   assertIsolatedDataDir,
+  assertRecordedSession,
   assertSanctionedURL,
+  isRecordedTargetLive,
   productionRoots,
   launchEnv,
   prepareDirs,
@@ -51,6 +53,39 @@ test("Given protected app roots, when verification resolves a data directory, th
   }
   assert.throws(() => assertIsolatedDataDir(join(homedir(), "somewhere-else")), IsolationError);
   assert.throws(() => assertIsolatedDataDir(""), IsolationError);
+});
+
+test("Given a recorded verification session, when ownership is checked, then every path/port must match this checkout and a stale PID cannot adopt a listening bridge", () => {
+  const target = resolveTarget();
+  const session = {
+    appPid: 123,
+    browserPid: 456,
+    cdpPort: target.cdpPort,
+    cdpURL: `http://127.0.0.1:${target.cdpPort}`,
+    devserverPort: target.devserverPort,
+    baseURL: target.baseURL,
+    dataDir: target.dataDir,
+    keychainDir: target.keychainDir,
+    dbPath: target.dbPath,
+    logFile: target.logFile,
+    startedAt: new Date().toISOString(),
+    headless: true,
+  };
+
+  assert.equal(assertRecordedSession(target, session), session);
+  assert.equal(isRecordedTargetLive(target, session, true, () => true), true);
+  assert.equal(isRecordedTargetLive(target, session, true, () => false), false);
+  assert.equal(isRecordedTargetLive(target, session, false, () => true), false);
+
+  for (const mutation of [
+    { dataDir: join(homedir(), "real-data") },
+    { dbPath: join(homedir(), "real.db") },
+    { baseURL: "http://127.0.0.1:34115" },
+    { appPid: 0 },
+    { startedAt: null },
+  ]) {
+    assert.throws(() => assertRecordedSession(target, { ...session, ...mutation }), IsolationError);
+  }
 });
 
 test("Given a live verification target, when a URL is checked, then only its own loopback bridge is accepted", () => {

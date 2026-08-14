@@ -53,6 +53,13 @@ async function reserveLoopbackPort() {
   });
 }
 
+export async function reserveDistinctLoopbackPorts(reserve = reserveLoopbackPort) {
+  const first = await reserve();
+  let second = await reserve();
+  while (second === first) second = await reserve();
+  return [first, second];
+}
+
 export async function createRunContext({ prefix = "agentre-e2e-" } = {}) {
   const runRoot = mkdtempSync(join(tmpdir(), prefix));
   if (process.platform !== "win32") chmodSync(runRoot, 0o700);
@@ -72,8 +79,7 @@ export async function createRunContext({ prefix = "agentre-e2e-" } = {}) {
   );
   if (process.platform !== "win32") chmodSync(manifestPath, 0o600);
 
-  const port = await reserveLoopbackPort();
-  const vitePort = await reserveLoopbackPort();
+  const [port, vitePort] = await reserveDistinctLoopbackPorts();
   return {
     runRoot,
     dataDir,
@@ -112,6 +118,13 @@ export function appEnvironment(run, parentEnv = process.env) {
     }
   }
   return { ...env, ...run.env };
+}
+
+export function fakePeerEnvironment(run, parentEnv = process.env) {
+  return {
+    ...appEnvironment(run, parentEnv),
+    AGENTRE_E2E_CONTROL_TOKEN: run.controlToken,
+  };
 }
 
 export function playwrightEnvironment(run, parentEnv = process.env) {
