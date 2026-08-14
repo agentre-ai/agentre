@@ -674,10 +674,7 @@ export function LlmProvidersPanel({
         />
       ) : (
         <>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="font-mono text-2xs text-muted-foreground">
-              {t("llmProviders.page.count", { count: providers.length })}
-            </span>
+          <div className="flex justify-end">
             <Button
               type="button"
               size="sm"

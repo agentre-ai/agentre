@@ -1843,11 +1843,6 @@
       "rowSuccess": "模型 {{model}} 调用成功（{{duration}}），已发送 hi 并收到模型响应",
       "rowFailed": "模型 {{model}} 连接失败（{{duration}}）：{{message}}"
     },
-    "toolbar": {
-      "add": "新增供应商",
-      "count": "共 {{count}} 个",
-      "title": "已配置的供应商"
-    },
     "validation": {
       "apiKeyRequired": "API Key 不能为空",
       "modelRequired": "请先填写默认模型",
@@ -1867,8 +1862,7 @@
       "modelCount": "{{count}} 个模型"
     },
     "page": {
-      "add": "新增供应商",
-      "count": "共 {{count}} 个"
+      "add": "新增供应商"
     },
     "workspace": {
       "ariaLabel": "{{name}} 模型工作区",

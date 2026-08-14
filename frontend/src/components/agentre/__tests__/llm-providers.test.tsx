@@ -1271,7 +1271,8 @@ describe("LlmProvidersPanel", () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Add Provider" })).toBeNull();
     expect(screen.queryByText("Configured Providers")).toBeNull();
-    expect(screen.getByText("1 total")).toBeInTheDocument();
+    // mockup 注解①：删掉「已配置的供应商 / 共 N 个」重复计数条，不再单独占一层 strip
+    expect(screen.queryByText("1 total")).toBeNull();
   });
 
   it("Given a provider is selected, When the workspace renders, Then the header splits into identity and metadata rows with the combined switch first, then Test Connection, Discover Models and More", async () => {

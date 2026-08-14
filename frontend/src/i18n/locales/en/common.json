@@ -1843,11 +1843,6 @@
       "rowSuccess": "Model {{model}} call succeeded ({{duration}}). Sent hi and received a model response.",
       "rowFailed": "Model {{model}} connection failed ({{duration}}): {{message}}"
     },
-    "toolbar": {
-      "add": "New Provider",
-      "count": "{{count}} total",
-      "title": "Configured Providers"
-    },
     "validation": {
       "apiKeyRequired": "API Key is required",
       "modelRequired": "Enter a default model first",
@@ -1867,8 +1862,7 @@
       "modelCount": "{{count}} models"
     },
     "page": {
-      "add": "New Provider",
-      "count": "{{count}} total"
+      "add": "New Provider"
     },
     "workspace": {
       "ariaLabel": "{{name}} models",
