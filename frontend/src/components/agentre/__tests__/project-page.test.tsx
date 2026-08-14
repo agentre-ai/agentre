@@ -152,6 +152,100 @@ describe("ProjectsPage refreshes account-level project changes", () => {
       vi.useRealTimers();
     }
   });
+
+  it("Given a loaded project tree, When the background poll is still in flight, Then the existing tree remains interactive instead of flashing a loading state", async () => {
+    vi.useFakeTimers();
+    let resolveBackground!: (value: unknown[]) => void;
+    appMocks.ProjectListTree.mockResolvedValueOnce([
+      {
+        project: {
+          color: "agent-2",
+          icon: "folder",
+          id: 2,
+          name: "Stable project",
+          parentID: 0,
+          path: "/tmp/stable-project",
+        },
+        children: [],
+      },
+    ]).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveBackground = resolve;
+      }),
+    );
+
+    try {
+      renderProjectsPage();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByText("Stable project")).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(appMocks.ProjectListTree).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("Stable project")).toBeInTheDocument();
+      expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
+
+      await act(async () => {
+        resolveBackground([]);
+        await Promise.resolve();
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Given a background poll is in flight, When a project mutation requests another refresh, Then one trailing reload runs after the poll instead of overlapping it", async () => {
+    vi.useFakeTimers();
+    let resolveBackground!: (value: unknown[]) => void;
+    appMocks.ProjectListTree.mockResolvedValueOnce([])
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveBackground = resolve;
+        }),
+      )
+      .mockResolvedValue([]);
+    appMocks.ProjectCreate.mockResolvedValue({ id: 9 });
+    appMocks.ProjectDetectGitRepo.mockResolvedValue({ isGitRepo: false });
+
+    try {
+      renderProjectsPage();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(appMocks.ProjectListTree).toHaveBeenCalledTimes(2);
+
+      fireEvent.click(screen.getByTestId("project-create-trigger"));
+      fireEvent.change(screen.getByTestId("project-new-path"), {
+        target: { value: "/tmp/queued-project" },
+      });
+      fireEvent.change(screen.getByTestId("project-new-name"), {
+        target: { value: "Queued project" },
+      });
+      fireEvent.click(screen.getByTestId("project-new-submit"));
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(appMocks.ProjectCreate).toHaveBeenCalledTimes(1);
+      expect(appMocks.ProjectListTree).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        resolveBackground([]);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(appMocks.ProjectListTree).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("ProjectsPage session read state", () => {

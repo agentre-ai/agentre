@@ -167,6 +167,9 @@ function ProjectsPage() {
   const sessions = useProjectSessionsStore((s) => s.sessionsByProject);
   const reloadProjectSessions = useProjectSessionsStore((s) => s.reload);
   const [loading, setLoading] = React.useState(true);
+  const initialLoadComplete = React.useRef(false);
+  const refreshInFlight = React.useRef<Promise<void> | null>(null);
+  const refreshQueued = React.useRef(false);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [filter, setFilter] = React.useState("");
   // R2x「运行中」筛选 chips：false=全部，true=只留 subtree 有 running/bg_running 的项目。
@@ -192,8 +195,9 @@ function ProjectsPage() {
       coordinateGetter: sortableKeyboardCoordinates,
     }),
   );
-  const refresh = React.useCallback(async () => {
-    setLoading(true);
+  const performRefresh = React.useCallback(async () => {
+    const isInitialLoad = !initialLoadComplete.current;
+    if (isInitialLoad) setLoading(true);
     setLoadError(null);
     try {
       const t = (await reloadProjectTreeCache()) ?? [];
@@ -207,9 +211,30 @@ function ProjectsPage() {
     } catch (err) {
       setLoadError(String(err));
     } finally {
-      setLoading(false);
+      if (isInitialLoad) {
+        initialLoadComplete.current = true;
+        setLoading(false);
+      }
     }
   }, [reloadProjectSessions]);
+  const refresh = React.useCallback(() => {
+    if (refreshInFlight.current) {
+      refreshQueued.current = true;
+      return refreshInFlight.current;
+    }
+    const pending = (async () => {
+      try {
+        do {
+          refreshQueued.current = false;
+          await performRefresh();
+        } while (refreshQueued.current);
+      } finally {
+        refreshInFlight.current = null;
+      }
+    })();
+    refreshInFlight.current = pending;
+    return pending;
+  }, [performRefresh]);
 
   React.useEffect(() => {
     let cancelled = false;

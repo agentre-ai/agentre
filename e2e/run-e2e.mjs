@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { createAppOverlay } from "./lib/app-overlay.mjs";
 import { startFakeSyncServer } from "./lib/fake-sync-server.mjs";
+import { runNodeGuards } from "./lib/guard-suite.mjs";
 import {
   ProcessSupervisor,
   REPO_ROOT,
@@ -31,24 +32,6 @@ function childResult(child) {
     child.once("error", (error) => resolve({ code: 1, signal: null, error }));
     child.once("exit", (code, signal) => resolve({ code: code ?? 1, signal, error: null }));
   });
-}
-
-async function runNodeGuards() {
-  const child = spawn(
-    process.execPath,
-    [
-      "--test",
-      "lib/run-context.test.mjs",
-      "lib/app-overlay.test.mjs",
-      "lib/fake-sync-server.test.mjs",
-    ],
-    {
-      cwd: here,
-      stdio: "inherit",
-    },
-  );
-  const result = await childResult(child);
-  if (result.code !== 0) throw new Error("runner isolation tests failed");
 }
 
 function viteCommand(run) {
@@ -107,11 +90,19 @@ async function main() {
   let failure;
   let interrupted = false;
   let artifactDir;
+  let supervisorStopError;
 
+  const stopSupervisedProcesses = async () => {
+    try {
+      await supervisor.stopAll();
+    } catch (error) {
+      supervisorStopError ??= error;
+    }
+  };
   const stopForSignal = async (signal) => {
     interrupted = true;
     failure = new Error(`runner received ${signal}`);
-    await supervisor.stopAll();
+    await stopSupervisedProcesses();
   };
   const handlers = new Map(
     ["SIGINT", "SIGTERM"].map((signal) => {
@@ -265,7 +256,13 @@ async function main() {
         // The peer may already have been terminated by a signal/failure path.
       }
     }
-    await supervisor.stopAll();
+    await stopSupervisedProcesses();
+    if (supervisorStopError) {
+      exitCode = 1;
+      failure = failure
+        ? new Error(`${failure.message}\n${supervisorStopError.message}`)
+        : supervisorStopError;
+    }
     if (fakeSync) {
       writeFileSync(run.syncRecorderPath, `${JSON.stringify(fakeSync.snapshot(), null, 2)}\n`, {
         mode: 0o600,

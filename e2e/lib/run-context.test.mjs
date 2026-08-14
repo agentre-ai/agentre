@@ -170,6 +170,21 @@ test("Given a supervised child that has already exited, when cleanup runs, then 
   assert.deepEqual(calls, []);
 });
 
+test("Given one supervised process tree cannot be terminated, when cleanup runs, then every child is attempted and the cleanup failure is reported", async () => {
+  const calls = [];
+  const supervisor = new ProcessSupervisor(async (pid) => {
+    calls.push(pid);
+    if (pid === 404) throw new Error("permission denied");
+  });
+  supervisor.track({ pid: 404 });
+  supervisor.track({ pid: 505 });
+
+  await assert.rejects(supervisor.stopAll(), /failed to terminate 1 supervised process tree/);
+  await assert.rejects(supervisor.stopAll(), /failed to terminate 1 supervised process tree/);
+
+  assert.deepEqual(calls.sort((a, b) => a - b), [404, 505]);
+});
+
 test("Given a failed run containing its token in text artifacts, when evidence is preserved, then the report path is retained and secrets are redacted", async (t) => {
   const run = await createRunContext();
   const artifactRoot = join(dirname(run.runRoot), `${basename(run.runRoot)}-artifacts`);

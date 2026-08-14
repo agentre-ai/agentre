@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { GUARD_TESTS } from "./guard-suite.mjs";
 import { REPO_ROOT } from "./run-context.mjs";
 
 const read = (path) => readFileSync(join(REPO_ROOT, path), "utf8");
@@ -81,7 +82,19 @@ test("Given the replacement suite, when its public entries are inspected, then o
 
   const pkg = JSON.parse(read("e2e/package.json"));
   assert.deepEqual(Object.keys(pkg.scripts).sort(), ["drive", "setup", "test", "test:guards", "verify"]);
-  assert.equal(pkg.scripts.test, "pnpm run test:guards && node run-e2e.mjs");
+  assert.equal(pkg.scripts.test, "node run-e2e.mjs");
+  assert.equal(pkg.scripts["test:guards"], "node run-guards.mjs");
+
+  const runner = read("e2e/run-e2e.mjs");
+  assert.match(runner, /runNodeGuards/);
+  assert.equal(runner.includes('"lib\/run-context.test.mjs"'), false);
+  assert.deepEqual([...GUARD_TESTS].sort(), [
+    "lib/app-overlay.test.mjs",
+    "lib/current-contract.test.mjs",
+    "lib/fake-sync-server.test.mjs",
+    "lib/run-context.test.mjs",
+    "lib/target.test.mjs",
+  ]);
 
   const verify = read("e2e/verify.mjs");
   assert.match(verify, /spawn\(wailsBin\(\), wailsArgs, \{[\s\S]*cwd: repoRoot,/);

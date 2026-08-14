@@ -265,8 +265,17 @@ export class ProcessSupervisor {
     if (this.stopping) return this.stopping;
     this.stopping = Promise.allSettled(
       [...this.children.keys()].map((pid) => this.terminate(pid)),
-    ).then(() => {
+    ).then((results) => {
       this.children.clear();
+      const failures = results
+        .filter((result) => result.status === "rejected")
+        .map((result) => result.reason);
+      if (failures.length > 0) {
+        throw new AggregateError(
+          failures,
+          `failed to terminate ${failures.length} supervised process tree${failures.length === 1 ? "" : "s"}`,
+        );
+      }
     });
     return this.stopping;
   }
