@@ -2,12 +2,15 @@ import * as React from "react";
 
 import {
   ListLLMProviders,
+  RemoteDeviceFingerprint,
   RemoteDeviceList,
   RemoteDeviceListProviders,
+  RemoteDeviceSyncProvider,
   SetChatSessionModelTarget,
 } from "../../../../wailsjs/go/app/App";
 import { llm_provider_svc } from "../../../../wailsjs/go/models";
 import i18n from "@/i18n";
+import { resolveExecutionDevice } from "../device-identity";
 
 import {
   recordRecentTarget,
@@ -22,6 +25,7 @@ type DeviceView = {
   id: number;
   name: string;
   online: boolean;
+  daemonFingerprint?: string;
   supportsLLMModelTarget?: boolean;
 };
 type ProviderSummary = {
@@ -88,6 +92,12 @@ export interface UseProviderPillOptions {
   /** agent 已绑定的 provider key；空串 = 未绑（CLI 登录态）。 */
   boundProviderKey?: string | null;
   /**
+   * agent 已绑定的 model key；空串/null = 跟随该供应商默认，非空 = 固定模型。
+   * undefined 表示新建会话的 ChatAgentItem 没有 model key：此时 UI 只承诺跟随绑定
+   * 供应商，不猜测模型（spec 2026-08-13 决策 18）。
+   */
+  boundModelKey?: string | null;
+  /**
    * >0 = 已有会话：选择立即持久化（调用 SetChatSessionModelTarget）；0 / undefined =
    * 新建会话：纯瞬态，首发 Send 时随 SendRequest.ProviderKey/ModelKey 透传
    * （spec 2026-08-11「新建与已有会话流程」）。
@@ -117,6 +127,15 @@ export interface UseProviderPillOptions {
   executionLocation?: string;
 }
 
+export type ProviderPillState = {
+  mode: "follow-agent" | "provider-default" | "fixed" | "invalid";
+  providerLabel: string;
+  providerType: string;
+  modelLabel: string;
+  resolutionLabel: string;
+  dynamic: boolean;
+};
+
 export interface UseProviderPillReturn {
   /** 当前选择的 provider key；空串 = 跟随 agent 绑定。新建会话是纯瞬态本地值，
    *  已有会话镜像 chat_sessions.provider_key（乐观更新，失败回滚）。 */
@@ -138,6 +157,11 @@ export interface UseProviderPillReturn {
   supportsFixedModel: boolean;
   /** 目标执行设备上是否缺少当前选中的 Provider（远端场景提示）。 */
   remoteMissing: boolean;
+  /** 把本机 Provider（含 API Key）显式同步到目标设备，并刷新远端目录。 */
+  syncProvider: (providerKey: string) => Promise<void>;
+  /** 本机是否真有一条通往目标设备的同步通道（已配对的 agentred 行）。为 false 时
+   *  目标设备只能被门控、不能被同步——此时不得提供同步入口（否则点了什么都不会发生）。 */
+  canSyncProvider: boolean;
   /** 目标执行位置（透传自选项，供 ProviderPill 传给共享 Picker）。 */
   executionLocation: string;
   /** 模型目录加载中 → pill 禁用。 */
@@ -152,6 +176,10 @@ export interface UseProviderPillReturn {
   unbound: boolean;
   /** 生效 key：providerKey || boundProviderKey（用于 pill 标签 / 高亮）。 */
   effectiveKey: string;
+  /** Composer 常驻 pill 的四态与解析结果。 */
+  pillState: ProviderPillState;
+  /** Picker 顶部「跟随 Agent 绑定」项的解析副行。 */
+  boundResolutionLabel: string;
   /** 当前选中 target 在目录里解析不出来（Provider/Model 缺失/停用/被删）→「目标已失效」。 */
   invalid: boolean;
   /** pill 是否禁用（规格「UI 与禁用状态」状态表：加载中 / 后端不可选 / 无兼容供应商）。 */
@@ -179,6 +207,7 @@ export interface UseProviderPillReturn {
 export function useProviderPill({
   backendType,
   boundProviderKey,
+  boundModelKey,
   sessionId,
   persistedProviderKey,
   persistedModelKey,
@@ -313,49 +342,141 @@ export function useProviderPill({
     return !m || !m.enabled;
   }, [catalog, providerKey, modelKey]);
 
+  const boundState = React.useMemo<ProviderPillState>(() => {
+    const provider = catalog.find(
+      (candidate) => candidate.providerKey === boundProviderKey,
+    );
+    const providerLabel = provider?.name ?? boundProviderKey ?? "";
+    const providerType = provider?.type ?? "";
+
+    // 新建会话没有 agent model key。即使目录能看见默认模型，也不能据此断言 agent
+    // 后端绑定的是 provider-default；它也可能固定到了另一个模型（决策 18）。
+    if (boundModelKey === undefined) {
+      return {
+        mode: "follow-agent",
+        providerLabel,
+        providerType,
+        modelLabel: "",
+        resolutionLabel: providerLabel,
+        dynamic: false,
+      };
+    }
+
+    const fixedModel = boundModelKey
+      ? provider?.models.find((model) => model.modelKey === boundModelKey)
+      : undefined;
+    const resolvedModel = fixedModel ?? provider?.defaultModel ?? undefined;
+    const modelLabel = resolvedModel?.modelId ?? "";
+    return {
+      mode: "follow-agent",
+      providerLabel,
+      providerType,
+      modelLabel,
+      resolutionLabel: modelLabel
+        ? `${providerLabel} · ${modelLabel}`
+        : providerLabel,
+      dynamic: !fixedModel && !!resolvedModel,
+    };
+  }, [boundModelKey, boundProviderKey, catalog]);
+
+  const pillState = React.useMemo<ProviderPillState>(() => {
+    if (providerKey === "" && modelKey === "") return boundState;
+
+    const provider = catalog.find(
+      (candidate) => candidate.providerKey === providerKey,
+    );
+    const providerLabel = provider?.name ?? providerKey;
+    const providerType = provider?.type ?? "";
+    const selectedModel = modelKey
+      ? provider?.models.find((model) => model.modelKey === modelKey)
+      : (provider?.defaultModel ?? undefined);
+    const modelLabel = selectedModel?.modelId ?? modelKey;
+    return {
+      mode: invalid ? "invalid" : modelKey ? "fixed" : "provider-default",
+      providerLabel,
+      providerType,
+      modelLabel,
+      resolutionLabel: modelLabel
+        ? `${providerLabel} · ${modelLabel}`
+        : providerLabel,
+      dynamic: !invalid && modelKey === "" && !!selectedModel,
+    };
+  }, [boundState, catalog, invalid, modelKey, providerKey]);
+
   // ── 远端门控（gap 1）：目标执行设备是远端时，以 daemon 目录为可运行事实源。──────
-  // 只认纯数字串设备 id（与 agent-backends 同款解析）；本机 / 非数字 id → 不启用远端门控。
-  const remoteDeviceID =
-    executionLocation !== "" && /^\d+$/.test(executionLocation)
-      ? Number(executionLocation)
-      : 0;
+  // executionLocation 可以是 canonical fingerprint，也兼容遗留 paired-row 数字 ID；
+  // 只有调用本地 RemoteDevice* RPC 时才翻成本安装的 paired row。
+  const [localFingerprint, setLocalFingerprint] = React.useState("");
   const [remoteDevices, setRemoteDevices] = React.useState<DeviceView[]>([]);
   const [remoteProviders, setRemoteProviders] = React.useState<
     ProviderSummary[]
   >([]);
+  const executionDevice = React.useMemo(
+    () =>
+      resolveExecutionDevice(
+        executionLocation,
+        localFingerprint,
+        remoteDevices,
+      ),
+    [executionLocation, localFingerprint, remoteDevices],
+  );
+  const remoteDeviceID = executionDevice.pairedDeviceId;
+  // 换目标后旧一轮的迟到结果直接丢弃，否则上一台机器的目录会盖住当前目标的门控。
+  const remoteRequestRef = React.useRef(0);
   const fetchRemote = React.useCallback(async () => {
-    if (remoteDeviceID <= 0) {
+    const request = ++remoteRequestRef.current;
+    const stale = () => remoteRequestRef.current !== request;
+    if (executionLocation === "") {
+      setLocalFingerprint("");
       setRemoteDevices([]);
       setRemoteProviders([]);
       return;
     }
+    // 两个 RPC 各自结算：配对目录拉取失败不该连带丢掉已经读到的本机指纹，否则本机
+    // 自身的 canonical fingerprint 会被当成另一台机器（resolveExecutionDevice 的
+    // 「未定」分支只在指纹真的未知时才该出现）。
+    const [fingerprint, dvRows] = await Promise.all([
+      RemoteDeviceFingerprint().catch(() => ""),
+      RemoteDeviceList().catch(() => null),
+    ]);
+    if (stale()) return;
+    const devices = (dvRows ?? []) as unknown as DeviceView[];
+    setLocalFingerprint(fingerprint ?? "");
+    setRemoteDevices(devices);
+    const resolved = resolveExecutionDevice(
+      executionLocation,
+      fingerprint ?? "",
+      devices,
+    );
+    if (!resolved.remote || resolved.pairedDeviceId <= 0) {
+      setRemoteProviders([]);
+      return;
+    }
     try {
-      const [dvRows, provRows] = await Promise.all([
-        RemoteDeviceList(),
-        RemoteDeviceListProviders(remoteDeviceID),
-      ]);
-      setRemoteDevices((dvRows ?? []) as unknown as DeviceView[]);
+      const provRows = await RemoteDeviceListProviders(resolved.pairedDeviceId);
+      if (stale()) return;
       setRemoteProviders((provRows ?? []) as unknown as ProviderSummary[]);
     } catch {
       // daemon 离线 / 拉取失败 → 目录视为空：未验证的 fixed-model 无法选（严格）。
-      setRemoteDevices([]);
+      if (stale()) return;
       setRemoteProviders([]);
     }
-  }, [remoteDeviceID]);
+  }, [executionLocation]);
   React.useEffect(() => {
     void fetchRemote();
   }, [fetchRemote]);
 
   const supportsFixedModel = React.useMemo(() => {
-    if (remoteDeviceID <= 0) return true; // 本机：不设能力位限制。
+    if (!executionDevice.remote) return true; // 本机：不设能力位限制。
+    if (remoteDeviceID <= 0) return false; // 未配对 fingerprint：远端能力未知，严格禁用。
     const dv = remoteDevices.find((d) => d.id === remoteDeviceID);
     // 设备离线 / 能力位未知 → false：远端 fixed-model 一律禁用（绝不静默降级）。
     return dv?.supportsLLMModelTarget ?? false;
-  }, [remoteDevices, remoteDeviceID]);
+  }, [executionDevice.remote, remoteDevices, remoteDeviceID]);
 
   // 把 daemon 目录转成 PickerProvider[]（非敏感摘要），供 Picker 远端门控。
   const remoteCatalog = React.useMemo<PickerProvider[] | undefined>(() => {
-    if (remoteDeviceID <= 0) return undefined;
+    if (!executionDevice.remote) return undefined;
     return remoteProviders.map((p) => {
       const models = (p.models ?? []).map((m) => ({
         modelKey: m.key,
@@ -377,15 +498,24 @@ export function useProviderPill({
         models,
       };
     });
-  }, [remoteDeviceID, remoteProviders]);
+  }, [executionDevice.remote, remoteProviders]);
 
   // 当前选中的 provider 在 daemon 目录里缺失 → 弹层底部 remoteMissing 提示。
   const remoteMissing = React.useMemo(() => {
-    if (remoteDeviceID <= 0 || !remoteCatalog) return false;
+    if (!executionDevice.remote || !remoteCatalog) return false;
     const key = providerKey || boundProviderKey || "";
     if (key === "") return false;
     return !remoteCatalog.some((p) => p.providerKey === key);
-  }, [remoteDeviceID, remoteCatalog, providerKey, boundProviderKey]);
+  }, [executionDevice.remote, remoteCatalog, providerKey, boundProviderKey]);
+
+  const syncProvider = React.useCallback(
+    async (key: string) => {
+      if (remoteDeviceID <= 0) return;
+      await RemoteDeviceSyncProvider(remoteDeviceID, key);
+      await fetchRemote();
+    },
+    [fetchRemote, remoteDeviceID],
+  );
 
   return {
     providerKey,
@@ -400,6 +530,8 @@ export function useProviderPill({
     error,
     unbound: !boundProviderKey,
     effectiveKey: providerKey || boundProviderKey || "",
+    pillState,
+    boundResolutionLabel: boundState.resolutionLabel,
     invalid,
     disabled: loading || catalogLoading || disabledReason !== null,
     disabledReason,
@@ -407,5 +539,7 @@ export function useProviderPill({
     remoteCatalog,
     supportsFixedModel,
     remoteMissing,
+    syncProvider,
+    canSyncProvider: remoteDeviceID > 0,
   };
 }

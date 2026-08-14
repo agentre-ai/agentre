@@ -18,7 +18,6 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
-	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 )
 
 // cwdUnavailableReasonFor 把 resolveSessionCwd 的错误分类成结构化字符串（R10），
@@ -70,7 +69,7 @@ func resolveSessionCwd(ctx context.Context, sess *chat_entity.Session, be *agent
 	}
 	// self 档（R13 认领后本机 backend 的 DeviceID 是本机指纹）也按本机处理：
 	// cwd 走本机 CwdResolver（project.Path / AgentCwd fallback）。
-	if be == nil || be.IsLocal() || remote_device_svc.IsSelfDevice(be.DeviceID) {
+	if !beTargetsRemote(be) {
 		if resolveCwdFn != nil {
 			return resolveCwdFn(ctx, sess)
 		}
@@ -145,7 +144,7 @@ func (s *chatSvc) ResolveSessionWorkspace(ctx context.Context, sessionID int64) 
 	var deviceID int64
 	// self 档（R13 认领后本机 backend 的 DeviceID 是本机指纹）也按本机处理：deviceID 0
 	// 让 workspace_fs_svc 走本机文件系统，而不是去配对表里找行报 RemoteDeviceNotFound。
-	if be.IsRemote() && !remote_device_svc.IsSelfDevice(be.DeviceID) {
+	if beTargetsRemote(be) {
 		id, ok := localPairedDeviceID(ctx, be.DeviceID)
 		if !ok {
 			return 0, "", i18n.NewError(ctx, code.RemoteDeviceNotFound)

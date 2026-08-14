@@ -50,9 +50,11 @@ type BackendItem struct {
 	OpenClawDefaultModel string `json:"openClawDefaultModel"`
 	OpenClawSessionMode  string `json:"openClawSessionMode"`
 	HasToken             bool   `json:"hasToken"`
-	// DeviceID 关联的远端设备 ID（paired_agents.id 的字符串形式）。空串 = 本地。
+	// DeviceID 是目标机器的 canonical fingerprint；遗留记录可能仍是 paired_agents.id
+	// 的数字字符串。当前安装自己的 fingerprint 表示本机，跨机展示/编辑必须保留原值；
+	// 只有调用本地 daemon RPC 时才翻译成 paired row ID。
 	DeviceID string `json:"deviceId"`
-	// DeviceName 关联远端设备的显示名；DeviceID 为空时为空串。
+	// DeviceName 关联目标设备的显示名；无法在本机设备目录解析时可能为空。
 	DeviceName string `json:"deviceName"`
 	// Online 关联远端设备当前是否在线；DeviceID 为空时为 false。
 	Online bool `json:"online"`
@@ -209,9 +211,9 @@ type CancelTestBackendResponse struct {
 // Type 必填，仅接受 "claudecode" / "codex"；其它值返回 AgentBackendInvalidType。
 //
 // DeviceID 路由 CLI 探测的目标机：
-//   - 空串 → 本地，主进程直接走 cliprober 扫本机 $PATH；
-//   - 非空（paired_agents.id 的字符串形式）→ 远端，主进程拨该 device 调
-//     daemon 的 cli.resolvePath RPC，让远端扫它自己的 $PATH。
+//   - 空串或本安装的 canonical fingerprint → 本地，主进程直接扫本机 $PATH；
+//   - 其它 canonical fingerprint（或遗留 paired_agents.id 数字串）→ 在本地派发
+//     边界解析成 paired row ID，再拨该 device 的 daemon cli.resolvePath RPC。
 type ResolveCLIPathRequest struct {
 	Type     string `json:"type" binding:"required"`
 	DeviceID string `json:"deviceId"`

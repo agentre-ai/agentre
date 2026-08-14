@@ -42,7 +42,7 @@ func (s *Service) discoverForBackend(ctx context.Context, be *agent_backend_enti
 	// 看不到。经 RemoteDiscoverer 走 daemon skills.list 发现(借 device 连接池)。
 	// 指向本机指纹的档(R13 认领后本机 backend 的 DeviceID == 本机指纹)不是远端:
 	// 它跟 DeviceID 空一样走本地 Discoverer。
-	if be.IsRemote() && !remote_device_svc.IsSelfDevice(be.DeviceID) {
+	if remote_device_svc.TargetsAnotherMachine(be.DeviceID) {
 		deviceID, ok := be.DeviceIDInt()
 		if !ok || s.remote == nil {
 			return discoveryResult{backendType: backendType, backend: be, packs: []agentskill.SkillPack{}}, nil
@@ -297,7 +297,7 @@ func (s *Service) ListAgentSkillCommands(ctx context.Context, agentID int64, cwd
 	// 一样是本地档：CLI 自己解析的 user/project/system 命令也必须合并进来，不能因为
 	// DeviceID 非空就按远端档跳过（discoverForBackend 已把 self 当本地发现，这里只差
 	// 原生命令这一半边）。
-	if discovered.backend != nil && (discovered.backend.IsLocal() || remote_device_svc.IsSelfDevice(discovered.backend.DeviceID)) {
+	if discovered.backend != nil && !remote_device_svc.TargetsAnotherMachine(discovered.backend.DeviceID) {
 		if commandDiscoverer, ok := agentskill.CommandDiscovererFor(discovered.backendType); ok {
 			native, err := commandDiscoverer.DiscoverCommands(ctx, agentskill.CommandDiscoverQuery{
 				BackendType:    discovered.backendType,

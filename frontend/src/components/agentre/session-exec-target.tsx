@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import {
   ListAgentBackends,
   ListAgentExecTargetAvailability,
+  ServerListDevices,
 } from "../../../wailsjs/go/app/App";
 import type { agent_backend_svc } from "../../../wailsjs/go/models";
 import { EventsOn } from "../../../wailsjs/runtime/runtime";
@@ -33,6 +34,8 @@ export type ExecTargetCandidate = {
   online: boolean;
   backendType: string;
   backendName: string;
+  llmProviderKey: string;
+  llmModelKey: string;
   available: boolean;
   reason: string;
   hint: string;
@@ -70,23 +73,34 @@ export function useExecTargetCandidates(agentId: number, projectId: number) {
     }
     setLoading(true);
     try {
-      const [availability, backends] = await Promise.all([
+      const [availability, backends, accountDevices] = await Promise.all([
         ListAgentExecTargetAvailability(agentId, projectId),
         ListAgentBackends(),
+        ServerListDevices().catch(() => []),
       ]);
       if (req !== reqRef.current) return;
       const backendById = new Map<number, agent_backend_svc.BackendItem>();
       for (const b of backends?.items ?? []) backendById.set(b.id, b);
+      const accountNameByFingerprint = new Map(
+        (accountDevices ?? [])
+          .filter((device) => device.Fingerprint)
+          .map((device) => [device.Fingerprint, device.Name] as const),
+      );
       setCandidates(
         (availability ?? []).map((a) => {
           const b = backendById.get(a.agentBackendId);
           return {
             agentBackendId: a.agentBackendId,
             deviceId: b?.deviceId ?? "",
-            deviceName: b?.deviceName ?? "",
+            deviceName:
+              b?.deviceName ||
+              accountNameByFingerprint.get(b?.deviceId ?? "") ||
+              "",
             online: b?.online ?? false,
             backendType: b?.type ?? "",
             backendName: b?.name ?? "",
+            llmProviderKey: b?.llmProviderKey ?? "",
+            llmModelKey: b?.llmModelKey ?? "",
             available: a.available,
             reason: a.reason,
             hint: a.hint,
@@ -208,6 +222,9 @@ export type NewSessionExecTargetLineProps = {
       kind: "local" | "desktop" | "daemon";
       deviceId: string;
       deviceName: string;
+      backendType: string;
+      llmProviderKey: string;
+      llmModelKey: string;
     } | null,
   ) => void;
 };
@@ -260,6 +277,9 @@ export function NewSessionExecTargetLine(props: NewSessionExecTargetLineProps) {
             kind: effective.kind,
             deviceId: effective.deviceId,
             deviceName: effective.deviceName,
+            backendType: effective.backendType,
+            llmProviderKey: effective.llmProviderKey,
+            llmModelKey: effective.llmModelKey,
           }
         : null,
     );

@@ -96,8 +96,24 @@
       "cancelTestNamed": "Cancel test for {{name}}",
       "deleteNamed": "Delete {{name}}",
       "editNamed": "Edit {{name}}",
+      "changeBinding": "Change binding",
+      "changeBindingNamed": "Change binding for {{name}}",
+      "rebind": "Reselect",
+      "rebindNamed": "Reselect binding for {{name}}",
       "test": "Test Connection",
       "testNamed": "Test connection for {{name}}"
+    },
+    "binding": {
+      "label": "Model binding",
+      "description": "Choose the model source first; Claude tier routes and CLI-only overrides follow this main binding.",
+      "cliLogin": "CLI login state",
+      "cliResolution": "Effective model is determined by the CLI's own login account",
+      "modeFollow": "Follow default",
+      "modeFixed": "Fixed",
+      "followResolution": "Effective model: {{model}} · follows default changes from the next turn",
+      "fixedResolution": "Effective model: {{model}} · unaffected by provider default changes",
+      "invalidTarget": "Invalid target · {{target}}",
+      "invalidResolution": "This target cannot run the next turn; choose another binding"
     },
     "approval": {
       "hint": "Whether tool execution needs human approval",
@@ -155,7 +171,9 @@
     "defaultModel": {
       "hint": "--model · leave empty to use the provider model / CLI default",
       "label": "Custom Model",
-      "placeholder": "e.g. claude-fable-5 or an alias like opus/sonnet (used on CLI login)"
+      "placeholder": "e.g. claude-fable-5 or an alias like opus/sonnet (used on CLI login)",
+      "cliOnlyDescription": "Only applies with CLI login state. It is retained but ignored after binding an Agentre provider.",
+      "ignoredDescription": "The custom CLI model is retained but ignored while an Agentre provider is bound."
     },
     "deleteDialog": {
       "description": "Delete \"{{name}}\"? This is a soft delete and does not affect existing agent references.",
@@ -204,11 +222,15 @@
       "ariaLabel": "Agent backend list"
     },
     "modelRoutes": {
-      "hint": "ANTHROPIC_DEFAULT_*_MODEL. Leave empty to use the main provider.",
+      "hint": "Claude Code sends requests in three tiers — OPUS / SONNET / HAIKU. Any tier you leave alone follows the main binding above (the CLI's ANTHROPIC_DEFAULT_*_MODEL).",
+      "defaultChip": "Usually no change needed",
       "inheritMain": "Inherit main provider",
       "inheritWithName": "Inherit main provider · {{name}}",
-      "label": "Model Tier Routes",
-      "tierAria": "Claude tier route"
+      "label": "Model tier routes",
+      "tierAria": "Claude tier route",
+      "inheritsSummary": "main binding → {{target}}",
+      "fixedSummary": "fixed → {{target}}",
+      "invalid": "invalid target"
     },
     "name": {
       "deviceDefault": "{{device}} · {{name}}"
@@ -259,6 +281,9 @@
       "tokenSavedHint": "The existing token is retained unless you replace or explicitly clear it.",
       "tokenSavedPlaceholder": "Token is stored securely. Enter a new value to replace it.",
       "modelOverrideUnauthorized": "This Gateway does not authorize model overrides for this operator connection, so the agent's own model is used."
+    },
+    "page": {
+      "add": "New Backend"
     },
     "permission": {
       "addIsSandbox": "Add IS_SANDBOX=1",
@@ -343,7 +368,35 @@
       "agentCount": "{{count}} agents in use",
       "needsAction": "Needs action",
       "unused": "Not used by any agent",
-      "cliLogin": "CLI login"
+      "bindingCliLogin": "Use CLI login state",
+      "bindingInvalid": "Model binding is invalid",
+      "bindingInvalidReason": "{{provider}} · {{model}} is disabled or no longer available"
+    },
+    "summary": {
+      "title": "Effective configuration summary",
+      "runtime": "Runtime location",
+      "source": "Model source",
+      "model": "Effective model",
+      "routes": "Tier routes",
+      "references": "References",
+      "referenceCount": "{{count}} agents",
+      "saveReady": "Ready to save · all checks passed",
+      "cannotSaveReason": "Cannot save: {{reason}}",
+      "cliAccountModel": "Determined by CLI login account",
+      "unresolvedModel": "Unresolved",
+      "modeGateway": "Gateway selection",
+      "modeInvalid": "Invalid",
+      "modeCli": "CLI login",
+      "sources": {
+        "cli": "CLI login state",
+        "agentre": "Agentre provider · {{provider}}",
+        "openclaw": "OpenClaw Gateway"
+      },
+      "reasons": {
+        "nameRequired": "Enter a backend name",
+        "invalidTarget": "Choose a valid model binding",
+        "bindingRequired": "No compatible provider is available; configure one and select a model binding"
+      }
     },
     "sandbox": {
       "defaultHint": "Empty = use codex CLI default",
@@ -352,11 +405,6 @@
     },
     "test": {
       "passed": "Test passed · {{latency}}ms · {{message}}"
-    },
-    "toolbar": {
-      "add": "New Backend",
-      "count": "{{count}} total",
-      "title": "Configured Backends"
     }
   },
   "canonical": {
@@ -644,9 +692,9 @@
         "sentence": "Selected provider {{provider}} is unavailable; fell back to the agent binding"
       },
       "providerSwitch": {
-        "fixedModel": "Switched to provider {{provider}} · fixed model {{model}} from here",
-        "followAgentBinding": "Switched back to follow the agent binding / CLI login state from here",
-        "sentence": "Switched to provider {{provider}} from here"
+        "fixedModel": "$t(providerPill.mode.fixed) · {{provider}} · {{model}} from here",
+        "followAgentBinding": "$t(modelTargetPicker.special.chat) from here",
+        "sentence": "$t(providerPill.mode.followDefault) · {{provider}} from here"
       }
     },
     "meta": {
@@ -1663,7 +1711,6 @@
     },
     "empty": {
       "addFirst": "Add First Provider",
-      "apiKeyHelp": "How to get an API key",
       "chain": "LLM providers → Agent backends → Agent chats",
       "description": "Add a provider such as Anthropic, OpenAI, or a compatible endpoint, then choose a default model.",
       "goToBackend": "Go to Agent backends",
@@ -1720,7 +1767,28 @@
       "providerDisabled": "Provider {{name}} disabled",
       "imported": "Imported {{imported}} models, updated {{updated}}",
       "modelUpdated": "Model {{model}} updated",
-      "modelDeleted": "Model {{model}} deleted"
+      "modelDeleted": "Model {{model}} deleted",
+      "batchDeleted": "Deleted {{count}} models",
+      "batchDeleted_one": "Deleted {{count}} model",
+      "batchDeleted_other": "Deleted {{count}} models",
+      "batchDeletePartial": "Deleted {{deleted}} models · {{unprocessed}} not processed: {{message}}",
+      "batchDeletePartial_one": "Deleted {{deleted}} model · {{unprocessed}} not processed: {{message}}",
+      "batchDeletePartial_other": "Deleted {{deleted}} models · {{unprocessed}} not processed: {{message}}",
+      "batchEnabled": "Enabled {{count}} models",
+      "batchEnabled_one": "Enabled {{count}} model",
+      "batchEnabled_other": "Enabled {{count}} models",
+      "batchEnabledPartial": "Enabled {{done}} models · {{unprocessed}} not processed: {{message}}",
+      "batchEnabledPartial_one": "Enabled {{done}} model · {{unprocessed}} not processed: {{message}}",
+      "batchEnabledPartial_other": "Enabled {{done}} models · {{unprocessed}} not processed: {{message}}",
+      "batchDisabled": "Disabled {{count}} models",
+      "batchDisabled_one": "Disabled {{count}} model",
+      "batchDisabled_other": "Disabled {{count}} models",
+      "batchDisabledSkippedDefault": "Disabled {{count}} models (default model excluded)",
+      "batchDisabledSkippedDefault_one": "Disabled {{count}} model (default model excluded)",
+      "batchDisabledSkippedDefault_other": "Disabled {{count}} models (default model excluded)",
+      "batchDisabledPartial": "Disabled {{done}} models · {{unprocessed}} not processed: {{message}}",
+      "batchDisabledPartial_one": "Disabled {{done}} model · {{unprocessed}} not processed: {{message}}",
+      "batchDisabledPartial_other": "Disabled {{done}} models · {{unprocessed}} not processed: {{message}}"
     },
     "form": {
       "createAriaLabel": "New LLM provider",
@@ -1766,16 +1834,11 @@
       "draftFailed": "Call failed",
       "draftSuccess": "Call succeeded. Sent hi and received a model response.",
       "failedTitle": "Test Failed",
-      "providerFailed": "\"{{name}}\" connection failed: {{message}}",
-      "providerSuccess": "\"{{name}}\" call succeeded. Sent hi and received a model response.",
+      "providerFailed": "\"{{name}}\" connection failed ({{duration}}): {{message}}",
+      "providerSuccess": "\"{{name}}\" call succeeded ({{duration}}). Sent hi and received a model response.",
       "successTitle": "Test Passed",
-      "rowSuccess": "Model {{model}} call succeeded. Sent hi and received a model response.",
-      "rowFailed": "Model {{model}} connection failed: {{message}}"
-    },
-    "toolbar": {
-      "add": "New Provider",
-      "count": "{{count}} total",
-      "title": "Configured Providers"
+      "rowSuccess": "Model {{model}} call succeeded ({{duration}}). Sent hi and received a model response.",
+      "rowFailed": "Model {{model}} connection failed ({{duration}}): {{message}}"
     },
     "validation": {
       "apiKeyRequired": "API Key is required",
@@ -1792,7 +1855,12 @@
       "add": "Add Provider",
       "enabled": "Enabled",
       "disabled": "Disabled",
-      "noMatch": "No matching providers"
+      "noMatch": "No matching providers",
+      "modelCount": "{{count}} models"
+    },
+    "page": {
+      "add": "New Provider",
+      "loadingProviders": "Loading providers…"
     },
     "workspace": {
       "ariaLabel": "{{name}} models",
@@ -1809,7 +1877,23 @@
       "delete": "Delete",
       "deleteNamed": "Delete {{name}}",
       "deleteTitle": "Delete provider (requires confirmation)",
+      "deleteBlockedReferenced": "Referenced by {{count}}: cannot delete, disable it instead",
+      "deleteBlockedReferenced_one": "Referenced by {{count}}: cannot delete, disable it instead",
+      "deleteBlockedReferenced_other": "Referenced by {{count}}: cannot delete, disable it instead",
       "cannotEnableNoDefault": "Set an enabled default model before enabling this provider",
+      "testConnection": "Test Connection",
+      "more": "More",
+      "metaDefaultModel": "Default model",
+      "metaReferenced": "Referenced",
+      "refBackends": "{{count}} backends",
+      "refBackends_one": "{{count}} backend",
+      "refBackends_other": "{{count}} backends",
+      "refSessions": "{{count}} sessions",
+      "refSessions_one": "{{count}} session",
+      "refSessions_other": "{{count}} sessions",
+      "refRoutes": "{{count}} routes",
+      "refRoutes_one": "{{count}} route",
+      "refRoutes_other": "{{count}} routes",
       "searchPlaceholder": "Filter model IDs…",
       "searchAria": "Filter models",
       "modelCount": "Showing {{shown}} / {{total}}",
@@ -1837,8 +1921,30 @@
       "deleteModelNamed": "Delete {{model}}",
       "deleteBlockedDefault": "Default model: set another default before deleting",
       "deleteTitle": "Delete (requires confirmation)",
+      "testPassed": "Passed",
+      "testPassedHint": "Passed in this session · {{duration}}",
       "disableBlockedDefault": "Default model: set another default before disabling",
-      "enableNamed": "Enable {{model}}"
+      "enableNamed": "Enable {{model}}",
+      "selectAll": "Select all models",
+      "selectModel": "Select {{model}}",
+      "model": "Model",
+      "references": "References",
+      "enableColumn": "Enable",
+      "moreModelNamed": "More actions for {{model}}",
+      "deleteBlockedReferenced": "Referenced by {{count}}, cannot be deleted",
+      "batch": {
+        "selectedCount": "Selected {{selected}} / {{total}}",
+        "selectAll": "Select all",
+        "clearSelection": "Clear selection",
+        "enable": "Enable selected",
+        "disable": "Disable selected",
+        "delete": "Delete selected",
+        "referencesPending": "Wait for reference checks to finish before deleting",
+        "referencesUnavailable": "Reference status unavailable: cannot delete safely",
+        "rowCanDelete": "Can delete",
+        "rowDefaultBlocked": "Default model: cannot delete",
+        "rowReferencedBlocked": "Referenced by {{count}}: cannot delete"
+      }
     },
     "delete": {
       "providerTitle": "Delete provider · {{name}}",
@@ -1853,10 +1959,29 @@
       "modelConfirmHint": "This model has no references. Saved fixed-model targets pointing at it will become invalid.",
       "providerConfirmButton": "Delete provider",
       "modelConfirmButton": "Delete model",
+      "disableInstead": "Disable instead",
+      "disableInsteadHint": "Disabling keeps every reference and can be undone at any time.",
       "refBackends": "backends",
       "refSessions": "sessions",
       "refRoutes": "routes",
       "noRefs": "no references"
+    },
+    "batchDelete": {
+      "title": "Delete the {{count}} selected models?",
+      "title_one": "Delete the {{count}} selected model?",
+      "title_other": "Delete the {{count}} selected models?",
+      "descriptionWithProtected": "{{protectedCount}} of them are protected and stay untouched, so only {{deletableCount}} will actually be deleted.",
+      "descriptionAllDeletable": "All {{count}} selected models will be deleted.",
+      "descriptionAllDeletable_one": "All {{count}} selected model will be deleted.",
+      "descriptionAllDeletable_other": "All {{count}} selected models will be deleted.",
+      "notTransactional": "Models are deleted one by one, not as a transaction: a failure stops the run and reports how many were deleted and how many are left unprocessed, so nothing is silently half-done.",
+      "willDelete": "Will be deleted",
+      "protected": "Protected (unchanged)",
+      "noneDeletable": "No deletable models",
+      "deleting": "Deleting…",
+      "confirmButton": "Delete {{count}} models",
+      "confirmButton_one": "Delete {{count}} model",
+      "confirmButton_other": "Delete {{count}} models"
     },
     "modelEdit": {
       "ariaLabel": "Edit model",
@@ -1886,7 +2011,28 @@
       "selectAllHint": "Existing items are skipped",
       "existingSkip": "Already exists · skip",
       "new": "New",
+      "otherVendor": "Other",
+      "readOk": "Loaded",
+      "errorTitle": {
+        "auth": "Authentication failed ({{code}})",
+        "endpoint": "Endpoint not found ({{code}})",
+        "server": "Provider server error ({{code}})",
+        "status": "Request failed (HTTP {{code}})",
+        "network": "Cannot reach the provider",
+        "generic": "Could not read the model catalog"
+      },
+      "error": {
+        "auth": "The provider rejected the request. Check the API Key and credentials in the connection settings.",
+        "endpoint": "The provider endpoint could not be reached. Check the base URL.",
+        "server": "The provider returned a server error. Try again in a moment.",
+        "status": "The provider returned an error (HTTP {{code}}).",
+        "network": "Could not reach the provider. Check the network or endpoint.",
+        "generic": "Could not load the model catalog."
+      },
+      "goEditConnection": "Edit connection",
+      "viewRawResponse": "View raw response",
       "importSummary": "Will import {{count}} new models",
+      "importSummaryExisting": "Existing models keep their name, context, default and reference settings.",
       "importButton": "Import {{count}} models",
       "importing": "Importing…",
       "importButton_one": "Import {{count}} model",
@@ -1896,6 +2042,7 @@
       "ariaLabel": "Add model manually",
       "title": "Add model · {{name}}",
       "description": "Manually add a private, preview or proxy-alias model not listed upstream.",
+      "catalogMatched": "The built-in catalog matched this ID and filled in the context window and max output; both stay editable.",
       "submit": "Add"
     }
   },
@@ -2679,12 +2826,12 @@
     "disabledNoCompatibleProviders": "No available provider matches this backend type",
     "disabledUnsupportedBackend": "This backend does not use agentre providers",
     "errorFetch": "Failed to load providers. Please try again.",
-    "followAgentBinding": "Follow agent binding",
-    "followAgentBindingDesc": "Use the provider default bound to this agent",
-    "followAgentBindingUnboundDesc": "Leave unselected; use the CLI login state",
-    "heading": "Provider",
+    "mode": {
+      "fixed": "Fixed model",
+      "followDefault": "Follow provider default",
+      "invalid": "No longer valid"
+    },
     "switchNote": "Switching takes effect from the next turn; the turn in progress is unaffected",
-    "title": "Select provider · current {{provider}}",
     "unselected": "Select provider"
   },
   "permissionMode": {
@@ -2820,7 +2967,7 @@
       "title": "Local HTTP Proxy"
     },
     "llmProvider": {
-      "description": "Configure available model sources. After saving, Agentre can fetch the account's available models, while context window, thinking support, and other capabilities are filled from the built-in cago agents catalog.",
+      "description": "Configure available model sources. After saving, Agentre can fetch the models available under the account and fill in each model's capabilities automatically.",
       "gapBanner": {
         "description": "Some agents are bound to backends that have no activated LLM provider. Once you've configured a provider, go to the org chart to assign it to those agents.",
         "goToOrg": "Go to org chart",
@@ -3191,21 +3338,44 @@
     "special": {
       "backend": "CLI login state",
       "chat": "Follow agent binding",
-      "route": "Inherit main binding"
+      "route": "Inherit main binding",
+      "backendSublabel": "Determined by the CLI's own login account"
     },
     "searchPlaceholder": "Search providers or models…",
     "clearSearch": "Clear search",
     "loading": "Loading model catalog…",
     "error": "Failed to load model catalog",
     "empty": "No available providers. Create one in LLM Providers first.",
-    "defaultBadge": "default",
+    "noCompatibleProviders": "No providers compatible with this backend type.",
     "defaultLabel": "Follow default model",
+    "followDefault": "Follow this provider's default",
+    "dynamicLegend": "Follow this provider's default — can change from the next turn; a fixed model never changes.",
+    "fixedSection": "Fixed to a specific model",
+    "contextOutput": "{{ctx}} ctx · {{out}} out",
+    "disabledModel": "This model is disabled",
+    "disabledProvider": "This provider is disabled",
+    "recentLabel": "Recently used",
+    "removeRecent": "Remove {{label}}",
+    "invalidTarget": "The current selection \"{{target}}\" is no longer valid (its provider or model is missing, disabled, or deleted). The next run will be blocked, and it will not automatically fall back to another model. Choose again.",
     "invalidHint": "This target is no longer valid (provider or model missing/disabled). Choose again.",
+    "invalidCurrent": "Current selection · no longer valid",
+    "invalidChip": "Invalid",
     "remoteMissing": "Target device is missing this provider. Sync it first.",
     "noDefaultModel": "No default model set",
     "remoteSyncNeeded": "Local only — sync to this device first",
     "fixedModelUnsupported": "This device does not support fixed models — upgrade agentred",
-    "remoteGateHint": "Disabled items need sync to the device or an unsupported capability"
+    "remoteGateHint": "Disabled items need sync to the device or an unsupported capability",
+    "remoteDeviceHeader": "Runs on {{device}} — that device's own configuration applies",
+    "providerOnDevice": "Already on this device",
+    "syncInline": "Sync over",
+    "syncFootnote": "Syncing copies the API key to that device and needs your explicit confirmation",
+    "syncProviderNamed": "Sync {{provider}} to this device",
+    "syncDialog": {
+      "title": "Sync provider to device",
+      "description": "Sync {{provider}} and its model catalog to the target device.",
+      "confirmation": "This copies the provider API key to the target device. Confirm before continuing.",
+      "confirm": "Confirm sync"
+    }
   },
   "statusBar": {
     "agentSummary": "{{count}} agents · {{running}} running",

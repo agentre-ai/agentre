@@ -93,7 +93,7 @@ func (s *chatSvc) RunPeerSession(ctx context.Context, params wire.RunParams, sou
 	if err != nil {
 		return nil, err
 	}
-	if backend.IsRemote() {
+	if beTargetsRemote(backend) {
 		if err := s.preflightPeerRemoteExecution(ctx, backend, session.ID); err != nil {
 			return nil, err
 		}
@@ -131,6 +131,8 @@ func (s *chatSvc) runFreshPeerSession(ctx context.Context, params wire.RunParams
 		ProjectID:             projectID,
 		Text:                  params.UserText,
 		PermissionMode:        params.PermissionMode,
+		ProviderKey:           params.LLMProviderKey,
+		ModelKey:              params.LLMModelKey,
 		EmitTurnStartedBypass: true,
 		peerSource:            source.messageSource(),
 	}, sendOptions{})

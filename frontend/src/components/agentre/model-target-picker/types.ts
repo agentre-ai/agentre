@@ -14,11 +14,14 @@ export type ModelTarget = { providerKey: string; modelKey: string };
 export type PickerScenario = "backend" | "chat" | "route";
 
 // PickerModel 一条可选的固定模型。enabled=false 的模型不可选（目标已失效）。
+// contextWindow / maxOutput 供选项行右侧展示上下文窗口与最大输出（纯前端展示）。
 export type PickerModel = {
   modelKey: string;
   modelId: string;
   name?: string;
   enabled: boolean;
+  contextWindow?: number;
+  maxOutput?: number;
 };
 
 // PickerProvider 一个 Provider 组。defaultModel 是 provider-default 项（当前默认模型的

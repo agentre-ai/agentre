@@ -73,6 +73,21 @@ func (mr *MockLLMProviderRepoMockRecorder) CountModelReferences(ctx, modelKey an
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountModelReferences", reflect.TypeOf((*MockLLMProviderRepo)(nil).CountModelReferences), ctx, modelKey)
 }
 
+// CountModelsByProvider mocks base method.
+func (m *MockLLMProviderRepo) CountModelsByProvider(ctx context.Context, providerIDs []int64) (map[int64]int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CountModelsByProvider", ctx, providerIDs)
+	ret0, _ := ret[0].(map[int64]int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CountModelsByProvider indicates an expected call of CountModelsByProvider.
+func (mr *MockLLMProviderRepoMockRecorder) CountModelsByProvider(ctx, providerIDs any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountModelsByProvider", reflect.TypeOf((*MockLLMProviderRepo)(nil).CountModelsByProvider), ctx, providerIDs)
+}
+
 // CountProviderReferences mocks base method.
 func (m *MockLLMProviderRepo) CountProviderReferences(ctx context.Context, providerKey string) (llm_provider_repo.ProviderRefCounts, error) {
 	m.ctrl.T.Helper()

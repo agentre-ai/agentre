@@ -7,6 +7,7 @@ import {
   ChevronRight,
   ExternalLink,
   Loader2,
+  Lock,
   Pencil,
   Plus,
   Puzzle,
@@ -30,8 +31,16 @@ import {
 import i18n from "@/i18n";
 import { cn } from "@/lib/utils";
 
-import { truncateFlashText } from "./agent-backends-utils";
-import { AgentBackendLogo, LlmModelLogo } from "./ai-brand-logo";
+import {
+  resolveModelTarget,
+  truncateFlashText,
+  type ResolvedModelTarget,
+} from "./agent-backends-utils";
+import {
+  AgentBackendLogo,
+  LlmModelLogo,
+  LlmProviderLogo,
+} from "./ai-brand-logo";
 import {
   CancelTestAgentBackend,
   CreateAgentBackend,
@@ -40,10 +49,12 @@ import {
   GetGatewayStatus,
   ListAgentBackends,
   ListLLMProviders,
+  RemoteDeviceFingerprint,
   RemoteDeviceList,
   RemoteDeviceListProviders,
   RemoteDeviceSyncProvider,
   ResolveAgentBackendCLIPath,
+  ServerListDevices,
   ScanAndCreateAgentBackends,
   TestAgentBackend,
   TestOpenClawAgentBackend,
@@ -71,10 +82,17 @@ import {
   OPENCLAW_ERROR_KEY_BY_CODE,
   openClawDraftIssue,
 } from "./openclaw-validation";
+import {
+  deviceSelectValue,
+  pairedDeviceSelectValue,
+  persistedDeviceIdForSelection,
+  resolveExecutionDevice,
+} from "./device-identity";
 
 type Backend = agent_backend_svc.BackendItem;
 type Provider = llm_provider_svc.ProviderItem;
 type BackendType = "builtin" | "claudecode" | "codex" | "piagent" | "openclaw";
+type Translate = ReturnType<typeof useTranslation>["t"];
 
 // DeviceView — local shim matching remote_device_svc.DeviceView.
 // wailsjs/go/models is generated at build time and not present in this worktree.
@@ -82,6 +100,7 @@ type DeviceView = {
   id: number;
   name: string;
   online: boolean;
+  daemonFingerprint?: string;
   supportsLLMModelTarget?: boolean;
 };
 type ProviderSummary = {
@@ -141,7 +160,7 @@ const backendTypeMeta: Record<
 type EditorState =
   | { kind: "closed" }
   | { kind: "create" }
-  | { kind: "edit"; backend: Backend };
+  | { kind: "edit"; backend: Backend; openBinding?: boolean };
 
 type FlashState =
   | { kind: "ok"; text: string }
@@ -238,14 +257,6 @@ const RESERVED_ENV_KEYS = new Set([
 
 const LOCAL_DEVICE_SELECT_VALUE = "__local_device__";
 
-function deviceIdToSelectValue(deviceId: string): string {
-  return deviceId === "" ? LOCAL_DEVICE_SELECT_VALUE : deviceId;
-}
-
-function selectValueToDeviceId(value: string): string {
-  return value === LOCAL_DEVICE_SELECT_VALUE ? "" : value;
-}
-
 function matchingProviders(t: BackendType, providers: Provider[]) {
   if (t === "claudecode")
     return providers.filter((p) => p.type === "anthropic");
@@ -253,19 +264,6 @@ function matchingProviders(t: BackendType, providers: Provider[]) {
     return providers.filter((p) => p.type === "openai-response");
   // piagent 三类全收（anthropic / openai-chat / openai-response）：直接全列。
   return providers;
-}
-
-function strictMatchLabel(
-  t: BackendType,
-  providerType?: string,
-): string | null {
-  if (t === "claudecode") return "anthropic";
-  if (t === "codex") {
-    if (providerType === "openai-response") return "openai-response";
-    return "openai-response";
-  }
-  if (t === "piagent") return null;
-  return null;
 }
 
 function isCliBackend(t: BackendType): boolean {
@@ -388,9 +386,13 @@ function openClawProbeErrorMessage(
 export function AgentBackendsPanel({
   onOpenLlmProviders,
   onOpenProxySettings,
+  renderHeader,
 }: {
   onOpenLlmProviders?: () => void;
   onOpenProxySettings?: () => void;
+  // 页头由宿主渲染，面板把自己的页级操作（自动识别 / 新建后端）交进去：按钮要落在
+  // H1 行，而它们开的创建弹窗、扫描进行态仍归面板持有。
+  renderHeader?: (actions: React.ReactNode) => React.ReactNode;
 } = {}) {
   const { t } = useTranslation();
   const [backends, setBackends] = React.useState<Backend[]>([]);
@@ -562,81 +564,126 @@ export function AgentBackendsPanel({
     // reload is for explicit refreshes only; initial load runs directly
   }, []);
 
-  return (
-    <section className="min-w-0 overflow-hidden rounded-lg border border-border bg-card">
-      <Toolbar
-        count={backends.length}
-        onCreate={() => setEditor({ kind: "create" })}
-        onAutoScan={handleAutoScan}
-        scanning={scanning}
-      />
-      {flash ? (
-        <FlashBanner state={flash} onDismiss={() => setFlash(null)} />
-      ) : null}
-      <div className="flex min-w-0 flex-col">
-        {loading ? (
-          <div className="flex items-center justify-center gap-2 px-4 py-6 text-xs text-muted-foreground">
-            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-            {t("common.loading")}
-          </div>
-        ) : backends.length === 0 ? (
-          <AgentBackendsEmptyState
-            onCreate={() => setEditor({ kind: "create" })}
-            onOpenLlmProviders={onOpenLlmProviders}
+  // 页级操作落在 H1 行。「新建后端」在空态下让位给空态自带的 CTA——全页始终只有一个
+  // 新建入口；「自动识别」恰恰在空态最有用，所以一直留在标题行。
+  const headerActions = (
+    <>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="h-[30px] gap-1.5 px-3 text-xs"
+        onClick={handleAutoScan}
+        disabled={scanning}
+        title={t("agentBackends.autoScan.buttonTitle")}
+      >
+        {scanning ? (
+          <Loader2
+            className="size-3.5 animate-spin"
+            data-icon="inline-start"
+            aria-hidden="true"
           />
         ) : (
-          <div
-            role="list"
-            aria-label={t("agentBackends.list.ariaLabel")}
-            className="flex min-w-0 flex-col"
-          >
-            {backends.map((b) => (
-              <BackendRow
-                key={b.id}
-                backend={b}
-                testing={testingId === b.id}
-                testDisabled={testingId !== null}
-                onTest={() => handleTestRow(b)}
-                onCancelTest={handleCancelRow}
-                onEdit={() => setEditor({ kind: "edit", backend: b })}
-                onDelete={() => setPendingDelete(b)}
-              />
-            ))}
-          </div>
+          <Radar
+            className="size-3.5"
+            data-icon="inline-start"
+            aria-hidden="true"
+          />
         )}
-      </div>
+        {scanning
+          ? t("agentBackends.autoScan.scanning")
+          : t("agentBackends.autoScan.button")}
+      </Button>
+      {loading || backends.length === 0 ? null : (
+        <Button
+          type="button"
+          size="sm"
+          data-testid="agent-backend-create"
+          className="h-[30px] gap-1.5 px-3 text-xs"
+          onClick={() => setEditor({ kind: "create" })}
+        >
+          <Plus data-icon="inline-start" aria-hidden="true" />
+          {t("agentBackends.page.add")}
+        </Button>
+      )}
+    </>
+  );
 
-      {editor.kind !== "closed" ? (
-        <BackendEditor
-          state={editor}
-          providers={providers}
-          onClose={() => setEditor({ kind: "closed" })}
-          onSaved={async (message) => {
-            setEditor({ kind: "closed" });
-            setFlash({ kind: "ok", text: message });
-            await reload();
-          }}
-          onOpenProxySettings={onOpenProxySettings}
-          onOpenLlmProviders={onOpenLlmProviders}
-        />
-      ) : null}
+  return (
+    <>
+      {renderHeader?.(headerActions)}
+      <section className="min-w-0 overflow-hidden rounded-lg border border-border bg-card">
+        {flash ? (
+          <FlashBanner state={flash} onDismiss={() => setFlash(null)} />
+        ) : null}
+        <div className="flex min-w-0 flex-col">
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 px-4 py-6 text-xs text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+              {t("common.loading")}
+            </div>
+          ) : backends.length === 0 ? (
+            <AgentBackendsEmptyState
+              onCreate={() => setEditor({ kind: "create" })}
+              onOpenLlmProviders={onOpenLlmProviders}
+            />
+          ) : (
+            <div
+              role="list"
+              aria-label={t("agentBackends.list.ariaLabel")}
+              className="flex min-w-0 flex-col"
+            >
+              {backends.map((b) => (
+                <BackendRow
+                  key={b.id}
+                  backend={b}
+                  testing={testingId === b.id}
+                  testDisabled={testingId !== null}
+                  onTest={() => handleTestRow(b)}
+                  onCancelTest={handleCancelRow}
+                  onEdit={() => setEditor({ kind: "edit", backend: b })}
+                  onChangeBinding={() =>
+                    setEditor({ kind: "edit", backend: b, openBinding: true })
+                  }
+                  onDelete={() => setPendingDelete(b)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
 
-      {pendingDelete ? (
-        <DeleteDialog
-          backend={pendingDelete}
-          onCancel={() => setPendingDelete(null)}
-          onConfirmed={async () => {
-            setPendingDelete(null);
-            setFlash({ kind: "ok", text: t("agentBackends.flash.deleted") });
-            await reload();
-          }}
-          onError={(text) => {
-            setPendingDelete(null);
-            setFlash({ kind: "err", text });
-          }}
-        />
-      ) : null}
-    </section>
+        {editor.kind !== "closed" ? (
+          <BackendEditor
+            state={editor}
+            providers={providers}
+            onClose={() => setEditor({ kind: "closed" })}
+            onSaved={async (message) => {
+              setEditor({ kind: "closed" });
+              setFlash({ kind: "ok", text: message });
+              await reload();
+            }}
+            onOpenProxySettings={onOpenProxySettings}
+            onOpenLlmProviders={onOpenLlmProviders}
+          />
+        ) : null}
+
+        {pendingDelete ? (
+          <DeleteDialog
+            backend={pendingDelete}
+            onCancel={() => setPendingDelete(null)}
+            onConfirmed={async () => {
+              setPendingDelete(null);
+              setFlash({ kind: "ok", text: t("agentBackends.flash.deleted") });
+              await reload();
+            }}
+            onError={(text) => {
+              setPendingDelete(null);
+              setFlash({ kind: "err", text });
+            }}
+          />
+        ) : null}
+      </section>
+    </>
   );
 }
 
@@ -690,67 +737,101 @@ function AgentBackendsEmptyState({
   );
 }
 
-function Toolbar({
-  count,
-  onCreate,
-  onAutoScan,
-  scanning,
+// 一行后端的绑定面包屑有四种形态：网关托管 / 走 CLI 自身登录 / 绑定失效 / 正常绑定。
+type BindingVariant = "openclaw" | "cli-login" | "invalid" | "bound";
+
+// 绑定长在元数据行上（供应商 › 模型 + 跟随默认/固定），不再独立成块 —— 一眼看清绑了什么。
+function BackendRowBinding({
+  backend,
+  variant,
 }: {
-  count: number;
-  onCreate: () => void;
-  onAutoScan: () => void;
-  scanning: boolean;
+  backend: Backend;
+  variant: BindingVariant;
 }) {
   const { t } = useTranslation();
+  const providerKey =
+    (backend as unknown as { llmProviderKey?: string }).llmProviderKey ?? "";
+  const modelKey =
+    (backend as unknown as { llmModelKey?: string }).llmModelKey ?? "";
+  const follow = modelKey === "";
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-3 sm:px-4">
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <span className="text-sm font-semibold">
-          {t("agentBackends.toolbar.title")}
-        </span>
-        <span className="text-2xs text-muted-foreground">
-          {t("agentBackends.toolbar.count", { count })}
-        </span>
-      </div>
-      <div className="flex items-center gap-2">
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-[30px] gap-1.5 px-3 text-xs"
-          onClick={onAutoScan}
-          disabled={scanning}
-          title={t("agentBackends.autoScan.buttonTitle")}
-        >
-          {scanning ? (
-            <Loader2
-              className="size-3.5 animate-spin"
-              data-icon="inline-start"
-              aria-hidden="true"
-            />
-          ) : (
-            <Radar
-              className="size-3.5"
-              data-icon="inline-start"
-              aria-hidden="true"
-            />
-          )}
-          {scanning
-            ? t("agentBackends.autoScan.scanning")
-            : t("agentBackends.autoScan.button")}
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          data-testid="agent-backend-create"
-          className="h-[30px] gap-1.5 px-3 text-xs"
-          onClick={onCreate}
-        >
-          <Plus data-icon="inline-start" aria-hidden="true" />
-          {t("agentBackends.toolbar.add")}
-        </Button>
-      </div>
-    </div>
+    <span
+      data-testid="backend-binding"
+      className={cn(
+        "inline-flex min-w-0 shrink items-center gap-1 rounded-md px-1.5 py-0.5",
+        variant === "invalid"
+          ? "bg-status-waiting-bg text-status-waiting"
+          : "bg-secondary text-foreground",
+      )}
+    >
+      {variant === "openclaw" ? (
+        <>
+          <LlmModelLogo
+            providerType="openclaw"
+            model={
+              backend.openClawDefaultModel ||
+              backend.openClawAgentId ||
+              "openclaw"
+            }
+            className="size-3.5 shrink-0"
+          />
+          <span className="truncate">
+            {backend.openClawDefaultModel ||
+              backend.openClawAgentId ||
+              t("agentBackends.openclaw.modelGatewayDefault")}
+          </span>
+        </>
+      ) : variant === "cli-login" ? (
+        <>
+          <Lock className="size-3 shrink-0" aria-hidden="true" />
+          <span className="truncate">
+            {t("agentBackends.row.bindingCliLogin")}
+          </span>
+        </>
+      ) : variant === "invalid" ? (
+        <>
+          <AlertCircle className="size-3 shrink-0" aria-hidden="true" />
+          <span className="shrink-0 font-medium">
+            {t("agentBackends.row.bindingInvalid")}
+          </span>
+          <span className="text-subtle-foreground" aria-hidden="true">
+            ·
+          </span>
+          <span className="truncate">
+            {t("agentBackends.row.bindingInvalidReason", {
+              provider: backend.llmProviderName || providerKey,
+              model: backend.llmProviderModel || modelKey,
+            })}
+          </span>
+        </>
+      ) : (
+        <>
+          <LlmProviderLogo
+            providerType={backend.llmProviderType ?? ""}
+            providerName={backend.llmProviderName ?? ""}
+            className="size-3.5 shrink-0"
+          />
+          <span className="truncate">{backend.llmProviderName}</span>
+          <span className="shrink-0 text-subtle-foreground" aria-hidden="true">
+            ›
+          </span>
+          <span className="truncate font-mono">
+            {backend.llmProviderModel || t("agentBackends.provider.noModel")}
+          </span>
+          <Badge
+            variant="secondary"
+            className={cn(
+              "shrink-0 rounded-sm px-1 py-0 text-2xs font-normal",
+              follow && "bg-primary-soft text-primary-text",
+            )}
+          >
+            {follow
+              ? t("agentBackends.binding.modeFollow")
+              : t("agentBackends.binding.modeFixed")}
+          </Badge>
+        </>
+      )}
+    </span>
   );
 }
 
@@ -761,6 +842,7 @@ function BackendRow({
   onTest,
   onCancelTest,
   onEdit,
+  onChangeBinding,
   onDelete,
 }: {
   backend: Backend;
@@ -769,6 +851,7 @@ function BackendRow({
   onTest: () => void;
   onCancelTest: () => void;
   onEdit: () => void;
+  onChangeBinding: () => void;
   onDelete: () => void;
 }) {
   const { t } = useTranslation();
@@ -776,33 +859,30 @@ function BackendRow({
   const cliBased = isCliBackend(typ);
   const openClaw = typ === "openclaw";
   // 未关联 provider 的 CLI 后端 = 走 CLI 自身 login，不算需处理。
-  const unlinkedCli =
-    cliBased &&
-    !((backend as unknown as { llmProviderKey?: string }).llmProviderKey ?? "");
-  const providerLabel = openClaw
-    ? backend.openClawDefaultModel ||
-      backend.openClawAgentId ||
-      t("agentBackends.openclaw.modelGatewayDefault")
-    : unlinkedCli
-      ? t("agentBackends.provider.cliLogin")
-      : backend.llmProviderName
-        ? `${backend.llmProviderName} · ${backend.llmProviderModel || t("agentBackends.provider.noModel")}`
-        : t("agentBackends.provider.unlinked");
+  const providerKey =
+    (backend as unknown as { llmProviderKey?: string }).llmProviderKey ?? "";
+  const unlinkedCli = cliBased && providerKey === "";
   const warning = !openClaw && !unlinkedCli && !backend.llmProviderActive;
+  const bindingVariant: BindingVariant = openClaw
+    ? "openclaw"
+    : unlinkedCli
+      ? "cli-login"
+      : warning
+        ? "invalid"
+        : "bound";
 
-  // 双行列表第二行的 mono 元数据：类型 · CLI/网关 · 供应商 · 使用数。
-  const metaParts: string[] = [t(`agentBackends.backendType.${typ}.label`)];
-  if (openClaw && backend.openClawGatewayUrl) {
-    metaParts.push(backend.openClawGatewayUrl);
-  } else if (cliBased && backend.cliPath) {
-    metaParts.push(backend.cliPath);
-  }
-  metaParts.push(providerLabel);
-  metaParts.push(
+  // 类型回到名字旁的 chip;元数据行只留「绑定面包屑 · 运行位置 · 引用数」，一行说清
+  // 「绑了谁、在哪跑、谁在用」。
+  const metaTail: string[] = [
+    openClaw && backend.openClawGatewayUrl
+      ? backend.openClawGatewayUrl
+      : // deviceName 为空 = 未关联远端设备 = 跑在本机。
+        (backend.deviceName || "").trim() ||
+        t("agentBackends.device.localShort"),
     backend.agentCount > 0
       ? t("agentBackends.row.agentCount", { count: backend.agentCount })
       : t("agentBackends.row.unused"),
-  );
+  ];
 
   return (
     <div
@@ -815,28 +895,73 @@ function BackendRow({
     >
       <div className="flex min-w-0 items-center gap-2.5">
         <AgentBackendLogo backendType={typ} className="size-7 rounded-md" />
-        <span
-          data-selectable-text="true"
-          className="min-w-0 truncate text-sm font-semibold"
-        >
-          {backend.name}
-        </span>
-        {warning ? (
-          <Badge
-            variant="secondary"
-            className="shrink-0 rounded-sm bg-status-waiting-bg px-1.5 py-0 font-mono text-2xs text-status-waiting"
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span
+              data-selectable-text="true"
+              className="min-w-0 truncate text-sm font-semibold"
+            >
+              {backend.name}
+            </span>
+            <Badge
+              data-testid="backend-type-chip"
+              variant="secondary"
+              className="shrink-0 rounded-sm px-1.5 py-0 text-2xs font-normal"
+            >
+              {t(`agentBackends.backendType.${typ}.label`)}
+            </Badge>
+            {warning ? (
+              <Badge
+                variant="secondary"
+                className="shrink-0 rounded-sm bg-status-waiting-bg px-1.5 py-0 font-mono text-2xs text-status-waiting"
+              >
+                {t("agentBackends.row.needsAction")}
+              </Badge>
+            ) : null}
+          </div>
+          <div
+            data-testid="backend-meta"
+            className="flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground"
           >
-            {t("agentBackends.row.needsAction")}
-          </Badge>
-        ) : unlinkedCli ? (
-          <Badge
-            variant="secondary"
-            className="shrink-0 rounded-sm bg-secondary px-1.5 py-0 font-mono text-2xs text-secondary-foreground"
-          >
-            {t("agentBackends.row.cliLogin")}
-          </Badge>
-        ) : null}
-        <div className="ml-auto flex shrink-0 items-center gap-1">
+            <BackendRowBinding backend={backend} variant={bindingVariant} />
+            <span className="min-w-0 truncate">
+              {metaTail.map((part, i) => (
+                <React.Fragment key={i}>
+                  <span
+                    className="mx-1 text-subtle-foreground"
+                    aria-hidden="true"
+                  >
+                    ·
+                  </span>
+                  {part}
+                </React.Fragment>
+              ))}
+            </span>
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          {!openClaw ? (
+            <Button
+              type="button"
+              variant={warning ? "default" : "outline"}
+              size="xs"
+              // 绑定已失效时这不是「换一个」而是「必须重选」，动词跟着状态走。
+              aria-label={
+                warning
+                  ? t("agentBackends.actions.rebindNamed", {
+                      name: backend.name,
+                    })
+                  : t("agentBackends.actions.changeBindingNamed", {
+                      name: backend.name,
+                    })
+              }
+              onClick={onChangeBinding}
+            >
+              {warning
+                ? t("agentBackends.actions.rebind")
+                : t("agentBackends.actions.changeBinding")}
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant="ghost"
@@ -894,37 +1019,6 @@ function BackendRow({
             <Trash2 data-icon="only" aria-hidden="true" />
           </Button>
         </div>
-      </div>
-      <div className="flex min-w-0 items-center gap-1.5 pl-[38px]">
-        <span
-          className={cn(
-            "size-1.5 shrink-0 rounded-full",
-            warning ? "bg-status-waiting" : "bg-status-running",
-          )}
-          aria-hidden="true"
-        />
-        {!openClaw && backend.llmProviderModel ? (
-          <LlmModelLogo
-            providerType={backend.llmProviderType ?? ""}
-            model={backend.llmProviderModel}
-            className="size-3.5"
-          />
-        ) : null}
-        <span className="min-w-0 truncate font-mono text-2xs text-muted-foreground">
-          {metaParts.map((part, i) => (
-            <span key={i}>
-              {i > 0 ? (
-                <span
-                  className="mx-1.5 text-subtle-foreground"
-                  aria-hidden="true"
-                >
-                  ·
-                </span>
-              ) : null}
-              {part}
-            </span>
-          ))}
-        </span>
       </div>
     </div>
   );
@@ -1006,6 +1100,10 @@ function BackendEditor({
     editing?.deviceId ?? "",
   );
   const [devices, setDevices] = React.useState<DeviceView[]>([]);
+  const [localFingerprint, setLocalFingerprint] = React.useState("");
+  const [accountDeviceNames, setAccountDeviceNames] = React.useState<
+    Map<string, string>
+  >(new Map());
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
   const [pendingProviderSync, setPendingProviderSync] =
@@ -1103,11 +1201,7 @@ function BackendEditor({
   // 只有 CLI 引擎带设备前缀 —— 它们才能派到远端；内置 / 网关直接用类型名。
   function defaultBackendName(bt: BackendType, dev: string): string {
     if (!isCliBackend(bt)) return t(`agentBackends.backendType.${bt}.label`);
-    const deviceName =
-      dev === ""
-        ? t("agentBackends.device.localShort")
-        : (devices.find((d) => String(d.id) === dev)?.name ??
-          t("agentBackends.device.localShort"));
+    const deviceName = deviceDisplayName(dev);
     return t("agentBackends.name.deviceDefault", {
       device: deviceName,
       name: t(`agentBackends.backendType.${bt}.shortLabel`),
@@ -1131,6 +1225,7 @@ function BackendEditor({
       );
     }
     setLlmProviderKey("");
+    setLlmModelKey("");
     setRoutes(emptyRoutes());
     setSandbox("");
     setApproval("");
@@ -1217,36 +1312,93 @@ function BackendEditor({
   // Fetch paired remote devices when the dialog opens (or re-opens).
   React.useEffect(() => {
     if (state.kind === "closed") return;
-    void RemoteDeviceList()
-      .then((rows) => setDevices((rows ?? []) as unknown as DeviceView[]))
-      .catch(() => setDevices([]));
+    void Promise.all([
+      RemoteDeviceList(),
+      RemoteDeviceFingerprint(),
+      ServerListDevices().catch(() => []),
+    ])
+      .then(([rows, fingerprint, accountDevices]) => {
+        setDevices((rows ?? []) as unknown as DeviceView[]);
+        setLocalFingerprint(fingerprint ?? "");
+        setAccountDeviceNames(
+          new Map(
+            (accountDevices ?? [])
+              .filter((device) => device.Fingerprint)
+              .map((device) => [device.Fingerprint, device.Name] as const),
+          ),
+        );
+      })
+      .catch(() => {
+        setDevices([]);
+        setLocalFingerprint("");
+        setAccountDeviceNames(new Map());
+      });
   }, [state.kind]);
 
   // 远端执行时以目标 daemon 目录为可运行事实源（task 6 决策 12）：拉一次该设备的
   // Provider/Model 目录 + 能力位，传给 Picker 做远端门控（desktop 独有的行禁用、
   // 旧 daemon 禁用 fixed-model）。daemon 离线时目录为空 → 未验证的 fixed-model 无法保存。
-  const remoteDeviceID =
-    deviceId !== "" && /^\d+$/.test(deviceId) ? Number(deviceId) : 0;
+  const executionDevice = React.useMemo(
+    () => resolveExecutionDevice(deviceId, localFingerprint, devices),
+    [deviceId, devices, localFingerprint],
+  );
+  const remoteDeviceID = executionDevice.pairedDeviceId;
+  const remoteExecution = executionDevice.remote;
+  // 只有存在已配对的 agentred 行时，本机才真能把供应商同步过去；本机自身指纹与
+  // 账号内其它桌面端都没有这条通道，不提供做不到的同步入口。
+  const canSyncProvider = remoteDeviceID > 0;
+  const selectedDeviceValue = deviceSelectValue(
+    deviceId,
+    localFingerprint,
+    LOCAL_DEVICE_SELECT_VALUE,
+  );
+  const selectedDeviceKnown =
+    selectedDeviceValue === LOCAL_DEVICE_SELECT_VALUE ||
+    devices.some(
+      (candidate) => pairedDeviceSelectValue(candidate) === selectedDeviceValue,
+    );
+  const deviceDisplayName = React.useCallback(
+    (value: string) => {
+      if (
+        value === "" ||
+        (localFingerprint !== "" && value === localFingerprint)
+      ) {
+        return t("agentBackends.device.localShort");
+      }
+      return (
+        devices.find(
+          (candidate) => pairedDeviceSelectValue(candidate) === value,
+        )?.name ||
+        accountDeviceNames.get(value) ||
+        value
+      );
+    },
+    [accountDeviceNames, devices, localFingerprint, t],
+  );
   const [remoteProviders, setRemoteProviders] = React.useState<
     ProviderSummary[]
   >([]);
-  React.useEffect(() => {
+  const remoteProviderRequestRef = React.useRef(0);
+  const refreshRemoteProviders = React.useCallback(async () => {
+    const request = ++remoteProviderRequestRef.current;
     if (state.kind === "closed" || remoteDeviceID <= 0) {
       setRemoteProviders([]);
       return;
     }
-    let mounted = true;
-    void RemoteDeviceListProviders(remoteDeviceID)
-      .then((rows) => {
-        if (mounted) setRemoteProviders((rows ?? []) as ProviderSummary[]);
-      })
-      .catch(() => {
-        if (mounted) setRemoteProviders([]);
-      });
-    return () => {
-      mounted = false;
-    };
+    try {
+      const rows = await RemoteDeviceListProviders(remoteDeviceID);
+      if (remoteProviderRequestRef.current === request) {
+        setRemoteProviders((rows ?? []) as ProviderSummary[]);
+      }
+    } catch {
+      if (remoteProviderRequestRef.current === request) {
+        setRemoteProviders([]);
+      }
+    }
   }, [state.kind, remoteDeviceID]);
+  React.useEffect(() => {
+    void refreshRemoteProviders();
+  }, [refreshRemoteProviders]);
 
   const remoteSupportsFixedModel = React.useMemo(() => {
     const dv = devices.find((d) => d.id === remoteDeviceID);
@@ -1327,24 +1479,110 @@ function BackendEditor({
     };
   }
 
-  async function missingRemoteProviderKeys(
-    draft: BackendDraft,
-  ): Promise<string[]> {
-    if (draft.deviceId === "") return [];
-    const deviceID = Number(draft.deviceId);
-    if (!Number.isFinite(deviceID) || deviceID <= 0) return [];
+  type RemoteDraftInspection = {
+    missingProviderKeys: string[];
+    targetIssue: "fixedUnsupported" | "syncNeeded" | null;
+  };
 
-    const keys = referencedProviderKeys(draft);
-    if (keys.length === 0) return [];
+  async function inspectRemoteDraft(
+    draft: BackendDraft,
+  ): Promise<RemoteDraftInspection> {
+    const resolved = resolveExecutionDevice(
+      draft.deviceId,
+      localFingerprint,
+      devices,
+    );
+    if (!resolved.remote) {
+      return { missingProviderKeys: [], targetIssue: null };
+    }
+
+    const providerKeys = referencedProviderKeys(draft);
+    if (providerKeys.length === 0) {
+      return { missingProviderKeys: [], targetIssue: null };
+    }
+    const deviceID = resolved.pairedDeviceId;
+    // 本机没有通往该设备的已配对行（典型是账号内另一台桌面端）：这台机器读不到它的
+    // 目录，也同步不过去。此时既不能断言"供应商缺失"，也不能拿一个做不到的同步挡住
+    // 保存 —— 未验证就是未验证，按无结论放行（门控仍在 Picker 侧禁用未验证目标）。
+    if (deviceID <= 0) {
+      return { missingProviderKeys: [], targetIssue: null };
+    }
 
     const remoteRaw = (await RemoteDeviceListProviders(deviceID)) as
       | ProviderSummary[]
       | null
       | undefined;
-    const remoteKeys = new Set(
-      (remoteRaw ?? []).map((p) => p.key ?? "").filter(Boolean),
+    const remoteByKey = new Map(
+      (remoteRaw ?? [])
+        .filter((provider) => provider.key)
+        .map((provider) => [provider.key ?? "", provider] as const),
     );
-    return keys.filter((key) => !remoteKeys.has(key));
+    const missingProviderKeys = providerKeys.filter(
+      (key) => !remoteByKey.has(key),
+    );
+    if (missingProviderKeys.length > 0) {
+      return { missingProviderKeys, targetIssue: null };
+    }
+
+    const targets: RouteTarget[] = [];
+    if (draft.llmProviderKey) {
+      targets.push({
+        providerKey: draft.llmProviderKey,
+        modelKey: draft.llmModelKey,
+      });
+    }
+    if (draft.type === "claudecode") {
+      targets.push(...Object.values(draft.modelRoutes));
+    }
+    const supportsFixedModel =
+      devices.find((device) => device.id === deviceID)
+        ?.supportsLLMModelTarget ?? false;
+    for (const target of targets) {
+      const providerKey = target.providerKey.trim();
+      if (!providerKey) continue;
+      const remoteProvider = remoteByKey.get(providerKey);
+      if (!remoteProvider) continue;
+      const modelKey = target.modelKey.trim();
+      if (modelKey) {
+        if (!supportsFixedModel) {
+          return {
+            missingProviderKeys: [],
+            targetIssue: "fixedUnsupported",
+          };
+        }
+        const remoteModel = (remoteProvider.models ?? []).find(
+          (model) => model.key === modelKey && model.enabled,
+        );
+        if (!remoteModel) {
+          return { missingProviderKeys: [], targetIssue: "syncNeeded" };
+        }
+        continue;
+      }
+      const localDefaultModelKey = targetCatalog.find(
+        (provider) => provider.providerKey === providerKey,
+      )?.defaultModel?.modelKey;
+      if (localDefaultModelKey) {
+        const remoteDefaultModel = (remoteProvider.models ?? []).find(
+          (model) =>
+            model.key === remoteProvider.defaultModelKey && model.enabled,
+        );
+        if (
+          remoteProvider.defaultModelKey !== localDefaultModelKey ||
+          !remoteDefaultModel
+        ) {
+          return { missingProviderKeys: [], targetIssue: "syncNeeded" };
+        }
+      }
+    }
+    return { missingProviderKeys: [], targetIssue: null };
+  }
+
+  function remoteTargetIssueMessage(
+    issue: RemoteDraftInspection["targetIssue"],
+  ): string {
+    return issue === "fixedUnsupported"
+      ? t("modelTargetPicker.fixedModelUnsupported")
+      : t("modelTargetPicker.remoteSyncNeeded");
   }
 
   async function saveDraft(draft: BackendDraft) {
@@ -1535,13 +1773,21 @@ function BackendEditor({
     setSubmitting(true);
     try {
       const draft = buildDraft();
-      const missingKeys = await missingRemoteProviderKeys(draft);
-      if (missingKeys.length > 0) {
+      const inspection = await inspectRemoteDraft(draft);
+      if (inspection.missingProviderKeys.length > 0) {
+        const missingKeys = inspection.missingProviderKeys;
         setProviderSyncError(null);
         setPendingProviderSync({
           draft,
           providerKeys: missingKeys,
           saveAfterSync: true,
+        });
+        return;
+      }
+      if (inspection.targetIssue) {
+        setSaveResult({
+          kind: "err",
+          text: remoteTargetIssueMessage(inspection.targetIssue),
         });
         return;
       }
@@ -1555,7 +1801,12 @@ function BackendEditor({
 
   async function handleConfirmProviderSync() {
     if (!pendingProviderSync || syncingProvider) return;
-    const deviceID = Number(pendingProviderSync.draft.deviceId);
+    const deviceID = resolveExecutionDevice(
+      pendingProviderSync.draft.deviceId,
+      localFingerprint,
+      devices,
+    ).pairedDeviceId;
+    if (deviceID <= 0) return;
     const saveAfterSync = pendingProviderSync.saveAfterSync;
     setSyncingProvider(true);
     setSubmitting(saveAfterSync);
@@ -1566,10 +1817,26 @@ function BackendEditor({
       }
       const draft = pendingProviderSync.draft;
       if (saveAfterSync) {
+        const inspection = await inspectRemoteDraft(draft);
+        if (
+          inspection.missingProviderKeys.length > 0 ||
+          inspection.targetIssue
+        ) {
+          setProviderSyncError(
+            inspection.targetIssue
+              ? remoteTargetIssueMessage(inspection.targetIssue)
+              : t("modelTargetPicker.remoteSyncNeeded"),
+          );
+          return;
+        }
         await saveDraft(draft);
       } else {
         setPendingProviderSync(null);
-        await onSaved(t("agentBackends.flash.providerSynced"));
+        await refreshRemoteProviders();
+        setSaveResult({
+          kind: "ok",
+          text: t("agentBackends.flash.providerSynced"),
+        });
       }
     } catch (err) {
       setProviderSyncError(providerSyncMessageFromError(err));
@@ -1579,9 +1846,20 @@ function BackendEditor({
     }
   }
 
+  // 同步入口只做同步（复制凭证到目标设备），不改动草稿里的模型绑定：用户点它是为了
+  // 让某个供应商在目标设备上可用，不是为了改选它（改选走 Picker 的选项行）。
+  function handlePickerProviderSync(provider: PickerProvider) {
+    setProviderSyncError(null);
+    setPendingProviderSync({
+      draft: buildDraft(),
+      providerKeys: [provider.providerKey],
+      saveAfterSync: false,
+    });
+  }
+
   function handleManualProviderSync() {
+    if (!canSyncProvider) return;
     const draft = buildDraft();
-    if (draft.deviceId === "") return;
     const keys = referencedProviderKeys(draft);
     if (keys.length === 0) return;
     setProviderSyncError(null);
@@ -1597,12 +1875,6 @@ function BackendEditor({
     setProviderSyncError(null);
   }
 
-  const selectedProvider = filteredProviders.find(
-    (p) =>
-      (p.providerKey && p.providerKey === effectiveLlmProviderKey) ||
-      String(p.id) === effectiveLlmProviderKey,
-  );
-  const strictLabel = strictMatchLabel(type, selectedProvider?.type);
   // builtin 必须有 provider；CLI 自身登录、OpenClaw 走 Gateway 认证，都允许未关联。
   const providerOptional = isCliBackend(type) || type === "openclaw";
   // piagent 绑定时 provider-default / fixed-model 都必须最终解析到可用模型
@@ -1622,22 +1894,53 @@ function BackendEditor({
   // 主目标是否已失效：绑定了 provider/model 但目录里解析不出来（Provider/Model 缺失/停用）。
   const mainTargetInvalid =
     effectiveLlmProviderKey !== "" &&
-    !!selectedTargetProvider &&
-    (llmModelKey !== ""
-      ? !selectedTargetProvider.models.some(
-          (m) => m.modelKey === llmModelKey && m.enabled,
-        )
-      : !selectedTargetProvider.defaultModel);
-  const submitDisabled =
-    submitting ||
-    piAgentModelMissing ||
-    (!providerOptional &&
-      (filteredProviders.length === 0 || effectiveLlmProviderKey === "")) ||
-    (isCliBackend(type) && reservedOffenders.length > 0);
-  const manualProviderSyncKeys =
-    deviceId !== "" ? referencedProviderKeys(buildDraft()) : [];
+    (!selectedTargetProvider ||
+      !selectedTargetProvider.enabled ||
+      (llmModelKey !== ""
+        ? !selectedTargetProvider.models.some(
+            (m) => m.modelKey === llmModelKey && m.enabled,
+          )
+        : !selectedTargetProvider.defaultModel?.enabled));
+  const resolvedMainTarget = resolveModelTarget(
+    effectiveLlmProviderKey,
+    llmModelKey,
+    targetCatalog,
+  );
+  const openClawIssue =
+    type === "openclaw"
+      ? openClawDraftIssue({
+          name,
+          gatewayURL: openClawGatewayURL,
+          sessionMode: OPENCLAW_SESSION_MODE,
+        })
+      : null;
+  const saveBlockedReason =
+    name.trim() === ""
+      ? t("agentBackends.summary.reasons.nameRequired")
+      : mainTargetInvalid
+        ? t("agentBackends.summary.reasons.invalidTarget")
+        : piAgentModelMissing
+          ? t("agentBackends.provider.modelRequiredTitle")
+          : !providerOptional &&
+              (filteredProviders.length === 0 || effectiveLlmProviderKey === "")
+            ? t("agentBackends.summary.reasons.bindingRequired")
+            : isCliBackend(type) && reservedOffenders.length > 0
+              ? t("agentBackends.env.reservedDisabled", {
+                  keys: reservedOffenders.join(", "),
+                })
+              : openClawIssue
+                ? openClawProbeErrorMessage(openClawIssue, "", t)
+                : null;
+  const effectiveSaveBlockedReason =
+    type !== "openclaw" && resolvedMainTarget.mode === "invalid"
+      ? t("agentBackends.summary.reasons.invalidTarget")
+      : saveBlockedReason;
+  const submitDisabled = submitting || effectiveSaveBlockedReason !== null;
+  const manualProviderSyncKeys = canSyncProvider
+    ? referencedProviderKeys(buildDraft())
+    : [];
   const showManualProviderSync =
-    deviceId !== "" && manualProviderSyncKeys.length > 0;
+    canSyncProvider && manualProviderSyncKeys.length > 0;
 
   return (
     <>
@@ -1738,8 +2041,16 @@ function BackendEditor({
             {t("agentBackends.fields.device")}
           </span>
           <Select
-            value={deviceIdToSelectValue(deviceId)}
-            onValueChange={(v) => handleDeviceChange(selectValueToDeviceId(v))}
+            value={selectedDeviceValue}
+            onValueChange={(v) =>
+              handleDeviceChange(
+                persistedDeviceIdForSelection(
+                  v,
+                  LOCAL_DEVICE_SELECT_VALUE,
+                  localFingerprint,
+                ),
+              )
+            }
             disabled={type === "builtin" || type === "openclaw"}
           >
             <SelectTrigger aria-label={t("agentBackends.fields.device")}>
@@ -1754,13 +2065,18 @@ function BackendEditor({
               {devices.map((d) => (
                 <SelectItem
                   key={d.id}
-                  value={String(d.id)}
+                  value={pairedDeviceSelectValue(d)}
                   disabled={!d.online}
                 >
                   📡 {d.name}
                   {d.online ? "" : t("agentBackends.device.offlineSuffix")}
                 </SelectItem>
               ))}
+              {!selectedDeviceKnown && deviceId ? (
+                <SelectItem value={deviceId} disabled>
+                  📡 {editing?.deviceName || deviceDisplayName(deviceId)}
+                </SelectItem>
+              ) : null}
             </SelectContent>
           </Select>
           {type === "builtin" ? (
@@ -1771,7 +2087,7 @@ function BackendEditor({
         </div>
 
         {type !== "openclaw" ? (
-          <ModelTargetField
+          <ModelBindingSection
             type={type}
             providers={filteredProviders}
             value={effectiveLlmProviderKey}
@@ -1780,7 +2096,9 @@ function BackendEditor({
               setLlmProviderKey(providerKey);
               setLlmModelKey(modelKey);
             }}
-            strictLabel={strictLabel}
+            onSyncProvider={
+              canSyncProvider ? handlePickerProviderSync : undefined
+            }
             invalid={mainTargetInvalid}
             piAgentModelMissing={piAgentModelMissing}
             editing={!!editing}
@@ -1788,7 +2106,17 @@ function BackendEditor({
             catalog={targetCatalog}
             catalogLoading={catalogLoading}
             catalogError={catalogError}
-            executionLocation={deviceId}
+            executionLocation={remoteExecution ? deviceId : ""}
+            supportsFixedModel={
+              remoteExecution ? remoteSupportsFixedModel : true
+            }
+            remoteCatalog={remoteExecution ? remotePickerCatalog : undefined}
+            routes={routes}
+            onRoutesChange={setRoutes}
+            customModel={defaultModel}
+            onCustomModelChange={setDefaultModel}
+            resolvedMainTarget={resolvedMainTarget}
+            openPickerOnMount={state.kind === "edit" && !!state.openBinding}
           />
         ) : (
           <OpenClawBackendFields
@@ -1860,29 +2188,10 @@ function BackendEditor({
         ) : null}
 
         {type === "claudecode" ? (
-          <ModelRoutesField
-            catalog={targetCatalog}
-            catalogLoading={catalogLoading}
-            catalogError={catalogError}
-            routes={routes}
-            onChange={setRoutes}
-            executionLocation={deviceId}
-            supportsFixedModel={
-              remoteDeviceID > 0 ? remoteSupportsFixedModel : true
-            }
-            remoteCatalog={remoteDeviceID > 0 ? remotePickerCatalog : undefined}
-          />
-        ) : null}
-
-        {type === "claudecode" ? (
-          <DefaultModelField value={defaultModel} onChange={setDefaultModel} />
-        ) : null}
-
-        {type === "claudecode" ? (
           <DefaultPermissionModeField
             value={defaultPermissionMode}
             onChange={setDefaultPermissionMode}
-            isRemote={deviceId !== ""}
+            isRemote={remoteExecution}
             hasIsSandbox={envEntries.some(
               (e) => e.key.trim() === "IS_SANDBOX" && e.value.trim() !== "",
             )}
@@ -1910,6 +2219,19 @@ function BackendEditor({
             <ApprovalField value={approval} onChange={setApproval} />
           </>
         ) : null}
+
+        <EffectiveConfigSummary
+          type={type}
+          deviceName={deviceDisplayName(deviceId)}
+          cliPath={cliBased ? cliPath : ""}
+          resolvedMainTarget={resolvedMainTarget}
+          customModel={defaultModel}
+          routes={routes}
+          catalog={targetCatalog}
+          referenceCount={editing?.agentCount ?? 0}
+          saveBlockedReason={effectiveSaveBlockedReason}
+          openClawModel={openClawDefaultModel || openClawAgentID}
+        />
 
         {type !== "openclaw" ? (
           <ReasoningEffortField
@@ -2184,13 +2506,216 @@ function ProviderConfigureCta({ onConfigure }: { onConfigure?: () => void }) {
   );
 }
 
+// 触发按钮主行：品牌标识 + 供应商名 + 跟随/固定徽标 —— 和列表行的绑定面包屑
+// （BackendRowBinding）同一套处理，让「绑了谁、是不是跟随」在收起状态下也一眼可读。
+// 按钮的无障碍名由 ModelTargetPicker 的 aria-label 决定，这里只管视觉主行。
+function BindingTriggerLabel({ target }: { target: ResolvedModelTarget }) {
+  const { t } = useTranslation();
+  if (target.mode === "native") {
+    return (
+      <span className="min-w-0 truncate">
+        {t("agentBackends.binding.cliLogin")}
+      </span>
+    );
+  }
+  if (target.mode === "invalid") {
+    return (
+      <span className="min-w-0 truncate">
+        {t("agentBackends.binding.invalidTarget", {
+          target: target.providerName || target.modelId,
+        })}
+      </span>
+    );
+  }
+  const follow = target.mode === "provider-default";
+  return (
+    <>
+      <LlmProviderLogo
+        providerType={target.providerType}
+        providerName={target.providerName}
+        className="size-3.5 shrink-0"
+      />
+      <span className="min-w-0 truncate font-medium">
+        {target.providerName}
+      </span>
+      <Badge
+        data-testid="binding-mode-chip"
+        variant="secondary"
+        className={cn(
+          "shrink-0 rounded-sm px-1 py-0 text-2xs font-normal",
+          follow && "bg-primary-soft text-primary-text",
+        )}
+      >
+        {follow
+          ? t("agentBackends.binding.modeFollow")
+          : t("agentBackends.binding.modeFixed")}
+      </Badge>
+    </>
+  );
+}
+
+function bindingTriggerSub(t: Translate, target: ResolvedModelTarget): string {
+  if (target.mode === "native") return t("agentBackends.binding.cliResolution");
+  if (target.mode === "invalid")
+    return t("agentBackends.binding.invalidResolution");
+  return target.mode === "provider-default"
+    ? t("agentBackends.binding.followResolution", { model: target.modelId })
+    : t("agentBackends.binding.fixedResolution", { model: target.modelId });
+}
+
+function routeConclusion(
+  t: Translate,
+  route: RouteTarget,
+  main: ResolvedModelTarget,
+  catalog: PickerProvider[],
+): string {
+  if (!route.providerKey) {
+    return t("agentBackends.modelRoutes.inheritsSummary", {
+      target:
+        main.mode === "native"
+          ? t("agentBackends.binding.cliLogin")
+          : main.modelId || main.providerName,
+    });
+  }
+  const resolved = resolveModelTarget(
+    route.providerKey,
+    route.modelKey,
+    catalog,
+  );
+  if (resolved.mode === "invalid")
+    return t("agentBackends.modelRoutes.invalid");
+  return t("agentBackends.modelRoutes.fixedSummary", {
+    target: resolved.modelId || resolved.providerName,
+  });
+}
+
+function ModelBindingSection({
+  type,
+  providers,
+  value,
+  modelKey,
+  onTargetChange,
+  onSyncProvider,
+  invalid,
+  piAgentModelMissing,
+  editing,
+  onOpenLlmProviders,
+  catalog,
+  catalogLoading,
+  catalogError,
+  executionLocation,
+  supportsFixedModel,
+  remoteCatalog,
+  routes,
+  onRoutesChange,
+  customModel,
+  onCustomModelChange,
+  resolvedMainTarget,
+  openPickerOnMount,
+}: {
+  type: BackendType;
+  providers: Provider[];
+  value: string;
+  modelKey: string;
+  onTargetChange: (target: RouteTarget) => void;
+  onSyncProvider?: (provider: PickerProvider) => void;
+  invalid: boolean;
+  piAgentModelMissing: boolean;
+  editing: boolean;
+  onOpenLlmProviders?: () => void;
+  catalog: PickerProvider[];
+  catalogLoading: boolean;
+  catalogError: boolean;
+  executionLocation: string;
+  supportsFixedModel: boolean;
+  remoteCatalog?: PickerProvider[];
+  routes: Record<ClaudeTier, RouteTarget>;
+  onRoutesChange: (routes: Record<ClaudeTier, RouteTarget>) => void;
+  customModel: string;
+  onCustomModelChange: (value: string) => void;
+  resolvedMainTarget: ResolvedModelTarget;
+  openPickerOnMount: boolean;
+}) {
+  const { t } = useTranslation();
+  const cliLogin = resolvedMainTarget.mode === "native";
+  return (
+    <section
+      data-testid="model-binding-block"
+      className="flex flex-col gap-3 rounded-lg border border-border bg-secondary/30 p-3"
+    >
+      <div className="flex flex-col gap-0.5">
+        {/* 区块标题就是这项配置的唯一标题，下面的 Picker 直接是它的第一项，不再重复一遍字段名。 */}
+        <div className="flex min-w-0 items-center gap-1.5">
+          <h3 className="text-xs font-semibold">
+            {t("agentBackends.binding.label")}
+          </h3>
+          {isCliBackend(type) ? (
+            <span className="font-mono text-2xs text-muted-foreground">
+              {t("agentBackends.provider.optionalSuffix")}
+            </span>
+          ) : null}
+        </div>
+        <p className="text-2xs text-muted-foreground">
+          {t("agentBackends.binding.description")}
+        </p>
+      </div>
+      <ModelTargetField
+        type={type}
+        providers={providers}
+        value={value}
+        modelKey={modelKey}
+        onTargetChange={onTargetChange}
+        onSyncProvider={onSyncProvider}
+        invalid={invalid}
+        piAgentModelMissing={piAgentModelMissing}
+        editing={editing}
+        onOpenLlmProviders={onOpenLlmProviders}
+        catalog={catalog}
+        catalogLoading={catalogLoading}
+        catalogError={catalogError}
+        executionLocation={executionLocation}
+        supportsFixedModel={supportsFixedModel}
+        remoteCatalog={remoteCatalog}
+        resolvedTarget={resolvedMainTarget}
+        openPickerOnMount={openPickerOnMount}
+      />
+      {type === "claudecode" ? (
+        <>
+          {cliLogin ? (
+            <DefaultModelField
+              value={customModel}
+              onChange={onCustomModelChange}
+              description={t("agentBackends.defaultModel.cliOnlyDescription")}
+            />
+          ) : (
+            <p className="text-2xs text-muted-foreground">
+              {t("agentBackends.defaultModel.ignoredDescription")}
+            </p>
+          )}
+          <ModelRoutesField
+            catalog={catalog}
+            catalogLoading={catalogLoading}
+            catalogError={catalogError}
+            routes={routes}
+            onChange={onRoutesChange}
+            executionLocation={executionLocation}
+            supportsFixedModel={supportsFixedModel}
+            remoteCatalog={remoteCatalog}
+            mainTarget={resolvedMainTarget}
+          />
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 function ModelTargetField({
   type,
   providers,
   value,
   modelKey,
   onTargetChange,
-  strictLabel,
+  onSyncProvider,
   invalid,
   piAgentModelMissing,
   editing,
@@ -2201,13 +2726,15 @@ function ModelTargetField({
   executionLocation,
   supportsFixedModel = true,
   remoteCatalog,
+  resolvedTarget,
+  openPickerOnMount = false,
 }: {
   type: BackendType;
   providers: Provider[];
   value: string;
   modelKey: string;
   onTargetChange: (t: { providerKey: string; modelKey: string }) => void;
-  strictLabel: string | null;
+  onSyncProvider?: (provider: PickerProvider) => void;
   invalid: boolean;
   piAgentModelMissing: boolean;
   editing: boolean;
@@ -2218,6 +2745,8 @@ function ModelTargetField({
   executionLocation: string;
   supportsFixedModel?: boolean;
   remoteCatalog?: PickerProvider[];
+  resolvedTarget: ResolvedModelTarget;
+  openPickerOnMount?: boolean;
 }) {
   const { t } = useTranslation();
   // claudecode / codex / piagent 允许「不关联」走 CLI 自身登录；builtin 必填。
@@ -2228,15 +2757,11 @@ function ModelTargetField({
   const stale = editing && value !== "" && !providers.some(matchesProvider);
   const empty = providers.length === 0;
   const selected = { providerKey: value, modelKey };
+  const noCompatibleDescription = t("modelTargetPicker.noCompatibleProviders");
 
   if (empty && !optional) {
     return (
       <div className="flex flex-col gap-1.5 text-xs">
-        <div className="flex items-center justify-between">
-          <span className="font-medium">
-            {t("agentBackends.provider.label")}
-          </span>
-        </div>
         <Alert className="border-status-waiting/40 bg-status-waiting-bg text-xs">
           <AlertCircle className="size-4" aria-hidden="true" />
           <AlertTitle className="text-xs">
@@ -2255,24 +2780,6 @@ function ModelTargetField({
 
   return (
     <div className="flex flex-col gap-1.5 text-xs">
-      <div className="flex items-center justify-between">
-        <span className="font-medium">
-          {t("agentBackends.provider.label")}
-          {optional ? (
-            <span className="ml-1 font-mono text-2xs text-muted-foreground">
-              {t("agentBackends.provider.optionalSuffix")}
-            </span>
-          ) : null}
-        </span>
-        {strictLabel ? (
-          <Badge
-            variant="secondary"
-            className="rounded-sm bg-primary-soft px-1.5 py-0 font-mono text-2xs text-primary-text"
-          >
-            {t("agentBackends.provider.strictMatch", { type: strictLabel })}
-          </Badge>
-        ) : null}
-      </div>
       {stale ? (
         <Alert className="border-status-waiting/40 bg-status-waiting-bg text-xs">
           <AlertCircle className="size-4" aria-hidden="true" />
@@ -2295,11 +2802,7 @@ function ModelTargetField({
             {t("agentBackends.provider.noMatchTitle")}
           </AlertTitle>
           <AlertDescription className="text-2xs">
-            {type === "claudecode"
-              ? t("agentBackends.provider.noMatchClaude")
-              : type === "piagent"
-                ? t("agentBackends.provider.noMatchPiAgent")
-                : t("agentBackends.provider.noMatchCodex")}
+            {noCompatibleDescription}
             {onOpenLlmProviders ? (
               <ProviderConfigureCta onConfigure={onOpenLlmProviders} />
             ) : null}
@@ -2317,25 +2820,19 @@ function ModelTargetField({
               modelKey: target.modelKey,
             })
           }
+          onSyncProvider={onSyncProvider}
           catalog={catalog}
           loading={catalogLoading}
           error={catalogError}
           invalid={invalid}
+          openOnMount={openPickerOnMount}
           supportsFixedModel={supportsFixedModel}
           remoteCatalog={remoteCatalog}
-          aria-label={t("agentBackends.provider.label")}
+          triggerLabel={<BindingTriggerLabel target={resolvedTarget} />}
+          triggerSub={bindingTriggerSub(t, resolvedTarget)}
+          aria-label={t("agentBackends.binding.label")}
         />
       )}
-      {value !== "" && !modelKey ? (
-        <span className="font-mono text-2xs text-muted-foreground">
-          {t("agentBackends.provider.followsDefault")}
-        </span>
-      ) : null}
-      {value !== "" && modelKey ? (
-        <span className="font-mono text-2xs text-muted-foreground">
-          {t("agentBackends.provider.fixedNote")}
-        </span>
-      ) : null}
       {piAgentModelMissing ? (
         <Alert className="border-status-waiting/40 bg-status-waiting-bg text-xs">
           <AlertCircle className="size-4" aria-hidden="true" />
@@ -2421,6 +2918,7 @@ function ModelRoutesField({
   executionLocation,
   supportsFixedModel = true,
   remoteCatalog,
+  mainTarget,
 }: {
   catalog: PickerProvider[];
   catalogLoading: boolean;
@@ -2430,70 +2928,100 @@ function ModelRoutesField({
   executionLocation: string;
   supportsFixedModel?: boolean;
   remoteCatalog?: PickerProvider[];
+  mainTarget: ResolvedModelTarget;
 }) {
   const { t } = useTranslation();
+  const [open, setOpen] = React.useState(false);
+  const summary = CLAUDE_TIERS.map(
+    (tier) =>
+      `${tier}: ${routeConclusion(t, routes[tier], mainTarget, catalog)}`,
+  ).join(" · ");
   return (
-    <div className="flex flex-col gap-1.5 text-xs">
-      <div className="flex items-center justify-between">
-        <span className="font-medium">
+    <div className="flex flex-col gap-1.5 rounded-md border border-border bg-background px-2.5 py-2 text-xs">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="flex min-w-0 items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+      >
+        {open ? (
+          <ChevronDown className="size-3.5 shrink-0" aria-hidden="true" />
+        ) : (
+          <ChevronRight className="size-3.5 shrink-0" aria-hidden="true" />
+        )}
+        {/* 标签不换行、摘要吃掉剩余宽度：默认状态下摘要才是这一行真正要读的内容。 */}
+        <span className="shrink-0 font-medium">
           {t("agentBackends.modelRoutes.label")}
         </span>
-        <span className="font-mono text-2xs text-muted-foreground">
-          {t("agentBackends.modelRoutes.hint")}
+        <span className="min-w-0 flex-1 truncate text-2xs text-muted-foreground">
+          {summary}
         </span>
-      </div>
-      <div className="flex flex-col gap-1.5">
-        {CLAUDE_TIERS.map((tier) => {
-          const route = routes[tier] ?? { providerKey: "", modelKey: "" };
-          const tierInvalid =
-            route.providerKey !== "" &&
-            !catalog.some(
-              (p) =>
-                p.providerKey === route.providerKey &&
-                (route.modelKey === ""
-                  ? !!p.defaultModel
-                  : p.models.some(
-                      (m) => m.modelKey === route.modelKey && m.enabled,
-                    )),
-            );
-          return (
-            <div
-              key={tier}
-              className="grid grid-cols-[64px_1fr] items-center gap-2"
-            >
-              <Badge
-                variant="secondary"
-                className="justify-self-start rounded-sm px-1.5 py-0.5 font-mono text-2xs"
+        <Badge
+          variant="secondary"
+          className="shrink-0 rounded-sm px-1.5 py-0 text-2xs font-normal"
+        >
+          {t("agentBackends.modelRoutes.defaultChip")}
+        </Badge>
+      </button>
+      {open ? (
+        <div className="flex flex-col gap-1.5 pt-1.5">
+          <p className="text-2xs text-muted-foreground">
+            {t("agentBackends.modelRoutes.hint")}
+          </p>
+          {CLAUDE_TIERS.map((tier) => {
+            const route = routes[tier] ?? { providerKey: "", modelKey: "" };
+            const tierInvalid =
+              route.providerKey !== "" &&
+              !catalog.some(
+                (p) =>
+                  p.providerKey === route.providerKey &&
+                  (route.modelKey === ""
+                    ? !!p.defaultModel
+                    : p.models.some(
+                        (m) => m.modelKey === route.modelKey && m.enabled,
+                      )),
+              );
+            return (
+              <div
+                key={tier}
+                className="grid grid-cols-[64px_1fr] items-center gap-2"
               >
-                {tier}
-              </Badge>
-              <ModelTargetPicker
-                scenario="route"
-                backendType="claudecode"
-                executionLocation={executionLocation}
-                selected={route}
-                onChange={(target) =>
-                  onChange({
-                    ...routes,
-                    [tier]: {
-                      providerKey: target.providerKey,
-                      modelKey: target.modelKey,
-                    },
-                  })
-                }
-                catalog={catalog}
-                loading={catalogLoading}
-                error={catalogError}
-                invalid={tierInvalid}
-                supportsFixedModel={supportsFixedModel}
-                remoteCatalog={remoteCatalog}
-                compact
-                aria-label={t("agentBackends.modelRoutes.tierAria", { tier })}
-              />
-            </div>
-          );
-        })}
-      </div>
+                <Badge
+                  variant="secondary"
+                  className="justify-self-start rounded-sm px-1.5 py-0.5 font-mono text-2xs"
+                >
+                  {tier}
+                </Badge>
+                <ModelTargetPicker
+                  scenario="route"
+                  backendType="claudecode"
+                  executionLocation={executionLocation}
+                  selected={route}
+                  onChange={(target) =>
+                    onChange({
+                      ...routes,
+                      [tier]: {
+                        providerKey: target.providerKey,
+                        modelKey: target.modelKey,
+                      },
+                    })
+                  }
+                  catalog={catalog}
+                  loading={catalogLoading}
+                  error={catalogError}
+                  invalid={tierInvalid}
+                  supportsFixedModel={supportsFixedModel}
+                  remoteCatalog={remoteCatalog}
+                  specialSublabel={bindingTriggerSub(t, mainTarget)}
+                  triggerSub={routeConclusion(t, route, mainTarget, catalog)}
+                  compact
+                  aria-label={t("agentBackends.modelRoutes.tierAria", { tier })}
+                />
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2590,6 +3118,137 @@ function ApprovalField({
 //
 // Select 不接受空字符串作为 SelectItem value，所以把 "" 映射为字面量 "default"，
 // 在 onValueChange 回传时再翻译回 ""，与后端枚举对齐。
+function EffectiveConfigSummary({
+  type,
+  deviceName,
+  cliPath,
+  resolvedMainTarget,
+  customModel,
+  routes,
+  catalog,
+  referenceCount,
+  saveBlockedReason,
+  openClawModel,
+}: {
+  type: BackendType;
+  deviceName: string;
+  cliPath: string;
+  resolvedMainTarget: ResolvedModelTarget;
+  customModel: string;
+  routes: Record<ClaudeTier, RouteTarget>;
+  catalog: PickerProvider[];
+  referenceCount: number;
+  saveBlockedReason: string | null;
+  openClawModel: string;
+}) {
+  const { t } = useTranslation();
+  const source =
+    type === "openclaw"
+      ? t("agentBackends.summary.sources.openclaw")
+      : resolvedMainTarget.mode === "native"
+        ? t("agentBackends.summary.sources.cli")
+        : t("agentBackends.summary.sources.agentre", {
+            provider: resolvedMainTarget.providerName,
+          });
+  const effectiveModel =
+    type === "openclaw"
+      ? openClawModel || t("agentBackends.openclaw.modelGatewayDefault")
+      : resolvedMainTarget.mode === "native"
+        ? customModel || t("agentBackends.summary.cliAccountModel")
+        : resolvedMainTarget.modelId ||
+          t("agentBackends.summary.unresolvedModel");
+  const mode =
+    type === "openclaw"
+      ? t("agentBackends.summary.modeGateway")
+      : resolvedMainTarget.mode === "provider-default"
+        ? t("agentBackends.binding.modeFollow")
+        : resolvedMainTarget.mode === "fixed"
+          ? t("agentBackends.binding.modeFixed")
+          : resolvedMainTarget.mode === "invalid"
+            ? t("agentBackends.summary.modeInvalid")
+            : t("agentBackends.summary.modeCli");
+  return (
+    <section
+      data-testid="effective-config-summary"
+      className={cn(
+        "flex flex-col gap-2 rounded-lg border px-3 py-3 text-xs",
+        saveBlockedReason
+          ? "border-status-waiting/40 bg-status-waiting-bg"
+          : "border-border bg-secondary/30",
+      )}
+    >
+      <h3 className="font-semibold">{t("agentBackends.summary.title")}</h3>
+      <dl className="grid grid-cols-[110px_minmax(0,1fr)] gap-x-2 gap-y-1 text-2xs">
+        <dt className="text-muted-foreground">
+          {t("agentBackends.summary.runtime")}
+        </dt>
+        {/* 运行位置要能回答「到底跑哪个可执行文件」，自定义 CLI 路径必须一起显示。 */}
+        <dd data-testid="summary-runtime" className="truncate">
+          {deviceName}
+          {cliPath.trim() !== "" ? (
+            <>
+              <span className="mx-1 text-subtle-foreground" aria-hidden="true">
+                ·
+              </span>
+              <span className="font-mono">{cliPath.trim()}</span>
+            </>
+          ) : null}
+        </dd>
+        <dt className="text-muted-foreground">
+          {t("agentBackends.summary.source")}
+        </dt>
+        <dd className="truncate">{source}</dd>
+        <dt className="text-muted-foreground">
+          {t("agentBackends.summary.model")}
+        </dt>
+        <dd className="truncate">
+          {effectiveModel} · {mode}
+        </dd>
+        {type === "claudecode" ? (
+          <>
+            <dt className="text-muted-foreground">
+              {t("agentBackends.summary.routes")}
+            </dt>
+            <dd className="min-w-0">
+              {CLAUDE_TIERS.map((tier) => (
+                <span key={tier} className="mr-2 inline-block">
+                  {tier}:{" "}
+                  {routeConclusion(
+                    t,
+                    routes[tier],
+                    resolvedMainTarget,
+                    catalog,
+                  )}
+                </span>
+              ))}
+            </dd>
+          </>
+        ) : null}
+        <dt className="text-muted-foreground">
+          {t("agentBackends.summary.references")}
+        </dt>
+        <dd>
+          {t("agentBackends.summary.referenceCount", { count: referenceCount })}
+        </dd>
+      </dl>
+      {/* 校验结论独立成一整行:通过时给正向确认，不通过时把原因说完整。 */}
+      {saveBlockedReason ? (
+        <p className="flex items-center gap-1.5 rounded-md bg-status-waiting-bg px-2 py-1.5 text-2xs text-status-waiting">
+          <AlertCircle className="size-3 shrink-0" aria-hidden="true" />
+          {t("agentBackends.summary.cannotSaveReason", {
+            reason: saveBlockedReason,
+          })}
+        </p>
+      ) : (
+        <p className="flex items-center gap-1.5 rounded-md bg-status-running-bg px-2 py-1.5 text-2xs font-medium text-status-running">
+          <CheckCircle2 className="size-3 shrink-0" aria-hidden="true" />
+          {t("agentBackends.summary.saveReady")}
+        </p>
+      )}
+    </section>
+  );
+}
+
 function ReasoningEffortField({
   type,
   value,
@@ -2653,9 +3312,11 @@ function ReasoningEffortField({
 function DefaultModelField({
   value,
   onChange,
+  description,
 }: {
   value: string;
   onChange: (v: string) => void;
+  description: string;
 }) {
   const { t } = useTranslation();
   return (
@@ -2669,6 +3330,7 @@ function DefaultModelField({
         </span>
       </div>
       <Input
+        aria-label={t("agentBackends.defaultModel.label")}
         value={value}
         autoCapitalize="off"
         autoComplete="off"
@@ -2678,6 +3340,7 @@ function DefaultModelField({
         onChange={(e) => onChange(e.currentTarget.value)}
         className="h-9 font-mono text-xs"
       />
+      <span className="text-2xs text-muted-foreground">{description}</span>
     </div>
   );
 }

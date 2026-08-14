@@ -55,9 +55,15 @@ type BackendItem = {
   deviceId?: string;
   deviceName?: string;
   online?: boolean;
+  llmProviderKey?: string;
+  llmModelKey?: string;
 };
 
-function stubWails(availability: AvailabilityItem[], backends: BackendItem[]) {
+function stubWails(
+  availability: AvailabilityItem[],
+  backends: BackendItem[],
+  accountDevices: Array<{ Fingerprint: string; Name: string }> = [],
+) {
   const listAvailability = vi.fn().mockResolvedValue(
     availability.map((it) => ({
       reason: "",
@@ -73,6 +79,7 @@ function stubWails(availability: AvailabilityItem[], backends: BackendItem[]) {
       App: {
         ListAgentExecTargetAvailability: listAvailability,
         ListAgentBackends: listBackends,
+        ServerListDevices: vi.fn().mockResolvedValue(accountDevices),
       },
     },
   };
@@ -94,6 +101,13 @@ function renderLine(
     onOverride: (id: number | null) => void;
     onOverrideBackendType: (type: string | null) => void;
     projectId: number;
+    onEffectiveTarget: (
+      target: {
+        kind: "local" | "desktop" | "daemon";
+        deviceId: string;
+        deviceName: string;
+      } | null,
+    ) => void;
   }> = {},
 ) {
   const onOverride = overrides.onOverride ?? vi.fn();
@@ -107,6 +121,7 @@ function renderLine(
         overrideBackendId={overrides.overrideBackendId ?? null}
         onOverride={onOverride}
         onOverrideBackendType={onOverrideBackendType}
+        onEffectiveTarget={overrides.onEffectiveTarget}
       />
     </MemoryRouter>,
   );
@@ -120,6 +135,41 @@ async function openPicker() {
 }
 
 describe("NewSessionExecTargetLine", () => {
+  it("Given an account desktop fingerprint without a paired agentred row, When targets load, Then the account device name is shown and reported", async () => {
+    const onEffectiveTarget = vi.fn();
+    stubWails(
+      [
+        { agentBackendId: 51, available: true },
+        { agentBackendId: 52, available: true },
+      ],
+      [
+        {
+          id: 51,
+          name: "Desktop Claude",
+          deviceId: "sha256:desktop-a",
+          llmProviderKey: "desktop-provider",
+          llmModelKey: "desktop-model",
+        },
+        { id: 52, name: "Local Claude", deviceId: "" },
+      ],
+      [{ Fingerprint: "sha256:desktop-a", Name: "Studio Mac" }],
+    );
+    renderLine({ onEffectiveTarget });
+
+    expect(await screen.findByText(/Studio Mac/)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(onEffectiveTarget).toHaveBeenCalledWith(
+        expect.objectContaining({
+          deviceId: "sha256:desktop-a",
+          deviceName: "Studio Mac",
+          backendType: "",
+          llmProviderKey: "desktop-provider",
+          llmModelKey: "desktop-model",
+        }),
+      ),
+    );
+  });
+
   it("single candidate: renders nothing", async () => {
     stubWails([{ agentBackendId: 51, available: true }], [{ id: 51 }]);
     const { container } = render(

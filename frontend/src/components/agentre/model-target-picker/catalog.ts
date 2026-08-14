@@ -25,6 +25,8 @@ export function buildPickerCatalog(
         modelId: m.modelId,
         name: m.name,
         enabled: m.enabled,
+        contextWindow: m.contextWindow,
+        maxOutput: m.maxOutput,
       }),
     );
     let defaultModel: PickerModel | null = null;

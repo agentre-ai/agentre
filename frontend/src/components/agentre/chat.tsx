@@ -1675,9 +1675,9 @@ const ChatTranscript = React.forwardRef<
   }, [active, scrollElement, virtualizer]);
   // 注意:这里不能在 active 翻成 true 时再调 virtualizer.measure()。
   // measure() 会 itemSizeCache.clear() 把所有行的真实测量值丢弃、整列瞬间塌回
-  // estimateSize(132px),切回 tab 时引发可见的塌缩 / 闪烁 reflow。隐藏期间行的
-  // ResizeObserver 不触发(display:none 不参与布局),重新可见时 measureElement 的
-  // ResizeObserver 会自然对可见窗口逐行复测,无需整列清缓存。
+  // estimateSize(132px),切回 tab 时引发可见的塌缩 / 闪烁 reflow。隐藏期间行
+  // 根本不在 DOM 里(renderVirtualRows 在 !active 时为 false,故无从复测),重新
+  // 可见时 measureElement 的 ResizeObserver 会自然对可见窗口逐行复测,无需整列清缓存。
 
   // 行级贴底跟随:anchorTo:"end" 只在「行 resize」时钉底(流式文本生长走那条路),
   // 而行模型下新 tool 卡 / indicator 是「行追加」—— followOnAppend 因 wrong-restore

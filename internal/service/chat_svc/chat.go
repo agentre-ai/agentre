@@ -333,7 +333,7 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 	deviceIDSet := map[int64]struct{}{}
 	fingerprintSet := map[string]struct{}{}
 	for _, be := range backends {
-		if be == nil || !be.IsRemote() {
+		if !beTargetsRemote(be) {
 			continue
 		}
 		if strings.HasPrefix(be.DeviceID, "sha256:") {
@@ -406,16 +406,19 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 				// 仅 claudecode 透出；entity.Check 限定其它后端为空串。
 				item.DefaultPermissionMode = be.DefaultPermissionMode
 			}
-			// 远端 device 归属字段。
-			item.DeviceID = be.DeviceID
-			if id, ok := be.DeviceIDInt(); ok {
-				if dv := deviceViews[id]; dv != nil {
+			// 远端 device 归属字段。本机档（空 DeviceID / 本机指纹）走 ExternalDeviceID
+			// 收敛成空串后整组留零值，与 LoadSession 同一口径。
+			if deviceID := remote_device_svc.ExternalDeviceID(be.DeviceID); deviceID != "" {
+				item.DeviceID = deviceID
+				if id, ok := be.DeviceIDInt(); ok {
+					if dv := deviceViews[id]; dv != nil {
+						item.DeviceName = dv.Name
+						item.Online = dv.Online
+					}
+				} else if dv := fingerprintViews[deviceID]; dv != nil {
 					item.DeviceName = dv.Name
 					item.Online = dv.Online
 				}
-			} else if dv := fingerprintViews[be.DeviceID]; dv != nil {
-				item.DeviceName = dv.Name
-				item.Online = dv.Online
 			}
 			gatewayRunning := s.gateway != nil && s.gateway.Status().State == "running"
 			item.Chattable, item.BlockReason, item.ChattableHint =
@@ -692,22 +695,28 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		// be 解析失败 / device 离线 / cwd 查询失败时容忍降级 (字段留空,不让 LoadSession 整体失败);
 		// 降级路径都补 debug log,给排查 blank DeviceName / missing Cwd 留信号。
 		if be != nil {
-			resp.Session.DeviceID = be.DeviceID
-			if id, ok := be.DeviceIDInt(); ok {
-				if rds := remote_device_svc.Default(); rds != nil {
-					if dv, derr := rds.Get(ctx, id); derr == nil && dv != nil {
-						resp.Session.DeviceName = dv.Name
-						resp.Session.Online = dv.Online
-					} else if derr != nil {
-						logger.Ctx(ctx).Debug("LoadSession: device lookup degraded",
-							zap.Int64("deviceID", id),
-							zap.Int64("sessionID", sess.ID),
-							zap.Error(derr))
+			// 展示口径的设备标识：本机档（空 DeviceID / R13 认领后的本机指纹）一律空
+			// 串，见 remote_device_svc.ExternalDeviceID。本机指纹拿去配对表里查永远查
+			// 不到（不会和自己配对），照远端解析会把本机会话渲染成一台没名字的离线远
+			// 端机；device 字段整组只对真正的远端档才有意义。
+			if deviceID := remote_device_svc.ExternalDeviceID(be.DeviceID); deviceID != "" {
+				resp.Session.DeviceID = deviceID
+				if id, ok := be.DeviceIDInt(); ok {
+					if rds := remote_device_svc.Default(); rds != nil {
+						if dv, derr := rds.Get(ctx, id); derr == nil && dv != nil {
+							resp.Session.DeviceName = dv.Name
+							resp.Session.Online = dv.Online
+						} else if derr != nil {
+							logger.Ctx(ctx).Debug("LoadSession: device lookup degraded",
+								zap.Int64("deviceID", id),
+								zap.Int64("sessionID", sess.ID),
+								zap.Error(derr))
+						}
 					}
+				} else if dv := localPairedDeviceView(ctx, deviceID); dv != nil {
+					resp.Session.DeviceName = dv.Name
+					resp.Session.Online = dv.Online
 				}
-			} else if dv := localPairedDeviceView(ctx, be.DeviceID); dv != nil {
-				resp.Session.DeviceName = dv.Name
-				resp.Session.Online = dv.Online
 			}
 			if cwd, cerr := resolveSessionCwd(ctx, sess, be); cerr == nil {
 				resp.Session.Cwd = cwd
@@ -1259,7 +1268,7 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 		return nil, i18n.NewError(ctx, code.ChatCompactUnsupported)
 	}
 	releasePreflight := func() {}
-	if be.IsRemote() {
+	if beTargetsRemote(be) {
 		if deviceID, ok := localPairedDeviceID(ctx, be.DeviceID); ok {
 			releasePreflight = func() { s.releaseRemoteRuntime(deviceID, sess.ID) }
 		}
@@ -1450,7 +1459,7 @@ func (s *chatSvc) goalControllerForSession(ctx context.Context, sess *chat_entit
 			zap.Error(err))
 		return nil, agentruntime.GoalRequest{}, release, i18n.NewError(ctx, code.ChatGoalUnsupported)
 	}
-	if be.IsRemote() {
+	if beTargetsRemote(be) {
 		if deviceID, ok := localPairedDeviceID(ctx, be.DeviceID); ok {
 			released := false
 			release = func() {
@@ -1606,7 +1615,7 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 	// 指向本机指纹的档（R13 认领后本机 backend 的 DeviceID == 本机指纹）按本机处理：
 	// 图片能力校验同样适用于它——它跑在本地 runtime 上，缺 CapImageInput 时也该早退
 	// AgentBackendTypeUnsupported，而不是绕过校验把图喂给不支持的 runtime。
-	if len(imageBlocks) > 0 && (be.IsLocal() || remote_device_svc.IsSelfDevice(be.DeviceID)) {
+	if len(imageBlocks) > 0 && !beTargetsRemote(be) {
 		runner, err := s.selectRunner(ctx, be, req.SessionID)
 		if err != nil {
 			return nil, err
@@ -1870,7 +1879,7 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, sess *chat_entity.Ses
 			if remoteProviderKnownMissing(be) {
 				return nil, nil, nil, remoteProviderNotConfiguredError(ctx, be.LLMProviderKey)
 			}
-			if be.IsRemote() && !s.beIsSelf(ctx, be) {
+			if beTargetsRemote(be) {
 				break
 			}
 			if s.gateway == nil || s.gateway.Status().State != "running" {
@@ -1879,7 +1888,7 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, sess *chat_entity.Ses
 		}
 		// LLMProviderKey == "" → CLI 自身 login 状态生效，不强制 gateway。
 	case agent_backend_entity.TypeOpenClaw:
-		if be.IsRemote() && !s.beIsSelf(ctx, be) {
+		if beTargetsRemote(be) {
 			return nil, nil, nil, fmt.Errorf("openclaw remote secret enrollment is unavailable")
 		}
 	default:
@@ -1929,7 +1938,7 @@ func (s *chatSvc) resolveTurnBackendID(
 // 一并写入，三列同生共死，不拆成两个写入点。写库失败只记日志、不阻断这一轮 —— 下一轮
 // 会再次落进"没值"分支重新挑选并重试写回，不会永久卡住对话。
 func (s *chatSvc) pinExecTargetIfUnset(ctx context.Context, sess *chat_entity.Session, be *agent_backend_entity.AgentBackend) {
-	if sess == nil || sess.ID <= 0 || be == nil || sess.ExecAgentBackendID != 0 || (be.IsRemote() && !s.beIsSelf(ctx, be)) {
+	if sess == nil || sess.ID <= 0 || be == nil || sess.ExecAgentBackendID != 0 || beTargetsRemote(be) {
 		return
 	}
 	if err := chat_repo.Session().UpdateExecDaemon(ctx, sess.ID, 0, "", be.ID); err != nil {
@@ -1979,7 +1988,7 @@ func (s *chatSvc) resolveSessionProvider(
 	prov *llm_provider_entity.LLMProvider,
 ) (*llm_provider_entity.LLMProvider, *blocks.NoticeBlock, error) {
 	if sess == nil || strings.TrimSpace(sess.ProviderKey) == "" || be == nil ||
-		(be.IsRemote() && !s.beIsSelf(ctx, be)) {
+		beTargetsRemote(be) {
 		return prov, nil, nil
 	}
 	return s.sessionProviderOverride(ctx, be, sess.ProviderKey, sess.ModelKey, prov)
@@ -2042,7 +2051,7 @@ func (s *chatSvc) AgentBackendHasCapability(ctx context.Context, agentID int64, 
 	if be == nil {
 		return false, nil
 	}
-	if !be.IsLocal() && !s.beIsSelf(ctx, be) {
+	if beTargetsRemote(be) {
 		return false, nil
 	}
 	r := agentruntime.RuntimeFor(agent_backend_entity.BackendType(be.Type))
@@ -3948,7 +3957,7 @@ func (s *chatSvc) prepareTurnRun(
 		release = func() {}
 		err     error
 	)
-	if be.IsRemote() && !s.beIsSelf(ctx, be) {
+	if beTargetsRemote(be) {
 		runner, release, err = s.borrowRemoteRuntimeForTurn(ctx, be, sess.ID)
 	} else {
 		runner, err = s.selectRunner(ctx, be, sess.ID)
@@ -4029,7 +4038,7 @@ func (s *chatSvc) prepareTurnRun(
 		}
 		req.History = history
 	}
-	if be.IsRemote() && !s.beIsSelf(ctx, be) {
+	if beTargetsRemote(be) {
 		// 远端 backend: daemon 自家有 ProviderLookup + Gateway,该自家解。
 		// GatewayURL/Token 是 desktop 的 127.0.0.1，Provider 又含明文 APIKey，
 		// 都不跨机器；wire 透传 effectiveProviderKey（会话 provider_key 优先，
@@ -4103,7 +4112,7 @@ func (s *chatSvc) bindLocalPiAbort(
 	be *agent_backend_entity.AgentBackend,
 	runner agentruntime.Runtime,
 ) {
-	if be == nil || !be.IsPiAgent() || (be.IsRemote() && !s.beIsSelf(ctx, be)) || runner == nil {
+	if be == nil || !be.IsPiAgent() || beTargetsRemote(be) || runner == nil {
 		return
 	}
 	aborter, ok := runner.(agentruntime.Aborter)
@@ -4918,7 +4927,7 @@ func gatewayRoutesLLM(be *agent_backend_entity.AgentBackend) bool {
 // the backend's provider key. A nil list means "no heartbeat data yet", so the
 // runtime path is allowed to try and report the authoritative daemon error.
 func remoteProviderKnownMissing(be *agent_backend_entity.AgentBackend) bool {
-	if be == nil || !be.IsRemote() || strings.TrimSpace(be.LLMProviderKey) == "" {
+	if !beTargetsRemote(be) || strings.TrimSpace(be.LLMProviderKey) == "" {
 		return false
 	}
 	deviceID, ok := be.DeviceIDInt()
@@ -5739,7 +5748,7 @@ func (s *chatSvc) selectRunner(ctx context.Context, be *agent_backend_entity.Age
 	}
 	// 指向本机的档（DeviceID == 本机指纹）就是本地 CLI / 内置 runtime，不走远端
 	// borrow——R14 把自己排到第一之后，派发到「自己」必须在本机跑起来。
-	if be.IsLocal() || s.beIsSelf(ctx, be) {
+	if !beTargetsRemote(be) {
 		r := agentruntime.RuntimeFor(agent_backend_entity.BackendType(be.Type))
 		if r == nil {
 			return nil, i18n.NewError(ctx, code.AgentBackendInvalidType)

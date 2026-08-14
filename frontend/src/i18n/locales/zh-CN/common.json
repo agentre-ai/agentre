@@ -96,8 +96,24 @@
       "cancelTestNamed": "取消测试 {{name}}",
       "deleteNamed": "删除 {{name}}",
       "editNamed": "编辑 {{name}}",
+      "changeBinding": "更换绑定",
+      "changeBindingNamed": "更换 {{name}} 的模型绑定",
+      "rebind": "重新选择",
+      "rebindNamed": "为 {{name}} 重新选择模型绑定",
       "test": "测试连接",
       "testNamed": "测试连接 {{name}}"
+    },
+    "binding": {
+      "label": "模型绑定",
+      "description": "先选择主模型来源；Claude 分级路由与 CLI 专属覆盖都从属于这项绑定。",
+      "cliLogin": "CLI 自身登录态",
+      "cliResolution": "生效模型由该 CLI 自身的登录账号决定",
+      "modeFollow": "跟随默认",
+      "modeFixed": "固定",
+      "followResolution": "生效模型：{{model}} · 默认变化会从下一轮起跟随",
+      "fixedResolution": "生效模型：{{model}} · 不受供应商默认变化影响",
+      "invalidTarget": "目标已失效 · {{target}}",
+      "invalidResolution": "该目标无法运行下一轮，请重新选择绑定"
     },
     "approval": {
       "hint": "工具执行前是否人工确认",
@@ -155,7 +171,9 @@
     "defaultModel": {
       "hint": "--model · 留空走供应商模型 / CLI 默认",
       "label": "自定义模型",
-      "placeholder": "如 claude-fable-5 或别名 opus/sonnet（走 CLI 登录态时生效）"
+      "placeholder": "如 claude-fable-5 或别名 opus/sonnet（走 CLI 登录态时生效）",
+      "cliOnlyDescription": "仅在 CLI 自身登录态下生效；绑定 Agentre 供应商后会保留但被忽略。",
+      "ignoredDescription": "自定义 CLI 模型仍会保留，但绑定 Agentre 供应商期间会被忽略。"
     },
     "deleteDialog": {
       "description": "确认删除「{{name}}」？该操作仅软删，不影响已存在的 Agent 引用。",
@@ -204,11 +222,15 @@
       "ariaLabel": "Agent 后端列表"
     },
     "modelRoutes": {
-      "hint": "ANTHROPIC_DEFAULT_*_MODEL，留空走主供应商",
+      "hint": "Claude Code 会把请求按 OPUS / SONNET / HAIKU 三档发出；没有单独设置的档位全部走上面的主绑定（对应 CLI 的 ANTHROPIC_DEFAULT_*_MODEL）。",
+      "defaultChip": "默认不用改",
       "inheritMain": "继承主供应商",
       "inheritWithName": "继承主供应商 · {{name}}",
       "label": "模型分级路由",
-      "tierAria": "OPUS/SONNET/HAIKU 路由"
+      "tierAria": "OPUS/SONNET/HAIKU 路由",
+      "inheritsSummary": "继承主绑定 → {{target}}",
+      "fixedSummary": "固定 → {{target}}",
+      "invalid": "目标失效"
     },
     "name": {
       "deviceDefault": "{{device}} · {{name}}"
@@ -259,6 +281,9 @@
       "tokenSavedHint": "除非输入新值替换或明确清除，否则保留已保存 Token。",
       "tokenSavedPlaceholder": "Token 已安全保存；输入新值可替换。",
       "modelOverrideUnauthorized": "该 Gateway 不允许当前 operator 连接覆盖模型,实际会使用 agent 自身的模型。"
+    },
+    "page": {
+      "add": "新增后端"
     },
     "permission": {
       "addIsSandbox": "添加 IS_SANDBOX=1",
@@ -343,7 +368,35 @@
       "agentCount": "{{count}} agents 使用中",
       "needsAction": "需处理",
       "unused": "暂未被 Agent 使用",
-      "cliLogin": "CLI 登录"
+      "bindingCliLogin": "走 CLI 自身登录态",
+      "bindingInvalid": "模型绑定已失效",
+      "bindingInvalidReason": "{{provider}} · {{model}} 已停用或不存在"
+    },
+    "summary": {
+      "title": "生效配置摘要",
+      "runtime": "运行位置",
+      "source": "模型来源",
+      "model": "生效模型",
+      "routes": "分级路由",
+      "references": "引用数量",
+      "referenceCount": "{{count}} 个 Agent",
+      "saveReady": "配置可保存 · 全部校验通过",
+      "cannotSaveReason": "无法保存：{{reason}}",
+      "cliAccountModel": "由 CLI 登录账号决定",
+      "unresolvedModel": "尚未解析",
+      "modeGateway": "Gateway 选择",
+      "modeInvalid": "失效",
+      "modeCli": "CLI 登录态",
+      "sources": {
+        "cli": "CLI 自身登录态",
+        "agentre": "Agentre 供应商 · {{provider}}",
+        "openclaw": "OpenClaw Gateway"
+      },
+      "reasons": {
+        "nameRequired": "请填写后端名称",
+        "invalidTarget": "请选择有效的模型绑定",
+        "bindingRequired": "当前没有兼容供应商，请先配置并选择模型绑定"
+      }
     },
     "sandbox": {
       "defaultHint": "空 = 走 codex CLI 默认",
@@ -352,11 +405,6 @@
     },
     "test": {
       "passed": "测试通过 · {{latency}}ms · {{message}}"
-    },
-    "toolbar": {
-      "add": "新增后端",
-      "count": "共 {{count}} 个",
-      "title": "已配置的后端"
     }
   },
   "canonical": {
@@ -644,9 +692,9 @@
         "sentence": "所选供应商 {{provider}} 不可用，已回退 agent 绑定"
       },
       "providerSwitch": {
-        "fixedModel": "自此改用供应商 {{provider}} · 固定模型 {{model}}",
-        "followAgentBinding": "自此改回跟随 agent 绑定 / CLI 登录态",
-        "sentence": "自此改用供应商 {{provider}}"
+        "fixedModel": "自此$t(providerPill.mode.fixed) · {{provider}} · {{model}}",
+        "followAgentBinding": "自此$t(modelTargetPicker.special.chat)",
+        "sentence": "自此$t(providerPill.mode.followDefault) · {{provider}}"
       }
     },
     "meta": {
@@ -1663,7 +1711,6 @@
     },
     "empty": {
       "addFirst": "新增第一个供应商",
-      "apiKeyHelp": "如何获取 API Key",
       "chain": "LLM 供应商 → Agent 后端 → Agent 对话",
       "description": "先添加一个供应商（Anthropic、OpenAI 或兼容端点），并选择默认模型即可使用。",
       "goToBackend": "去 Agent 后端",
@@ -1720,7 +1767,28 @@
       "providerDisabled": "已停用供应商 {{name}}",
       "imported": "已导入 {{imported}} 个模型，更新 {{updated}} 个",
       "modelUpdated": "已更新模型 {{model}}",
-      "modelDeleted": "已删除模型 {{model}}"
+      "modelDeleted": "已删除模型 {{model}}",
+      "batchDeleted": "已删除 {{count}} 个模型",
+      "batchDeleted_one": "已删除 {{count}} 个模型",
+      "batchDeleted_other": "已删除 {{count}} 个模型",
+      "batchDeletePartial": "已删除 {{deleted}} 个模型，{{unprocessed}} 个未处理：{{message}}",
+      "batchDeletePartial_one": "已删除 {{deleted}} 个模型，{{unprocessed}} 个未处理：{{message}}",
+      "batchDeletePartial_other": "已删除 {{deleted}} 个模型，{{unprocessed}} 个未处理：{{message}}",
+      "batchEnabled": "已启用 {{count}} 个模型",
+      "batchEnabled_one": "已启用 {{count}} 个模型",
+      "batchEnabled_other": "已启用 {{count}} 个模型",
+      "batchEnabledPartial": "已启用 {{done}} 个模型，{{unprocessed}} 个未处理：{{message}}",
+      "batchEnabledPartial_one": "已启用 {{done}} 个模型，{{unprocessed}} 个未处理：{{message}}",
+      "batchEnabledPartial_other": "已启用 {{done}} 个模型，{{unprocessed}} 个未处理：{{message}}",
+      "batchDisabled": "已停用 {{count}} 个模型",
+      "batchDisabled_one": "已停用 {{count}} 个模型",
+      "batchDisabled_other": "已停用 {{count}} 个模型",
+      "batchDisabledSkippedDefault": "已停用 {{count}} 个模型（默认模型不参与停用）",
+      "batchDisabledSkippedDefault_one": "已停用 {{count}} 个模型（默认模型不参与停用）",
+      "batchDisabledSkippedDefault_other": "已停用 {{count}} 个模型（默认模型不参与停用）",
+      "batchDisabledPartial": "已停用 {{done}} 个模型，{{unprocessed}} 个未处理：{{message}}",
+      "batchDisabledPartial_one": "已停用 {{done}} 个模型，{{unprocessed}} 个未处理：{{message}}",
+      "batchDisabledPartial_other": "已停用 {{done}} 个模型，{{unprocessed}} 个未处理：{{message}}"
     },
     "form": {
       "createAriaLabel": "新增 LLM 供应商",
@@ -1766,16 +1834,11 @@
       "draftFailed": "调用失败",
       "draftSuccess": "调用成功，已发送 hi 并收到模型响应",
       "failedTitle": "测试失败",
-      "providerFailed": "\"{{name}}\" 连接失败：{{message}}",
-      "providerSuccess": "\"{{name}}\" 调用成功，已发送 hi 并收到模型响应",
+      "providerFailed": "\"{{name}}\" 连接失败（{{duration}}）：{{message}}",
+      "providerSuccess": "\"{{name}}\" 调用成功（{{duration}}），已发送 hi 并收到模型响应",
       "successTitle": "测试成功",
-      "rowSuccess": "模型 {{model}} 调用成功，已发送 hi 并收到模型响应",
-      "rowFailed": "模型 {{model}} 连接失败：{{message}}"
-    },
-    "toolbar": {
-      "add": "新增供应商",
-      "count": "共 {{count}} 个",
-      "title": "已配置的供应商"
+      "rowSuccess": "模型 {{model}} 调用成功（{{duration}}），已发送 hi 并收到模型响应",
+      "rowFailed": "模型 {{model}} 连接失败（{{duration}}）：{{message}}"
     },
     "validation": {
       "apiKeyRequired": "API Key 不能为空",
@@ -1792,7 +1855,12 @@
       "add": "添加供应商",
       "enabled": "已启用",
       "disabled": "已停用",
-      "noMatch": "没有匹配的供应商"
+      "noMatch": "没有匹配的供应商",
+      "modelCount": "{{count}} 个模型"
+    },
+    "page": {
+      "add": "新增供应商",
+      "loadingProviders": "正在加载供应商…"
     },
     "workspace": {
       "ariaLabel": "{{name}} 模型工作区",
@@ -1809,7 +1877,23 @@
       "delete": "删除",
       "deleteNamed": "删除 {{name}}",
       "deleteTitle": "删除供应商（需二次确认）",
+      "deleteBlockedReferenced": "被 {{count}} 处引用，无法删除；可以先停用",
+      "deleteBlockedReferenced_one": "被 {{count}} 处引用，无法删除；可以先停用",
+      "deleteBlockedReferenced_other": "被 {{count}} 处引用，无法删除；可以先停用",
       "cannotEnableNoDefault": "未设置可用的启用默认模型，无法启用该供应商",
+      "testConnection": "测试连接",
+      "more": "更多",
+      "metaDefaultModel": "默认模型",
+      "metaReferenced": "被引用",
+      "refBackends": "{{count}} 个后端",
+      "refBackends_one": "{{count}} 个后端",
+      "refBackends_other": "{{count}} 个后端",
+      "refSessions": "{{count}} 个会话",
+      "refSessions_one": "{{count}} 个会话",
+      "refSessions_other": "{{count}} 个会话",
+      "refRoutes": "{{count}} 条路由",
+      "refRoutes_one": "{{count}} 条路由",
+      "refRoutes_other": "{{count}} 条路由",
       "searchPlaceholder": "筛选模型 ID…",
       "searchAria": "筛选模型",
       "modelCount": "显示 {{shown}} / {{total}}",
@@ -1837,8 +1921,30 @@
       "deleteModelNamed": "删除 {{model}}",
       "deleteBlockedDefault": "默认模型：需先另设默认才能删除",
       "deleteTitle": "删除（需二次确认）",
+      "testPassed": "已通过",
+      "testPassedHint": "本次会话内测试通过 · {{duration}}",
       "disableBlockedDefault": "默认模型：需先另设默认才能停用",
-      "enableNamed": "启用/停用 {{model}}"
+      "enableNamed": "启用/停用 {{model}}",
+      "selectAll": "全选模型",
+      "selectModel": "选择 {{model}}",
+      "model": "模型",
+      "references": "引用",
+      "enableColumn": "启用",
+      "moreModelNamed": "{{model}} 的更多操作",
+      "deleteBlockedReferenced": "被 {{count}} 处引用，无法删除",
+      "batch": {
+        "selectedCount": "已选 {{selected}} / {{total}}",
+        "selectAll": "全选",
+        "clearSelection": "取消选择",
+        "enable": "批量启用",
+        "disable": "批量停用",
+        "delete": "批量删除",
+        "referencesPending": "请等待引用检查完成后再删除",
+        "referencesUnavailable": "引用状态不可用，无法安全删除",
+        "rowCanDelete": "可删除",
+        "rowDefaultBlocked": "默认模型不可删除",
+        "rowReferencedBlocked": "引用 {{count}} 处不可删除"
+      }
     },
     "delete": {
       "providerTitle": "删除供应商 · {{name}}",
@@ -1853,10 +1959,29 @@
       "modelConfirmHint": "该模型没有被引用。删除后已保存的 fixed-model 目标会失效。",
       "providerConfirmButton": "删除供应商",
       "modelConfirmButton": "删除模型",
+      "disableInstead": "改为停用",
+      "disableInsteadHint": "停用会保留全部引用，之后随时可以恢复。",
       "refBackends": "个后端",
       "refSessions": "个会话",
       "refRoutes": "条路由",
       "noRefs": "无引用"
+    },
+    "batchDelete": {
+      "title": "删除选中的 {{count}} 个模型？",
+      "title_one": "删除选中的 {{count}} 个模型？",
+      "title_other": "删除选中的 {{count}} 个模型？",
+      "descriptionWithProtected": "其中 {{protectedCount}} 个被保护，不会被删除；这次只会删掉 {{deletableCount}} 个。",
+      "descriptionAllDeletable": "选中的 {{count}} 个模型都会被删除。",
+      "descriptionAllDeletable_one": "选中的 {{count}} 个模型都会被删除。",
+      "descriptionAllDeletable_other": "选中的 {{count}} 个模型都会被删除。",
+      "notTransactional": "逐个删除，不是一个事务：中途失败会停下并报告已删除与未处理的数量，不会悄悄留下半截状态。",
+      "willDelete": "将被删除",
+      "protected": "被保护（保持不动）",
+      "noneDeletable": "没有可删除的模型",
+      "deleting": "正在删除…",
+      "confirmButton": "删除 {{count}} 个模型",
+      "confirmButton_one": "删除 {{count}} 个模型",
+      "confirmButton_other": "删除 {{count}} 个模型"
     },
     "modelEdit": {
       "ariaLabel": "编辑模型",
@@ -1886,7 +2011,28 @@
       "selectAllHint": "已存在项自动跳过",
       "existingSkip": "已存在 · 跳过",
       "new": "新",
+      "otherVendor": "其它",
+      "readOk": "读取成功",
+      "errorTitle": {
+        "auth": "认证失败（{{code}}）",
+        "endpoint": "端点不存在（{{code}}）",
+        "server": "供应商服务端错误（{{code}}）",
+        "status": "请求失败（HTTP {{code}}）",
+        "network": "连接不上供应商",
+        "generic": "读取模型目录失败"
+      },
+      "error": {
+        "auth": "供应商拒绝了请求，请检查连接设置中的 API Key 与凭据。",
+        "endpoint": "无法访问供应商端点，请检查 Base URL。",
+        "server": "供应商返回服务端错误，请稍后再试。",
+        "status": "供应商返回错误（HTTP {{code}}）。",
+        "network": "无法连接到供应商，请检查网络或端点。",
+        "generic": "无法加载模型目录。"
+      },
+      "goEditConnection": "前往编辑连接",
+      "viewRawResponse": "查看原始响应",
       "importSummary": "将导入 {{count}} 个新模型",
+      "importSummaryExisting": "已存在模型保持其名称、上下文、默认与引用配置不变。",
       "importButton": "导入 {{count}} 个模型",
       "importing": "正在导入…",
       "importButton_one": "导入 {{count}} 个模型",
@@ -1896,6 +2042,7 @@
       "ariaLabel": "手动添加模型",
       "title": "添加模型 · {{name}}",
       "description": "手动添加一个上游未列出的私有、preview 或代理别名模型。",
+      "catalogMatched": "内置目录命中了这个 ID，已自动填好上下文窗口与最大输出，可以改。",
       "submit": "添加"
     }
   },
@@ -2679,12 +2826,12 @@
     "disabledNoCompatibleProviders": "没有与该后端类型匹配的可用供应商",
     "disabledUnsupportedBackend": "该后端不使用 agentre 供应商",
     "errorFetch": "供应商列表加载失败，请稍后重试",
-    "followAgentBinding": "跟随 agent 绑定",
-    "followAgentBindingDesc": "使用 agent 绑定的供应商默认模型",
-    "followAgentBindingUnboundDesc": "不选，走 CLI 登录态",
-    "heading": "供应商",
+    "mode": {
+      "fixed": "固定模型",
+      "followDefault": "跟随供应商默认",
+      "invalid": "已失效"
+    },
     "switchNote": "切换自下一轮生效，正在进行的回合不受影响",
-    "title": "选择供应商 · 当前 {{provider}}",
     "unselected": "选择供应商"
   },
   "permissionMode": {
@@ -2820,7 +2967,7 @@
       "title": "本地 HTTP 代理"
     },
     "llmProvider": {
-      "description": "配置可用模型来源。保存后可拉取该账号下的实际可用模型，模型能力（上下文窗口、是否支持 thinking 等）由 cago agents 内置目录补全。",
+      "description": "配置可用模型来源。保存后可拉取该账号下的可用模型，并自动补全各模型的能力参数。",
       "gapBanner": {
         "description": "部分 Agent 绑定的后端还没有关联已激活的 LLM 供应商。配置好供应商后，去组织架构给这些 Agent 选上即可。",
         "goToOrg": "去组织架构",
@@ -3191,21 +3338,44 @@
     "special": {
       "backend": "CLI 自身登录态",
       "chat": "跟随 Agent 绑定",
-      "route": "继承主绑定"
+      "route": "继承主绑定",
+      "backendSublabel": "由 CLI 自身的登录账号决定"
     },
     "searchPlaceholder": "搜索供应商或模型…",
     "clearSearch": "清空搜索",
     "loading": "正在加载模型目录…",
     "error": "模型目录加载失败",
     "empty": "暂无可用供应商，请先到 LLM 供应商管理页创建。",
-    "defaultBadge": "默认",
+    "noCompatibleProviders": "没有与当前后端类型兼容的供应商。",
     "defaultLabel": "跟随默认模型",
+    "followDefault": "跟随该供应商默认",
+    "dynamicLegend": "跟随该供应商默认 —— 默认变了下一轮自动跟着变；固定模型不会变。",
+    "fixedSection": "固定到具体模型",
+    "contextOutput": "{{ctx}} 上下文 · {{out}} 输出",
+    "disabledModel": "模型已停用",
+    "disabledProvider": "供应商已停用",
+    "recentLabel": "最近使用",
+    "removeRecent": "移除 {{label}}",
+    "invalidTarget": "当前选择「{{target}}」已失效（供应商或模型缺失、停用或被删除）。下一轮会被阻止，且不会自动改用其它模型，请重新选择。",
     "invalidHint": "该目标已失效（供应商或模型缺失/停用），请重新选择。",
+    "invalidCurrent": "当前选择 · 已失效",
+    "invalidChip": "失效",
     "remoteMissing": "目标设备缺少该供应商，请在远端同步后再选择。",
     "noDefaultModel": "未设置默认模型",
     "remoteSyncNeeded": "本机独有，同步到该设备后可用",
     "fixedModelUnsupported": "该设备不支持固定模型，请升级 agentred",
-    "remoteGateHint": "灰色项需先同步到目标设备，或设备不支持该能力"
+    "remoteGateHint": "灰色项需先同步到目标设备，或设备不支持该能力",
+    "remoteDeviceHeader": "在 {{device}} 上执行 —— 以该设备的配置为准",
+    "providerOnDevice": "设备上已有",
+    "syncInline": "同步过去",
+    "syncFootnote": "同步会把 API Key 复制到该设备，需要你明确确认",
+    "syncProviderNamed": "同步 {{provider}} 到该设备",
+    "syncDialog": {
+      "title": "同步供应商到设备",
+      "description": "将 {{provider}} 及其模型目录同步到目标设备。",
+      "confirmation": "此操作会把供应商 API Key 复制到目标设备，请确认后继续。",
+      "confirm": "确认同步"
+    }
   },
   "statusBar": {
     "agentSummary": "{{count}} 个 agent · {{running}} 个运行中",

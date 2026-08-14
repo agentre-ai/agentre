@@ -27,11 +27,14 @@ func (s *chatSvc) selfFingerprint(ctx context.Context) string {
 	return fp
 }
 
-// beIsSelf 报告一个 backend 是否指向「本机」（它的 DeviceID 就是本机设备指纹）。
-// 委托 remote_device_svc.IsSelfDevice 这一个事实来源；receiver 形式只是让持
-// 有 chatSvc 的调用方不用关心 remote_device_svc。nil be 与空串一样不是「自己」。
-func (s *chatSvc) beIsSelf(ctx context.Context, be *agent_backend_entity.AgentBackend) bool {
-	return be != nil && remote_device_svc.IsSelfDevice(be.DeviceID)
+// beTargetsRemote 报告一个 backend 是否要派到「别的机器」上跑。判据本身住在
+// remote_device_svc.TargetsAnotherMachine（单一事实来源）；这里只补 entity 的 nil
+// 语义——nil be 与空 DeviceID 一样是「本机」，与 IsRemote() 的 nil 约定一致。
+//
+// 全仓一律用它 / TargetsAnotherMachine 提问，**不要再写 be.IsRemote()**：R13 认领后
+// 本机 backend 的 DeviceID 就是本机指纹，IsRemote() 单独用会把本机判成远端。
+func beTargetsRemote(be *agent_backend_entity.AgentBackend) bool {
+	return be != nil && remote_device_svc.TargetsAnotherMachine(be.DeviceID)
 }
 
 // selfBackendIDs 找出一个 Agent 执行目标列表里指向本机（DeviceID == 本机指纹）的那

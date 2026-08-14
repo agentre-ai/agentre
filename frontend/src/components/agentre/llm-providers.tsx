@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
   ArrowRight,
-  ArrowUpRight,
   CheckCircle2,
   Loader2,
   Plus,
@@ -18,6 +17,8 @@ import {
   CreateLLMProvider,
   ListLLMModels,
   ListLLMProviders,
+  LLMModelRefCounts,
+  LLMProviderRefCounts,
   SetLLMModelEnabled,
   SetLLMProviderEnabled,
   TestLLMProvider,
@@ -30,6 +31,7 @@ import {
   type DeleteTarget,
   DeleteDialog,
 } from "./llm-provider-models/delete-dialog";
+import { type BatchDeleteResult } from "./llm-provider-models/batch-delete-dialog";
 import {
   type DefaultModelTarget,
   DefaultModelDialog,
@@ -46,6 +48,7 @@ import { ProviderWorkspace } from "./llm-provider-models/provider-workspace";
 import {
   type Model,
   type Provider,
+  type ReferenceCounts,
   endpointFor,
   errMessage,
   isProviderType,
@@ -59,8 +62,12 @@ type FlashState =
 
 export function LlmProvidersPanel({
   onOpenAgentBackends,
+  renderHeader,
 }: {
   onOpenAgentBackends?: () => void;
+  // 页头由宿主渲染，面板把自己的页级操作（新增供应商）交进去：按钮要落在 H1
+  // 行，而它开的创建弹窗仍归面板持有。
+  renderHeader?: (actions: React.ReactNode) => React.ReactNode;
 } = {}) {
   const { t } = useTranslation();
   const [providers, setProviders] = React.useState<Provider[]>([]);
@@ -85,6 +92,16 @@ export function LlmProvidersPanel({
   const [testingModelId, setTestingModelId] = React.useState<number | null>(
     null,
   );
+  const [providerRefCounts, setProviderRefCounts] =
+    React.useState<ReferenceCounts | null>(null);
+  const [modelRefCounts, setModelRefCounts] = React.useState<
+    Map<string, ReferenceCounts>
+  >(new Map());
+  const [modelRefsLoading, setModelRefsLoading] = React.useState(false);
+  // 行内「已通过」是会话内瞬时态：后端不持久化测试结果，刷新即消失。
+  const [passedModelTests, setPassedModelTests] = React.useState<
+    Map<number, string>
+  >(new Map());
 
   const selectedProvider = providers.find((p) => p.id === selectedId) ?? null;
 
@@ -175,9 +192,83 @@ export function LlmProvidersPanel({
     };
   }, [selectedId]);
 
+  // 元信息行的「被引用」计数：切换供应商时按 providerKey 拉取，失败降级为 0。
+  React.useEffect(() => {
+    if (!selectedProvider) {
+      setProviderRefCounts(null);
+      return;
+    }
+    const providerKey = selectedProvider.providerKey;
+    let cancelled = false;
+    setProviderRefCounts(null);
+    void (async () => {
+      try {
+        const resp = await LLMProviderRefCounts(
+          new llm_provider_svc.ProviderRefCountsRequest({ providerKey }),
+        );
+        if (!cancelled) {
+          setProviderRefCounts(
+            resp.counts ?? { backends: 0, sessions: 0, routes: 0 },
+          );
+        }
+      } catch {
+        if (!cancelled) {
+          setProviderRefCounts({ backends: 0, sessions: 0, routes: 0 });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProvider]);
+
+  // 模型表「引用」列：按 modelKey 逐条拉取引用计数。新目录先清掉旧计数；单条
+  // 失败保持 unknown，绝不能把「未确认」降级成 0 后开放批量删除。
+  React.useEffect(() => {
+    const keys = models.map((m) => m.modelKey);
+    setModelRefCounts(new Map());
+    if (keys.length === 0) {
+      setModelRefsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setModelRefsLoading(true);
+    void (async () => {
+      const entries = await Promise.all(
+        keys.map(async (key): Promise<[string, ReferenceCounts] | null> => {
+          try {
+            const resp = await LLMModelRefCounts(
+              new llm_provider_svc.ModelRefCountsRequest({ modelKey: key }),
+            );
+            return [
+              key,
+              resp.counts ?? { backends: 0, sessions: 0, routes: 0 },
+            ];
+          } catch {
+            return null;
+          }
+        }),
+      );
+      if (!cancelled) {
+        setModelRefCounts(
+          new Map(
+            entries.filter(
+              (entry): entry is [string, ReferenceCounts] => entry !== null,
+            ),
+          ),
+        );
+        setModelRefsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [models]);
+
   const handleTestProvider = React.useCallback(
     async (provider: Provider) => {
       setTestingDefault(true);
+      const startedAt = Date.now();
       try {
         const resp = await TestLLMProvider(
           new llm_provider_svc.TestConnectionRequest({
@@ -191,12 +282,14 @@ export function LlmProvidersPanel({
             modelId: "",
           }),
         );
+        const duration = `${Date.now() - startedAt}ms`;
         setFlash(
           resp.ok
             ? {
                 kind: "ok",
                 text: t("llmProviders.test.providerSuccess", {
                   name: provider.name,
+                  duration,
                 }),
               }
             : {
@@ -204,6 +297,7 @@ export function LlmProvidersPanel({
                 text: t("llmProviders.test.providerFailed", {
                   name: provider.name,
                   message: resp.message,
+                  duration,
                 }),
               },
         );
@@ -224,6 +318,7 @@ export function LlmProvidersPanel({
   const handleTestModel = React.useCallback(
     async (model: Model) => {
       setTestingModelId(model.id);
+      const startedAt = Date.now();
       try {
         const resp = await TestLLMProvider(
           new llm_provider_svc.TestConnectionRequest({
@@ -237,12 +332,20 @@ export function LlmProvidersPanel({
             modelId: "",
           }),
         );
+        const duration = `${Date.now() - startedAt}ms`;
+        setPassedModelTests((prev) => {
+          const next = new Map(prev);
+          if (resp.ok) next.set(model.id, duration);
+          else next.delete(model.id);
+          return next;
+        });
         setFlash(
           resp.ok
             ? {
                 kind: "ok",
                 text: t("llmProviders.test.rowSuccess", {
                   model: model.modelId,
+                  duration,
                 }),
               }
             : {
@@ -250,10 +353,17 @@ export function LlmProvidersPanel({
                 text: t("llmProviders.test.rowFailed", {
                   model: model.modelId,
                   message: resp.message,
+                  duration,
                 }),
               },
         );
       } catch (err) {
+        setPassedModelTests((prev) => {
+          if (!prev.has(model.id)) return prev;
+          const next = new Map(prev);
+          next.delete(model.id);
+          return next;
+        });
         setFlash({
           kind: "err",
           text: t("llmProviders.flash.testFailed", {
@@ -334,6 +444,115 @@ export function LlmProvidersPanel({
       }
     },
     [refreshProviders, t],
+  );
+
+  const handleBatchToggleEnabled = React.useCallback(
+    async (models: Model[], enabled: boolean) => {
+      if (!selectedProvider) return;
+      const defaultKey = selectedProvider.defaultModelKey;
+      // 停用时跳过默认模型（默认模型不可停用）；启用只作用于已停用的模型。
+      const targets = enabled
+        ? models.filter((m) => !m.enabled)
+        : models.filter((m) => m.enabled && m.modelKey !== defaultKey);
+      const skippedDefault =
+        !enabled && models.some((m) => m.enabled && m.modelKey === defaultKey);
+
+      let done = 0;
+      let error: string | null = null;
+      for (const model of targets) {
+        try {
+          await SetLLMModelEnabled(
+            new llm_provider_svc.SetModelEnabledRequest({
+              id: model.id,
+              enabled,
+            }),
+          );
+          done += 1;
+        } catch (err) {
+          error = errMessage(err);
+          break;
+        }
+      }
+      const unprocessed = targets.length - done;
+
+      if (error) {
+        setFlash({
+          kind: "err",
+          text: enabled
+            ? t("llmProviders.flash.batchEnabledPartial", {
+                done,
+                unprocessed,
+                message: error,
+              })
+            : t("llmProviders.flash.batchDisabledPartial", {
+                done,
+                unprocessed,
+                message: error,
+              }),
+        });
+      } else if (enabled) {
+        setFlash({
+          kind: "ok",
+          text: t("llmProviders.flash.batchEnabled", { count: done }),
+        });
+      } else if (skippedDefault) {
+        setFlash({
+          kind: "ok",
+          text: t("llmProviders.flash.batchDisabledSkippedDefault", {
+            count: done,
+          }),
+        });
+      } else {
+        setFlash({
+          kind: "ok",
+          text: t("llmProviders.flash.batchDisabled", { count: done }),
+        });
+      }
+      await refreshModels();
+    },
+    [refreshModels, selectedProvider, t],
+  );
+
+  const handleBatchDeleteCompleted = React.useCallback(
+    (result: BatchDeleteResult) => {
+      if (result.error) {
+        setFlash({
+          kind: "err",
+          text: t("llmProviders.flash.batchDeletePartial", {
+            deleted: result.deleted,
+            unprocessed: result.unprocessed,
+            message: result.error,
+          }),
+        });
+      } else {
+        setFlash({
+          kind: "ok",
+          text: t("llmProviders.flash.batchDeleted", {
+            count: result.deleted,
+          }),
+        });
+      }
+      void refreshModels();
+    },
+    [refreshModels, t],
+  );
+
+  const handleCopyProviderKey = React.useCallback(
+    async (provider: Provider) => {
+      try {
+        await navigator.clipboard.writeText(provider.providerKey);
+        setFlash({
+          kind: "ok",
+          text: t("llmProviders.fields.copyProviderKeyDone"),
+        });
+      } catch {
+        setFlash({
+          kind: "err",
+          text: t("llmProviders.fields.copyProviderKeyFailed"),
+        });
+      }
+    },
+    [t],
   );
 
   const handleFormSubmit = React.useCallback(
@@ -437,56 +656,78 @@ export function LlmProvidersPanel({
     [refreshModels, refreshProviders, t],
   );
 
-  return (
-    <div className="flex min-w-0 flex-col gap-3">
-      {flash ? (
-        <Alert
-          className={cn(
-            "py-2",
-            flash.kind === "ok"
-              ? "border-status-running/40 bg-status-running/10 text-status-running"
-              : "border-status-error/40 bg-status-error/10 text-status-error",
-          )}
-        >
-          {flash.kind === "ok" ? (
-            <CheckCircle2 className="size-4" aria-hidden="true" />
-          ) : (
-            <AlertCircle className="size-4" aria-hidden="true" />
-          )}
-          <AlertTitle className="text-xs font-semibold">
-            {flash.kind === "ok"
-              ? t("common.operationSucceeded")
-              : t("common.errorOccurred")}
-          </AlertTitle>
-          <AlertDescription className="text-2xs">{flash.text}</AlertDescription>
-        </Alert>
-      ) : null}
+  // 被引用挡住删除时的第三条出路：弹窗自己完成停用，这里只负责说出结果并刷新，
+  // 否则后端已经停用而工作区还停在旧的启用态。
+  const handleDisabled = React.useCallback(
+    (target: DeleteTarget) => {
+      if (target.kind === "provider") {
+        setFlash({
+          kind: "ok",
+          text: t("llmProviders.flash.providerDisabled", {
+            name: target.provider.name,
+          }),
+        });
+        void refreshProviders();
+      } else {
+        setFlash({
+          kind: "ok",
+          text: t("llmProviders.flash.modelDisabled", {
+            model: target.model.modelId,
+          }),
+        });
+        void refreshModels();
+      }
+    },
+    [refreshModels, refreshProviders, t],
+  );
 
-      <section className="min-w-0 overflow-hidden rounded-lg border border-border bg-card">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-3 sm:px-4">
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <span className="text-sm font-semibold">
-              {t("llmProviders.toolbar.title")}
-            </span>
-            <span className="text-2xs text-muted-foreground">
-              {t("llmProviders.toolbar.count", { count: providers.length })}
-            </span>
-          </div>
-          <Button
-            type="button"
-            size="sm"
-            className="h-[30px] gap-1.5 px-3 text-xs"
-            onClick={() => setFormMode({ kind: "create" })}
+  // 空态自带「添加第一个供应商」CTA，此时页头不再出第二个——全页始终只有一个入口。
+  const headerActions =
+    providersLoading || providers.length === 0 ? null : (
+      <Button
+        type="button"
+        size="sm"
+        className="h-[30px] gap-1.5 px-3 text-xs"
+        onClick={() => setFormMode({ kind: "create" })}
+      >
+        <Plus data-icon="inline-start" aria-hidden="true" />
+        {t("llmProviders.page.add")}
+      </Button>
+    );
+
+  return (
+    <>
+      {renderHeader?.(headerActions)}
+      <div className="flex min-w-0 flex-col gap-3">
+        {flash ? (
+          <Alert
+            className={cn(
+              "py-2",
+              flash.kind === "ok"
+                ? "border-status-running/40 bg-status-running/10 text-status-running"
+                : "border-status-error/40 bg-status-error/10 text-status-error",
+            )}
           >
-            <Plus data-icon="inline-start" aria-hidden="true" />
-            {t("llmProviders.toolbar.add")}
-          </Button>
-        </div>
+            {flash.kind === "ok" ? (
+              <CheckCircle2 className="size-4" aria-hidden="true" />
+            ) : (
+              <AlertCircle className="size-4" aria-hidden="true" />
+            )}
+            <AlertTitle className="text-xs font-semibold">
+              {flash.kind === "ok"
+                ? t("common.operationSucceeded")
+                : t("common.errorOccurred")}
+            </AlertTitle>
+            <AlertDescription className="text-2xs">
+              {flash.text}
+            </AlertDescription>
+          </Alert>
+        ) : null}
 
         {providersLoading ? (
           <div className="flex items-center justify-center gap-2 py-10 text-2xs text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-            {t("llmProviders.workspace.loadingModels")}
+            {t("llmProviders.page.loadingProviders")}
           </div>
         ) : providers.length === 0 ? (
           <ProvidersEmptyState
@@ -494,75 +735,94 @@ export function LlmProvidersPanel({
             onOpenAgentBackends={onOpenAgentBackends}
           />
         ) : (
-          <ProviderManagement
-            providers={providers}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            selectedProvider={selectedProvider}
-            models={models}
-            modelsLoading={modelsLoading}
-            modelsError={modelsError}
-            onRetryModels={() => void refreshModels()}
-            testingDefault={testingDefault}
-            testingModelId={testingModelId}
-            onTestProvider={handleTestProvider}
-            onTestModel={handleTestModel}
-            onEditConnection={() => {
-              if (selectedProvider)
-                setFormMode({ kind: "edit", provider: selectedProvider });
-            }}
-            onDiscover={() => setDiscoverProvider(selectedProvider)}
-            onAddModel={() => setAddModelProvider(selectedProvider)}
-            onDeleteProvider={() =>
-              selectedProvider
-                ? setDeleteTarget({
-                    kind: "provider",
-                    provider: selectedProvider,
-                  })
-                : undefined
-            }
-            onSetDefault={handleSetDefault}
-            onToggleModelEnabled={handleToggleModelEnabled}
-            onEditModel={setEditModel}
-            onDeleteModel={(model) => setDeleteTarget({ kind: "model", model })}
-            onToggleProviderEnabled={handleToggleProviderEnabled}
-            onAddProvider={() => setFormMode({ kind: "create" })}
-          />
+          <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-card">
+            <ProviderManagement
+              providers={providers}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              selectedProvider={selectedProvider}
+              models={models}
+              modelsLoading={modelsLoading}
+              modelsError={modelsError}
+              onRetryModels={() => void refreshModels()}
+              testingDefault={testingDefault}
+              testingModelId={testingModelId}
+              passedModelTests={passedModelTests}
+              providerRefCounts={providerRefCounts}
+              modelRefCounts={modelRefCounts}
+              modelRefsLoading={modelRefsLoading}
+              onTestProvider={handleTestProvider}
+              onTestModel={handleTestModel}
+              onEditConnection={() => {
+                if (selectedProvider)
+                  setFormMode({ kind: "edit", provider: selectedProvider });
+              }}
+              onDiscover={() => setDiscoverProvider(selectedProvider)}
+              onAddModel={() => setAddModelProvider(selectedProvider)}
+              onCopyProviderKey={() => {
+                if (selectedProvider)
+                  void handleCopyProviderKey(selectedProvider);
+              }}
+              onDeleteProvider={() =>
+                selectedProvider
+                  ? setDeleteTarget({
+                      kind: "provider",
+                      provider: selectedProvider,
+                    })
+                  : undefined
+              }
+              onSetDefault={handleSetDefault}
+              onToggleModelEnabled={handleToggleModelEnabled}
+              onEditModel={setEditModel}
+              onDeleteModel={(model) =>
+                setDeleteTarget({ kind: "model", model })
+              }
+              onToggleProviderEnabled={handleToggleProviderEnabled}
+              onBatchToggleEnabled={handleBatchToggleEnabled}
+              onBatchDeleteCompleted={handleBatchDeleteCompleted}
+            />
+          </div>
         )}
-      </section>
 
-      <ProviderFormDialog
-        mode={formMode}
-        onClose={() => setFormMode(null)}
-        onSubmit={handleFormSubmit}
-      />
-      <DiscoverDialog
-        provider={discoverProvider}
-        existingModels={models}
-        onClose={() => setDiscoverProvider(null)}
-        onImported={handleImported}
-      />
-      <AddModelDialog
-        provider={addModelProvider}
-        onClose={() => setAddModelProvider(null)}
-        onImported={handleImported}
-      />
-      <ModelEditDialog
-        model={editModel}
-        onClose={() => setEditModel(null)}
-        onSaved={handleModelSaved}
-      />
-      <DeleteDialog
-        target={deleteTarget}
-        onClose={() => setDeleteTarget(null)}
-        onDeleted={handleDeleted}
-      />
-      <DefaultModelDialog
-        target={setDefaultTarget}
-        onClose={() => setSetDefaultTarget(null)}
-        onSaved={() => void handleDefaultSaved()}
-      />
-    </div>
+        <ProviderFormDialog
+          mode={formMode}
+          onClose={() => setFormMode(null)}
+          onSubmit={handleFormSubmit}
+        />
+        <DiscoverDialog
+          provider={discoverProvider}
+          existingModels={models}
+          onClose={() => setDiscoverProvider(null)}
+          onEditConnection={() => {
+            if (discoverProvider)
+              setFormMode({ kind: "edit", provider: discoverProvider });
+            setDiscoverProvider(null);
+          }}
+          onImported={handleImported}
+        />
+        <AddModelDialog
+          provider={addModelProvider}
+          onClose={() => setAddModelProvider(null)}
+          onImported={handleImported}
+        />
+        <ModelEditDialog
+          model={editModel}
+          onClose={() => setEditModel(null)}
+          onSaved={handleModelSaved}
+        />
+        <DeleteDialog
+          target={deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          onDeleted={handleDeleted}
+          onDisabled={handleDisabled}
+        />
+        <DefaultModelDialog
+          target={setDefaultTarget}
+          onClose={() => setSetDefaultTarget(null)}
+          onSaved={() => void handleDefaultSaved()}
+        />
+      </div>
+    </>
   );
 }
 
@@ -577,18 +837,24 @@ function ProviderManagement({
   onRetryModels,
   testingDefault,
   testingModelId,
+  passedModelTests,
   onTestProvider,
   onTestModel,
   onEditConnection,
   onDiscover,
   onAddModel,
+  onCopyProviderKey,
   onSetDefault,
   onToggleModelEnabled,
   onEditModel,
   onDeleteModel,
   onDeleteProvider,
   onToggleProviderEnabled,
-  onAddProvider,
+  onBatchToggleEnabled,
+  onBatchDeleteCompleted,
+  providerRefCounts,
+  modelRefCounts,
+  modelRefsLoading,
 }: {
   providers: Provider[];
   selectedId: number | null;
@@ -600,18 +866,24 @@ function ProviderManagement({
   onRetryModels: () => void;
   testingDefault: boolean;
   testingModelId: number | null;
+  passedModelTests: ReadonlyMap<number, string>;
   onTestProvider: (provider: Provider) => void;
   onTestModel: (model: Model) => void;
   onEditConnection: () => void;
   onDiscover: () => void;
   onAddModel: () => void;
+  onCopyProviderKey: () => void;
   onSetDefault: (model: Model) => void;
   onToggleModelEnabled: (model: Model) => void;
   onEditModel: (model: Model) => void;
   onDeleteModel: (model: Model) => void;
   onDeleteProvider: () => void;
   onToggleProviderEnabled: (provider: Provider) => void;
-  onAddProvider: () => void;
+  onBatchToggleEnabled: (models: Model[], enabled: boolean) => Promise<void>;
+  onBatchDeleteCompleted: (result: BatchDeleteResult) => void;
+  providerRefCounts: ReferenceCounts | null;
+  modelRefCounts: Map<string, ReferenceCounts>;
+  modelRefsLoading: boolean;
 }) {
   const { t } = useTranslation();
   const [navSearch, setNavSearch] = React.useState("");
@@ -703,22 +975,23 @@ function ProviderManagement({
                         <span className="block truncate text-xs font-medium">
                           {p.name}
                         </span>
+                        {/* endpoint 独占一行：截断只吃 endpoint 自己 */}
                         <span className="block truncate font-mono text-2xs text-muted-foreground">
                           {endpointFor(p)}
                         </span>
                       </span>
-                      <span
-                        className={cn(
-                          "shrink-0 font-mono text-2xs",
-                          p.enabled
-                            ? "text-status-running"
-                            : "text-status-waiting",
-                        )}
-                      >
-                        {p.enabled
-                          ? t("llmProviders.nav.enabled")
-                          : t("llmProviders.nav.disabled")}
-                      </span>
+                      {/* 模型数是独立元素，不参与 endpoint 的截断；停用时让位给下面的徽标 */}
+                      {p.enabled ? (
+                        <span className="shrink-0 font-mono text-2xs text-muted-foreground">
+                          {t("llmProviders.nav.modelCount", {
+                            count: p.modelCount,
+                          })}
+                        </span>
+                      ) : (
+                        <span className="shrink-0 font-mono text-2xs text-status-waiting">
+                          {t("llmProviders.nav.disabled")}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
@@ -730,22 +1003,6 @@ function ProviderManagement({
               {t("llmProviders.nav.noMatch")}
             </p>
           ) : null}
-        </div>
-        <div className="border-t border-border p-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-[30px] w-full gap-1.5 text-xs"
-            onClick={onAddProvider}
-          >
-            <Plus
-              className="size-3.5"
-              data-icon="inline-start"
-              aria-hidden="true"
-            />
-            {t("llmProviders.nav.add")}
-          </Button>
         </div>
       </aside>
 
@@ -759,11 +1016,13 @@ function ProviderManagement({
             onRetryModels={onRetryModels}
             testingDefault={testingDefault}
             testingModelId={testingModelId}
+            passedModelTests={passedModelTests}
             onTestProvider={() => onTestProvider(selectedProvider)}
             onTestModel={onTestModel}
             onEditConnection={onEditConnection}
             onDiscover={onDiscover}
             onAddModel={onAddModel}
+            onCopyProviderKey={onCopyProviderKey}
             onSetDefault={onSetDefault}
             onToggleModelEnabled={onToggleModelEnabled}
             onEditModel={onEditModel}
@@ -772,6 +1031,11 @@ function ProviderManagement({
             onToggleProviderEnabled={() =>
               onToggleProviderEnabled(selectedProvider)
             }
+            onBatchToggleEnabled={onBatchToggleEnabled}
+            onBatchDeleteCompleted={onBatchDeleteCompleted}
+            providerRefCounts={providerRefCounts}
+            modelRefCounts={modelRefCounts}
+            modelRefsLoading={modelRefsLoading}
           />
         ) : null}
       </div>
@@ -815,15 +1079,6 @@ function ProvidersEmptyState({
         <Plus data-icon="inline-start" aria-hidden="true" />
         {t("llmProviders.empty.addFirst")}
       </Button>
-      <a
-        href="https://docs.anthropic.com/"
-        target="_blank"
-        rel="noreferrer"
-        className="inline-flex items-center gap-1 text-2xs text-muted-foreground transition-colors hover:text-primary-text"
-      >
-        {t("llmProviders.empty.apiKeyHelp")}
-        <ArrowUpRight className="size-3" aria-hidden="true" />
-      </a>
       <div className="flex flex-col items-center gap-1 text-2xs text-muted-foreground">
         <span className="font-mono">{t("llmProviders.empty.chain")}</span>
         <Button

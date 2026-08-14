@@ -20,6 +20,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/department_repo"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 	"github.com/agentre-ai/agentre/internal/repository/remote_device_repo"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 )
 
 const (
@@ -213,7 +214,7 @@ func toBundleDevice(d *paired_agentred_entity.PairedAgentred, secrets bool) Bund
 
 func backendsHaveDeviceID(backends []*agent_backend_entity.AgentBackend) bool {
 	for _, b := range backends {
-		if b != nil && b.DeviceID != "" {
+		if b != nil && remote_device_svc.TargetsAnotherMachine(b.DeviceID) {
 			return true
 		}
 	}
@@ -232,8 +233,12 @@ func deviceUUIDByRowID(devices []*paired_agentred_entity.PairedAgentred) map[str
 }
 
 func toBundleBackend(b *agent_backend_entity.AgentBackend, exportKey string, deviceUUIDByID map[string]string) (BundleAgentBackend, error) {
-	deviceID := b.DeviceID
-	if uuid, ok := deviceUUIDByID[b.DeviceID]; ok {
+	// bundle 是可移植配置：本机档的含义是「跑在导入它的那台机器上」，因此不带设备
+	// 引用。R13 认领后本机 backend 的 DeviceID 是本机指纹，照抄会让导入侧在 devices
+	// 段里找不到它（本机不会和自己配对）而整条判 dangling ref —— 见
+	// remote_device_svc.ExternalDeviceID。
+	deviceID := remote_device_svc.ExternalDeviceID(b.DeviceID)
+	if uuid, ok := deviceUUIDByID[deviceID]; ok {
 		deviceID = uuid
 	}
 	routes, err := agent_backend_entity.ParseModelRoutes(b.ModelRoutes)

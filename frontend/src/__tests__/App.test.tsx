@@ -247,6 +247,7 @@ function mockLlmProviders() {
                   hasApiKey: true,
                   id: 1,
                   maskedApiKey: "sk-ant-•••••••••••••• xJ12",
+                  modelCount: 1,
                   name: "Production",
                   providerKey: "pk-production",
                   type: "anthropic",
@@ -260,6 +261,7 @@ function mockLlmProviders() {
                   hasApiKey: false,
                   id: 2,
                   maskedApiKey: "",
+                  modelCount: 0,
                   name: "Ollama 本机",
                   providerKey: "pk-ollama",
                   type: "openai-chat",
@@ -1126,10 +1128,15 @@ describe("App", () => {
     expect(backendList).not.toHaveClass("overflow-x-auto");
     await waitFor(() => {
       expect(within(backendList).getByText("默认助手")).toBeInTheDocument();
-      expect(within(backendList).getByText("AWS Bedrock")).toBeInTheDocument();
+      // 后端名与绑定摘要里的供应商名都可能等于 "AWS Bedrock"，用 getAllByText 断言存在。
       expect(
-        within(backendList).getByText(/Anthropic · sonnet-4-6/),
-      ).toBeInTheDocument();
+        within(backendList).getAllByText("AWS Bedrock").length,
+      ).toBeGreaterThanOrEqual(1);
+      // 绑定摘要把供应商名与模型 ID 拆成独立 span，分别断言；"sonnet-4-6" 两个后端都有。
+      expect(within(backendList).getByText("Anthropic")).toBeInTheDocument();
+      expect(
+        within(backendList).getAllByText("sonnet-4-6").length,
+      ).toBeGreaterThanOrEqual(1);
     });
 
     expect(
@@ -1182,13 +1189,16 @@ describe("App", () => {
       name: /Production/,
     });
     expect(
-      within(production).getByText("https://api.anthropic.com"),
+      within(production).getByText(/https:\/\/api\.anthropic\.com/),
     ).toBeInTheDocument();
-    expect(within(production).getByText("Enabled")).toBeInTheDocument();
+    expect(within(production).getByText(/1 models/)).toBeInTheDocument();
+    expect(within(production).queryByText("Enabled")).not.toBeInTheDocument();
     const ollama = within(nav).getByRole("button", { name: /Ollama 本机/ });
     expect(
-      within(ollama).getByText("http://localhost:11434/v1"),
+      within(ollama).getByText(/http:\/\/localhost:11434\/v1/),
     ).toBeInTheDocument();
+    // 停用的供应商只出 Disabled 徽标，不再同时挂模型计数。
+    expect(within(ollama).queryByText(/0 models/)).not.toBeInTheDocument();
     expect(within(ollama).getByText("Disabled")).toBeInTheDocument();
 
     expect(
@@ -1212,13 +1222,25 @@ describe("App", () => {
       within(workspace).getByText("sk-ant-•••••••••••••• xJ12"),
     ).toBeInTheDocument();
     expect(
-      within(workspace).getByText("claude-sonnet-4-6"),
-    ).toBeInTheDocument();
-    expect(within(workspace).getByText("mk-sonnet")).toBeInTheDocument();
+      within(workspace).getAllByText("claude-sonnet-4-6").length,
+    ).toBeGreaterThanOrEqual(1);
+    // 模型行主行显示 display name，modelKey 已移入编辑弹窗不再出现在行内
+    expect(within(workspace).getByText("Sonnet")).toBeInTheDocument();
+    expect(within(workspace).queryByText("mk-sonnet")).not.toBeInTheDocument();
 
+    // mockup 注解①：唯一的「新增供应商」入口落在 H1 页头行内，不再单独占一层 strip
+    const pageHeader = screen
+      .getByRole("heading", { level: 1, name: "LLM Providers" })
+      .closest('[data-slot="settings-page-header"]');
+    expect(pageHeader).not.toBeNull();
     expect(
-      screen.getByRole("button", { name: "New Provider" }),
+      within(pageHeader as HTMLElement).getByRole("button", {
+        name: "New Provider",
+      }),
     ).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("button", { name: "New Provider" }),
+    ).toHaveLength(1);
   });
 
   it("tests an LLM provider by calling the configured model", async () => {
@@ -1249,9 +1271,7 @@ describe("App", () => {
       expect.objectContaining({ id: 1, modelKey: "" }),
     );
     expect(
-      await screen.findByText(
-        '"Production" call succeeded. Sent hi and received a model response.',
-      ),
+      await screen.findByText(/"Production" call succeeded \(\d+ms\)/),
     ).toBeInTheDocument();
   });
 

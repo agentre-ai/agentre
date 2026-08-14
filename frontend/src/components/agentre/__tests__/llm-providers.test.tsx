@@ -89,6 +89,7 @@ type ProviderItem = {
   hasApiKey: boolean;
   id: number;
   maskedApiKey: string;
+  modelCount: number;
   name: string;
   providerKey: string;
   type: string;
@@ -118,6 +119,7 @@ function makeProvider(overrides: Partial<ProviderItem> = {}): ProviderItem {
     hasApiKey: true,
     enabled: true,
     defaultModelKey: "mk-default",
+    modelCount: 3,
     ...overrides,
   };
 }
@@ -186,12 +188,79 @@ function installAppMock(overrides: Partial<AppMockShape> = {}) {
   return merged;
 }
 
+const originalClipboard = navigator.clipboard;
+
+function mockClipboard() {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText },
+  });
+  return writeText;
+}
+
 afterEach(() => {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: originalClipboard,
+  });
   vi.clearAllMocks();
 });
 
+// Radix DropdownMenu 在 jsdom 中需要关闭 pointerEvents 检查。
+function setupMenuUser() {
+  return userEvent.setup({ pointerEventsCheck: 0 });
+}
+
+function rowForModel(modelId: string): HTMLTableRowElement {
+  const checkbox = screen.getByRole("checkbox", { name: `Select ${modelId}` });
+  return checkbox.closest("tr") as HTMLTableRowElement;
+}
+
+// 默认模型（mk-default）+ 被引用模型（mk-opus）+ 可删除模型（mk-haiku）。
+function installThreeModels(
+  refs: Record<
+    string,
+    { backends: number; sessions: number; routes: number }
+  > = {},
+) {
+  return installAppMock({
+    ListLLMProviders: vi.fn(() => Promise.resolve({ items: [makeProvider()] })),
+    ListLLMModels: vi.fn(() =>
+      Promise.resolve({
+        items: [
+          makeModel(),
+          makeModel({
+            id: 12,
+            modelKey: "mk-opus",
+            modelId: "claude-opus-4-1",
+            name: "",
+            isDefault: false,
+          }),
+          makeModel({
+            id: 13,
+            modelKey: "mk-haiku",
+            modelId: "claude-haiku",
+            name: "",
+            isDefault: false,
+          }),
+        ],
+      }),
+    ),
+    LLMModelRefCounts: vi.fn((req: unknown) =>
+      Promise.resolve({
+        counts: refs[(req as { modelKey?: string }).modelKey ?? ""] ?? {
+          backends: 0,
+          sessions: 0,
+          routes: 0,
+        },
+      }),
+    ),
+  });
+}
+
 describe("LlmProvidersPanel", () => {
-  it("Given providers of different types, When the panel loads, Then the nav groups them by type and shows connection config plus enabled/disabled status", async () => {
+  it("Given providers of different types, When the panel loads, Then the nav groups them by type, shows the endpoint, and marks only disabled providers", async () => {
     const mocks = installAppMock({
       ListLLMProviders: vi.fn(() =>
         Promise.resolve({
@@ -205,6 +274,7 @@ describe("LlmProvidersPanel", () => {
               maskedApiKey: "sk-••••••9XQ2",
               hasApiKey: true,
               enabled: true,
+              modelCount: 3,
             }),
             makeProvider({
               id: 2,
@@ -216,6 +286,7 @@ describe("LlmProvidersPanel", () => {
               hasApiKey: false,
               enabled: false,
               defaultModelKey: "",
+              modelCount: 2,
             }),
           ],
         }),
@@ -230,14 +301,20 @@ describe("LlmProvidersPanel", () => {
       name: /Anthropic Official/,
     });
     expect(
-      within(anthropic).getByText("api.anthropic.com"),
+      within(anthropic).getByText(/api\.anthropic\.com/),
     ).toBeInTheDocument();
-    expect(within(anthropic).getByText("Enabled")).toBeInTheDocument();
+    expect(within(anthropic).getByText(/3 models/)).toBeInTheDocument();
+    // 启用是常态，不再标注；只有停用的供应商带停用标记
+    expect(within(anthropic).queryByText("Enabled")).not.toBeInTheDocument();
 
     const deepseek = within(nav).getByRole("button", {
       name: /DeepSeek Proxy/,
     });
-    expect(within(deepseek).getByText("llm.intra.example")).toBeInTheDocument();
+    expect(
+      within(deepseek).getByText(/llm\.intra\.example/),
+    ).toBeInTheDocument();
+    // 停用的供应商让位给「已停用」徽标：模型数不再和它抢空间
+    expect(within(deepseek).queryByText(/2 models/)).not.toBeInTheDocument();
     expect(within(deepseek).getByText("Disabled")).toBeInTheDocument();
 
     // 每个类型有独立分组标题
@@ -272,8 +349,8 @@ describe("LlmProvidersPanel", () => {
     });
     // 模型行由异步 ListLLMModels 渲染，等待真实模型控件出现而非 region。
     expect(
-      await within(workspace).findByText("claude-sonnet-4-5"),
-    ).toBeInTheDocument();
+      (await within(workspace).findAllByText("claude-sonnet-4-5")).length,
+    ).toBeGreaterThan(0);
     expect(within(workspace).getByText("claude-opus-4-1")).toBeInTheDocument();
     // 连接配置（endpoint + 掩码 key）在头部可见
     expect(
@@ -285,6 +362,211 @@ describe("LlmProvidersPanel", () => {
     expect(mocks.ListLLMModels).toHaveBeenCalledWith(
       expect.objectContaining({ id: 1 }),
     );
+  });
+
+  it("Given models with and without display names, When the table renders, Then the main row shows the display name (falling back to model ID) and the sub row shows only the model ID", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel(),
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              name: "",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    const workspace = await screen.findByRole("region", {
+      name: /Anthropic models/,
+    });
+    // 主行显示 display name（Sonnet），副行显示 modelId
+    expect(await within(workspace).findByText("Sonnet")).toBeInTheDocument();
+    expect(
+      within(workspace).getAllByText("claude-sonnet-4-5").length,
+    ).toBeGreaterThan(0);
+    // 空 name 回落显示 modelId
+    expect(
+      within(workspace).getAllByText("claude-opus-4-1").length,
+    ).toBeGreaterThan(0);
+    // UUID modelKey 不再出现在行内
+    expect(within(workspace).queryByText("mk-default")).not.toBeInTheDocument();
+    expect(within(workspace).queryByText("mk-opus")).not.toBeInTheDocument();
+  });
+
+  it("Given a provider with models, When the table renders, Then the columns are ordered checkbox, model, context, max output, references, default, enable and row actions", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+    });
+    render(<LlmProvidersPanel />);
+
+    const table = await screen.findByRole("table", { name: "Model list" });
+    const texts = within(table)
+      .getAllByRole("columnheader")
+      .map((h) => (h.textContent ?? "").trim());
+    expect(texts[0]).toBe("");
+    expect(texts[1]).toBe("Model");
+    expect(texts[2]).toBe("Context");
+    expect(texts[3]).toBe("Max Output");
+    expect(texts[4]).toBe("References");
+    expect(texts[5]).toBe("Default");
+    expect(texts[6]).toBe("Enable");
+    expect(texts[7]).toBe("");
+  });
+
+  it("Given reference counts are still loading, When a model is selected, Then batch delete stays blocked until deleteability is known", async () => {
+    const user = userEvent.setup();
+    let resolveReferences: ((value: unknown) => void) | undefined;
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel({
+              id: 13,
+              modelKey: "mk-haiku",
+              modelId: "claude-haiku",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+      LLMModelRefCounts: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveReferences = resolve;
+          }),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    const checkbox = await screen.findByRole("checkbox", {
+      name: "Select claude-haiku",
+    });
+    await user.click(checkbox);
+
+    expect(
+      screen.getByRole("button", { name: "Delete selected" }),
+    ).toBeDisabled();
+
+    resolveReferences?.({
+      counts: { backends: 0, sessions: 0, routes: 0 },
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Delete selected" }),
+      ).not.toBeDisabled();
+    });
+  });
+
+  it("Given a reference lookup fails, When a model is selected, Then batch delete remains blocked instead of treating the model as unreferenced", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel({
+              id: 13,
+              modelKey: "mk-haiku",
+              modelId: "claude-haiku",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+      LLMModelRefCounts: vi.fn(() =>
+        Promise.reject(new Error("reference lookup failed")),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    const checkbox = await screen.findByRole("checkbox", {
+      name: "Select claude-haiku",
+    });
+    await user.click(checkbox);
+
+    const deleteButton = screen.getByRole("button", {
+      name: "Delete selected",
+    });
+    await waitFor(() => expect(deleteButton).toBeDisabled());
+    expect(deleteButton).toHaveAttribute(
+      "title",
+      "Reference status unavailable: cannot delete safely",
+    );
+    expect(
+      screen.getByText("Reference status unavailable: cannot delete safely"),
+    ).toBeInTheDocument();
+  });
+
+  it("Given models with and without references, When the table renders, Then the reference column shows the count and a placeholder for unreferenced models", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel(),
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+      LLMModelRefCounts: vi.fn((req: unknown) =>
+        Promise.resolve({
+          counts:
+            (req as { modelKey?: string }).modelKey === "mk-opus"
+              ? { backends: 1, sessions: 0, routes: 2 }
+              : { backends: 0, sessions: 0, routes: 0 },
+        }),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    const workspace = await screen.findByRole("region", {
+      name: /Anthropic models/,
+    });
+    await within(workspace).findByRole("switch", {
+      name: "Enable claude-opus-4-1",
+    });
+
+    const opusRow = screen
+      .getByRole("switch", { name: "Enable claude-opus-4-1" })
+      .closest("tr");
+    const sonnetRow = screen
+      .getByRole("switch", { name: "Enable claude-sonnet-4-5" })
+      .closest("tr");
+    expect(opusRow).toBeTruthy();
+    expect(sonnetRow).toBeTruthy();
+
+    // 被引用模型的引用列显示数量；无引用的模型显示占位符
+    expect(
+      await within(opusRow as HTMLTableRowElement).findByText("3"),
+    ).toBeInTheDocument();
+    expect(
+      within(sonnetRow as HTMLTableRowElement).getByText("—"),
+    ).toBeInTheDocument();
   });
 
   it("Given a provider with a default model, When the header Test is clicked, Then TestLLMProvider is called with an empty modelKey", async () => {
@@ -305,6 +587,23 @@ describe("LlmProvidersPanel", () => {
         expect.objectContaining({ id: 1, modelKey: "" }),
       );
     });
+  });
+
+  it("Given a provider test succeeds, When it completes, Then the transient flash reports success with the elapsed time", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(screen.getByRole("button", { name: "Test Anthropic" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/\d+ms/);
   });
 
   it("Given a non-default model row, When its row Test is clicked, Then TestLLMProvider is called with the concrete modelKey", async () => {
@@ -404,28 +703,42 @@ describe("LlmProvidersPanel", () => {
       ),
       ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
     });
+    const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
-    const deleteBtn = await screen.findByRole("button", {
-      name: "Delete claude-sonnet-4-5",
-    });
-    expect(deleteBtn).toBeDisabled();
-    // 被阻止的原因通过 title / tooltip 可见
-    expect(deleteBtn).toHaveAttribute(
-      "title",
-      expect.stringMatching(/default model/i),
-    );
+    await screen.findByRole("region", { name: /Anthropic models/ });
 
+    // 默认模型：启用开关禁用并给出原因（需在打开菜单前查询，Radix 菜单打开时会 aria-hidden 其余内容）
     const enableSwitch = screen.getByRole("switch", {
       name: "Enable claude-sonnet-4-5",
     });
     expect(enableSwitch).toBeDisabled();
+    expect(enableSwitch).toHaveAttribute(
+      "title",
+      expect.stringMatching(/default model/i),
+    );
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "More actions for claude-sonnet-4-5",
+      }),
+    );
+    const deleteItem = within(await screen.findByRole("menu")).getByRole(
+      "menuitem",
+      { name: "Delete claude-sonnet-4-5" },
+    );
+    expect(deleteItem).toHaveAttribute("aria-disabled", "true");
+    // 被阻止的原因通过 title / tooltip 可见
+    expect(deleteItem).toHaveAttribute(
+      "title",
+      expect.stringMatching(/default model/i),
+    );
 
     expect(mocks.DeleteLLMModel).not.toHaveBeenCalled();
     expect(mocks.SetLLMModelEnabled).not.toHaveBeenCalled();
   });
 
-  it("Given a referenced model, When delete is requested, Then the dialog shows impact counts and blocks the deletion", async () => {
+  it("Given a referenced model, When its More menu is opened, Then the delete item is disabled with a visible reason", async () => {
     const mocks = installAppMock({
       ListLLMProviders: vi.fn(() =>
         Promise.resolve({ items: [makeProvider()] }),
@@ -443,30 +756,34 @@ describe("LlmProvidersPanel", () => {
           ],
         }),
       ),
-      LLMModelRefCounts: vi.fn(() =>
+      LLMModelRefCounts: vi.fn((req: unknown) =>
         Promise.resolve({
-          counts: { backends: 1, sessions: 0, routes: 2 },
+          counts:
+            (req as { modelKey?: string }).modelKey === "mk-opus"
+              ? { backends: 1, sessions: 0, routes: 2 }
+              : { backends: 0, sessions: 0, routes: 0 },
         }),
       ),
     });
-    const user = userEvent.setup();
+    const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
+    await screen.findByRole("region", { name: /Anthropic models/ });
     await user.click(
-      await screen.findByRole("button", { name: "Delete claude-opus-4-1" }),
+      screen.getByRole("button", {
+        name: "More actions for claude-opus-4-1",
+      }),
     );
-
-    const dialog = await screen.findByRole("dialog", {
-      name: /Delete model/,
+    const menu = await screen.findByRole("menu");
+    const deleteItem = within(menu).getByRole("menuitem", {
+      name: "Delete claude-opus-4-1",
     });
-    // 引用影响计数可见
-    expect(within(dialog).getByText(/referenced/i)).toBeInTheDocument();
-    expect(within(dialog).getByText(/1 backend/i)).toBeInTheDocument();
-    expect(within(dialog).getByText(/2 routes/i)).toBeInTheDocument();
-    // 没有删除确认按钮 → 不会发起删除
-    expect(
-      within(dialog).queryByRole("button", { name: "Delete" }),
-    ).not.toBeInTheDocument();
+    // 被引用的模型删除项禁用，并给出原因
+    expect(deleteItem).toHaveAttribute("aria-disabled", "true");
+    expect(deleteItem).toHaveAttribute(
+      "title",
+      expect.stringMatching(/referenced/i),
+    );
     expect(mocks.DeleteLLMModel).not.toHaveBeenCalled();
     // 引用计数按稳定 modelKey 查询
     expect(mocks.LLMModelRefCounts).toHaveBeenCalledWith(
@@ -474,7 +791,7 @@ describe("LlmProvidersPanel", () => {
     );
   });
 
-  it("Given an unreferenced model, When delete is confirmed, Then DeleteLLMModel is called", async () => {
+  it("Given an unreferenced model, When delete is confirmed via the row menu, Then DeleteLLMModel is called", async () => {
     const mocks = installAppMock({
       ListLLMProviders: vi.fn(() =>
         Promise.resolve({ items: [makeProvider()] }),
@@ -493,11 +810,17 @@ describe("LlmProvidersPanel", () => {
         }),
       ),
     });
-    const user = userEvent.setup();
+    const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
+    await screen.findByRole("region", { name: /Anthropic models/ });
     await user.click(
-      await screen.findByRole("button", { name: "Delete claude-opus-4-1" }),
+      screen.getByRole("button", {
+        name: "More actions for claude-opus-4-1",
+      }),
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Delete claude-opus-4-1" }),
     );
     await user.click(
       await screen.findByRole("button", { name: "Delete model" }),
@@ -544,8 +867,12 @@ describe("LlmProvidersPanel", () => {
     const dialog = await screen.findByRole("dialog", {
       name: /Edit model/,
     });
-    // 稳定 modelKey 只读展示，modelId 可编辑
-    expect(within(dialog).getByText("mk-opus")).toBeInTheDocument();
+    // 稳定 modelKey 只读可选中复制（不是输入框），modelId 可编辑
+    expect(within(dialog).queryByLabelText("Model Key")).toBeNull();
+    expect(within(dialog).getByText("mk-opus")).toHaveAttribute(
+      "data-selectable-text",
+      "true",
+    );
     const modelIdInput = within(dialog).getByLabelText("Model ID");
     expect(modelIdInput).toHaveValue("claude-opus-4-1");
 
@@ -578,6 +905,57 @@ describe("LlmProvidersPanel", () => {
     expect(mocks.LLMModelRefCounts).toHaveBeenCalledWith(
       expect.objectContaining({ modelKey: "mk-opus" }),
     );
+  });
+
+  it("Given the model edit dialog, When it renders, Then fields run display name → model ID → change warning → context/max output, with Model Key last as a read-only chip", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel(),
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+      LLMModelRefCounts: vi.fn(() =>
+        Promise.resolve({ counts: { backends: 1, sessions: 1, routes: 0 } }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Edit claude-opus-4-1" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: /Edit model/ });
+
+    const nameInput = within(dialog).getByLabelText("Display name");
+    const modelIdInput = within(dialog).getByLabelText("Model ID");
+    const contextInput = within(dialog).getByLabelText("Context Window");
+    const modelKeyChip = within(dialog).getByText("mk-opus");
+
+    const follows = (a: Element, b: Element) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+    expect(follows(nameInput, modelIdInput)).toBe(true);
+    expect(follows(modelIdInput, contextInput)).toBe(true);
+    expect(follows(contextInput, modelKeyChip)).toBe(true);
+
+    // 改 ID 的影响提示紧跟模型 ID，而不是被挤到最后
+    fireEvent.change(modelIdInput, { target: { value: "claude-opus-4-2" } });
+    const warning = await within(dialog).findByText(
+      /This model is referenced/i,
+    );
+    expect(follows(modelIdInput, warning)).toBe(true);
+    expect(follows(warning, contextInput)).toBe(true);
   });
 
   it("Given an unreferenced model, When its Model ID is edited, Then UpdateLLMModel saves without reference confirmation", async () => {
@@ -679,6 +1057,8 @@ describe("LlmProvidersPanel", () => {
       await within(dialog).findByText(/Already exists/),
     ).toBeInTheDocument();
     expect(within(dialog).getByText(/deepseek-chat/)).toBeInTheDocument();
+    // 读取成功的状态 chip 落在弹窗头部
+    expect(within(dialog).getByText("Loaded")).toBeInTheDocument();
 
     await user.click(
       within(dialog).getByRole("button", { name: "Import 1 model" }),
@@ -748,7 +1128,7 @@ describe("LlmProvidersPanel", () => {
     });
   });
 
-  it("Given a referenced provider, When delete is requested, Then the dialog blocks deletion but explains it can be disabled", async () => {
+  it("Given a referenced provider, When the More menu is opened, Then Delete is already disabled with the reason, before any click", async () => {
     const mocks = installAppMock({
       ListLLMProviders: vi.fn(() =>
         Promise.resolve({ items: [makeProvider()] }),
@@ -760,24 +1140,96 @@ describe("LlmProvidersPanel", () => {
         }),
       ),
     });
-    const user = userEvent.setup();
+    const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("region", { name: /Anthropic models/ });
-    await user.click(screen.getByRole("button", { name: "Delete Anthropic" }));
-
-    const dialog = await screen.findByRole("dialog", {
-      name: /Delete provider/,
+    const workspace = await screen.findByRole("region", {
+      name: /Anthropic models/,
     });
-    expect(within(dialog).getByText(/referenced/i)).toBeInTheDocument();
-    expect(within(dialog).getByText(/disabl/i)).toBeInTheDocument();
-    expect(
-      within(dialog).queryByRole("button", { name: "Delete provider" }),
-    ).not.toBeInTheDocument();
+    // 引用计数落地后才判定：等元信息行显示出真实计数
+    await within(workspace).findByText("2 backends");
+
+    await user.click(screen.getByRole("button", { name: "More" }));
+    const deleteItem = within(await screen.findByRole("menu")).getByRole(
+      "menuitem",
+      { name: "Delete Anthropic" },
+    );
+    expect(deleteItem).toHaveAttribute("aria-disabled", "true");
+    expect(deleteItem).toHaveAttribute(
+      "title",
+      expect.stringMatching(/referenced/i),
+    );
     expect(mocks.DeleteLLMProvider).not.toHaveBeenCalled();
     expect(mocks.LLMProviderRefCounts).toHaveBeenCalledWith(
       expect.objectContaining({ providerKey: "pk-1" }),
     );
+  });
+
+  it("Given the reference count went stale, When the delete dialog reports the model is blocked, Then it offers Disable instead next to a disabled Delete", async () => {
+    let referenced = false;
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel(),
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              name: "",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+      LLMModelRefCounts: vi.fn((req: unknown) =>
+        Promise.resolve({
+          counts:
+            referenced && (req as { modelKey?: string }).modelKey === "mk-opus"
+              ? { backends: 1, sessions: 2, routes: 0 }
+              : { backends: 0, sessions: 0, routes: 0 },
+        }),
+      ),
+    });
+    const user = setupMenuUser();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    // 表格先读到「无引用」，行内删除项因此可点
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select claude-opus-4-1" }),
+    );
+    await within(rowForModel("claude-opus-4-1")).findByText("Can delete");
+
+    // 打开删除弹窗时后端已有新引用：弹窗自己复查后转入 blocked
+    referenced = true;
+    await user.click(
+      screen.getByRole("button", { name: "More actions for claude-opus-4-1" }),
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Delete claude-opus-4-1" }),
+    );
+
+    const dialog = await screen.findByRole("dialog", { name: /Delete model/ });
+    const disableInstead = await within(dialog).findByRole("button", {
+      name: "Disable instead",
+    });
+    // 删除按钮仍在，但被禁用并给出原因（不是消失）
+    expect(
+      within(dialog).getByRole("button", { name: "Delete model" }),
+    ).toBeDisabled();
+
+    await user.click(disableInstead);
+
+    await waitFor(() => {
+      expect(mocks.SetLLMModelEnabled).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 12, enabled: false }),
+      );
+    });
+    expect(mocks.DeleteLLMModel).not.toHaveBeenCalled();
   });
 
   it("Given an unreferenced provider, When delete is confirmed, Then DeleteLLMProvider is called", async () => {
@@ -787,11 +1239,14 @@ describe("LlmProvidersPanel", () => {
       ),
       ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
     });
-    const user = userEvent.setup();
+    const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
     await screen.findByRole("region", { name: /Anthropic models/ });
-    await user.click(screen.getByRole("button", { name: "Delete Anthropic" }));
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Delete Anthropic" }),
+    );
     await user.click(
       await screen.findByRole("button", { name: "Delete provider" }),
     );
@@ -810,8 +1265,10 @@ describe("LlmProvidersPanel", () => {
     const user = userEvent.setup();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("button", { name: "New Provider" });
-    await user.click(screen.getByRole("button", { name: "New Provider" }));
+    await screen.findByRole("button", { name: "Add First Provider" });
+    await user.click(
+      screen.getByRole("button", { name: "Add First Provider" }),
+    );
 
     const dialog = await screen.findByRole("dialog", {
       name: "New LLM Provider",
@@ -875,12 +1332,15 @@ describe("LlmProvidersPanel", () => {
       ),
       ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
     });
-    const user = userEvent.setup();
+    const user = setupMenuUser();
     render(<LlmProvidersPanel />);
 
     await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(screen.getByRole("button", { name: "More" }));
     await user.click(
-      screen.getByRole("button", { name: "Edit Anthropic connection" }),
+      await screen.findByRole("menuitem", {
+        name: "Edit Anthropic connection",
+      }),
     );
     const dialog = await screen.findByRole("dialog", {
       name: /Edit connection/,
@@ -920,5 +1380,1224 @@ describe("LlmProvidersPanel", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Load failed: database locked",
     );
+  });
+
+  it("Given providers exist, When the panel loads, Then its single New Provider entry is handed to the page header slot and the old toolbar and nav add entry are gone", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+    });
+    render(
+      <LlmProvidersPanel
+        renderHeader={(actions) => (
+          <div data-testid="page-header">{actions}</div>
+        )}
+      />,
+    );
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+
+    // mockup 注解①：唯一新增入口交给页头 slot 渲染，面板自己不再留一层 strip
+    expect(
+      within(screen.getByTestId("page-header")).getByRole("button", {
+        name: "New Provider",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("button", { name: "New Provider" }),
+    ).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Add Provider" })).toBeNull();
+    expect(screen.queryByText("Configured Providers")).toBeNull();
+    // mockup 注解①：删掉「已配置的供应商 / 共 N 个」重复计数条，不再单独占一层 strip
+    expect(screen.queryByText("1 total")).toBeNull();
+  });
+
+  it("Given the page header slot renders the New Provider entry, When it is clicked, Then the create dialog opens", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+    });
+    render(
+      <LlmProvidersPanel
+        renderHeader={(actions) => (
+          <div data-testid="page-header">{actions}</div>
+        )}
+      />,
+    );
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      within(screen.getByTestId("page-header")).getByRole("button", {
+        name: "New Provider",
+      }),
+    );
+
+    expect(
+      await screen.findByRole("dialog", { name: "New LLM Provider" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Given no providers exist, When the panel loads, Then the page header slot gets no add entry and the empty state keeps the only one", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() => Promise.resolve({ items: [] })),
+    });
+    render(
+      <LlmProvidersPanel
+        renderHeader={(actions) => (
+          <div data-testid="page-header">{actions}</div>
+        )}
+      />,
+    );
+
+    await screen.findByRole("button", { name: "Add First Provider" });
+
+    expect(
+      within(screen.getByTestId("page-header")).queryByRole("button"),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "New Provider" })).toBeNull();
+  });
+
+  it("Given a provider is selected, When the workspace renders, Then the header splits into identity and metadata rows with the combined switch first, then Test Connection, Discover Models and More", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({
+          items: [makeProvider({ name: "Anthropic Official" })],
+        }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+      LLMProviderRefCounts: vi.fn(() =>
+        Promise.resolve({ counts: { backends: 2, sessions: 1, routes: 0 } }),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    const workspace = await screen.findByRole("region", {
+      name: /Anthropic Official models/,
+    });
+
+    // 身份行：名称 + 协议类型
+    expect(
+      within(workspace).getByText("Anthropic Official"),
+    ).toBeInTheDocument();
+    expect(
+      within(workspace).getByText("Anthropic", { selector: "span" }),
+    ).toBeInTheDocument();
+
+    // 元信息行：endpoint / 掩码 key / 默认模型 / 被引用
+    expect(
+      within(workspace).getByText("https://api.anthropic.com"),
+    ).toBeInTheDocument();
+    expect(within(workspace).getByText("sk-••••••9XQ2")).toBeInTheDocument();
+    expect(within(workspace).getByText("Default model")).toBeInTheDocument();
+    expect(
+      (await within(workspace).findAllByText("claude-sonnet-4-5")).length,
+    ).toBeGreaterThan(0);
+    expect(within(workspace).getByText("Referenced")).toBeInTheDocument();
+    expect(
+      await within(workspace).findByText("2 backends · 1 session"),
+    ).toBeInTheDocument();
+
+    // 操作区顺序：开关（含状态文字）→ 测试连接 → 发现模型 → 更多
+    const switchEl = within(workspace).getByRole("switch", {
+      name: "Enable Anthropic Official",
+    });
+    const testBtn = within(workspace).getByRole("button", {
+      name: "Test Anthropic Official",
+    });
+    const discoverBtn = within(workspace).getByRole("button", {
+      name: "Discover models",
+    });
+    const moreBtn = within(workspace).getByRole("button", { name: "More" });
+    expect(
+      switchEl.compareDocumentPosition(testBtn) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      testBtn.compareDocumentPosition(discoverBtn) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      discoverBtn.compareDocumentPosition(moreBtn) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // 启用状态与开关合成一个控件，且可见文案为 Test Connection
+    expect(switchEl.closest("label")).toHaveTextContent("Enabled");
+    expect(within(workspace).getByText("Test Connection")).toBeInTheDocument();
+  });
+
+  it("Given a provider workspace, When the More menu is opened, Then it contains Edit Connection, Copy Provider Key and Delete", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+    });
+    const user = setupMenuUser();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(screen.getByRole("button", { name: "More" }));
+
+    const menu = await screen.findByRole("menu");
+    expect(
+      within(menu).getByRole("menuitem", { name: "Edit Anthropic connection" }),
+    ).toBeInTheDocument();
+    expect(
+      within(menu).getByRole("menuitem", { name: "Copy Provider Key" }),
+    ).toBeInTheDocument();
+    expect(
+      within(menu).getByRole("menuitem", { name: "Delete Anthropic" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Given models, When the header checkbox is clicked, Then all currently-listed models are selected and the action bar shows the selected count", async () => {
+    installThreeModels();
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+
+    expect(screen.getByText("Selected 3 / 3")).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: "Select claude-sonnet-4-5" }),
+    ).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: "Select claude-opus-4-1" }),
+    ).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: "Select claude-haiku" }),
+    ).toBeChecked();
+  });
+
+  it("Given a provider that already has models, When the model toolbar renders, Then Add model manually sits between the filter and the count and still opens the manual add dialog", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    const workspace = await screen.findByRole("region", {
+      name: /Anthropic models/,
+    });
+    const search = within(workspace).getByRole("searchbox", {
+      name: "Filter models",
+    });
+    const addButton = within(workspace).getByRole("button", {
+      name: "Add model manually",
+    });
+    const count = within(workspace).getByText("Showing 1 / 1");
+
+    expect(
+      search.compareDocumentPosition(addButton) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      addButton.compareDocumentPosition(count) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    await user.click(addButton);
+    expect(
+      await screen.findByRole("dialog", { name: /Add model/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("Given a disabled model, When the table renders, Then only that row carries a disabled badge", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel(),
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              name: "",
+              isDefault: false,
+              enabled: false,
+            }),
+          ],
+        }),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    expect(
+      within(rowForModel("claude-opus-4-1")).getByText("Disabled"),
+    ).toBeInTheDocument();
+    expect(
+      within(rowForModel("claude-sonnet-4-5")).queryByText("Disabled"),
+    ).toBeNull();
+  });
+
+  it("Given selection is active, When the toolbar is inspected, Then the search/count toolbar is replaced in place by the selection action bar", async () => {
+    installThreeModels();
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    expect(
+      screen.getByRole("searchbox", { name: "Filter models" }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+
+    // 工具栏被选择态操作条原地替换，搜索框消失
+    expect(
+      screen.queryByRole("searchbox", { name: "Filter models" }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Select all" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Clear selection" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Enable selected" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Disable selected" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Delete selected" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Given models are selected, When another provider is opened, Then the old provider selection is cleared", async () => {
+    const first = makeProvider({
+      id: 1,
+      name: "Anthropic",
+      providerKey: "pk-1",
+    });
+    const second = makeProvider({
+      id: 2,
+      name: "OpenAI",
+      providerKey: "pk-2",
+      type: "openai-response",
+      defaultModelKey: "mk-gpt",
+    });
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [first, second] }),
+      ),
+      ListLLMModels: vi.fn((req: unknown) =>
+        Promise.resolve({
+          items:
+            (req as { id?: number }).id === 1
+              ? [makeModel()]
+              : [
+                  makeModel({
+                    id: 21,
+                    providerId: 2,
+                    providerKey: "pk-2",
+                    modelKey: "mk-gpt",
+                    modelId: "gpt-5",
+                  }),
+                ],
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select claude-sonnet-4-5" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Clear selection" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /OpenAI/ }));
+
+    await screen.findByRole("region", { name: /OpenAI models/ });
+    expect(
+      screen.getByRole("searchbox", { name: "Filter models" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Clear selection" }),
+    ).toBeNull();
+  });
+
+  it("Given selected models, When each row is inspected, Then each row annotates whether it can be deleted", async () => {
+    installThreeModels({
+      "mk-opus": { backends: 1, sessions: 0, routes: 2 },
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+
+    // 被引用模型的标注依赖异步引用计数，等待其加载
+    expect(
+      await within(rowForModel("claude-opus-4-1")).findByText(
+        "Referenced by 3: cannot delete",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(rowForModel("claude-sonnet-4-5")).getByText(
+        "Default model: cannot delete",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(rowForModel("claude-haiku")).getByText("Can delete"),
+    ).toBeInTheDocument();
+  });
+
+  it("Given selected models including protected ones, When batch delete is requested, Then the dialog splits into deletable and protected groups and the primary button states the real delete count", async () => {
+    installThreeModels({
+      "mk-opus": { backends: 1, sessions: 0, routes: 2 },
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+    await within(rowForModel("claude-opus-4-1")).findByText(
+      "Referenced by 3: cannot delete",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: /selected models/,
+    });
+    expect(within(dialog).getByText("Will be deleted")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("Protected (unchanged)"),
+    ).toBeInTheDocument();
+    // 可删除组包含 haiku；被保护组列出默认模型与被引用模型及其原因
+    expect(within(dialog).getByText("claude-haiku")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("Default model: cannot delete"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("Referenced by 3: cannot delete"),
+    ).toBeInTheDocument();
+    const confirm = within(dialog).getByRole("button", {
+      name: "Delete 1 model",
+    });
+    expect(confirm).toBeEnabled();
+  });
+
+  it("Given a mixed selection, When batch delete is requested, Then the title and description carry the real counts and the non-transactional caveat is always shown", async () => {
+    installThreeModels({
+      "mk-opus": { backends: 1, sessions: 0, routes: 2 },
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+    await within(rowForModel("claude-opus-4-1")).findByText(
+      "Referenced by 3: cannot delete",
+    );
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+
+    // 标题写清选中数，描述写清被保护数与真正会删掉的数量
+    const dialog = await screen.findByRole("dialog", {
+      name: /Delete the 3 selected models/,
+    });
+    expect(
+      within(dialog).getByText(
+        /2 of them are protected .* only 1 will actually be deleted/i,
+      ),
+    ).toBeInTheDocument();
+    // 非事务性提醒常驻
+    expect(
+      within(dialog).getByText(/not as a transaction/i),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "Delete 1 model" }),
+    ).toBeEnabled();
+  });
+
+  it("Given every selected model is deletable, When batch delete is requested, Then the description says so and the caveat is still shown", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              name: "",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: /Delete the 1 selected model/,
+    });
+    expect(
+      within(dialog).getByText(/All 1 selected model will be deleted/i),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/not as a transaction/i),
+    ).toBeInTheDocument();
+  });
+
+  it("Given all selected models are protected, When batch delete is requested, Then the primary button is disabled and explains there is nothing to delete", async () => {
+    installThreeModels({
+      "mk-opus": { backends: 1, sessions: 0, routes: 2 },
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    // 只选中默认模型与被引用模型（均不可删除）
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select claude-sonnet-4-5" }),
+    );
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select claude-opus-4-1" }),
+    );
+    await within(rowForModel("claude-opus-4-1")).findByText(
+      "Referenced by 3: cannot delete",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: /selected models/,
+    });
+    expect(within(dialog).getByText("No deletable models")).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "Delete 0 models" }),
+    ).toBeDisabled();
+  });
+
+  it("Given two deletable models are selected, When batch delete is confirmed, Then DeleteLLMModel is called sequentially for each and the flash reports the deleted count", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              name: "",
+              isDefault: false,
+            }),
+            makeModel({
+              id: 13,
+              modelKey: "mk-haiku",
+              modelId: "claude-haiku",
+              name: "",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: /selected models/,
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Delete 2 models" }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.DeleteLLMModel).toHaveBeenCalledTimes(2);
+    });
+    expect(mocks.DeleteLLMModel).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ id: 12 }),
+    );
+    expect(mocks.DeleteLLMModel).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: 13 }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Deleted 2 models",
+    );
+  });
+
+  it("Given a deletable batch where one delete fails, When batch delete runs, Then it stops at the failure and reports deleted and unprocessed counts", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              name: "",
+              isDefault: false,
+            }),
+            makeModel({
+              id: 13,
+              modelKey: "mk-haiku",
+              modelId: "claude-haiku",
+              name: "",
+              isDefault: false,
+            }),
+            makeModel({
+              id: 14,
+              modelKey: "mk-sonnet-lite",
+              modelId: "claude-sonnet-lite",
+              name: "",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+      DeleteLLMModel: vi
+        .fn()
+        .mockResolvedValueOnce({})
+        .mockRejectedValueOnce(new Error("database locked"))
+        .mockResolvedValue({}),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: /selected models/,
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Delete 3 models" }),
+    );
+
+    // 第 2 条失败后停止，第 3 条不再调用
+    await waitFor(() => {
+      expect(mocks.DeleteLLMModel).toHaveBeenCalledTimes(2);
+    });
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/Deleted 1 model/);
+    expect(alert).toHaveTextContent(/2 not processed/);
+  });
+
+  it("Given selected models including the default, When batch disable runs, Then the default model is skipped with an explanation and the flash reports the disabled count", async () => {
+    const mocks = installThreeModels({
+      "mk-opus": { backends: 1, sessions: 0, routes: 2 },
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Disable selected" }));
+
+    await waitFor(() => {
+      expect(mocks.SetLLMModelEnabled).toHaveBeenCalledTimes(2);
+    });
+    // 默认模型（id 11）不参与停用；opus 与 haiku 被停用
+    expect(mocks.SetLLMModelEnabled).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 12, enabled: false }),
+    );
+    expect(mocks.SetLLMModelEnabled).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 13, enabled: false }),
+    );
+    expect(mocks.SetLLMModelEnabled).not.toHaveBeenCalledWith(
+      expect.objectContaining({ id: 11 }),
+    );
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/Disabled 2 models/);
+    expect(alert).toHaveTextContent(/default model excluded/);
+  });
+
+  it("Given selected models with a disabled one, When batch enable runs, Then only disabled models are enabled and the flash reports the count", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              name: "",
+              isDefault: false,
+              enabled: false,
+            }),
+            makeModel({
+              id: 13,
+              modelKey: "mk-haiku",
+              modelId: "claude-haiku",
+              name: "",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all models" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Enable selected" }));
+
+    await waitFor(() => {
+      expect(mocks.SetLLMModelEnabled).toHaveBeenCalledTimes(1);
+    });
+    expect(mocks.SetLLMModelEnabled).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 12, enabled: true }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Enabled 1 model",
+    );
+  });
+
+  it("Given a provider workspace, When Copy Provider Key is chosen from the More menu, Then the provider key is written to the clipboard and a success flash is shown", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+    });
+    const user = setupMenuUser();
+    const writeText = mockClipboard();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(screen.getByRole("button", { name: "More" }));
+    // fireEvent 直接触发 Radix DropdownMenuItem onSelect（不产生 pointer-leave 关闭菜单）
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Copy Provider Key" }),
+    );
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("pk-1");
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Provider Key copied",
+    );
+  });
+
+  it("Given a multi-vendor preview with existing and unknown-vendor models, When discover is opened, Then models are grouped by vendor, existing items stay disabled, and select-all targets only new models", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({ items: [makeModel({ modelId: "gpt-5" })] }),
+      ),
+      PreviewLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: "gpt-5",
+              vendor: "openai",
+              contextWindow: 100000,
+              maxOutput: 8000,
+              modalities: [],
+              thinking: false,
+              knownInCago: true,
+            },
+            {
+              id: "gpt-5.1",
+              vendor: "openai",
+              contextWindow: 120000,
+              maxOutput: 9000,
+              modalities: [],
+              thinking: false,
+              knownInCago: true,
+            },
+            {
+              id: "deepseek-chat",
+              vendor: "deepseek",
+              contextWindow: 64000,
+              maxOutput: 4096,
+              modalities: [],
+              thinking: false,
+              knownInCago: false,
+            },
+            {
+              id: "custom-xyz",
+              vendor: "",
+              contextWindow: 0,
+              maxOutput: 0,
+              modalities: [],
+              thinking: false,
+              knownInCago: false,
+            },
+          ],
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(screen.getByRole("button", { name: "Discover models" }));
+
+    const dialog = await screen.findByRole("dialog", { name: /Discover/ });
+
+    // 远端总数 / 新增数 / 已存在数
+    expect(
+      await within(dialog).findByText("Remote 4 · new 3 · existing 1"),
+    ).toBeInTheDocument();
+
+    // 按模型族分组 + 认不出的兜底分组
+    expect(within(dialog).getByText("OpenAI")).toBeInTheDocument();
+    expect(within(dialog).getByText("DeepSeek")).toBeInTheDocument();
+    expect(within(dialog).getByText("Other")).toBeInTheDocument();
+
+    // 新 / 已存在 · 跳过 区分
+    expect(within(dialog).getAllByText("New")).toHaveLength(3);
+    expect(
+      within(dialog).getByText("Already exists · skip"),
+    ).toBeInTheDocument();
+
+    // 已存在项不可勾选
+    expect(
+      within(dialog).getByRole("checkbox", { name: "gpt-5" }),
+    ).toBeDisabled();
+
+    // 全选只作用于新模型：先取消一个新项使全选处于未全选态，再点全选
+    await user.click(within(dialog).getByRole("checkbox", { name: "gpt-5.1" }));
+    await user.click(
+      within(dialog).getByRole("checkbox", {
+        name: "Select all new models",
+      }),
+    );
+    expect(
+      within(dialog).getByRole("checkbox", { name: "gpt-5.1" }),
+    ).toBeChecked();
+    expect(
+      within(dialog).getByRole("checkbox", { name: "deepseek-chat" }),
+    ).toBeChecked();
+    expect(
+      within(dialog).getByRole("checkbox", { name: "custom-xyz" }),
+    ).toBeChecked();
+    expect(
+      within(dialog).getByRole("checkbox", { name: "gpt-5" }),
+    ).not.toBeChecked();
+
+    // 底部导入结论 + 已存在项保持不变
+    expect(
+      within(dialog).getByText(/Will import 3 new models/),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(
+        /keep their name, context, default and reference/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("Given preview fails with an HTTP 401, When discover is opened, Then it shows an understandable reason with next steps and collapses the raw response until expanded", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+      PreviewLLMModels: vi.fn(() =>
+        Promise.reject(
+          new Error(
+            'http 401: {"type":"error","error":{"request_id":"req_123"}}',
+          ),
+        ),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(screen.getByRole("button", { name: "Discover models" }));
+
+    const dialog = await screen.findByRole("dialog", { name: /Discover/ });
+    const alert = await within(dialog).findByRole("alert");
+
+    // 可理解的失败原因，原始 JSON 不作为主文案
+    expect(alert).toHaveTextContent(/API Key/i);
+    expect(alert).not.toHaveTextContent("request_id");
+
+    // 标题与解释分开两段，标题带上状态码
+    const failureTitle = within(alert).getByText("Authentication failed (401)");
+    const failureDetail = within(alert).getByText(/rejected the request/i);
+    expect(failureTitle).not.toBe(failureDetail);
+
+    // 可执行的下一步：前往编辑连接 / 重试
+    expect(
+      within(alert).getByRole("button", { name: /Edit connection/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(alert).getByRole("button", { name: "Retry" }),
+    ).toBeInTheDocument();
+
+    // 原始响应默认折叠，按需展开
+    expect(within(alert).queryByText(/request_id/)).not.toBeInTheDocument();
+    await user.click(
+      within(alert).getByRole("button", { name: /raw response/i }),
+    );
+    expect(within(alert).getByText(/request_id/)).toBeInTheDocument();
+
+    // 前往编辑连接直达编辑弹窗
+    await user.click(
+      within(alert).getByRole("button", { name: /Edit connection/i }),
+    );
+    expect(
+      await screen.findByRole("dialog", { name: /Edit connection/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("Given a catalog-known model id, When the manual add dialog fills it in, Then context and max output are autofilled, stay editable, and an empty display name falls back to the model id", async () => {
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [] })),
+      LookupLLMModel: vi.fn(() =>
+        Promise.resolve({
+          known: true,
+          vendor: "anthropic",
+          contextWindow: 200000,
+          maxOutput: 64000,
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      await screen.findByRole("button", { name: "Add model manually" }),
+    );
+
+    const dialog = await screen.findByRole("dialog", {
+      name: /Add model/,
+    });
+    const modelIdInput = within(dialog).getByLabelText("Model ID");
+    fireEvent.change(modelIdInput, { target: { value: "claude-sonnet-4-5" } });
+    fireEvent.blur(modelIdInput);
+
+    // 内置目录命中自动填入上下文窗口与最大输出
+    await waitFor(() => {
+      expect(within(dialog).getByLabelText("Context Window")).toHaveValue(
+        200000,
+      );
+    });
+    // 自动补数据必须说明来源，且明说仍可改
+    expect(
+      within(dialog).getByText(/built-in catalog matched/i),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Max Output Tokens")).toHaveValue(
+      64000,
+    );
+
+    // 补全后仍可修改
+    fireEvent.change(within(dialog).getByLabelText("Context Window"), {
+      target: { value: "300000" },
+    });
+    expect(within(dialog).getByLabelText("Context Window")).toHaveValue(300000);
+
+    // 显示名称可留空
+    expect(within(dialog).getByLabelText("Display name")).toHaveValue("");
+
+    await user.click(within(dialog).getByRole("button", { name: "Add" }));
+
+    await waitFor(() => {
+      expect(mocks.ImportLLMModels).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerId: 1,
+          models: expect.arrayContaining([
+            expect.objectContaining({
+              modelId: "claude-sonnet-4-5",
+              name: "",
+              contextWindow: 300000,
+              maxOutput: 64000,
+            }),
+          ]),
+        }),
+      );
+    });
+  });
+
+  it("Given a blocked model delete, When Disable instead succeeds, Then the panel flashes the disabled model and reloads the model list", async () => {
+    let referenced = false;
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel(),
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              name: "",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+      LLMModelRefCounts: vi.fn((req: unknown) =>
+        Promise.resolve({
+          counts:
+            referenced && (req as { modelKey?: string }).modelKey === "mk-opus"
+              ? { backends: 1, sessions: 2, routes: 0 }
+              : { backends: 0, sessions: 0, routes: 0 },
+        }),
+      ),
+    });
+    const user = setupMenuUser();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    const listCallsBefore = (mocks.ListLLMModels as ReturnType<typeof vi.fn>)
+      .mock.calls.length;
+
+    referenced = true;
+    await user.click(
+      screen.getByRole("button", { name: "More actions for claude-opus-4-1" }),
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Delete claude-opus-4-1" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: /Delete model/ });
+    await user.click(
+      await within(dialog).findByRole("button", { name: "Disable instead" }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.SetLLMModelEnabled).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 12, enabled: false }),
+      );
+    });
+    // 后端已改状态，工作区必须跟着刷新并把结果说出来，而不是留在陈旧的启用态
+    expect(
+      await screen.findByText("Model claude-opus-4-1 disabled"),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        (mocks.ListLLMModels as ReturnType<typeof vi.fn>).mock.calls.length,
+      ).toBeGreaterThan(listCallsBefore);
+    });
+  });
+
+  it("Given a blocked provider delete, When Disable instead succeeds, Then the panel flashes the disabled provider and reloads the provider list", async () => {
+    let referenced = false;
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+      LLMProviderRefCounts: vi.fn(() =>
+        Promise.resolve({
+          counts: referenced
+            ? { backends: 2, sessions: 1, routes: 0 }
+            : { backends: 0, sessions: 0, routes: 0 },
+        }),
+      ),
+    });
+    const user = setupMenuUser();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    const providerCallsBefore = (
+      mocks.ListLLMProviders as ReturnType<typeof vi.fn>
+    ).mock.calls.length;
+
+    referenced = true;
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Delete Anthropic" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: /Delete provider/,
+    });
+    await user.click(
+      await within(dialog).findByRole("button", { name: "Disable instead" }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.SetLLMProviderEnabled).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 1, enabled: false }),
+      );
+    });
+    expect(
+      await screen.findByText("Provider Anthropic disabled"),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        (mocks.ListLLMProviders as ReturnType<typeof vi.fn>).mock.calls.length,
+      ).toBeGreaterThan(providerCallsBefore);
+    });
+  });
+
+  it("Given a long endpoint, When the nav item renders, Then the endpoint owns its own truncating line and the model count is a separate element that cannot be truncated away", async () => {
+    const endpoint = "https://example.invalid/v1/openai/compatible/gateway";
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeProvider({
+              name: "Long Endpoint Provider",
+              baseUrl: endpoint,
+              modelCount: 7,
+            }),
+          ],
+        }),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    const nav = await screen.findByRole("complementary", {
+      name: "Provider list",
+    });
+    const item = await within(nav).findByRole("button", {
+      name: /Long Endpoint Provider/,
+    });
+
+    // endpoint 独占一行：截断只吃 endpoint 自己
+    const endpointEl = within(item).getByText(endpoint);
+    expect(endpointEl.className).toContain("truncate");
+
+    // 计数是同级独立元素，不参与 endpoint 的截断
+    const countEl = within(item).getByText("7 models");
+    expect(endpointEl.contains(countEl)).toBe(false);
+    expect(countEl.className).toContain("shrink-0");
+    expect(countEl.className).not.toContain("truncate");
+  });
+
+  it("Given no providers, When the empty state renders, Then it carries no vendor-specific API key documentation link", async () => {
+    installAppMock();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("button", { name: "Add First Provider" });
+    // 供应商可能是 OpenAI / 兼容端点，硬编码 Anthropic 文档链接是错的
+    expect(screen.queryByText("How to get an API key")).toBeNull();
+    expect(
+      document.querySelector('a[href^="https://docs.anthropic.com"]'),
+    ).toBeNull();
+  });
+
+  it("Given the provider list is still loading, When the spinner renders, Then it says providers are loading, not models", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() => new Promise(() => {})),
+    });
+    render(<LlmProvidersPanel />);
+
+    expect(await screen.findByText("Loading providers…")).toBeInTheDocument();
+    expect(screen.queryByText("Loading models…")).toBeNull();
+  });
+
+  it("Given a model row test succeeds, When it completes, Then only that row gains a transient Passed chip", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel(),
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              name: "",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Test claude-opus-4-1" }),
+    );
+
+    const testedRow = await waitFor(() => {
+      const row = rowForModel("claude-opus-4-1");
+      expect(within(row).getByText("Passed")).toBeInTheDocument();
+      return row;
+    });
+    expect(within(testedRow).getByText("Passed")).toBeInTheDocument();
+    expect(
+      within(rowForModel("claude-sonnet-4-5")).queryByText("Passed"),
+    ).toBeNull();
+  });
+
+  it("Given a model row test fails, When it completes, Then the row shows no Passed chip", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+      TestLLMProvider: vi.fn(() =>
+        Promise.resolve({ ok: false, message: "401 unauthorized" }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Test claude-sonnet-4-5" }),
+    );
+
+    await screen.findByText(/401 unauthorized/);
+    expect(
+      within(rowForModel("claude-sonnet-4-5")).queryByText("Passed"),
+    ).toBeNull();
   });
 });

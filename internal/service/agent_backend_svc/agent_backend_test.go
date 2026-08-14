@@ -1272,6 +1272,8 @@ func TestCreateBackend_GivenCanonicalFingerprint_PersistsItAfterMatchingPairedDe
 	rd.EXPECT().List(ctx).Return([]*remote_device_svc.DeviceView{
 		{ID: 7, Name: "desktop-a", DaemonFingerprint: "sha256:desktop-a", Online: true},
 	}, nil)
+	// 展示侧要先判「这个指纹是不是本机」才决定按远端解析（DisplayDeviceID）。
+	rd.EXPECT().DeviceFingerprint().Return("sha256:this-desktop", nil).AnyTimes()
 
 	resp, err := svc.Create(ctx, &CreateBackendRequest{
 		Type: "claudecode", Name: "desktop-cc", LLMProviderKey: "key-1", DeviceID: "sha256:desktop-a",
@@ -1309,22 +1311,29 @@ func TestCreateBackend_RemoteDeviceValidation(t *testing.T) {
 			convey.So(resp.Item.DeviceName, convey.ShouldEqual, "linux-srv")
 			convey.So(resp.Item.Online, convey.ShouldBeTrue)
 		})
-		convey.Convey("device 空 = 本机指纹", func() {
+		convey.Convey("device 空 = 本机指纹（落库带指纹，视图仍按本机口径）", func() {
 			ctx, backendMock, providerMock, _, rd, _, svc := setupSvcTestWithRemoteDevice(t)
 			providerMock.EXPECT().FindByKey(gomock.Any(), "key-1").Return(activeProvider("key-1"), nil).AnyTimes()
 			expectDefaultModelResolution(providerMock, "key-1", 1)
 			backendMock.EXPECT().FindByName(gomock.Any(), "local-cc").Return(nil, nil)
+			persisted := ""
 			backendMock.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
-				func(_ context.Context, b *agent_backend_entity.AgentBackend) error { b.ID = 12; return nil },
+				func(_ context.Context, b *agent_backend_entity.AgentBackend) error {
+					persisted = b.DeviceID
+					b.ID = 12
+					return nil
+				},
 			)
-			rd.EXPECT().DeviceFingerprint().Return("sha256:this-desktop", nil)
-			rd.EXPECT().List(ctx).Return(nil, nil)
+			rd.EXPECT().DeviceFingerprint().Return("sha256:this-desktop", nil).AnyTimes()
 			resp, err := svc.Create(ctx, &CreateBackendRequest{
 				Type: "claudecode", Name: "local-cc",
 				LLMProviderKey: "key-1", DeviceID: "",
 			})
 			convey.So(err, convey.ShouldBeNil)
-			convey.So(resp.Item.DeviceID, convey.ShouldEqual, "sha256:this-desktop")
+			// 持久化侧：空串被规范化成本机指纹（canonicalDeviceID）。
+			convey.So(persisted, convey.ShouldEqual, "sha256:this-desktop")
+			// 展示侧：本机指纹收敛回本机口径，否则界面把本机当成一台未配对的远端机。
+			convey.So(resp.Item.DeviceID, convey.ShouldEqual, "")
 			convey.So(resp.Item.DeviceName, convey.ShouldEqual, "")
 		})
 	})

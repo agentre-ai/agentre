@@ -18,7 +18,6 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
-	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 )
 
 // runGitState 在 cwd 下连跑几条 git 命令汇成 ChatSessionGitState。
@@ -120,7 +119,7 @@ func (s *chatSvc) GetSessionGitState(ctx context.Context, req *GetSessionGitStat
 }
 
 func (s *chatSvc) getSessionGitStateForSession(ctx context.Context, sess *chat_entity.Session, be *agent_backend_entity.AgentBackend) (*GetSessionGitStateResponse, error) {
-	if be != nil && be.IsRemote() && !remote_device_svc.IsSelfDevice(be.DeviceID) {
+	if beTargetsRemote(be) {
 		return notARepoResponse(), nil
 	}
 	cwd, err := resolveSessionCwd(ctx, sess, be)

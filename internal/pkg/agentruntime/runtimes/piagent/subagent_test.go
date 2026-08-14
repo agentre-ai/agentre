@@ -526,6 +526,90 @@ func TestSubagentTracker_PartialErrorDoesNotFinishActiveRun(t *testing.T) {
 	assert.Equal(t, "failed", tracker.info().Runs[0].Status)
 }
 
+func TestSubagentTracker_RetriedAttemptErrorDoesNotLatchRunAsFailed(t *testing.T) {
+	// pi 把一次失败的模型请求作为一条 assistant 消息记进快照(stopReason=error +
+	// errorMessage)后自动重试,快照每帧全量重放这些消息。
+	const attemptError = `{"role":"assistant","content":[],"provider":"local-llm",` +
+		`"model":"gpt-5.6-sol","stopReason":"error","errorMessage":"Connection error."}`
+	newTracker := func(t *testing.T) *subagentTracker {
+		t.Helper()
+		inv, ok := classifySubagentInvocation([]byte(`{"task":"implement","profile":"write"}`))
+		require.True(t, ok)
+		return newSubagentTracker("outer", inv)
+	}
+
+	t.Run("a still-trailing attempt error reports the diagnostic without settling the run", func(t *testing.T) {
+		tracker := newTracker(t)
+		_, changed := tracker.consumeUpdate([]byte(`{"details":{"messages":[
+			{"role":"assistant","content":[{"type":"toolCall","id":"first","name":"edit","arguments":{}}],"stopReason":"toolUse"},
+			{"role":"toolResult","toolCallId":"first","content":[{"type":"text","text":"ok"}]},
+			` + attemptError + `
+		]}}`))
+
+		require.True(t, changed)
+		info := tracker.info()
+		assert.Equal(t, "running", info.Runs[0].Status, "the outer subagent tool has not returned yet")
+		assert.Equal(t, "running", info.Status)
+		assert.Equal(t, "Connection error.", info.Runs[0].ErrorMessage)
+	})
+
+	t.Run("child activity after the attempt error clears it instead of running beneath a failed card", func(t *testing.T) {
+		tracker := newTracker(t)
+		_, _ = tracker.consumeUpdate([]byte(`{"details":{"messages":[
+			{"role":"assistant","content":[{"type":"toolCall","id":"first","name":"edit","arguments":{}}],"stopReason":"toolUse"},
+			{"role":"toolResult","toolCallId":"first","content":[{"type":"text","text":"ok"}]},
+			` + attemptError + `
+		]}}`))
+
+		// Given pi retried, when the next full replay carries the retry's own child
+		// call after the attempt error, then the card recovers rather than staying
+		// pinned to FAILED / "Connection error." while it keeps calling tools.
+		events, changed := tracker.consumeUpdate([]byte(`{"details":{"messages":[
+			{"role":"assistant","content":[{"type":"toolCall","id":"first","name":"edit","arguments":{}}],"stopReason":"toolUse"},
+			{"role":"toolResult","toolCallId":"first","content":[{"type":"text","text":"ok"}]},
+			` + attemptError + `,
+			{"role":"assistant","content":[{"type":"toolCall","id":"second","name":"bash","arguments":{}}],"stopReason":"toolUse"}
+		]}}`))
+
+		require.True(t, changed)
+		require.Len(t, events, 1, "only the retry's new child call is emitted")
+		info := tracker.info()
+		assert.Equal(t, "running", info.Runs[0].Status)
+		assert.Equal(t, "running", info.Status)
+		assert.Empty(t, info.Runs[0].ErrorMessage, "the superseded attempt must not linger as the card's summary")
+		assert.Equal(t, 2, info.ToolUses)
+	})
+
+	t.Run("a trailing attempt error at the real final boundary settles the run as failed", func(t *testing.T) {
+		tracker := newTracker(t)
+		_, changed := tracker.consumeFinal([]byte(`{"messages":[
+			{"role":"assistant","content":[{"type":"toolCall","id":"first","name":"edit","arguments":{}}],"stopReason":"toolUse"},
+			{"role":"toolResult","toolCallId":"first","content":[{"type":"text","text":"ok"}]},
+			`+attemptError+`
+		]}`), false, "")
+
+		require.True(t, changed)
+		info := tracker.info()
+		assert.Equal(t, "failed", info.Runs[0].Status)
+		assert.Equal(t, "failed", info.Status)
+		assert.Equal(t, "Connection error.", info.Runs[0].ErrorMessage)
+	})
+
+	t.Run("a superseded attempt error does not override the final outcome", func(t *testing.T) {
+		tracker := newTracker(t)
+		_, changed := tracker.consumeFinal([]byte(`{"messages":[
+			`+attemptError+`,
+			{"role":"assistant","content":[{"type":"text","text":"task done"}],"stopReason":"stop"}
+		],"exitCode":0}`), false, "")
+
+		require.True(t, changed)
+		info := tracker.info()
+		assert.Equal(t, "completed", info.Runs[0].Status)
+		assert.Empty(t, info.Runs[0].ErrorMessage)
+		assert.Equal(t, "task done", info.Runs[0].Summary)
+	})
+}
+
 func TestSubagentTracker_UsageFeedsPerRunAndAggregateTotalTokens(t *testing.T) {
 	t.Run("flat single snapshots report usage in real time", func(t *testing.T) {
 		inv, ok := classifySubagentInvocation([]byte(`{"task":"inspect","profile":"read-only"}`))

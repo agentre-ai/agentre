@@ -561,8 +561,12 @@ type ChatSessionDetail struct {
 	// 空串表示「还没 spawn 过 / 老会话」。
 	PermissionModeAtLaunch string `json:"permissionModeAtLaunch"`
 	// 远端 device 归属 + 远端 cwd, 给前端 chat header 渲染"远端运行"小字使用。
-	// 空 DeviceID = 本地;非空 = paired_agentred.id 字符串化。
-	// DeviceName 来自 paired_agentreds.display_name;Online 由 LastSeenAt 推算。
+	// 空 DeviceID = 本机 —— 含 R13 认领后 DeviceID 是本机指纹的档,它们在这里一律
+	// 收敛成空串(remote_device_svc.ExternalDeviceID),因为本机永远不在配对表里,
+	// 照远端解析会渲染成一台没名字的离线机器。非空 = 真正的另一台机器(规范指纹,
+	// 或历史 paired_agentred.id 字符串)。
+	// DeviceName 来自 paired_agentreds.display_name;Online 由 LastSeenAt 推算;
+	// 本机档两者都留零值(前端按空 DeviceID 走本机分支,不读它们)。
 	// Cwd 是该 session 真正的工作目录:本地 = project.path (或 AgentCwd 兜底);
 	// 远端 = project_locations.path (resolveSessionCwd 已经做完路由)。
 	DeviceID   string `json:"deviceID"`
@@ -654,8 +658,9 @@ type ChatAgentItem struct {
 	Sessions          []ChatSessionLite `json:"sessions"`
 	AttentionSessions []ChatSessionLite `json:"attentionSessions"`
 
-	// 远端 device 归属 — 给前端 DeviceTag 渲染本地/远端 chip 用。
-	// 空 DeviceID = 本地 backend；非空 = paired_agentred.id 字符串化。
+	// 远端 device 归属 — 给前端 DeviceTag 渲染本地/远端 chip 用。口径与
+	// ChatSessionDetail 一致：空 DeviceID = 本机（含 R13 认领后带本机指纹的档，经
+	// remote_device_svc.ExternalDeviceID 收敛）；非空 = 真正的另一台机器。
 	// DeviceName 来自 paired_agentreds.display_name；Online 由 LastSeenAt 推算。
 	DeviceID   string `json:"deviceID"`
 	DeviceName string `json:"deviceName"`

@@ -83,9 +83,13 @@ func TestRunPeerSession_GivenUnknownSession_ThenCreatesFreshDesktopSessionAndRun
 		ID: 21, ProviderKey: "key-21", Type: string(llm_provider_entity.TypeAnthropic),
 		Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-key-21", Status: consts.ACTIVE,
 	}, nil).AnyTimes()
-	m.provider.EXPECT().FindModelByKey(gomock.Any(), "mk-key-21").Return(
+	m.provider.EXPECT().FindByKey(gomock.Any(), "session-provider").Return(&llm_provider_entity.LLMProvider{
+		ID: 22, ProviderKey: "session-provider", Type: string(llm_provider_entity.TypeAnthropic),
+		Enabled: llm_provider_entity.EnabledOn, DefaultModelKey: "mk-session-default", Status: consts.ACTIVE,
+	}, nil).AnyTimes()
+	m.provider.EXPECT().FindModelByKey(gomock.Any(), "mk-session-fixed").Return(
 		&llm_provider_model_entity.LLMProviderModel{
-			ProviderID: 21, ModelKey: "mk-key-21", ModelID: "claude-sonnet-4-6",
+			ProviderID: 22, ModelKey: "mk-session-fixed", ModelID: "claude-opus-4-1",
 			Enabled: llm_provider_model_entity.EnabledOn, Status: consts.ACTIVE,
 		}, nil).AnyTimes()
 
@@ -111,6 +115,8 @@ func TestRunPeerSession_GivenUnknownSession_ThenCreatesFreshDesktopSessionAndRun
 		DoAndReturn(func(_ context.Context, s *chat_entity.Session) error {
 			assert.Equal(t, int64(7), s.AgentID)
 			assert.Equal(t, int64(5), s.ProjectID)
+			assert.Equal(t, "session-provider", s.ProviderKey, "the peer-selected provider must persist with the new session")
+			assert.Equal(t, "mk-session-fixed", s.ModelKey, "the peer-selected fixed model must persist with the new session")
 			assert.Equal(t, firstUserText, s.Title)
 			s.ID = 100
 			return nil
@@ -141,12 +147,14 @@ func TestRunPeerSession_GivenUnknownSession_ThenCreatesFreshDesktopSessionAndRun
 	adapter, ok := m.svc.(peerRunAdapter)
 	require.True(t, ok, "chatSvc must implement the peer run adapter")
 	resp, err := adapter.RunPeerSession(ctx, wire.RunParams{
-		SessionID:    90001,
-		AgentSyncID:  "01HXAGENTIDENTITY0000000000",
-		Cwd:          cwd,
-		Title:        "帮我看看这个项目",
-		UserText:     firstUserText,
-		SourceDevice: "fp-web",
+		SessionID:      90001,
+		AgentSyncID:    "01HXAGENTIDENTITY0000000000",
+		Cwd:            cwd,
+		Title:          "帮我看看这个项目",
+		UserText:       firstUserText,
+		LLMProviderKey: "session-provider",
+		LLMModelKey:    "mk-session-fixed",
+		SourceDevice:   "fp-web",
 	}, chat_svc.PeerSessionSource{Device: "fp-web", Name: "Chrome · macOS"})
 	require.NoError(t, err)
 	assert.Equal(t, int64(100), resp.SessionID)
