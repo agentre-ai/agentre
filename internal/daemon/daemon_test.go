@@ -889,15 +889,21 @@ func TestDaemon_GivenClaimedAndUnavailableRelay_WhenRunning_ThenLANKeepsServing(
 }
 
 // TestDaemon_GivenUnclaimedRelayURL_WhenConstructed_ThenKeepsLANOnly ensures
-// relay construction remains gated by account ownership; an unclaimed daemon
-// must not create a hub link or a multiplexer merely because a server URL exists.
+// relay **traffic** remains gated by account ownership: a configured server URL
+// alone must not get anything dialed.
+//
+// 断言的位置从「链路对象是不是 nil」挪到「端点解析得出来吗」：链路本身现在无条件
+// 存在（否则未认领启动的进程登录之后没有东西会把它建起来，见
+// TestDaemon_GivenUnclaimedAtStartup_...），拦住出站流量的是解析结果为空。
 func TestDaemon_GivenUnclaimedRelayURL_WhenConstructed_ThenKeepsLANOnly(t *testing.T) {
 	d, err := New(Options{DataDir: t.TempDir(), HubServerURL: "http://relay.example"})
 	require.NoError(t, err)
 	t.Cleanup(func() { closeDB(d.db) })
 
-	assert.Nil(t, d.hub)
-	assert.Nil(t, d.mux)
+	assert.Empty(t, d.relayServerURL(),
+		"没有账号归属时，配置里的 server URL 不足以让它去连中转")
+	assert.NotNil(t, d.hub, "链路要在，登录之后才有东西接管")
+	assert.NotNil(t, d.mux)
 }
 
 func TestDaemon_BootShutdown(t *testing.T) {
@@ -2103,4 +2109,35 @@ func prepareDaemonPi(t *testing.T, conn *client.Client, params wire.RunParams) w
 	require.NoError(t, conn.Call(ctx, wire.MethodRun, params, &prepared))
 	require.NotEmpty(t, prepared.ProviderSessionID)
 	return prepared
+}
+
+// TestDaemon_GivenUnclaimedAtStartup_WhenLoginLandsOnDisk_ThenTheRelayLinkPicksItUp
+// 钉死「先起服务、后 agentred login」这条路径。
+//
+// 认领状态原本只在 New 里判一次：未认领启动的 daemon 连 HubLink 都不构造，之后
+// 无论怎么登录都不会有中转链路——而 login 是另一个进程，它写完 state.json 就退出，
+// 没有任何东西会回来把链路建起来。症状是设备在控制台恒显示离线，且没有一行日志
+// 说明为什么，只能靠重启进程恢复。
+func TestDaemon_GivenUnclaimedAtStartup_WhenLoginLandsOnDisk_ThenTheRelayLinkPicksItUp(t *testing.T) {
+	dir := t.TempDir()
+	d, err := New(Options{DataDir: dir})
+	require.NoError(t, err)
+	t.Cleanup(func() { closeDB(d.db) })
+
+	// 未认领启动：链路必须已经存在并处于「解析不出端点」的等待态，而不是不存在。
+	require.NotNil(t, d.hub, "未认领启动也要有中转链路，否则登录之后没有东西会把它建起来")
+	require.NotNil(t, d.mux)
+	assert.Empty(t, d.relayServerURL(), "还没认领时解析不出端点")
+
+	// 另一个进程完成 login。
+	other, err := state.Load(dir)
+	require.NoError(t, err)
+	other.Mutate(func(s *state.State) { s.HubServerURL = "https://server.example" })
+	other.ClaimWithKeySet("42", "kid-1", map[string]string{"kid-1": "PEM"}, 900,
+		state.AccountCredential{DeviceID: 7, AccessToken: "at-1", RefreshToken: "rt-1"})
+	require.NoError(t, other.Save())
+
+	assert.Equal(t, "https://server.example", d.relayServerURL(),
+		"下一次 dial 重新解析时就该看到这次登录")
+	assert.Equal(t, "at-1", d.currentAccessToken(), "凭据也一并被采纳，dial 才带得上 Bearer")
 }

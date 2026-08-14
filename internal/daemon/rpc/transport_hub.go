@@ -27,6 +27,11 @@ const (
 // must wait for OnDial before retrying; HubLink reconnects in the background.
 var ErrHubUnavailable = errors.New("rpc: hub relay unavailable")
 
+// ErrHubUnresolved reports that there is no relay endpoint to dial yet, because
+// the daemon has no account. It is not a failure: Run backs off and retries, so
+// a login that lands later is picked up without restarting the process.
+var ErrHubUnresolved = errors.New("rpc: relay endpoint not resolved yet")
+
 // HubFrame is one raw WebSocket frame arriving from the relay. The future hub
 // multiplexer owns interpreting its payload and must select on Frames instead
 // of reading the underlying socket directly.
@@ -37,8 +42,18 @@ type HubFrame struct {
 
 // HubLinkOptions configures a daemon-owned outbound relay connection.
 type HubLinkOptions struct {
-	ServerURL   string
-	AccessToken string
+	ServerURL string
+	// ServerURLProvider re-resolves the account server base URL at every dial,
+	// the same way AccessTokenProvider re-resolves the token. When set it takes
+	// precedence over the static ServerURL field.
+	//
+	// It returns "" while the daemon has no account to connect to, and Run then
+	// stays in its retry loop instead of treating the link as nonexistent: the
+	// daemon may have started before `agentred login` ran, and login is a
+	// separate process that writes state.json and exits — nothing would come
+	// back to build the link.
+	ServerURLProvider func() string
+	AccessToken       string
 	// AccessTokenProvider re-resolves the bearer token at every dial. When set
 	// it takes precedence over the static AccessToken field. The daemon uses it
 	// to hand HubLink the freshest refreshed access token across reconnects
@@ -129,7 +144,13 @@ func (l *HubLink) Run(ctx context.Context) error {
 				// see it as a relay failure: no log, no backoff, no retry.
 				return nil //nolint:nilerr // this dial error is the shutdown surfacing through the dialer
 			}
-			log.Printf("rpc.HubLink: relay dial failed; retrying: %v", err)
+			if errors.Is(err, ErrHubUnresolved) {
+				// 未认领不是故障：说成 dial failed 会把「这台机器还没登录」误导成
+				// 「登录了但连不上」，而这两者的处置完全不同。
+				log.Printf("rpc.HubLink: no account to connect to yet; waiting for login")
+			} else {
+				log.Printf("rpc.HubLink: relay dial failed; retrying: %v", err)
+			}
 			if err := l.wait(ctx, failures); err != nil {
 				return l.stopRetrying(ctx, err)
 			}
@@ -245,7 +266,14 @@ func (l *HubLink) notifyDisconnect(err error) {
 }
 
 func (l *HubLink) dial(ctx context.Context) (*websocket.Conn, error) {
-	endpoint, err := hubEndpoint(l.opts.ServerURL)
+	serverURL := l.opts.ServerURL
+	if l.opts.ServerURLProvider != nil {
+		serverURL = l.opts.ServerURLProvider()
+	}
+	if serverURL == "" {
+		return nil, ErrHubUnresolved
+	}
+	endpoint, err := hubEndpoint(serverURL)
 	if err != nil {
 		return nil, err
 	}

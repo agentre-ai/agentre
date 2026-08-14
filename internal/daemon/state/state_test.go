@@ -85,6 +85,62 @@ func TestStateLoadSave(t *testing.T) {
 			assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 		})
 
+		// `agentred login` 是另一个进程：它把凭据写进 state.json 就退出。运行中的
+		// daemon 手里是启动时读到的内存副本，不重新读盘就永远看不到自己已被认领。
+		convey.Convey("AdoptClaimFromDisk picks up a claim written by another process", func() {
+			st, _ := Load(dir)
+			require.NoError(t, st.Save())
+			require.False(t, st.IsClaimed())
+
+			// 另一个进程完成登录。
+			other, _ := Load(dir)
+			other.Mutate(func(s *State) { s.HubServerURL = "https://server.example" })
+			other.ClaimWithKeySet("42", "kid-1", map[string]string{"kid-1": "PEM"}, 900,
+				AccountCredential{DeviceID: 7, AccessToken: "at", RefreshToken: "rt"})
+			require.NoError(t, other.Save())
+
+			adopted, err := st.AdoptClaimFromDisk()
+			require.NoError(t, err)
+			assert.True(t, adopted, "认领是新出现的，应报告已采纳")
+			assert.True(t, st.IsClaimed())
+
+			snap := st.Snapshot()
+			assert.Equal(t, "42", snap.AccountID)
+			assert.Equal(t, "https://server.example", snap.HubServerURL)
+			assert.Equal(t, "at", snap.Credential.AccessToken)
+			assert.Equal(t, "rt", snap.Credential.RefreshToken)
+			assert.Equal(t, int64(7), snap.Credential.DeviceID)
+			assert.Equal(t, "kid-1", snap.VerificationCurrentKID)
+			assert.Equal(t, "PEM", snap.VerificationPublicKeys["kid-1"])
+			assert.Equal(t, int64(900), snap.MaxTokenLifetimeSeconds)
+		})
+
+		convey.Convey("AdoptClaimFromDisk leaves an already-claimed state alone", func() {
+			st, _ := Load(dir)
+			st.Claim("mine", "PEM-mine", AccountCredential{AccessToken: "mine-at"})
+			require.NoError(t, st.Save())
+
+			// 盘上换成了另一个账号（例如 unclaim + 重新登录留下的残留）。
+			other, _ := Load(dir)
+			other.Claim("theirs", "PEM-theirs", AccountCredential{AccessToken: "theirs-at"})
+			require.NoError(t, other.Save())
+
+			adopted, err := st.AdoptClaimFromDisk()
+			require.NoError(t, err)
+			assert.False(t, adopted, "已认领时不读盘、不覆盖内存里那份")
+			assert.Equal(t, "mine", st.Snapshot().AccountID)
+			assert.Equal(t, "mine-at", st.Snapshot().Credential.AccessToken)
+		})
+
+		convey.Convey("AdoptClaimFromDisk reports no claim when disk is still unclaimed", func() {
+			st, _ := Load(dir)
+			require.NoError(t, st.Save())
+			adopted, err := st.AdoptClaimFromDisk()
+			require.NoError(t, err)
+			assert.False(t, adopted)
+			assert.False(t, st.IsClaimed())
+		})
+
 		convey.Convey("Snapshot returns an independent copy of maps", func() {
 			st, _ := Load(dir)
 			st.Mutate(func(s *State) {

@@ -681,6 +681,30 @@ func (d *Daemon) currentAccessToken() string {
 	return d.state.Snapshot().Credential.AccessToken
 }
 
+// relayServerURL 在每次 dial 前重新解析中转端点，返回 "" 表示这台 daemon 还没有
+// 账号可连。HubLink 收到空值会退避重试而不是把链路当作不存在。
+//
+// 未认领时**先读一次盘**：`agentred login` 是另一个进程，它把凭据写进 state.json
+// 就退出。daemon 手里是启动时读到的内存副本，不重新读盘就永远发现不了自己已经被
+// 认领 —— 那正是「先起服务、后登录」恒离线的原因。
+func (d *Daemon) relayServerURL() string {
+	if !d.state.IsClaimed() {
+		if _, err := d.state.AdoptClaimFromDisk(); err != nil {
+			log.Printf("daemon.relayServerURL: re-read state.json failed: %v", err)
+		}
+	}
+	snap := d.state.Snapshot()
+	if snap.AccountID == "" {
+		// 没有账号就没有端点。这里返回空而不是返回一个「配置里写着的」地址：
+		// 带着空 Bearer 去连只会换来一串 401，把「还没登录」伪装成「登录了但被拒」。
+		return ""
+	}
+	if d.opts.HubServerURL != "" {
+		return d.opts.HubServerURL
+	}
+	return snap.HubServerURL
+}
+
 // New constructs a Daemon from Options. It loads persistent state, creates
 // sub-systems, and registers all static (non-per-conn) RPC methods.
 func New(opts Options) (*Daemon, error) {
@@ -744,15 +768,14 @@ func New(opts Options) (*Daemon, error) {
 	}
 	// 订阅资格的账号门:登记表每次解析收件人时现问 daemon 此刻的归属账号。
 	d.conns.claimedAccountID = d.claimedAccountID
-	if st.IsClaimed() && opts.HubServerURL != "" {
-		credential := st.Snapshot().Credential
-		d.hub = rpc.NewHubLink(rpc.HubLinkOptions{
-			ServerURL:           opts.HubServerURL,
-			AccessToken:         credential.AccessToken,
-			AccessTokenProvider: d.currentAccessToken,
-		})
-		d.mux = rpc.NewMultiplexer(d.hub)
-	}
+	// 中转链路无条件构造：认领状态改由每次 dial 时重新解析（relayServerURL），
+	// 不在这里判一次。判一次的后果是未认领启动的进程即使之后登录了也永远没有链路
+	// —— login 是另一个进程，写完 state.json 就退出，没有东西会回来建它。
+	d.hub = rpc.NewHubLink(rpc.HubLinkOptions{
+		ServerURLProvider:   d.relayServerURL,
+		AccessTokenProvider: d.currentAccessToken,
+	})
+	d.mux = rpc.NewMultiplexer(d.hub)
 	d.catchup = handlers.NewSessionCatchupHandlers(handlers.SessionCatchupDeps{
 		Sessions:         d.sessionStore,
 		Journal:          journalReader{db: gormDB},
@@ -940,24 +963,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Outbound relay failures are deliberately isolated from the LAN server and
 	// running sessions. HubLink owns logging, heartbeats, and retry for Run's
 	// whole lifetime; the multiplexer consumes its raw-frame seam separately.
-	if d.hub != nil {
-		hubCtx, hubCancel := context.WithCancel(ctx)
-		go func() { _ = d.hub.Run(hubCtx) }()
-		// The credential refresher keeps the minute-lived access token ahead of
-		// expiry; a permanently dead refresh token cancels the hub link so a
-		// doomed relay is not kept alive forever (R4/R14). It never propagates
-		// to Run — local sessions and LAN stay healthy either way.
-		go d.runCredentialRefresh(ctx, hubCancel)
-		// R4 的另一半:定期把账号的吊销列表拉到本地。挂在 hubCtx 上是因为它与中转
-		// 链路共用同一份设备凭据 —— 凭据永久失效时两者一起停,最后拉到的那份列表
-		// 留在 state.json 里继续本地生效(R19 承认的延迟),本地会话与 LAN 直连
-		// 全程不受影响。
-		go d.runRevocationPoll(hubCtx)
-	}
-	if d.mux != nil {
-		defer d.mux.Close()
-		go d.serveRelayChannels(ctx, d.mux)
-	}
+	hubCtx, hubCancel := context.WithCancel(ctx)
+	go func() { _ = d.hub.Run(hubCtx) }()
+	// 凭据续期与吊销拉取都以「手上已经有凭据」为前提,所以要等认领落地再挂起来 ——
+	// 见 runAccountJobsWhenClaimed。中转链路本身不必等:它每次 dial 重新解析端点,
+	// 解析不出来就退避重试。
+	go d.runAccountJobsWhenClaimed(ctx, hubCtx, hubCancel)
+	defer d.mux.Close()
+	go d.serveRelayChannels(ctx, d.mux)
 	// 通知日志的回收:起手一次,之后按间隔跑(见 collectJournal 的留存策略)。
 	go d.runJournalCollector(ctx)
 	if err := d.gateway.Start(ctx); err != nil {
@@ -990,6 +1003,52 @@ func (d *Daemon) Run(ctx context.Context) error {
 		log.Printf("daemon.Run: connection cleanup failed errorType=%T", err)
 	}
 	return runErr
+}
+
+// claimPollInterval 是未认领时重读 state.json 的间隔。只在没有账号期间生效,
+// 认领一落地就不再轮询。
+const claimPollInterval = 5 * time.Second
+
+// runAccountJobsWhenClaimed 等到这台 daemon 被认领之后,再启动凭据续期与吊销拉取。
+//
+// 两者都以「手上已经有凭据」为前提:refresher 见到空的 refresh token 会记一行日志
+// 后**永久返回**。未认领时直接起等于把它废掉 —— 之后即使登录成功,访问令牌也没人
+// 续期,15 分钟后链路带着过期令牌掉线,再也回不来。
+func (d *Daemon) runAccountJobsWhenClaimed(ctx, hubCtx context.Context, stopRelay context.CancelFunc) {
+	if !d.awaitClaim(ctx) {
+		return
+	}
+	// The credential refresher keeps the minute-lived access token ahead of
+	// expiry; a permanently dead refresh token cancels the hub link so a
+	// doomed relay is not kept alive forever (R4/R14). It never propagates
+	// to Run — local sessions and LAN stay healthy either way.
+	go d.runCredentialRefresh(ctx, stopRelay)
+	// R4 的另一半:定期把账号的吊销列表拉到本地。挂在 hubCtx 上是因为它与中转
+	// 链路共用同一份设备凭据 —— 凭据永久失效时两者一起停,最后拉到的那份列表
+	// 留在 state.json 里继续本地生效(R19 承认的延迟),本地会话与 LAN 直连
+	// 全程不受影响。
+	go d.runRevocationPoll(hubCtx)
+}
+
+// awaitClaim 阻塞到这台 daemon 被认领,返回 false 表示 ctx 先结束了。未认领期间
+// 周期性重读 state.json:认领可能是另一个进程(`agentred login`)写下的。
+func (d *Daemon) awaitClaim(ctx context.Context) bool {
+	for {
+		if d.state.IsClaimed() {
+			return true
+		}
+		if _, err := d.state.AdoptClaimFromDisk(); err != nil {
+			log.Printf("daemon.awaitClaim: re-read state.json failed: %v", err)
+		}
+		if d.state.IsClaimed() {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(claimPollInterval):
+		}
+	}
 }
 
 // runCredentialRefresh launches the R4/R14 credential refresher for the daemon's
