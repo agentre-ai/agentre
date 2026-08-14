@@ -21,7 +21,7 @@ import { DeviceRow } from "./device-row";
 import { hostOf } from "./format";
 import { LoginDialog } from "./login-dialog";
 import { TLSTrustDialog } from "./tls-trust-dialog";
-import { useRemoteDevices, type DeviceRowModel } from "./use-remote-devices";
+import { useRemoteDevices, type DeviceView } from "./use-remote-devices";
 import { useServerLogin } from "./use-server-login";
 
 // 规格「界面与交互 › 登录」: entry point for the standard device-authorization
@@ -91,8 +91,9 @@ export function RemoteDevicesPanel({
   const [guideRequested, setGuideRequested] = useState(false);
   const [showBackendGuide, setShowBackendGuide] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
-  const [editTLSFor, setEditTLSFor] = useState<DeviceRowModel | null>(null);
-  const [removeFor, setRemoveFor] = useState<DeviceRowModel | null>(null);
+  // 改 TLS / 删配对都作用在 LAN 配对行上,这两个对话框拿的就是那一行。
+  const [editTLSFor, setEditTLSFor] = useState<DeviceView | null>(null);
+  const [removeFor, setRemoveFor] = useState<DeviceView | null>(null);
   const [renameFor, setRenameFor] = useState<{
     id: number;
     draft: string;
@@ -226,17 +227,28 @@ export function RemoteDevicesPanel({
 
       {devices.length > 0 ? (
         <div className="flex flex-col gap-2">
-          {devices.map((d) => (
-            <DeviceRow
-              key={d.id}
-              device={d}
-              now={now}
-              onRefresh={() => void refresh(d.id)}
-              onRename={() => setRenameFor({ id: d.id, draft: d.name })}
-              onEditTLS={() => setEditTLSFor(d)}
-              onRemove={() => setRemoveFor(d)}
-            />
-          ))}
+          {devices.map((d) => {
+            // 用 const 接住,窄化才进得了下面那几个闭包。
+            const lan = d.lan;
+            return (
+              <DeviceRow
+                key={d.key}
+                device={d}
+                now={now}
+                actions={
+                  lan
+                    ? {
+                        onRefresh: () => void refresh(lan.id),
+                        onRename: () =>
+                          setRenameFor({ id: lan.id, draft: lan.name }),
+                        onEditTLS: () => setEditTLSFor(lan),
+                        onRemove: () => setRemoveFor(lan),
+                      }
+                    : undefined
+                }
+              />
+            );
+          })}
         </div>
       ) : null}
 

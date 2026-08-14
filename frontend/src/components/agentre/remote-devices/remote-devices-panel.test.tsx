@@ -559,6 +559,77 @@ describe("RemoteDevicesPanel", () => {
     expect(screen.queryByText(/192\.168\.1\.50/)).not.toBeInTheDocument();
   });
 
+  // 真实场景:远端服务器上跑着 agentred,已登录同一个账号、中转在线,但这台桌面
+  // 从没跟它 LAN 配对过 —— 它以前一行都不产生,面板里只看得见本机。
+  it("lists an account-only agentred this desktop never paired over LAN", async () => {
+    mockList.mockResolvedValueOnce([]);
+    mockServerList.mockResolvedValueOnce([
+      {
+        ID: 21,
+        Name: "cloud-box",
+        Kind: "agentred",
+        Platform: "linux",
+        Version: "0.3.0",
+        Fingerprint: "fp-cloud",
+        LastSeenAt: 1_700_000_000_000,
+        Status: 1,
+        Online: true,
+        IsThisDevice: false,
+      },
+    ]);
+
+    render(<RemoteDevicesPanel />);
+
+    expect(await screen.findByTestId("device-row")).toBeInTheDocument();
+    expect(screen.getByText("cloud-box")).toBeInTheDocument();
+    expect(screen.getByLabelText("Relay · In use")).toBeInTheDocument();
+    expect(screen.getByText(/Via relay/)).toBeInTheDocument();
+    // 没有配对行 → 不给那组作用在配对行上的动作,也没有 TLS 徽章。
+    expect(screen.queryByLabelText("More actions")).not.toBeInTheDocument();
+    expect(screen.queryByText("OS Default")).not.toBeInTheDocument();
+    // 它在账号清单里 → 不是「未认领」。
+    expect(screen.queryByText("Unclaimed")).not.toBeInTheDocument();
+  });
+
+  it("lists an account-only agentred alongside the LAN-paired ones", async () => {
+    mockList.mockResolvedValueOnce([
+      {
+        id: 1,
+        name: "linux-srv",
+        url: "ws://192.168.1.50:7456/rpc",
+        daemonFingerprint: "fp-lan",
+        tlsMode: "default",
+        online: true,
+        lastSeenAt: 1_700_000_000_000,
+      },
+    ] as Partial<DeviceView>[]);
+    mockServerList.mockResolvedValueOnce([
+      {
+        ID: 21,
+        Name: "cloud-box",
+        Kind: "agentred",
+        Platform: "linux",
+        Version: "0.3.0",
+        Fingerprint: "fp-cloud",
+        LastSeenAt: 1_700_000_000_000,
+        Status: 1,
+        Online: true,
+        IsThisDevice: false,
+      },
+    ]);
+
+    render(<RemoteDevicesPanel />);
+
+    await waitFor(() =>
+      expect(screen.getAllByTestId("device-row")).toHaveLength(2),
+    );
+    expect(screen.getByText("linux-srv")).toBeInTheDocument();
+    expect(screen.getByText("cloud-box")).toBeInTheDocument();
+    // LAN 那台仍留着自己的地址位与配对动作。
+    expect(screen.getByText(/192\.168\.1\.50/)).toBeInTheDocument();
+    expect(screen.getByLabelText("More actions")).toBeInTheDocument();
+  });
+
   describe("unpair & rename use dialogs, never native window.*", () => {
     const device = {
       id: 1,

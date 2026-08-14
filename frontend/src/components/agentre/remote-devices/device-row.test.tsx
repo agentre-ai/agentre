@@ -4,9 +4,9 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { DeviceRow } from "./device-row";
-import type { DeviceRowModel } from "./use-remote-devices";
+import type { DeviceRowModel, DeviceView } from "./use-remote-devices";
 
-const baseDevice: DeviceRowModel = {
+const baseLan: DeviceView = {
   id: 1,
   name: "linux-srv",
   url: "ws://192.168.1.100:7456/rpc",
@@ -19,22 +19,30 @@ const baseDevice: DeviceRowModel = {
   lastError: "",
   online: false,
   daemonOutdated: false,
+};
+
+const baseDevice: DeviceRowModel = {
+  key: "lan:1",
+  name: "linux-srv",
+  online: false,
+  lastSeenAt: 0,
+  lan: baseLan,
   account: undefined,
   paths: [{ kind: "lan", state: "dead" }],
   unclaimed: false,
   viaRelay: false,
 };
 
+const noopActions = {
+  onRefresh: () => {},
+  onRename: () => {},
+  onEditTLS: () => {},
+  onRemove: () => {},
+};
+
 function renderRow(device: DeviceRowModel) {
   return render(
-    <DeviceRow
-      device={device}
-      now={1_000_000}
-      onRefresh={() => {}}
-      onRename={() => {}}
-      onEditTLS={() => {}}
-      onRemove={() => {}}
-    />,
+    <DeviceRow device={device} now={1_000_000} actions={noopActions} />,
   );
 }
 
@@ -53,7 +61,10 @@ describe("DeviceRow", () => {
     expect(screen.getByText(/Never connected/)).toBeInTheDocument();
   });
   it("renders friendly error for tofu_mismatch in destructive style", () => {
-    const d = { ...baseDevice, lastError: "tofu_mismatch" };
+    const d = {
+      ...baseDevice,
+      lan: { ...baseLan, lastError: "tofu_mismatch" },
+    };
     renderRow(d);
     expect(
       screen.getByText(/identity fingerprint changed/),
@@ -62,7 +73,7 @@ describe("DeviceRow", () => {
   // R18：daemon 版本过旧时，说明落在这台设备自己那一行 —— 它是设备属性，
   // 不是会话事件，也不是浮在聊天上的横幅。
   it("explains an outdated daemon on the device row", () => {
-    const d = { ...baseDevice, daemonOutdated: true };
+    const d = { ...baseDevice, lan: { ...baseLan, daemonOutdated: true } };
     renderRow(d);
     expect(screen.getByText(/Outdated daemon/)).toBeInTheDocument();
   });
@@ -79,10 +90,7 @@ describe("DeviceRow", () => {
       <DeviceRow
         device={baseDevice}
         now={1_000_000}
-        onRefresh={() => {}}
-        onRename={() => {}}
-        onEditTLS={() => {}}
-        onRemove={onRemove}
+        actions={{ ...noopActions, onRemove }}
       />,
     );
     await user.click(screen.getByLabelText("More actions"));
@@ -176,5 +184,63 @@ describe("DeviceRow", () => {
     expect(screen.queryByText(/agentred login/)).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Claim to account" }));
     expect(screen.getByText(/agentred login/)).toBeInTheDocument();
+  });
+
+  // ── 账号独有的一行 ─────────────────────────────────────────────────────────
+  // 这台机器只在账号里,本机没有 paired_agentreds 那一行 —— TLS 徽章 / LAN 地址 /
+  // 那组作用在配对行上的动作(刷新直连、改名、改 TLS、删配对)统统无处落脚。
+  describe("a row with no LAN pairing", () => {
+    const accountOnly: DeviceRowModel = {
+      key: "account:21",
+      name: "cloud-box",
+      online: true,
+      lastSeenAt: 1_700_000_000_000,
+      account: {
+        ID: 21,
+        Name: "cloud-box",
+        Kind: "agentred",
+        Platform: "linux",
+        Version: "0.3.0",
+        Fingerprint: "fp-cloud",
+        LastSeenAt: 1_700_000_000_000,
+        Status: 1,
+        Online: true,
+        IsThisDevice: false,
+      },
+      paths: [{ kind: "relay", state: "in-use" }],
+      unclaimed: false,
+      viaRelay: true,
+    };
+
+    it("names the machine and shows 经中转 in the address slot", () => {
+      render(<DeviceRow device={accountOnly} now={1_700_000_060_000} />);
+      expect(screen.getByText("cloud-box")).toBeInTheDocument();
+      expect(screen.getByText(/Via relay/)).toBeInTheDocument();
+      expect(screen.getByLabelText("Relay · In use")).toBeInTheDocument();
+    });
+
+    it("offers none of the LAN-only affordances", () => {
+      render(<DeviceRow device={accountOnly} now={1_700_000_060_000} />);
+      // TLS 信任模式是配对行上的字段。
+      expect(screen.queryByText("OS Default")).not.toBeInTheDocument();
+      // 刷新直连 / 改名 / 改 TLS / 删配对 全都作用在配对行上。
+      expect(screen.queryByLabelText("More actions")).not.toBeInTheDocument();
+    });
+
+    it("keeps the address slot on the relay even while the relay is unreachable", () => {
+      render(
+        <DeviceRow
+          device={{
+            ...accountOnly,
+            online: false,
+            viaRelay: false,
+            paths: [{ kind: "relay", state: "dead" }],
+          }}
+          now={1_700_000_060_000}
+        />,
+      );
+      expect(screen.getByText(/Via relay/)).toBeInTheDocument();
+      expect(screen.getByText("Relay · Unreachable")).toBeInTheDocument();
+    });
   });
 });

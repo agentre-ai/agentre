@@ -125,9 +125,13 @@ describe("mergeDeviceSources (R15)", () => {
       known: true,
       devices: [accountDevice()],
     });
-    expect(rows).toHaveLength(1);
-    expect(rows[0].account).toBeUndefined();
-    expect(rows[0].unclaimed).toBe(false);
+    const lanRow = rows.find((r) => r.lan?.id === 1);
+    expect(lanRow?.account).toBeUndefined();
+    expect(lanRow?.unclaimed).toBe(false);
+    // 这条 LAN 行没有指纹,连不上任何账号行 —— 于是那台账号设备照样自己成一行。
+    // 猜它俩是同一台机器需要一个我们没有的依据,而猜错的代价是把一台确实
+    // 在线的机器藏起来,正是这次要修的毛病。
+    expect(rows.map((r) => r.key)).toEqual(["lan:1", "account:10"]);
   });
 
   it("does not mark unclaimed when the account list is unknown (not logged in)", () => {
@@ -189,6 +193,114 @@ describe("mergeDeviceSources (R15)", () => {
     );
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => r.name)).toEqual(["linux-srv", "pi"]);
+  });
+
+  // ── 账号独有的机器(按指纹全外连接)────────────────────────────────────────
+  // 合并以 LAN 为左表做左连接时,一台只登记在账号里、本机从没 LAN 配对过的
+  // agentred 一行都不产生 —— 用户在远端服务器上登录了同一个账号、中转也在线,
+  // 面板却只看得见本机。两侧都要当左表。
+  it("emits a row for an account-only agentred that was never paired over LAN", () => {
+    const rows = mergeDeviceSources([], {
+      known: true,
+      devices: [accountDevice({ Fingerprint: "fp-cloud", Name: "cloud-box" })],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe("cloud-box");
+    expect(rows[0].account?.Fingerprint).toBe("fp-cloud");
+    // 没有本机配对行 —— 这一行在类型上就没有 LAN 来源。
+    expect(rows[0].lan).toBeUndefined();
+    // 只有中转一条可达路径。
+    expect(rows[0].paths).toEqual([{ kind: "relay", state: "in-use" }]);
+    expect(rows[0].viaRelay).toBe(true);
+    expect(rows[0].online).toBe(true);
+    // 「未认领」= 仅本机配对、账号清单里没有它。账号独有的行按定义不是未认领。
+    expect(rows[0].unclaimed).toBe(false);
+  });
+
+  it("keeps an account-only machine listed while its relay presence is gone", () => {
+    const rows = mergeDeviceSources([], {
+      known: true,
+      devices: [
+        accountDevice({
+          Fingerprint: "fp-cloud",
+          Name: "cloud-box",
+          Online: false,
+        }),
+      ],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].paths).toEqual([{ kind: "relay", state: "dead" }]);
+    expect(rows[0].online).toBe(false);
+    expect(rows[0].viaRelay).toBe(false);
+    expect(rows[0].lastSeenAt).toBe(1_700_000_000_000);
+  });
+
+  it("produces one row per machine across LAN-only, both, and account-only", () => {
+    const rows = mergeDeviceSources(
+      [
+        lanDevice({ id: 1, name: "linux-srv", daemonFingerprint: "fp-1" }),
+        lanDevice({ id: 2, name: "pi", daemonFingerprint: "fp-lan-only" }),
+      ],
+      {
+        known: true,
+        devices: [
+          accountDevice({ ID: 10, Fingerprint: "fp-1" }),
+          accountDevice({
+            ID: 11,
+            Name: "cloud-box",
+            Fingerprint: "fp-acct-only",
+          }),
+        ],
+      },
+    );
+    expect(rows.map((r) => r.name)).toEqual(["linux-srv", "pi", "cloud-box"]);
+    expect(rows.map((r) => r.lan?.id)).toEqual([1, 2, undefined]);
+    // 两边都有的那台只占一行,不因为参与合并而被复制成两行。
+    expect(rows.filter((r) => r.account?.Fingerprint === "fp-1")).toHaveLength(
+      1,
+    );
+    expect(rows[1].unclaimed).toBe(true);
+    expect(rows[2].unclaimed).toBe(false);
+  });
+
+  // 账号清单里 kind=desktop 的机器由 DesktopDeviceRow 单独成行(R19),
+  // 合并结果里再产生一行就是同一台机器出现两次。
+  it("leaves the account's desktop entries to their own row shape", () => {
+    const rows = mergeDeviceSources([], {
+      known: true,
+      devices: [
+        accountDevice({
+          ID: 12,
+          Kind: "desktop",
+          Name: "my-mac",
+          Fingerprint: "fp-desktop",
+          IsThisDevice: true,
+        }),
+      ],
+    });
+    expect(rows).toEqual([]);
+  });
+
+  // 配对行 id 与账号设备 ID 是两个自增序列,会撞号 —— 行键必须自带来源。
+  it("gives LAN and account-only rows distinct keys when their ids collide", () => {
+    const rows = mergeDeviceSources([lanDevice({ id: 10 })], {
+      known: true,
+      devices: [
+        accountDevice({ ID: 10, Name: "cloud-box", Fingerprint: "fp-cloud" }),
+      ],
+    });
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((r) => r.key)).size).toBe(2);
+  });
+
+  // 账号清单未知(未登录 / 拉取失败)时没有账号来源,一行都不该凭空多出来。
+  it("adds no account-only rows when the account list is unknown", () => {
+    const rows = mergeDeviceSources([lanDevice()], {
+      known: false,
+      devices: [],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].lan?.id).toBe(1);
   });
 });
 
@@ -320,15 +432,13 @@ describe("useRemoteDevices", () => {
       });
     });
 
-    expect(result.current.devices.find((d) => d.id === 1)?.online).toBe(true);
-    expect(result.current.devices.find((d) => d.id === 1)?.lastSeenAt).toBe(
-      12345,
-    );
+    const rowOf = (id: number) =>
+      result.current.devices.find((d) => d.lan?.id === id);
+    expect(rowOf(1)?.online).toBe(true);
+    expect(rowOf(1)?.lastSeenAt).toBe(12345);
     // 在线态变化后路径重算:LAN 直连从 dead 翻成 in-use。
-    expect(result.current.devices.find((d) => d.id === 1)?.paths).toEqual([
-      { kind: "lan", state: "in-use" },
-    ]);
-    expect(result.current.devices.find((d) => d.id === 2)?.online).toBe(false);
+    expect(rowOf(1)?.paths).toEqual([{ kind: "lan", state: "in-use" }]);
+    expect(rowOf(2)?.online).toBe(false);
   });
 
   it("ignores events for unknown id", async () => {
@@ -354,6 +464,6 @@ describe("useRemoteDevices", () => {
       });
     });
     expect(result.current.devices).toHaveLength(1);
-    expect(result.current.devices[0].id).toBe(1);
+    expect(result.current.devices[0].lan?.id).toBe(1);
   });
 });
