@@ -242,6 +242,10 @@ type trackedRun struct {
 	lastAssistantText string
 	activity          bool
 	totalTokens       int
+	// attemptError 标记 Status/ErrorMessage 当前来自快照里一条「本次模型请求失败」的
+	// assistant 消息（stopReason=error / errorMessage）。pi 记完这条就会自动重试，所以
+	// 它是可撤销的：见 clearSupersededAttemptError。
+	attemptError bool
 }
 
 type trackedResult struct {
@@ -465,6 +469,7 @@ func (t *subagentTracker) consumeDetails(details []byte, final, outerError bool)
 
 	for _, message := range orderedSnapshotMessages(snapshots, len(t.runs)) {
 		run := &t.runs[message.runIndex]
+		run.clearSupersededAttemptError()
 		messageEvents, activity := t.applyMessage(run, message.raw, final)
 		if activity {
 			t.markRunActive(run)
@@ -762,6 +767,34 @@ func snapshotHasActivity(snapshot decodedSnapshot) bool {
 	return snapshot.exitCode != nil && *snapshot.exitCode != -1
 }
 
+// recordAttemptError 收下快照里一条「本次模型请求失败」的 assistant 消息。pi 记完它就会
+// 自动重试，所以在外层 subagent 工具真正收口(final)之前它只是诊断信息，不能落成 run 终态
+// ——否则 "failed" 进了 isTerminalStatus，后续 stopReason=toolUse 的恢复路径被挡死，卡片
+// 会一直显示 FAILED + 该错误文案，底下却还在持续调工具。
+func (r *trackedRun) recordAttemptError(errorMessage string, final bool) {
+	if errorMessage != "" {
+		r.info.ErrorMessage = errorMessage
+	}
+	r.attemptError = true
+	if final {
+		r.info.Status = "failed"
+	}
+}
+
+// clearSupersededAttemptError 在应用同一 run 的下一条消息前撤销上一条尝试错误。快照每帧
+// 全量重放，所以「错误消息后面还有本 run 的消息」就等价于「pi 已经重试并继续下去了」，
+// 这条错误既不该定状态，也不该继续占着卡片摘要。
+func (r *trackedRun) clearSupersededAttemptError() {
+	if !r.attemptError {
+		return
+	}
+	r.attemptError = false
+	r.info.ErrorMessage = ""
+	if r.info.Status == "failed" {
+		r.info.Status = "running"
+	}
+}
+
 func (t *subagentTracker) markRunActive(run *trackedRun) {
 	run.activity = true
 	if run.info.Status == "waiting" {
@@ -783,9 +816,6 @@ func (t *subagentTracker) applyMessage(run *trackedRun, raw json.RawMessage, fin
 		}
 		stopReason := readTrimmedString(message["stopReason"])
 		errorMessage := readTrimmedString(message["errorMessage"])
-		if errorMessage != "" {
-			run.info.ErrorMessage = errorMessage
-		}
 		content, ok := rawArray(message["content"])
 		if !ok {
 			content = nil
@@ -819,9 +849,10 @@ func (t *subagentTracker) applyMessage(run *trackedRun, raw json.RawMessage, fin
 				run.info.Summary = run.lastAssistantText
 			}
 		}
-		t.applyStopReason(run, stopReason)
-		if errorMessage != "" {
-			run.info.Status = "failed"
+		if errorMessage != "" || stopReason == "error" {
+			run.recordAttemptError(errorMessage, final)
+		} else {
+			t.applyStopReason(run, stopReason)
 		}
 		return events, len(content) > 0 || stopReason != "" || observedModel != "" || errorMessage != ""
 	case "toolResult":
