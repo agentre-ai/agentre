@@ -14,14 +14,7 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
-import {
-  ChevronDown,
-  ChevronUp,
-  GripVertical,
-  Plus,
-  RotateCcw,
-  X,
-} from "lucide-react";
+import { ChevronDown, ChevronUp, GripVertical, Plus, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
@@ -48,16 +41,23 @@ export type ExecTargetRow = { agentBackendId: number };
 type Props = {
   agentId: number;
   agentName: string;
+  // targets 是这台电脑当前实际的派发顺序（后端解析后的顺序），也是唯一的一份列表：
+  // 界面上不再有第二个「账号默认顺序」视图。
   targets: ExecTargetRow[];
   backends: agent_backend_svc.BackendItem[];
+  // onChange = 集合变更（添加 / 移除 / 更换），写的是账号级执行目标集合。
   onChange: (next: ExecTargetRow[]) => void;
+  // onReorder = 顺序变更（拖拽 / 拖拽柄方向键 / 上移下移），只写本端顺序。
+  // 两条写路径由列表自己分开给出，而不是让调用方回头比对数组去猜刚才发生了什么。
+  onReorder: (next: ExecTargetRow[]) => void;
   saveRejected?: boolean;
-  // scope 标注这个列表编辑哪一端的顺序（R16）："device" = 本端覆盖（只改这台电脑、
-  // 不同步，隐藏增删、只重排），"default" = 账号默认顺序（同步，可增删）。
-  scope?: "device" | "default";
-  // onRestoreDeviceOrder 在 device 作用域提供「恢复为账号默认顺序」（清除本端覆盖）。
-  onRestoreDeviceOrder?: () => void;
+  // loading = 顺序数据尚未到达，渲染骨架行。它与「这个 Agent 没有执行目标」的空态
+  // 是两件事：混在一起就会同时说出两句互相否定的话。
+  loading?: boolean;
 };
+
+// 骨架行条数：加载窗口只是占位，取列表最常见的档数，避免加载完成时高度大幅跳变。
+const SKELETON_ROWS = 2;
 
 const BACKEND_TYPE_LABEL: Record<string, string> = {
   claudecode: "Claude Code",
@@ -98,8 +98,6 @@ export function ExecTargetList(props: Props) {
   const { t } = useTranslation();
   const [addOpen, setAddOpen] = React.useState(false);
   const [announcement, setAnnouncement] = React.useState("");
-  const scope = props.scope ?? "default";
-  const deviceScope = scope === "device";
 
   const targetsKey = React.useMemo(
     () =>
@@ -129,7 +127,7 @@ export function ExecTargetList(props: Props) {
   const move = (from: number, to: number) => {
     const next = moveItem(props.targets, from, to);
     if (next === props.targets) return;
-    props.onChange(next);
+    props.onReorder(next);
     setAnnouncement(
       t("org.agent.execTargets.moved", {
         position: to + 1,
@@ -186,9 +184,11 @@ export function ExecTargetList(props: Props) {
       index < props.targets.length - 1
         ? () => move(index, index + 1)
         : undefined,
-    onRemove: !single && !deviceScope ? () => removeAt(index) : undefined,
-    replaceBackends: single && !deviceScope ? props.backends : undefined,
-    onReplacePick: single && !deviceScope ? replaceSole : undefined,
+    // 增删/更换与顺序无关，因此在这唯一一份列表上恒可用（R15：单档时不给移除，
+    // 「至少要有一项」那条约束靠它成立，改成「更换」）。
+    onRemove: !single ? () => removeAt(index) : undefined,
+    replaceBackends: single ? props.backends : undefined,
+    onReplacePick: single ? replaceSole : undefined,
   });
 
   return (
@@ -198,86 +198,65 @@ export function ExecTargetList(props: Props) {
           {t("org.agent.execTargets.title")}
         </h3>
         <div className="flex-1" />
-        {deviceScope ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 px-2 text-2xs"
-            onClick={props.onRestoreDeviceOrder}
-          >
-            <RotateCcw className="size-3" aria-hidden="true" />
-            {t("org.agent.execTargets.restoreDefault")}
-          </Button>
-        ) : (
-          props.targets.length > 0 && (
-            <Popover open={addOpen} onOpenChange={setAddOpen}>
-              <PopoverTrigger asChild>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-7 px-2 text-2xs"
-                >
-                  <Plus className="size-3" aria-hidden="true" />
-                  {t("org.agent.execTargets.add")}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-72 p-0">
-                <AddTargetPanel
-                  backends={props.backends}
-                  usedIds={usedIds}
-                  onPick={appendBackend}
-                />
-              </PopoverContent>
-            </Popover>
-          )
+        {/* 骨架期间不给「添加」：此刻列表还不知道自己有哪些档，基于空列表的一次
+            添加会把账号级集合整份写成新加的那一项。 */}
+        {!props.loading && props.targets.length > 0 && (
+          <Popover open={addOpen} onOpenChange={setAddOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-2xs"
+              >
+                <Plus className="size-3" aria-hidden="true" />
+                {t("org.agent.execTargets.add")}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-72 p-0">
+              <AddTargetPanel
+                backends={props.backends}
+                usedIds={usedIds}
+                onPick={appendBackend}
+              />
+            </PopoverContent>
+          </Popover>
         )}
       </div>
 
-      {deviceScope && (
-        <p className="text-2xs leading-relaxed text-muted-foreground">
-          {t("org.agent.execTargets.deviceScopeHint")}
-        </p>
-      )}
-
-      {props.targets.length === 0 ? (
+      {props.loading ? (
+        <ExecTargetSkeleton />
+      ) : props.targets.length === 0 ? (
         <div className="rounded-md border border-border bg-input-bg px-3 py-5 text-center">
           <p className="text-sm text-muted-foreground">
             {t("org.agent.execTargets.emptyTitle")}
           </p>
           <p className="mt-1 text-2xs text-muted-foreground">
-            {deviceScope
-              ? t("org.agent.execTargets.deviceEmptyHint")
-              : t("org.agent.execTargets.emptyHint")}
+            {t("org.agent.execTargets.emptyHint")}
           </p>
-          {!deviceScope && (
-            <>
-              <Popover open={addOpen} onOpenChange={setAddOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="mt-2 h-7 px-2 text-2xs"
-                  >
-                    <Plus className="size-3" aria-hidden="true" />
-                    {t("org.agent.execTargets.addFull")}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-72 p-0">
-                  <AddTargetPanel
-                    backends={props.backends}
-                    usedIds={usedIds}
-                    onPick={appendBackend}
-                  />
-                </PopoverContent>
-              </Popover>
-              {props.saveRejected && (
-                <p className="mt-1.5 text-2xs text-destructive">
-                  {t("org.agent.execTargets.saveRejected")}
-                </p>
-              )}
-            </>
+          <Popover open={addOpen} onOpenChange={setAddOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                size="sm"
+                className="mt-2 h-7 px-2 text-2xs"
+              >
+                <Plus className="size-3" aria-hidden="true" />
+                {t("org.agent.execTargets.addFull")}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-72 p-0">
+              <AddTargetPanel
+                backends={props.backends}
+                usedIds={usedIds}
+                onPick={appendBackend}
+              />
+            </PopoverContent>
+          </Popover>
+          {props.saveRejected && (
+            <p className="mt-1.5 text-2xs text-destructive">
+              {t("org.agent.execTargets.saveRejected")}
+            </p>
           )}
         </div>
       ) : (
@@ -343,6 +322,38 @@ export function ExecTargetList(props: Props) {
       <p role="status" data-testid="exec-target-announcer" className="sr-only">
         {announcement}
       </p>
+    </div>
+  );
+}
+
+// ExecTargetSkeleton 是顺序数据还在路上时的占位：行框架照常在，只是内容还没到。
+// 它替代的是此前那张空态卡片——「还没有执行目标」在加载窗口里是假话。
+function ExecTargetSkeleton() {
+  const { t } = useTranslation();
+  return (
+    <div
+      className="flex flex-col overflow-hidden rounded-md border border-border bg-input-bg"
+      data-testid="exec-target-skeleton"
+    >
+      <span role="status" className="sr-only">
+        {t("org.agent.execTargets.loading")}
+      </span>
+      {Array.from({ length: SKELETON_ROWS }, (_, i) => (
+        <div
+          key={i}
+          aria-hidden="true"
+          className={cn(
+            "flex items-center gap-2 border-border px-2.5 py-2",
+            i < SKELETON_ROWS - 1 && "border-b",
+          )}
+        >
+          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+            <div className="h-2.5 w-24 rounded-sm bg-muted motion-safe:animate-pulse" />
+            <div className="h-2 w-32 rounded-sm bg-muted motion-safe:animate-pulse" />
+          </div>
+          <div className="h-4 w-12 shrink-0 rounded-sm bg-muted motion-safe:animate-pulse" />
+        </div>
+      ))}
     </div>
   );
 }

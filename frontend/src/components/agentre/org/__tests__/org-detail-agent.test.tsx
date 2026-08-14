@@ -120,7 +120,13 @@ function renderPanel(
   return { onUpdate, onDelete, onUploadAvatar, onDeleteAvatar };
 }
 
-function withCaps(caps: string[], packs: Array<Record<string, unknown>> = []) {
+function withCaps(
+  caps: string[],
+  packs: Array<Record<string, unknown>> = [],
+  // execTargetOrder 是后端解析后的本端派发顺序（R14），执行目标列表的内容就是它；
+  // 不给的话列表停在骨架态（顺序数据尚未到达），只断言其它区块的用例不受影响。
+  execTargetOrder: Array<{ agentBackendId: number; available: boolean }> = [],
+) {
   // 面板渲染即调 GetBackendCapabilities（经 useBackendCapabilities）。
   // 该 binding 走真实 wailsjs App.js（读 window.go.app.App.*），故测试
   // 把返回挂到 window.go 上覆盖默认空能力（与 chat-panel 等既有模式一致）。
@@ -133,6 +139,11 @@ function withCaps(caps: string[], packs: Array<Record<string, unknown>> = []) {
           permissionModeMeta: null,
         }),
         ListAgentSkillPacks: vi.fn().mockResolvedValue({ packs }),
+        ListAgentExecTargetAvailability: vi
+          .fn()
+          .mockResolvedValue(
+            execTargetOrder.map((it) => ({ reason: "", hint: "", ...it })),
+          ),
       },
     },
   };
@@ -188,21 +199,19 @@ describe("OrgDetailAgent", () => {
   });
 
   it("renders the execution targets section as a single-target row (R15/R20)", async () => {
-    const user = userEvent.setup();
+    withCaps([], [], [{ agentBackendId: 5, available: true }]);
     renderPanel({ agentBackendId: 5 }, [backend()]);
-    // 设备顺序是默认作用域；单档行的既有断言针对账号默认顺序列表，先切过去。
-    await user.click(screen.getByRole("button", { name: "Account default" }));
     expect(
       screen.getByRole("heading", { name: "Execution Targets" }),
     ).toBeInTheDocument();
     // 单档：没有序号、机器标为"本机"，第二行是"类型 · 名称"。
-    expect(screen.getByText("Local machine")).toBeInTheDocument();
+    expect(await screen.findByText("Local machine")).toBeInTheDocument();
     expect(screen.getByText(/Claude Code · Claude Code/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Replace/ })).toBeInTheDocument();
   });
 
   it("falls back to the Agent backend summary when the backend list is empty", async () => {
-    const user = userEvent.setup();
+    withCaps([], [], [{ agentBackendId: 5, available: true }]);
     renderPanel({
       agentBackendId: 5,
       backend: {
@@ -214,8 +223,7 @@ describe("OrgDetailAgent", () => {
         llmProviderActive: true,
       },
     });
-    await user.click(screen.getByRole("button", { name: "Account default" }));
-    expect(screen.getByText("Local machine")).toBeInTheDocument();
+    expect(await screen.findByText("Local machine")).toBeInTheDocument();
     expect(screen.getByText(/Claude Code · Claude Code/)).toBeInTheDocument();
   });
 

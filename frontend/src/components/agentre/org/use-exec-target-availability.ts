@@ -15,8 +15,9 @@ import type { chat_svc } from "@/../wailsjs/go/models";
 // （用 targetsKey 控制何时重新拉取）。
 //
 // R14：后端按解析后的顺序返回（本端覆盖 / 无覆盖时本机自己提前），所以响应数组
-// 本身**就是本端当前生效顺序**——orderedTargets 原样交回数组顺序供设备态列表使用，
-// hasOverride 标注是否处于本端覆盖（R16「恢复为账号默认顺序」据此显示）。
+// 本身**就是本端当前生效顺序**——orderedTargets 原样交回数组顺序，它就是执行目标区
+// 那一份列表。hasOverride 标注是否处于本端覆盖，服务端照常返回，但界面不消费它：
+// 界面上没有「账号默认顺序」这个概念，「有没有覆盖」也就没有可讲的区别。
 export function useExecTargetAvailability(agentId: number, targetsKey: string) {
   const [byBackendId, setByBackendId] = React.useState<
     Map<number, chat_svc.ExecTargetAvailabilityView>
