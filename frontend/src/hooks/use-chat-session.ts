@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Dispatch, SetStateAction } from "react";
 import { LoadChatSession } from "../../wailsjs/go/app/App";
 import type { chat_svc } from "../../wailsjs/go/models";
 import { clientLog } from "@/lib/client-log";
@@ -26,11 +27,55 @@ export type ChatSessionDetail = chat_svc.ChatSessionDetail & {
 };
 export type ChatMessage = chat_svc.ChatMessage;
 
+// reconcileLoadedMessages 把 LoadSession 快照与「快照被取走之后才插进来的行」合并。
+//
+// LoadSession 是异步 DB 快照。自主续轮 / 后台活动轮不经前端发起,可能正好在快照
+// 已取走、响应还没回来的窗口里起手 —— chat-panel 的 onAutonomousEvent 收到
+// autonomous_started 会就地插入这一轮的 assistant 行并 openStream。此时整表覆盖
+// 就把那一行抹掉了,而 liveBlocks 是按 assistantMessageId 挂的:宿主行没了,
+// transcript-rows 的 buildRows 只遍历 displayMessages,这一轮后续到达的流式正文、
+// AskUserQuestion 审批卡就全部静默丢弃,且不会自愈(sess-2916:会话胶囊翻「审批」
+// 而转录里一张卡都没有 —— agentStatus 有 normalizeSessionSnapshot 挡旧快照,
+// messages 没有对应护栏;doneTick 守卫只认 turn 结束,起手这一侧不设防)。
+//
+// 只补回「发起 load 时还不存在、快照里也没有」的行。发起时就已在表里、快照却不含
+// 的行是后端真删了(编辑 / 重跑会截断后续消息),必须跟着快照消失 —— 否则被截断的
+// 历史会被复活。
+function reconcileLoadedMessages(
+  prev: ChatMessage[],
+  loaded: ChatMessage[],
+  idsBeforeLoad: ReadonlySet<number>,
+): ChatMessage[] {
+  const loadedIds = new Set(loaded.map((m) => m.id));
+  const insertedDuringLoad = prev.filter(
+    (m) => !loadedIds.has(m.id) && !idsBeforeLoad.has(m.id),
+  );
+  if (insertedDuringLoad.length === 0) return loaded;
+  return [...loaded, ...insertedDuringLoad];
+}
+
 export function useChatSession(sessionId: number) {
   const [session, setSession] = useState<ChatSessionDetail | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessagesState] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // messagesRef 让 reload 这个异步流程能在 await 之前同步读到当前消息表 ——
+  // 上面 reconcileLoadedMessages 要的「发起 load 那一刻的 id 集合」只能这样取,
+  // 走 state 依赖会让 reload 随每次消息变化重建并触发重复加载。
+  const messagesRef = useRef<ChatMessage[]>([]);
+  const setMessages = useCallback<Dispatch<SetStateAction<ChatMessage[]>>>(
+    (action) => {
+      setMessagesState((prev) => {
+        const next =
+          typeof action === "function"
+            ? (action as (p: ChatMessage[]) => ChatMessage[])(prev)
+            : action;
+        messagesRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
 
   // useSessionWithOverlays 合并 meta + status + read-overlay，作为详情页
   // 运行时态的唯一来源。sessionWithLiveStatus 从此通过 overlay 读取，而不是
@@ -47,6 +92,9 @@ export function useChatSession(sessionId: number) {
     setLoading(true);
     setError(null);
     try {
+      // 快照的「已知世界」——在第一次 await 之前取,响应回来时据它区分
+      // 「load 在途期间新插入的行」与「后端真删了的行」。
+      const idsBeforeLoad = new Set(messagesRef.current.map((m) => m.id));
       const startedDoneTick =
         useSessionStatusStore.getState().statuses.get(sessionId)?.doneTick ?? 0;
       let resp = await LoadChatSession({ sessionId });
@@ -240,7 +288,9 @@ export function useChatSession(sessionId: number) {
             resp.session.connectionState as SessionConnectionState,
           );
       }
-      setMessages(loadedMessages);
+      setMessages((prev) =>
+        reconcileLoadedMessages(prev, loadedMessages, idsBeforeLoad),
+      );
       // 注:不在这里 MarkRead。语义上"用户已读到 lastMessageAt"只能由
       // ChatPanel 根据 active prop 判断 —— 隐藏 tab 也会 mount useChatSession,
       // 在这里无条件 MarkRead 会把用户没看过的 session 标记成已读。
@@ -249,7 +299,9 @@ export function useChatSession(sessionId: number) {
     } finally {
       setLoading(false);
     }
-  }, [sessionId]);
+    // setMessages 是 [] 依赖的 useCallback,身份恒定 —— 列进来只为满足
+    // exhaustive-deps,reload 仍然只随 sessionId 变化,不会多触发一次加载。
+  }, [sessionId, setMessages]);
 
   useEffect(() => {
     void reload();

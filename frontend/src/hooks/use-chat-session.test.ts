@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { useChatSession } from "./use-chat-session";
+import type { ChatMessage } from "./use-chat-session";
 import { useSessionMetaStore } from "@/stores/session-meta-store";
 import { useSessionReadStore } from "@/stores/session-read-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
@@ -613,6 +614,100 @@ describe("useChatSession", () => {
         }),
       ]),
     );
+  });
+
+  // Bug(sess-2916):LoadSession 是异步 DB 快照,自主续轮可能在它在途时起手 ——
+  // chat-panel 的 onAutonomousEvent 收到 autonomous_started 后 setMessages 插入
+  // 新 assistant 行,几十毫秒后那份**更旧**的快照 resolve,整表覆盖把行抹掉。
+  // 行没了,挂在该 assistantMessageId 上的 liveBlocks 就再没有宿主(transcript-rows
+  // 的 buildRows 只遍历 displayMessages),后续到达的审批卡 / 流式正文全部静默丢弃:
+  // 会话胶囊翻「审批」(agentStatus 有 normalizeSessionSnapshot 挡旧快照),转录里
+  // 却一张卡都没有。doneTick 守卫只认 turn **结束**,起手这一侧完全没护栏。
+  it("Given a session load in flight, When an autonomous turn inserts its assistant row, Then the older snapshot does not drop it", async () => {
+    let resolveStale!: (value: unknown) => void;
+    const stale = new Promise((resolve) => {
+      resolveStale = resolve;
+    });
+    loadChatSession.mockReturnValueOnce(stale);
+
+    const { result } = renderHook(() => useChatSession(9));
+    await waitFor(() => expect(loadChatSession).toHaveBeenCalledOnce());
+
+    // 自主续轮起手:chat-panel 就地插入这一轮的 assistant 行并 openStream。
+    act(() => {
+      result.current.setMessages((prev) => [
+        ...prev,
+        {
+          id: 42,
+          sessionId: 9,
+          role: "assistant",
+          blocks: [],
+          seq: 2,
+        } as unknown as ChatMessage,
+      ]);
+    });
+
+    // 这份快照是后端在 42 落库**之前**取走的,天然不含它。
+    act(() => {
+      resolveStale({
+        session: {
+          id: 9,
+          agentId: 1,
+          agentName: "Eng",
+          title: "x",
+          agentStatus: "running",
+          activeStream: "chat:event:9:42",
+          lastMessageAt: 0,
+          createtime: 0,
+        },
+        messages: [{ id: 40, sessionId: 9, role: "user", blocks: [], seq: 1 }],
+      });
+    });
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.messages.map((m) => m.id)).toEqual([40, 42]);
+  });
+
+  // 边界:只保留「本次 load 在途期间新插入」的行。发起 load 时就已在表里、而快照
+  // 不含的行是真被后端删了(编辑 / 重跑会截断后续消息),必须跟着快照消失 ——
+  // 否则修复会把被截断的历史复活。
+  it("Given rows the backend truncated, When the reload snapshot omits them, Then they are dropped", async () => {
+    loadChatSession.mockResolvedValueOnce({
+      session: {
+        id: 9,
+        agentId: 1,
+        agentName: "Eng",
+        title: "x",
+        agentStatus: "idle",
+        lastMessageAt: 0,
+        createtime: 0,
+      },
+      messages: [
+        { id: 40, sessionId: 9, role: "user", blocks: [], seq: 1 },
+        { id: 41, sessionId: 9, role: "assistant", blocks: [], seq: 2 },
+        { id: 42, sessionId: 9, role: "user", blocks: [], seq: 3 },
+      ],
+    });
+    const { result } = renderHook(() => useChatSession(9));
+    await waitFor(() => expect(result.current.messages).toHaveLength(3));
+
+    loadChatSession.mockResolvedValueOnce({
+      session: {
+        id: 9,
+        agentId: 1,
+        agentName: "Eng",
+        title: "x",
+        agentStatus: "idle",
+        lastMessageAt: 0,
+        createtime: 0,
+      },
+      messages: [{ id: 40, sessionId: 9, role: "user", blocks: [], seq: 1 }],
+    });
+    await act(async () => {
+      await result.current.reload();
+    });
+
+    expect(result.current.messages.map((m) => m.id)).toEqual([40]);
   });
 
   it("returns null when sessionId is 0", async () => {
