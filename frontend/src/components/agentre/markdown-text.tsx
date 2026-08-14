@@ -6,8 +6,9 @@ import ReactMarkdown, {
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 
-import { cn } from "@/lib/utils";
+import { isLocalFileURL } from "@/lib/link-classify";
 import { splitStreamingMarkdown } from "@/lib/streaming-markdown";
+import { cn } from "@/lib/utils";
 
 import { CodeBlock } from "./code-block";
 import {
@@ -131,18 +132,18 @@ const SAFE_HREF_PATTERNS: RegExp[] = [
   /^https?:/i,
   /^mailto:/i,
   /^tel:/i,
-  /^file:\/\//i,
   /^www\./i,
   /^\//, // POSIX 绝对
   /^[A-Za-z]:[\\/]/, // Windows 绝对
 ];
 
 function whitelistUrl(url: string, key: string): string {
-  for (const p of SAFE_HREF_PATTERNS) {
-    if (p.test(url)) return url;
+  if (isLocalFileURL(url)) return url;
+  for (const pattern of SAFE_HREF_PATTERNS) {
+    if (pattern.test(url)) return url;
   }
   // 只对图片 src 放行相对路径(无 scheme);href 分支逐字节不变,相对/危险 scheme
-  // (data: / javascript: / 其它协议)仍剥空。
+  // (data: / javascript: / 远端 file:// / 其它协议)仍剥空。
   if (key === "src" && url !== "" && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(url)) {
     return url;
   }

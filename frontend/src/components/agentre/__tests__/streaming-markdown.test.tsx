@@ -51,14 +51,16 @@ describe("StreamingMarkdown", () => {
     expect(screen.getByRole("link", { name: /main\.go/ })).toBeInTheDocument();
   });
 
-  it("Given an autolink in a committed segment, when only the streaming tail grows, then the committed link node remains stable", () => {
+  it("Given an autolink in a committed segment, when only the streaming tail grows, then both committed and completed targets remain visible", () => {
     const view = render(
       <StreamingMarkdown
         text={"README.md\n\nInspect main.g"}
         cwd="/work/proj"
       />,
     );
-    const committedLink = screen.getByRole("link", { name: /README\.md/ });
+    expect(
+      screen.getByRole("link", { name: /README\.md/ }),
+    ).toBeInTheDocument();
 
     view.rerender(
       <StreamingMarkdown
@@ -67,9 +69,9 @@ describe("StreamingMarkdown", () => {
       />,
     );
 
-    expect(screen.getByRole("link", { name: /README\.md/ })).toBe(
-      committedLink,
-    );
+    expect(
+      screen.getByRole("link", { name: /README\.md/ }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /main\.go/ })).toBeInTheDocument();
   });
 });

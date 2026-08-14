@@ -1,3 +1,5 @@
+import { isLocalFileURL } from "@/lib/link-classify";
+
 import { previewKind } from "./chat-context-sidebar/previewable";
 
 export const MARKDOWN_AUTOLINK_TAG = "markdown-autolink";
@@ -16,7 +18,6 @@ type HastNode = {
 
 const URL_PREFIX = /^(?:https?:\/\/|mailto:|tel:)/i;
 const WWW_PREFIX = /^www\./i;
-const FILE_PROTOCOL = /^file:\/\//i;
 const ABS_POSIX = /^\//;
 const ABS_WINDOWS = /^[A-Za-z]:[\\/]/;
 const SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
@@ -54,6 +55,8 @@ const HARD_END_BOUNDARY = new Set([
   "】",
   "》",
   ">",
+  "”",
+  "’",
 ]);
 const TRAILING_PUNCTUATION = /[.?:]+$/;
 
@@ -92,7 +95,7 @@ function isMarkdownAutoLinkTarget(value: string, cwd?: string): boolean {
     if (firstSeparator < 0 || firstWhitespace < firstSeparator) return false;
   }
   if (
-    FILE_PROTOCOL.test(value) ||
+    isLocalFileURL(value) ||
     ABS_POSIX.test(value) ||
     ABS_WINDOWS.test(value)
   ) {
@@ -126,6 +129,13 @@ function isStartBoundary(text: string, index: number): boolean {
   );
 }
 
+function followsSchemeColon(text: string, index: number): boolean {
+  if (index === 0 || text[index - 1] !== ":") return false;
+  let start = index - 2;
+  while (start >= 0 && /[A-Za-z0-9+.-]/.test(text[start])) start -= 1;
+  return SCHEME.test(text.slice(start + 1, index));
+}
+
 function isCandidateBoundary(text: string, index: number): boolean {
   if (index >= text.length) return true;
   const char = text[index];
@@ -141,7 +151,7 @@ function isCandidateBoundary(text: string, index: number): boolean {
 function candidateEnd(text: string, start: number): number {
   const source = text.slice(start);
   const urlTarget = URL_PREFIX.test(source) || WWW_PREFIX.test(source);
-  const fileTarget = FILE_PROTOCOL.test(source);
+  const fileTarget = isLocalFileURL(source);
   const windowsTarget = ABS_WINDOWS.test(source);
   let end = start;
   while (end < text.length) {
@@ -250,6 +260,7 @@ export function tokenizeMarkdownAutoLinks(
 
     if (
       !isStartBoundary(text, index) ||
+      followsSchemeColon(text, index) ||
       text[index] === ":" ||
       isBoundaryPunctuation(text[index])
     ) {
@@ -265,7 +276,7 @@ export function tokenizeMarkdownAutoLinks(
       !URL_PREFIX.test(candidate) && !WWW_PREFIX.test(candidate);
     const relativePathCandidate =
       pathCandidate &&
-      !FILE_PROTOCOL.test(candidate) &&
+      !isLocalFileURL(candidate) &&
       !ABS_POSIX.test(candidate) &&
       !ABS_WINDOWS.test(candidate);
 

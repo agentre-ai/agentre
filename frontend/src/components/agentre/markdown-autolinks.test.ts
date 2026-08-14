@@ -53,6 +53,16 @@ describe("tokenizeMarkdownAutoLinks", () => {
     expect(visibleText(text, CWD)).toBe(text);
   });
 
+  it("Given complete targets inside smart quotes, when tokenized, then the closing quotes stay outside the links", () => {
+    const text = "Open “README.md” and ‘frontend/src/chat.tsx’.";
+
+    expect(linkValues(text, CWD)).toEqual([
+      "README.md",
+      "frontend/src/chat.tsx",
+    ]);
+    expect(visibleText(text, CWD)).toBe(text);
+  });
+
   it("Given an unquoted relative path containing spaces, when tokenized, then no misleading partial filename is linked", () => {
     expect(linkValues("Open docs/My Guide.md now", CWD)).toEqual([]);
   });
@@ -76,7 +86,7 @@ describe("tokenizeMarkdownAutoLinks", () => {
 
   it("Given ambiguous or unsafe text, when tokenized, then it remains plain text", () => {
     const text =
-      "example.com github.com/owner/repo docs foo.bar 2026/08/14 1/2 javascript:alert(1) data:text/plain,x #L42";
+      "example.com github.com/owner/repo docs foo.bar 2026/08/14 1/2 javascript:alert(1) data:text/plain,x file://server/share/a.go #L42";
 
     expect(linkValues(text, CWD)).toEqual([]);
     expect(visibleText(text, CWD)).toBe(text);

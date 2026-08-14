@@ -21,7 +21,6 @@ export type LocalPathKind = "file" | "folder";
 
 const URL_PREFIX = /^(https?:|mailto:|tel:)/i;
 const WWW_PREFIX = /^www\./i;
-const FILE_PROTOCOL = /^file:\/\//i;
 const ABS_POSIX = /^\//;
 const ABS_WINDOWS = /^[A-Za-z]:[\\/]/;
 const SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
@@ -49,10 +48,17 @@ function decodeLocalPath(path: string): string {
   }
 }
 
+export function isLocalFileURL(href: string): boolean {
+  return /^file:\/\/(?:localhost\/|\/(?!\/))/i.test(href);
+}
+
 function fileURLToPath(href: string): string {
   // file:///Users/x/foo.go → /Users/x/foo.go
+  // file://localhost/Users/x/foo.go → /Users/x/foo.go
   // file:///C:/Users/x/foo.go → C:/Users/x/foo.go
-  let path = href.slice("file://".length);
+  let path = href
+    .replace(/^file:\/\/localhost/i, "file://")
+    .slice("file://".length);
   if (path.startsWith("/") && /^[A-Za-z]:/.test(path.slice(1))) {
     path = path.slice(1);
   }
@@ -132,7 +138,7 @@ export function classifyLink(
 
   let rawPath: string;
   let relativeSource: string | undefined;
-  if (FILE_PROTOCOL.test(href)) {
+  if (isLocalFileURL(href)) {
     rawPath = fileURLToPath(href);
   } else if (ABS_POSIX.test(href) || ABS_WINDOWS.test(href)) {
     rawPath = decodeLocalPath(href);

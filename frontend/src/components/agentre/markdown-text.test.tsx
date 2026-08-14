@@ -108,6 +108,17 @@ describe("MarkdownText automatic RichLinks", () => {
     );
   });
 
+  it("Given an explicit Markdown link with a remote file authority, when rendered, then it exposes no navigable href", () => {
+    const { container } = render(
+      <MarkdownText
+        text="[remote share](file://server/share/a.go)"
+        cwd="/work/proj"
+      />,
+    );
+
+    expect(container.querySelector("a")?.hasAttribute("href")).toBe(false);
+  });
+
   it("Given whole-target inline code, when rendered, then it is clickable while retaining the existing code appearance", () => {
     render(<MarkdownText text="`docs/My Guide.md`" cwd="/work/proj" />);
 

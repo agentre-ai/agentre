@@ -168,6 +168,22 @@ describe("classifyLink", () => {
         },
       );
     });
+
+    it("Given a localhost file URL, when classified, then it resolves as a local absolute path", () => {
+      expect(classifyLink("file://localhost/Users/me/proj/a.go", CWD)).toEqual({
+        kind: "local-internal",
+        fullPath: "/Users/me/proj/a.go",
+        pathKind: "file",
+        relPath: "a.go",
+      });
+    });
+
+    it("Given a file URL with a remote authority, when classified, then it is rejected instead of opening a process-relative path", () => {
+      expect(classifyLink("file://server/share/a.go", CWD)).toEqual({
+        kind: "unknown",
+        href: "file://server/share/a.go",
+      });
+    });
   });
 
   describe("Relative paths", () => {
