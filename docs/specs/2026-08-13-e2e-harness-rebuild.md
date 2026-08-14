@@ -6,7 +6,7 @@
 
 **Objective:** 将 `agentre/` 仓库的自动化 GUI E2E 重建为一个无外部基础设施依赖、强制隔离且只有 `make e2e` 一个正式入口的最小测试体系，同时将真实外部环境留给独立的本地验证流程。
 
-**Hard invariant:** 自动化 E2E 或本地真实验证均不得打开正式 `agentre`、开发态 `agentre-dev` 的业务数据库、读取其业务内容，或写入、迁移、克隆、删除其 SQLite 数据及 system keychain；为检测污染而读取数据库文件及 WAL/SHM 的存在性、大小和修改时间是唯一例外。E2E 专用 fake 不得进入正式 `agentre` 或 `agentred` 可执行程序的依赖图。
+**Hard invariant:** 自动化 E2E 或本地真实验证均不得发现、打开、读取、比较或修改正式 `agentre`、开发态 `agentre-dev` 的业务数据库及其 WAL/SHM，也不得读取或写入 system keychain。隔离证明只能检查本次随机运行根内实际解析和打开的 SQLite/file-keychain 路径，不能以正式数据静默为前提。E2E 专用 fake 不得进入正式 `agentre` 或 `agentred` 可执行程序的依赖图。
 
 ## Problem
 
@@ -16,6 +16,7 @@
 4. **桌面 E2E 越过了仓库责任边界。** 当前 `make e2e-sync` 经 `e2e/run-e2e-sync.mjs` 启动真实 `agentre-server`，并要求其 PostgreSQL/Redis 可用；对 `agentre/` 而言，Server、OAuth 及其数据基础设施都是外部系统，不应成为桌面仓库自动化 E2E 的前置条件。
 5. **入口和 harness 分裂。** 当前 Makefile 同时暴露 `e2e`、`e2e-scratch`、`e2e-sync` 及 fake/real 两种 verification flavor；`e2e/` 又维护普通、scratch、sync 多套 runner/config。相同的进程、端口、数据目录和清理约束分散在多处，难以证明所有入口都 fail closed。
 6. **现有 committed suite 超出本轮需要的最小回归面。** `e2e/tests/` 当前包含聊天、会话刷新、Git 预览、组织工具和子代理工具等多条规格。本轮已获准删除原有普通 E2E 内容，以三个桌面责任边界的基础冒烟重新建立可信基线。
+7. **正式数据库元数据 canary 与正在运行的正式应用冲突。** 修正前 runner 会在 E2E 前后比较正式/开发 SQLite、WAL、SHM 的元数据；本地运行观察到 installed Agentre 自己的正常 WAL 写入会让 7 条 smoke 全部通过后仍判定隔离失败。该机制既不能把正式应用写入与 E2E 污染归因区分开，也迫使测试要求正式应用静默，不符合 E2E 不接触生产数据的边界。
 
 ## Actors and user stories
 
@@ -23,6 +24,7 @@
 2. As a contributor, I want an incorrectly started E2E application to fail before storage initialization, so that a missing environment variable cannot mutate my real application state.
 3. As a release reviewer, I want the production dependency graph to exclude all E2E composition and fake implementations, so that test behavior cannot be activated in a shipped binary.
 4. As a developer investigating integration behavior, I want a separate isolated real-environment verification flow, so that I can exercise real Server, daemon or CLI integrations without weakening automated-test determinism.
+5. As a contributor running the installed desktop, I want `make e2e` to coexist with it without discovering or inspecting its data files, so that automation cannot disturb or depend on my production activity.
 
 ## Design decisions
 
@@ -37,6 +39,7 @@
 | 7 | 本地真实验证使用正式 main、真实依赖和隔离本地存储，不复用 E2E main 或 fake flavor。 | “真实验证”与“确定性自动化”职责不同。Rejected: verification 默认启动 E2E fake——无法证明真实外部集成，且继续混淆两个入口。 |
 | 8 | 不修改 sibling `agentre-server/` 仓库及其 E2E。 | 三个仓库独立提交，桌面仓库只验证自己的客户端责任。Rejected: 同时重建 Server E2E——扩大范围并混合仓库所有权。 |
 | 9 | `make e2e` 全程 headless，E2E 桌面原生窗口保持隐藏，由无头 Chromium 驱动 Wails bridge。 | 自动化运行不应抢占桌面、闪窗或依赖人工观看。Rejected: 先显示原生窗口再由 browser 调 `WindowHide`——当前 `App.tsx` 会在 mount 时调用 `WindowShow`，会产生可见闪窗且把隐藏时机交给测试脚本。 |
+| 10 | 隔离证明只验证 E2E 自己的实际解析/打开路径，不发现或比较正式/开发数据文件。 | 启动前使用与 bootstrap 相同的数据目录解析结果核对 manifest，启动后再核对 runtime/SQLite/file-keychain 均位于本次运行根，能直接证明测试使用的资源且不依赖正式应用静默。Rejected: 继续比较正式 DB/WAL/SHM 元数据——无法归因并会把正式应用正常写入误判为 E2E 污染；要求停止正式应用——让自动化反向影响生产使用。 |
 
 ## 自动化 E2E 流程
 
@@ -69,7 +72,9 @@ E2E main 在任何持久化初始化前执行以下验证：
 - 目录由本次 runner 创建，且在支持 POSIX 权限的平台上没有向其他用户开放；
 - 运行根/token 不可被另一次 E2E run 复用。
 
-任一条件失败时，错误信息只说明失败的隔离条件和正确入口，不回显 token，不尝试“修复”路径，也不回退到任何默认目录。runner 在启动前和结束后只读取正式/开发 SQLite 主文件及 WAL/SHM 文件的存在性、大小和修改时间；若元数据发生变化，本次 E2E 判为失败并报告隔离违规，但不尝试清理或恢复用户数据。
+任一条件失败时，错误信息只说明失败的隔离条件和正确入口，不回显 token，不尝试“修复”路径，也不回退到任何默认目录。E2E main 在调用 bootstrap 前还必须使用 bootstrap 的实际数据目录解析入口，确认结果与 manifest 的规范化 `dataDir` 完全一致；不一致时在日志、数据库和 keychain 初始化前失败。
+
+bootstrap 完成后，E2E composition 再确认 runtime 报告的数据目录等于同一 `dataDir`。SQLite oracle 通过实际 UI 写入与 `PRAGMA database_list` 证明默认数据库文件位于 `<runRoot>/data/agentre.db`；E2E 生成的 keychain 凭据必须作为 file-keychain 文件出现在 manifest 的 `keychainDir`。任一实际路径越出运行根时测试失败并只清理本次运行资源。runner 不枚举、不 `stat`、不打开，也不比较正式或开发数据目录下的任何 SQLite、WAL、SHM 文件，因此正式 Agentre 可在 E2E 期间继续运行。
 
 ## Desktop smoke
 
@@ -105,7 +110,7 @@ E2E composition 将桌面的真实 remote client 指向 harness 内实现最小�
 
 ## 兼容性、安全与隐私
 
-本轮不改变用户可见产品功能、数据库 schema、现有业务数据格式或前端文案。正式应用的数据目录优先级和真实 keychain 行为保持不变；新安全门只存在于独立 E2E main 和 verification launcher。
+本轮不改变用户可见产品功能、数据库 schema、现有业务数据格式或前端文案。正式应用的数据目录优先级和真实 keychain 行为保持不变；新安全门只存在于独立 E2E main 和 verification launcher。E2E runner 不解析正式/开发数据目录，也不要求正式应用停止或静默。
 
 E2E fake 只使用生成的测试身份、测试凭据和测试内容。日志、trace、截图和保留数据库不得包含开发者正式 token、keychain secret、真实账号数据或 sibling 仓库配置。fake HTTP/WebSocket 端点只绑定 loopback 和 runner 分配的动态端口，不监听 LAN。
 
@@ -132,7 +137,8 @@ E2E fake 只使用生成的测试身份、测试凭据和测试内容。日志�
 |---|---|---|
 | E2E 启动 preflight 的 Go 测试 | 有效 manifest 能进入启动流程；缺 token、token 不匹配、路径越界、符号链接逃逸、正式/开发目录及不安全权限均在 bootstrap 前失败 | 现有 `e2e/fakes/identity_test.go`、`keychain_test.go` 和 `e2e/lib/target.test.mjs` 提供部分隔离先例，但当前没有独立 main preflight |
 | 生产依赖图 guard | 正式 `agentre` 与 `agentred` 不依赖 `e2e/` 或 fake runtime；仓库不存在 E2E build tag/no-op seam | 现有 daemon runtime import guard；本轮新增针对入口依赖图的机械检查 |
-| Runner/target Node 测试 | 每次运行使用独占路径和动态端口；不同 worktree/run 不冲突；signal/失败清理只触及本次运行资源；默认数据文件元数据快照可检测污染 | `e2e/lib/target.test.mjs` 与 `lib/procs.mjs` |
+| Runner/target Node 测试 | 每次运行使用独占路径和动态端口；不同 worktree/run 不冲突；signal/失败清理只触及本次运行资源；runner 不发现或读取正式/开发数据路径 | `e2e/lib/run-context.test.mjs`、`target.test.mjs` 与 `lib/procs.mjs` |
+| E2E 实际存储路径证明 | bootstrap 前的实际 data-dir 解析、bootstrap runtime、SQLite `PRAGMA database_list` 和 file-keychain 产物均指向 manifest 声明的本次运行根；越界时 fail closed | `e2e/app`、`e2e/composition`、`e2e/fixtures/db.ts` |
 | Desktop Playwright smoke + SQLite oracle | 无头 Chromium 下真实 UI/IPC/service/repository/migration 的启动、聊天、流式回复、reload 持久化及 runtime 失败终态 | 现有 `smoke-chat.spec.ts`、`session-reload.spec.ts` 和 `fixtures/db.ts`，但规格将重写 |
 | Sync client Playwright smoke + fake HTTP protocol recorder | 桌面拥有的 push/pull 转换、身份/游标传递、远端变更 apply，以及拒绝/无效响应时不破坏本地状态 | 现有 `sync/workspace-sync.spec.ts` 覆盖真实 Server 路径；本轮改为仓库内 fake Server 边界 |
 | Remote peer Playwright smoke + fake WebSocket/JSON-RPC peer | 桌面拥有的连接、请求编码、事件流转换、持久化，以及中断/协议错误后的终态 | 现有 `e2e/fakes/remote.go` 与跨仓库 dual 路径提供协议先例；本轮不启动真实 daemon/Server |
