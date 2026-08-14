@@ -202,6 +202,20 @@ test("Given a failed run containing its token in text artifacts, when evidence i
   await writeFile(join(run.keychainDir, "secret-entry"), "must-not-be-retained");
   await writeFile(join(run.browserDir, "browser-secret.json"), "must-not-be-retained");
   await writeFile(join(run.runRoot, "go-overlay.json"), "must-not-be-retained");
+  const desktopControlToken = "d".repeat(43);
+  assert.equal(
+    [
+      run.token,
+      run.controlToken,
+      run.syncIdentity.refreshToken,
+      run.remoteIdentity.deviceToken,
+    ].includes(desktopControlToken),
+    false,
+  );
+  await writeFile(
+    join(run.dataDir, "ctl-endpoint.json"),
+    `${JSON.stringify({ token: desktopControlToken })}\n`,
+  );
 
   const preserved = await preserveFailureArtifacts(run, artifactRoot);
   await assert.rejects(access(run.runRoot), { code: "ENOENT" });
@@ -217,6 +231,9 @@ test("Given a failed run containing its token in text artifacts, when evidence i
   }
   assert.equal(manifest.includes(run.token), false);
   assert.match(log, /\[REDACTED\]/);
+  await assert.rejects(access(join(preserved, "data", "ctl-endpoint.json")), {
+    code: "ENOENT",
+  });
   for (const path of [
     join(preserved, "keychain"),
     join(preserved, "browser"),

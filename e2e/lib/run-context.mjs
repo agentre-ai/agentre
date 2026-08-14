@@ -309,6 +309,7 @@ export async function preserveFailureArtifacts(run, artifactBase = join(REPO_ROO
   for (const unsafePath of [
     "browser",
     "keychain",
+    "data/ctl-endpoint.json",
     "fake-runtime.go",
     "go-overlay.json",
     ".agentre-e2e-consumed",
