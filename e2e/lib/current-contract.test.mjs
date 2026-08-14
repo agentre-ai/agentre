@@ -329,6 +329,19 @@ test("Given the explicit guard entry, when it invokes the suite, then it request
   assert.match(guardRunner, /runNodeGuards\(\{\s*tests:\s*FULL_GUARD_TESTS\s*\}\)/);
 });
 
+test("Given the dedicated E2E app generates ignored Wails bindings, when Wails appends its wailsjs output directory, then the files land in the root frontend imported by Vite", () => {
+  const config = JSON.parse(read("e2e/app/wails.json"));
+  const generatedBindingsDir = resolve(
+    REPO_ROOT,
+    "e2e",
+    "app",
+    config.wailsjsdir,
+    "wailsjs",
+  );
+
+  assert.equal(generatedBindingsDir, join(REPO_ROOT, "frontend", "wailsjs"));
+});
+
 test("Given the replacement suite, when its public entries are inspected, then only unified automation and real verification remain", () => {
   assert.deepEqual(
     readdirSync(join(REPO_ROOT, "e2e", "tests")).filter((name) => name.endsWith(".spec.ts")).sort(),

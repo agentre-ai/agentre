@@ -14,6 +14,7 @@ import {
   assertRemoteDeviceCredentialPersisted,
   createRunContext,
   fakePeerEnvironment,
+  generateWailsBindings,
   playwrightEnvironment,
   preserveFailureArtifacts,
   spawnLogged,
@@ -107,6 +108,8 @@ async function main() {
   );
 
   try {
+    await generateWailsBindings(run);
+
     const syncIdentity = {
       serverURL: "",
       userID: 7001,

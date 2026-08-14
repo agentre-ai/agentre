@@ -5,7 +5,7 @@
   "projectdir": ".",
   "build:dir": "../../build",
   "frontend:dir": "../../frontend",
-  "wailsjsdir": "../../frontend/wailsjs",
+  "wailsjsdir": "../../frontend",
   "frontend:build": "true",
   "frontend:dev:serverUrl": "http://127.0.0.1:1",
   "author": {

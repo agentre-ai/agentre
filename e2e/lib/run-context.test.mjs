@@ -6,10 +6,12 @@ import { test } from "node:test";
 
 import {
   ProcessSupervisor,
+  REPO_ROOT,
   appEnvironment,
   assertRemoteDeviceCredentialPersisted,
   createRunContext,
   fakePeerEnvironment,
+  generateWailsBindings,
   playwrightEnvironment,
   preserveFailureArtifacts,
   reserveDistinctLoopbackPorts,
@@ -118,6 +120,98 @@ test("Given a private run and a secret-bearing parent environment, when Playwrig
   assert.equal(env.AGENTRE_KEYCHAIN_DIR, undefined);
   assert.equal(env.AGENTRE_ENV, undefined);
   assert.equal(env.AGENTRE_PROXY_PORT, undefined);
+});
+
+test("Given a fresh checkout without generated frontend bindings, when the E2E runner prepares the UI, then Wails bindings are generated with disposable storage inside the run root", async (t) => {
+  const run = await createRunContext();
+  const bindingsDir = join(run.runRoot, "generated-wailsjs");
+  t.after(() => run.remove());
+  let invocation;
+
+  await generateWailsBindings(run, {
+    bindingsDir,
+    parentEnv: {
+      PATH: "/test/bin",
+      AGENTRE_DATA_DIR: "/formal-data-must-not-be-used",
+      AGENTRE_KEYCHAIN_DIR: "/formal-keychain-must-not-be-used",
+      AGENTRE_E2E_TOKEN: "must-not-reach-binding-generation",
+    },
+    spawnProcess(command, args, options) {
+      invocation = { command, args, options };
+      const child = new EventEmitter();
+      queueMicrotask(async () => {
+        await mkdir(join(bindingsDir, "runtime"), { recursive: true });
+        await mkdir(join(bindingsDir, "go", "app"), { recursive: true });
+        await writeFile(join(bindingsDir, "runtime", "runtime.js"), "export {};\n");
+        await writeFile(join(bindingsDir, "go", "app", "App.js"), "export {};\n");
+        child.emit("exit", 0, null);
+      });
+      return child;
+    },
+  });
+
+  assert.equal(invocation.command, "wails");
+  assert.deepEqual(invocation.args, ["generate", "module"]);
+  assert.equal(invocation.options.cwd, REPO_ROOT);
+  assert.equal(invocation.options.env.PATH, "/test/bin");
+  assert.equal(invocation.options.env.AGENTRE_E2E_TOKEN, undefined);
+  assert.equal(invocation.options.env.AGENTRE_E2E_MANIFEST, undefined);
+  assert.equal(invocation.options.env.AGENTRE_E2E_SERVER_URL, undefined);
+  assert.notEqual(invocation.options.env.AGENTRE_DATA_DIR, run.dataDir);
+  assert.notEqual(invocation.options.env.AGENTRE_KEYCHAIN_DIR, run.keychainDir);
+  for (const path of [
+    invocation.options.env.AGENTRE_DATA_DIR,
+    invocation.options.env.AGENTRE_KEYCHAIN_DIR,
+    invocation.options.env.APPDATA,
+    invocation.options.env.LOCALAPPDATA,
+    invocation.options.env.XDG_CONFIG_HOME,
+    invocation.options.env.XDG_DATA_HOME,
+    invocation.options.env.XDG_CACHE_HOME,
+    invocation.options.env.TMPDIR,
+    invocation.options.env.TMP,
+    invocation.options.env.TEMP,
+  ]) {
+    assert.equal(path.startsWith(`${run.runRoot}/`), true);
+    await assert.rejects(access(path), { code: "ENOENT" });
+  }
+  await access(join(bindingsDir, "runtime", "runtime.js"));
+  await access(join(bindingsDir, "go", "app", "App.js"));
+});
+
+test("Given Wails binding generation exits unsuccessfully or omits required output, when E2E startup prepares the UI, then it fails before Vite and removes disposable generation storage", async (t) => {
+  const run = await createRunContext();
+  t.after(() => run.remove());
+  const attemptedStorage = [];
+
+  await assert.rejects(
+    generateWailsBindings(run, {
+      bindingsDir: join(run.runRoot, "failed-wailsjs"),
+      spawnProcess(_command, _args, options) {
+        attemptedStorage.push(options.env.AGENTRE_DATA_DIR, options.env.AGENTRE_KEYCHAIN_DIR);
+        const child = new EventEmitter();
+        queueMicrotask(() => child.emit("exit", 1, null));
+        return child;
+      },
+    }),
+    /failed to generate Wails bindings; use make e2e/,
+  );
+
+  await assert.rejects(
+    generateWailsBindings(run, {
+      bindingsDir: join(run.runRoot, "missing-wailsjs"),
+      spawnProcess(_command, _args, options) {
+        attemptedStorage.push(options.env.AGENTRE_DATA_DIR, options.env.AGENTRE_KEYCHAIN_DIR);
+        const child = new EventEmitter();
+        queueMicrotask(() => child.emit("exit", 0, null));
+        return child;
+      },
+    }),
+    /required Wails bindings are missing; use make e2e/,
+  );
+
+  for (const path of attemptedStorage) {
+    await assert.rejects(access(path), { code: "ENOENT" });
+  }
 });
 
 test("Given remote credential evidence context is unavailable, when persistence is checked, then the failure exposes no path or token and directs callers to make e2e", async () => {

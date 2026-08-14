@@ -9,7 +9,7 @@ import {
   readdirSync,
   writeFileSync,
 } from "node:fs";
-import { cp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -139,6 +139,110 @@ export function playwrightEnvironment(run, parentEnv = process.env) {
     TMP: run.browserDir,
     TEMP: run.browserDir,
   };
+}
+
+function childExitResult(child) {
+  return new Promise((resolveResult) => {
+    let resolved = false;
+    const resolveOnce = (result) => {
+      if (resolved) return;
+      resolved = true;
+      resolveResult(result);
+    };
+    child.once("error", () => resolveOnce({ code: 1, signal: null }));
+    child.once("exit", (code, signal) =>
+      resolveOnce({ code: code ?? 1, signal }),
+    );
+  });
+}
+
+export async function generateWailsBindings(
+  run,
+  {
+    bindingsDir = join(REPO_ROOT, "frontend", "wailsjs"),
+    parentEnv = process.env,
+    spawnProcess = spawnLogged,
+  } = {},
+) {
+  if (!run?.runRoot || !run?.logsDir) {
+    throw new Error("Wails binding generation context is unavailable; use make e2e");
+  }
+
+  const generationRoot = join(run.runRoot, "wails-bindings");
+  const dataDir = join(generationRoot, "data");
+  const keychainDir = join(generationRoot, "keychain");
+  const appDataDir = join(generationRoot, "appdata");
+  const localAppDataDir = join(generationRoot, "local-appdata");
+  const xdgConfigDir = join(generationRoot, "xdg-config");
+  const xdgDataDir = join(generationRoot, "xdg-data");
+  const xdgCacheDir = join(generationRoot, "xdg-cache");
+  const tempDir = join(generationRoot, "tmp");
+  for (const path of [
+    generationRoot,
+    dataDir,
+    keychainDir,
+    appDataDir,
+    localAppDataDir,
+    xdgConfigDir,
+    xdgDataDir,
+    xdgCacheDir,
+    tempDir,
+  ]) {
+    makePrivateDir(path);
+  }
+
+  const env = { ...parentEnv };
+  for (const name of Object.keys(env)) {
+    if (
+      name.startsWith("AGENTRE_E2E_") ||
+      name === "AGENTRE_DATA_DIR" ||
+      name === "AGENTRE_KEYCHAIN_DIR"
+    ) {
+      delete env[name];
+    }
+  }
+  Object.assign(env, {
+    AGENTRE_DATA_DIR: dataDir,
+    AGENTRE_KEYCHAIN_DIR: keychainDir,
+    AGENTRE_ENV: "test",
+    AGENTRE_PROXY_PORT: "0",
+    APPDATA: appDataDir,
+    LOCALAPPDATA: localAppDataDir,
+    XDG_CONFIG_HOME: xdgConfigDir,
+    XDG_DATA_HOME: xdgDataDir,
+    XDG_CACHE_HOME: xdgCacheDir,
+    TMPDIR: tempDir,
+    TMP: tempDir,
+    TEMP: tempDir,
+  });
+
+  try {
+    let child;
+    try {
+      child = spawnProcess("wails", ["generate", "module"], {
+        cwd: REPO_ROOT,
+        env,
+        logPath: join(run.logsDir, "wails-bindings.log"),
+      });
+    } catch {
+      throw new Error("failed to generate Wails bindings; use make e2e");
+    }
+    const result = await childExitResult(child);
+    if (result.code !== 0 || result.signal) {
+      throw new Error("failed to generate Wails bindings; use make e2e");
+    }
+
+    try {
+      await Promise.all([
+        access(join(bindingsDir, "runtime", "runtime.js")),
+        access(join(bindingsDir, "go", "app", "App.js")),
+      ]);
+    } catch {
+      throw new Error("required Wails bindings are missing; use make e2e");
+    }
+  } finally {
+    await rm(generationRoot, { recursive: true, force: true });
+  }
 }
 
 const credentialEvidenceFailures = Object.freeze({
