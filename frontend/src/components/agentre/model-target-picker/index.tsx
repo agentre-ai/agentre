@@ -325,11 +325,10 @@ export function ModelTargetPicker({
         group: groupLabel,
         groupType: p.type,
         label: followDefaultLabel,
-        sublabel: defaultModel
-          ? t("modelTargetPicker.defaultCurrent", {
-              model: defaultModel.modelId,
-            })
-          : noDefaultModelLabel,
+        // 副行只写解析到的模型标识 —— 它回答「到底跑哪个模型」，必须完整可读。
+        // 「默认变了会自动跟着变」这条后果对每一行都一样，交给弹层里唯一一条图例
+        // （+ ↻ 图标 + 「固定到具体模型」分段）承担，不逐行重复把副行挤到截断。
+        sublabel: defaultModel ? defaultModel.modelId : noDefaultModelLabel,
         target: { providerKey: p.providerKey, modelKey: "" },
         disabled: !p.enabled || providerSyncNeeded || defaultSyncNeeded,
         disabledHint:
@@ -389,7 +388,6 @@ export function ModelTargetPicker({
       }
     }
     return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     compatible,
     executionLocation,
@@ -710,6 +708,24 @@ export function ModelTargetPicker({
           ) : null}
         </div>
 
+        {/* ↻ 图例：整颗弹层只说一次「跟随默认会变、固定模型不会变」，选项行因此只留
+            解析到的模型标识。贴着它解释的选项列表放（底部留给消费方 footer 的
+            「何时生效」，两条说的是不同的事，不叠在一起）。列表里没有跟随默认项时不渲染。 */}
+        {!loading &&
+        !error &&
+        flatOptions.some((o) => o.kind === "provider-default") ? (
+          <div
+            data-testid="dynamic-legend"
+            className="flex items-start gap-1.5 border-b border-border px-3 py-1.5 text-2xs text-muted-foreground"
+          >
+            <RefreshCw
+              className="mt-px size-3 shrink-0 text-primary-text"
+              aria-hidden="true"
+            />
+            <span>{t("modelTargetPicker.dynamicLegend")}</span>
+          </div>
+        ) : null}
+
         <div className="max-h-64 overflow-y-auto p-1.5">
           {loading ? (
             <div className="flex items-center gap-2 px-2.5 py-3 text-xs text-muted-foreground">
@@ -864,7 +880,16 @@ export function ModelTargetPicker({
                                 {opt.label}
                               </span>
                               {opt.sublabel ? (
-                                <span className="truncate font-mono text-2xs text-muted-foreground">
+                                <span
+                                  className={cn(
+                                    "font-mono text-2xs text-muted-foreground",
+                                    // 跟随默认行的副行 = 解析到的模型标识，是「到底跑哪个
+                                    // 模型」的答案；宁可折行也不许截断。
+                                    opt.kind === "provider-default"
+                                      ? "break-all"
+                                      : "truncate",
+                                  )}
+                                >
                                   {opt.sublabel}
                                 </span>
                               ) : null}

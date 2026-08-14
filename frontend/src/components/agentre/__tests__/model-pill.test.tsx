@@ -434,6 +434,35 @@ describe("ProviderPill · 新建会话 ModelTarget 选择器", () => {
     ).toBeInTheDocument();
   });
 
+  it("chat 弹层给出两条互不替代的说明：列表上方 ↻ 图例（会不会变）+ 底部「自下一轮生效」（何时生效）", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({ items: ALL_PROVIDERS });
+    render(<Harness backendType="builtin" />);
+
+    const pill = await waitFor(() => screen.getByTestId("provider-pill"));
+    await waitFor(() => expect(pill).not.toBeDisabled());
+
+    const user = userEvent.setup();
+    await user.click(pill);
+
+    const legend = await screen.findByTestId("dynamic-legend");
+    expect(legend).toHaveTextContent(
+      "Follow this provider's default — can change from the next turn; a fixed model never changes.",
+    );
+    const switchNote = screen.getByText(
+      "Switching takes effect from the next turn; the turn in progress is unaffected",
+    );
+    // 两条说的是不同的事，谁都不能顶掉谁；且不叠成一堵字墙 —— 图例贴着它解释的选项列表，
+    // 切换说明留在弹层底部。
+    const list = screen.getByRole("listbox");
+    expect(
+      legend.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      list.compareDocumentPosition(switchNote) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("Given a new session follows an agent provider without a model key, when the catalog resolves a default, then the pill promises only that provider", async () => {
     appMocks.ListLLMProviders.mockResolvedValue({
       items: [ANTHROPIC_PROVIDER],

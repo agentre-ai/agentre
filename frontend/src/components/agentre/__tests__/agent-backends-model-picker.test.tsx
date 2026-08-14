@@ -2,6 +2,9 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import enCommon from "@/i18n/locales/en/common.json";
+import zhCommon from "@/i18n/locales/zh-CN/common.json";
+
 import { ModelTargetPicker } from "../model-target-picker";
 import {
   readRecentTargets,
@@ -253,12 +256,20 @@ describe("ModelTargetPicker", () => {
     expect(within(list).queryByText("OpenAI")).not.toBeInTheDocument();
     const options = within(list).getAllByRole("option");
     expect(options[0]).toHaveTextContent(/CLI login state/);
-    // provider-default 首项：强调底色 + 动态图标 + 「当前 = ×××」。
+    // provider-default 首项：强调底色 + 动态图标 + 副行只写解析到的模型标识。
     expect(options[1]).toHaveAttribute("data-kind", "provider-default");
     // 核心语义分歧：跟随默认用 primary-soft 底 + primary-text 标题，与固定模型两态可分。
     expect(options[1]).toHaveClass("bg-primary-soft");
     expect(options[1]).toHaveTextContent(/Follow this provider's default/);
-    expect(options[1]).toHaveTextContent(/Current = claude-sonnet-4-6/);
+    // 副行 = 解析到的模型标识本身（「到底跑哪个模型」的答案），不带 "Current = " 前缀、
+    // 不逐行重复后果说明 —— 后果由弹层里唯一一条图例 + ↻ 图标 + 「固定到具体模型」分段承担。
+    const defaultSub = within(options[1] as HTMLElement).getByText(
+      "claude-sonnet-4-6",
+    );
+    expect(options[1]).not.toHaveTextContent(/Current =/);
+    expect(options[1]).not.toHaveTextContent(/follows automatically/);
+    // 模型标识绝不能被截断（348px 弹层里英文副行一旦加前缀 + 后果从句就会被吃掉）。
+    expect(defaultSub).not.toHaveClass("truncate");
     expect(
       within(options[1] as HTMLElement).getByText(
         "Follow this provider's default",
@@ -326,6 +337,97 @@ describe("ModelTargetPicker", () => {
     expect(
       within(list).getByText("Fixed to a specific model"),
     ).toBeInTheDocument();
+  });
+
+  it("后果只在弹层里说一次：↻ 图例解释「跟随默认会变、固定模型不会变」，不随 provider 组重复", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelTargetPicker
+        scenario="backend"
+        aria-label="LLM Provider"
+        backendType="piagent"
+        selected={null}
+        onChange={vi.fn()}
+        catalog={catalog()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "LLM Provider" }));
+    const list = await screen.findByRole("listbox", { name: "LLM Provider" });
+    // piagent 两个供应商都兼容 → 两条 provider-default 行，但图例只有一条。
+    expect(
+      within(list).getAllByRole("option", {
+        name: /Follow this provider's default/,
+      }),
+    ).toHaveLength(2);
+    const legends = screen.getAllByTestId("dynamic-legend");
+    expect(legends).toHaveLength(1);
+    expect(legends[0]).toHaveTextContent(
+      "Follow this provider's default — can change from the next turn; a fixed model never changes.",
+    );
+    // 图例在选项列表之上（底部留给消费方的 footer，两条说明不叠在一起）。
+    expect(
+      legends[0].compareDocumentPosition(list) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("claude 分级路由（route 场景）弹层同样带 ↻ 图例", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelTargetPicker
+        scenario="route"
+        aria-label="Claude tier route"
+        backendType="claudecode"
+        selected={null}
+        onChange={vi.fn()}
+        catalog={catalog()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Claude tier route" }));
+    expect(await screen.findByTestId("dynamic-legend")).toHaveTextContent(
+      /can change from the next turn/,
+    );
+  });
+
+  it("列表里没有跟随默认项时（搜索只剩固定模型）不挂无处可指的图例", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelTargetPicker
+        scenario="backend"
+        aria-label="LLM Provider"
+        backendType="claudecode"
+        selected={null}
+        onChange={vi.fn()}
+        catalog={catalog()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "LLM Provider" }));
+    expect(await screen.findByTestId("dynamic-legend")).toBeInTheDocument();
+
+    await user.type(
+      screen.getByPlaceholderText("Search providers or models…"),
+      "opus",
+    );
+    const list = await screen.findByRole("listbox", { name: "LLM Provider" });
+    expect(
+      within(list).queryByRole("option", {
+        name: /Follow this provider's default/,
+      }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("dynamic-legend")).not.toBeInTheDocument();
+  });
+
+  it("两个 locale 同步收敛：逐行后果文案 defaultCurrent 被删除，唯一图例 dynamicLegend 两边都有", () => {
+    expect("defaultCurrent" in enCommon.modelTargetPicker).toBe(false);
+    expect("defaultCurrent" in zhCommon.modelTargetPicker).toBe(false);
+    expect(
+      (zhCommon.modelTargetPicker as Record<string, unknown>).dynamicLegend,
+    ).toBe("跟随该供应商默认 —— 默认变了下一轮自动跟着变；固定模型不会变。");
+    expect(
+      (enCommon.modelTargetPicker as Record<string, unknown>).dynamicLegend,
+    ).toBe(
+      "Follow this provider's default — can change from the next turn; a fixed model never changes.",
+    );
   });
 
   it("fixed-model 行不再重复供应商名：label=display name、副行=modelId、右侧上下文/最大输出，供应商名由组头承载", async () => {

@@ -3349,7 +3349,7 @@
     "noCompatibleProviders": "没有与当前后端类型兼容的供应商。",
     "defaultLabel": "跟随默认模型",
     "followDefault": "跟随该供应商默认",
-    "defaultCurrent": "当前 = {{model}}（默认变化时自动跟随）",
+    "dynamicLegend": "跟随该供应商默认 —— 默认变了下一轮自动跟着变；固定模型不会变。",
     "fixedSection": "固定到具体模型",
     "contextOutput": "{{ctx}} 上下文 · {{out}} 输出",
     "disabledModel": "模型已停用",

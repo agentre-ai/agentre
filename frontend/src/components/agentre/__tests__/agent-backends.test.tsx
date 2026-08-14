@@ -473,6 +473,30 @@ describe("AgentBackendsPanel", () => {
     ).toHaveLength(3);
   });
 
+  it("Given an expanded Claude tier route, When its picker opens, Then it carries the same follow-default legend as the main binding picker", async () => {
+    const user = userEvent.setup();
+    installAppMock();
+    render(<AgentBackendsPanel />);
+    await screen.findByText("默认助手");
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
+    );
+    const block = within(dialog).getByTestId("model-binding-block");
+    await user.click(
+      within(block).getByRole("button", { name: /Model tier routes/ }),
+    );
+    await user.click(
+      within(block).getAllByRole("button", { name: /Claude tier route/ })[0],
+    );
+
+    // 分级路由是第三个共用这颗 Picker 的场景，后果说明不能只在会话/后端里出现。
+    expect(await screen.findByTestId("dynamic-legend")).toHaveTextContent(
+      "Follow this provider's default — can change from the next turn; a fixed model never changes.",
+    );
+  });
+
   it("Given a selected provider target, When the editor renders, Then the picker trigger uses target-and-mode plus effective-model consequence on two lines", async () => {
     const user = userEvent.setup();
     installAppMock();

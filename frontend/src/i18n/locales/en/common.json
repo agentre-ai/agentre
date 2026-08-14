@@ -3349,7 +3349,7 @@
     "noCompatibleProviders": "No providers compatible with this backend type.",
     "defaultLabel": "Follow default model",
     "followDefault": "Follow this provider's default",
-    "defaultCurrent": "Current = {{model}} (follows automatically when the default changes)",
+    "dynamicLegend": "Follow this provider's default — can change from the next turn; a fixed model never changes.",
     "fixedSection": "Fixed to a specific model",
     "contextOutput": "{{ctx}} ctx · {{out}} out",
     "disabledModel": "This model is disabled",
