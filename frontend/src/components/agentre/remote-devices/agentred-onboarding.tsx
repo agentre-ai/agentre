@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { ArrowRight, Check } from "lucide-react";
+import { ArrowRight, Check, X } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
@@ -15,13 +15,18 @@ type RunMode = "background" | "foreground";
 type OnboardingStep = 1 | 2 | 3;
 
 type AgentredOnboardingProps = {
+  /** 省略即不可收起 —— 宿主没有可回退的地方(设备列表为空)时就是这种情况。 */
+  onDismiss?: () => void;
   onSubmit: (request: AddRequest) => Promise<void>;
 };
 
 const MANUAL_INSTALL_URL =
   "https://github.com/agentre-ai/agentre/releases/latest";
 
-export function AgentredOnboarding({ onSubmit }: AgentredOnboardingProps) {
+export function AgentredOnboarding({
+  onDismiss,
+  onSubmit,
+}: AgentredOnboardingProps) {
   const { t } = useTranslation();
   const [step, setStep] = useState<OnboardingStep>(1);
   const [remoteOS, setRemoteOS] = useState<RemoteOS>("linux");
@@ -44,34 +49,48 @@ export function AgentredOnboarding({ onSubmit }: AgentredOnboardingProps) {
 
   return (
     <section className="overflow-hidden rounded-xl border border-border bg-card">
-      <ol className="grid grid-cols-1 border-b border-border bg-muted/50 sm:grid-cols-3">
-        <StepHeader
-          number={1}
-          activeStep={step}
-          title={t("remoteDevices.onboarding.steps.install.title")}
-          subtitle={
-            step > 1
-              ? t("remoteDevices.onboarding.steps.install.done")
-              : t("remoteDevices.onboarding.steps.install.subtitle")
-          }
-        />
-        <StepHeader
-          number={2}
-          activeStep={step}
-          title={t("remoteDevices.onboarding.steps.service.title")}
-          subtitle={
-            step > 2
-              ? t("remoteDevices.onboarding.steps.service.done")
-              : t("remoteDevices.onboarding.steps.service.subtitle")
-          }
-        />
-        <StepHeader
-          number={3}
-          activeStep={step}
-          title={t("remoteDevices.onboarding.steps.pair.title")}
-          subtitle={t("remoteDevices.onboarding.steps.pair.subtitle")}
-        />
-      </ol>
+      <div className="flex items-start border-b border-border bg-muted/50">
+        <ol className="grid min-w-0 flex-1 grid-cols-1 sm:grid-cols-3">
+          <StepHeader
+            number={1}
+            activeStep={step}
+            title={t("remoteDevices.onboarding.steps.install.title")}
+            subtitle={
+              step > 1
+                ? t("remoteDevices.onboarding.steps.install.done")
+                : t("remoteDevices.onboarding.steps.install.subtitle")
+            }
+          />
+          <StepHeader
+            number={2}
+            activeStep={step}
+            title={t("remoteDevices.onboarding.steps.service.title")}
+            subtitle={
+              step > 2
+                ? t("remoteDevices.onboarding.steps.service.done")
+                : t("remoteDevices.onboarding.steps.service.subtitle")
+            }
+          />
+          <StepHeader
+            number={3}
+            activeStep={step}
+            title={t("remoteDevices.onboarding.steps.pair.title")}
+            subtitle={t("remoteDevices.onboarding.steps.pair.subtitle")}
+          />
+        </ol>
+        {onDismiss ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="m-2 shrink-0"
+            aria-label={t("remoteDevices.onboarding.dismiss")}
+            onClick={onDismiss}
+          >
+            <X aria-hidden="true" />
+          </Button>
+        ) : null}
+      </div>
 
       <div className="flex flex-col gap-5 p-4 sm:p-6">
         <div className="flex flex-col gap-2">

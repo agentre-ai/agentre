@@ -40,7 +40,7 @@ function initialMode(initialUrl: string): { mode: ServerMode; url: string } {
 }
 
 // 本地类型 — mirrors server_svc.StartLoginResult; avoids transitive
-// wailsjs import (same precedent as AddRequest in add-device-dialog.tsx).
+// wailsjs import (same precedent as AddRequest in device-pairing-form.tsx).
 export type StartLoginResult = {
   DeviceCode: string;
   UserCode: string;
@@ -264,7 +264,7 @@ export function LoginDialog({
   };
 
   const handleClose = () => {
-    if (phase === "starting") return; // mid-flight — same guard as AddDeviceDialog's submitting.
+    if (phase === "starting") return; // mid-flight — same guard as the pairing form's submitting.
     const wasWaiting = phase === "waiting";
     stopPolling();
     setPhase("form");

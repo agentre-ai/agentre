@@ -9,7 +9,8 @@ Desktop UI for pairing and managing agentred LAN devices.
 | `remote-devices-panel.tsx` | Settings → 远端 主面板，挂载 hook、调度对话框 |
 | `device-row.tsx` | 单台 agentred 行卡片 |
 | `device-action-menu.tsx` | 行右侧 `…` 菜单（Refresh / Rename / Edit TLS / Remove） |
-| `add-device-dialog.tsx` | Add agentred 对话框：地址 + 6 位 code + name + Advanced TLS Trust |
+| `agentred-onboarding.tsx` | 三步接入引导（安装 / 启动服务 / 配对），页头「添加 agentred」召唤，已有设备时可收起 |
+| `device-pairing-form.tsx` | 配对表单：地址 + 6 位 code + name + Advanced TLS Trust（引导第 3 步的宿主） |
 | `tls-trust-dialog.tsx` | 4 模式 radio：default / pin-cert / ca-bundle / skip-verify |
 | `use-remote-devices.ts` | hook：list / mutate / 30 s 轮询 / window focus 重新拉 |
 | `format.ts` | `relativeTime` / `deriveDeviceName` / `friendlyLastError` |
@@ -22,7 +23,8 @@ RemoteDevicesPanel
    ├── useRemoteDevices ─── window.setInterval(30s) → RemoteDeviceRefresh(id) for each
    │                       window 'focus' event   → RemoteDeviceList
    │
-   ├── AddDeviceDialog ────── onSubmit({URL, code, name, tlsMode, tlsCertPEM})
+   ├── AgentredOnboarding → DevicePairingForm
+   │                          onSubmit({URL, code, name, tlsMode, tlsCertPEM})
    │                                                 ↓
    │                                           svc.Add (Go) → daemon auth.pair
    │
@@ -46,8 +48,8 @@ agentred run --port 7456
 agentred pair    # copy printed code
 
 # On desktop
-agentre   # open Settings → 远端 → + Add agentred
-# Paste URL, paste 6-char code, leave TLS = Default, click Pair
+agentre   # open Settings → 远端 → 添加 agentred（零设备时引导已展开）
+# Step 3: paste URL, paste 6-char code, leave TLS = Default, click Pair
 # → row appears, status dot turns green within 30s
 
 # Edit TLS → switch to Pin certificate → paste cert → Apply

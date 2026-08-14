@@ -47,4 +47,21 @@ describe("AgentredOnboarding", () => {
       }),
     );
   });
+
+  // 收起只有在宿主真的能收下它时才存在:零设备时没有可回退的地方。
+  it("offers the collapse control only when the host provides somewhere to go back to", async () => {
+    const user = userEvent.setup();
+    const onDismiss = vi.fn();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = render(<AgentredOnboarding onSubmit={onSubmit} />);
+
+    expect(
+      screen.queryByRole("button", { name: "Collapse guide" }),
+    ).not.toBeInTheDocument();
+
+    rerender(<AgentredOnboarding onSubmit={onSubmit} onDismiss={onDismiss} />);
+    await user.click(screen.getByRole("button", { name: "Collapse guide" }));
+
+    expect(onDismiss).toHaveBeenCalledOnce();
+  });
 });

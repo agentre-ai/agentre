@@ -2295,6 +2295,7 @@
       },
       "copyLabel": "Copy {{label}}",
       "copySuccess": "Command copied",
+      "dismiss": "Collapse guide",
       "install": {
         "archHint": "Architecture is detected automatically",
         "description": "Choose the remote operating system, then run the install command in its terminal.",
@@ -2357,7 +2358,6 @@
     },
     "actions": {
       "addAgentred": "Add agentred",
-      "continueAddLan": "+ Add another agentred (LAN)",
       "editTls": "Edit TLS Trust",
       "refreshStatus": "Refresh Status",
       "removeConfirm": "Unpair \"{{name}}\"? This desktop will clear the token and fingerprint pin for this agentred. The remote agentred state.json.pairedPeers will not be cleaned up automatically.",
@@ -2367,7 +2367,6 @@
     },
     "add": {
       "advancedTls": "Advanced — TLS Trust ({{mode}})",
-      "description": "LAN direct",
       "errors": {
         "pairFailed": "Pairing failed"
       },
@@ -2380,13 +2379,8 @@
         "urlInvalid": "Address must end with /rpc, e.g. ws://192.168.1.100:7456/rpc",
         "codeInvalid": "Pairing code must be exactly 6 characters"
       },
-      "instructions": {
-        "prefix": "Run",
-        "suffix": "on the remote machine, then enter the printed URL and 6-character pairing code."
-      },
       "pair": "Pair",
-      "pairing": "Pairing...",
-      "title": "Add agentred Device"
+      "pairing": "Pairing..."
     },
     "errors": {
       "dialFailed": "Connection failed: {{message}}",
