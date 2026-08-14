@@ -128,6 +128,17 @@ describe("classifyLink", () => {
       });
     });
 
+    it("Given a Windows absolute path inside a Windows cwd, when classified, then it remains internal with a slash-normalized relPath", () => {
+      expect(
+        classifyLink("C:\\work\\proj\\src\\foo.go", "C:\\work\\proj"),
+      ).toEqual({
+        kind: "local-internal",
+        fullPath: "C:\\work\\proj\\src\\foo.go",
+        pathKind: "file",
+        relPath: "src/foo.go",
+      });
+    });
+
     it("when href is exactly cwd then relPath is empty", () => {
       expect(classifyLink(CWD, CWD)).toEqual({
         kind: "local-internal",
@@ -157,16 +168,82 @@ describe("classifyLink", () => {
         },
       );
     });
+
+    it("Given a localhost file URL, when classified, then it resolves as a local absolute path", () => {
+      expect(classifyLink("file://localhost/Users/me/proj/a.go", CWD)).toEqual({
+        kind: "local-internal",
+        fullPath: "/Users/me/proj/a.go",
+        pathKind: "file",
+        relPath: "a.go",
+      });
+    });
+
+    it("Given a file URL with a remote authority, when classified, then it is rejected instead of opening a process-relative path", () => {
+      expect(classifyLink("file://server/share/a.go", CWD)).toEqual({
+        kind: "unknown",
+        href: "file://server/share/a.go",
+      });
+    });
   });
 
-  describe("Unknown forms", () => {
-    it("when relative path then kind=unknown", () => {
-      expect(classifyLink("internal/foo.go", CWD)).toEqual({
+  describe("Relative paths", () => {
+    it("Given a cwd, when a relative file carries line and column, then it resolves to an internal absolute target", () => {
+      expect(classifyLink("frontend/src/chat.tsx:42:7", CWD)).toEqual({
+        kind: "local-internal",
+        fullPath: "/Users/me/proj/frontend/src/chat.tsx",
+        pathKind: "file",
+        relPath: "frontend/src/chat.tsx",
+        line: 42,
+        col: 7,
+      });
+    });
+
+    it("Given a cwd, when a trusted filename is classified, then it resolves from that cwd", () => {
+      expect(classifyLink("README.md", CWD)).toEqual({
+        kind: "local-internal",
+        fullPath: "/Users/me/proj/README.md",
+        pathKind: "file",
+        relPath: "README.md",
+      });
+    });
+
+    it("Given a multi-segment relative directory, when classified, then it resolves as an internal folder", () => {
+      expect(classifyLink("frontend/src/components", CWD)).toEqual({
+        kind: "local-internal",
+        fullPath: "/Users/me/proj/frontend/src/components",
+        pathKind: "folder",
+        relPath: "frontend/src/components",
+      });
+    });
+
+    it("Given parent traversal, when the resolved target leaves cwd, then it is classified as external", () => {
+      expect(classifyLink("../README.md:8", CWD)).toEqual({
+        kind: "local-external",
+        fullPath: "/Users/me/README.md",
+        pathKind: "file",
+        line: 8,
+      });
+    });
+
+    it("Given a Windows cwd, when a slash-separated relative path is classified, then it preserves the native absolute target", () => {
+      expect(classifyLink("src/main.go:9", "C:\\work\\proj")).toEqual({
+        kind: "local-internal",
+        fullPath: "C:\\work\\proj\\src\\main.go",
+        pathKind: "file",
+        relPath: "src/main.go",
+        line: 9,
+      });
+    });
+
+    it("Given no cwd, when a relative path is classified, then it remains unknown", () => {
+      expect(classifyLink("internal/foo.go", undefined)).toEqual({
         kind: "unknown",
         href: "internal/foo.go",
       });
     });
+  });
 
+  describe("Unknown forms", () => {
     it("when href is empty then kind=unknown", () => {
       expect(classifyLink(undefined, CWD)).toEqual({
         kind: "unknown",

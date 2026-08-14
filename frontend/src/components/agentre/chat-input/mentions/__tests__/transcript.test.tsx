@@ -36,6 +36,29 @@ describe("MarkdownText + mention decorator", () => {
     expect(screen.getByText("@Bob")).toBeInTheDocument();
   });
 
+  it("Given a mention and an allowed path in the same text, when the transcript renders them, then both own only their matching range", () => {
+    const { text, refs } = prepareMentionText(
+      'ask <agent id="1">Bob</agent> to inspect frontend/src/chat.tsx',
+    );
+    render(
+      <MemoryRouter>
+        <MarkdownText
+          text={text}
+          cwd="/work/proj"
+          decorator={makeMentionDecorator(refs)}
+        />
+      </MemoryRouter>,
+    );
+
+    const mention = screen.getByText("@Bob");
+    const link = screen.getByRole("link", { name: /frontend\/src\/chat\.tsx/ });
+    expect(mention.closest("a")).toBeNull();
+    expect(link.querySelector("button")).toBeNull();
+    expect(document.body.textContent).toContain(
+      "ask @Bob to inspect frontend/src/chat.tsx",
+    );
+  });
+
   it("Given a colored sent mention, When the transcript renders it, Then it keeps the mention background color", () => {
     const { text, refs } = prepareMentionText(
       '<agent id="1" color="agent-3">Bob</agent>',
