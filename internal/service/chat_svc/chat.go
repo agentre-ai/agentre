@@ -394,10 +394,11 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 			AvatarDataURL: a.AvatarDataURL,
 			// 置顶完全由 DB 的 pinned 列承载（含系统 Agent/CEO）：系统 Agent 不再被
 			// IsSystem() 强制浮顶，用户置顶/取消后这里透传 DB 值（R: ceo-unpin）。
-			Pinned:        a.Pinned,
-			ActiveCount:   counts[a.ID],
-			TotalSessions: totals[a.ID],
-			SessionIDs:    ids,
+			Pinned:           a.Pinned,
+			HasBackendTarget: a.AgentBackendID > 0,
+			ActiveCount:      counts[a.ID],
+			TotalSessions:    totals[a.ID],
+			SessionIDs:       ids,
 		}
 		if be := backends[a.AgentBackendID]; be != nil {
 			item.BackendType = be.Type

@@ -30,6 +30,7 @@ type SeedAgent = {
   name: string;
   chattable: boolean;
   blockReason?: string;
+  hasBackendTarget?: boolean;
 };
 
 function seedAgents(agents: SeedAgent[]) {
@@ -41,6 +42,7 @@ function seedAgents(agents: SeedAgent[]) {
       backendType: "builtin",
       chattable: a.chattable,
       blockReason: a.blockReason ?? "",
+      hasBackendTarget: a.hasBackendTarget ?? false,
       pinned: false,
       sessions: [],
       attentionSessions: [],
@@ -88,6 +90,25 @@ describe("Settings setup guidance (task 7)", () => {
           nav.querySelector('[data-gap-dot="agent-backend"]'),
         ).not.toBeNull();
         expect(nav.querySelector('[data-gap-dot="llm-providers"]')).toBeNull();
+      });
+    });
+
+    it("Given an Agent target references a deleted backend, When settings renders, Then the hidden backend does not keep the warning dot lit", async () => {
+      seedAgents([
+        {
+          id: 1,
+          name: "CEO",
+          chattable: false,
+          blockReason: "no-backend",
+          hasBackendTarget: true,
+        },
+      ]);
+      renderSettings();
+
+      await waitFor(() => {
+        expect(
+          settingsNav().querySelector('[data-gap-dot="agent-backend"]'),
+        ).toBeNull();
       });
     });
 

@@ -473,7 +473,7 @@ describe("AgentBackendsPanel", () => {
     ).toHaveLength(3);
   });
 
-  it("Given an expanded Claude tier route, When its picker opens, Then it carries the same follow-default legend as the main binding picker", async () => {
+  it("Given an expanded Claude tier route, When its picker opens, Then its follow-default rows read the same as the main binding picker's", async () => {
     const user = userEvent.setup();
     installAppMock();
     render(<AgentBackendsPanel />);
@@ -484,6 +484,94 @@ describe("AgentBackendsPanel", () => {
       within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
     );
     const block = within(dialog).getByTestId("model-binding-block");
+
+    // 「跟随默认会不会变」现在写在每一行 provider-default 的副行上（「当前 <模型>」），
+    // 不再有弹层顶部图例 —— 分级路由是第三个共用这颗 Picker 的场景，这套副行不能
+    // 只在会话/后端里出现。
+    await user.click(
+      within(block).getByRole("button", { name: "Model binding" }),
+    );
+    const mainDefault = await screen.findByRole("option", {
+      name: /Follow this provider's default/,
+    });
+    expect(mainDefault).toHaveTextContent("Currently claude-sonnet-4-6");
+    await user.keyboard("{Escape}");
+
+    await user.click(
+      within(block).getByRole("button", { name: /Model tier routes/ }),
+    );
+    await user.click(
+      within(block).getAllByRole("button", { name: /Claude tier route/ })[0],
+    );
+    const routeDefault = await screen.findByRole("option", {
+      name: /Follow this provider's default/,
+    });
+    expect(routeDefault).toHaveTextContent("Currently claude-sonnet-4-6");
+  });
+
+  it("Given the model-binding block renders, When its heading is read, Then it goes straight to the picker without a paragraph restating what the nesting already shows", async () => {
+    const user = userEvent.setup();
+    installAppMock();
+    render(<AgentBackendsPanel />);
+    await screen.findByText("默认助手");
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
+    );
+    const block = within(dialog).getByTestId("model-binding-block");
+
+    // 「分级路由/自定义模型从属于主绑定」这件事已经由区块嵌套 + 路由摘要「3 项都继承
+    // 主绑定」+ 自定义模型的行内说明讲了三遍，mockup ?view=backend 的区块头没有这段话。
+    expect(
+      within(block).queryByText(/Choose the model source first/i),
+    ).not.toBeInTheDocument();
+    expect(
+      within(block).getByRole("heading", { name: "Model binding" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Given the model-binding block renders, When the tier-routes toggle is inspected, Then it carries a pointer cursor like every other clickable control", async () => {
+    const user = userEvent.setup();
+    installAppMock();
+    render(<AgentBackendsPanel />);
+    await screen.findByText("默认助手");
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
+    );
+    const block = within(dialog).getByTestId("model-binding-block");
+
+    // 裸 <button> 拿不到 shadcn Button 基类里的 cursor-pointer，而 tailwind v4 把
+    // button 的默认光标改成了 default —— 折叠头点得动却不像能点。
+    expect(
+      within(block).getByRole("button", { name: /Model tier routes/ }),
+    ).toHaveClass("cursor-pointer");
+  });
+
+  it("Given the main binding resolves to a provider, When a Claude tier route picker opens, Then its inherit option shows the same arrow + brand mark + monospaced model id as the session picker", async () => {
+    const user = userEvent.setup();
+    installAppMock();
+    render(<AgentBackendsPanel />);
+    await screen.findByText("默认助手");
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
+    );
+    const block = within(dialog).getByTestId("model-binding-block");
+
+    // 主绑定先落到一个真实供应商，继承项才有解析结果可写。
+    await user.click(
+      within(block).getByRole("button", { name: "Model binding" }),
+    );
+    await user.click(
+      await screen.findByRole("option", {
+        name: /Follow this provider's default/,
+      }),
+    );
+
     await user.click(
       within(block).getByRole("button", { name: /Model tier routes/ }),
     );
@@ -491,10 +579,49 @@ describe("AgentBackendsPanel", () => {
       within(block).getAllByRole("button", { name: /Claude tier route/ })[0],
     );
 
-    // 分级路由是第三个共用这颗 Picker 的场景，后果说明不能只在会话/后端里出现。
-    expect(await screen.findByTestId("dynamic-legend")).toHaveTextContent(
-      "Follow this provider's default — can change from the next turn; a fixed model never changes.",
+    const inherit = await screen.findByRole("option", {
+      name: /Inherit main binding/,
+    });
+    const resolution = within(inherit).getByTestId("special-resolution");
+    expect(resolution).toHaveTextContent("→");
+    expect(
+      within(resolution).getByRole("img", { name: "Anthropic" }),
+    ).toBeInTheDocument();
+    expect(resolution).toHaveTextContent("Anthropic");
+    expect(within(resolution).getByText("claude-sonnet-4-6")).toHaveClass(
+      "font-mono",
     );
+  });
+
+  it("Given the main binding is CLI login, When a Claude tier route picker opens, Then its inherit option keeps the plain CLI resolution wording", async () => {
+    const user = userEvent.setup();
+    installAppMock();
+    render(<AgentBackendsPanel />);
+    await screen.findByText("默认助手");
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("radio", { name: /Claude Code CLI/ }),
+    );
+    const block = within(dialog).getByTestId("model-binding-block");
+
+    await user.click(
+      within(block).getByRole("button", { name: /Model tier routes/ }),
+    );
+    await user.click(
+      within(block).getAllByRole("button", { name: /Claude tier route/ })[0],
+    );
+
+    const inherit = await screen.findByRole("option", {
+      name: /Inherit main binding/,
+    });
+    expect(inherit).toHaveTextContent(
+      "Effective model is determined by the CLI's own login account",
+    );
+    expect(inherit).not.toHaveTextContent("→");
+    expect(
+      within(inherit).queryByTestId("special-resolution"),
+    ).not.toBeInTheDocument();
   });
 
   it("Given a selected provider target, When the editor renders, Then the picker trigger uses target-and-mode plus effective-model consequence on two lines", async () => {

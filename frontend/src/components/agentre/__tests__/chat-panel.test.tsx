@@ -3221,10 +3221,13 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
     await waitFor(() => {
       expect(pill).not.toBeDisabled();
       expect(appMocks.ListLLMModels).toHaveBeenCalled();
-      expect(pill).toHaveTextContent("Acme · claude-sonnet-4-5");
+      expect(pill).toHaveTextContent(
+        "Follow agent binding · claude-sonnet-4-5",
+      );
     });
     expect(pill).toHaveTextContent("Follow agent binding");
-    expect(pill).toHaveTextContent("Acme · claude-sonnet-4-5");
+    // 单行 pill 写的是解析出的模型 ID，供应商人读名由品牌标识承担 —— 这里要证的是
+    // 组合根把 agentModelKey 传下去了（解析到固定绑定，而不是供应商默认）。
     expect(pill).not.toHaveTextContent("claude-haiku-4-5");
     expect(appMocks.ListLLMProviders).toHaveBeenCalled();
   });

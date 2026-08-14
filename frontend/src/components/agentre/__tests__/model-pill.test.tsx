@@ -320,10 +320,9 @@ describe("ProviderPill · 新建会话 ModelTarget 选择器", () => {
     expect(providerDefault).toBeDefined();
     await user.click(providerDefault as HTMLElement);
 
-    // provider-default 摘要显示 Provider · 当前默认模型（不得只显示 Provider 名）。
-    expect(screen.getByTestId("provider-pill")).toHaveTextContent(
-      "Acme Resp · gpt-5",
-    );
+    // provider-default 摘要写的是「实际会跑哪个模型」：供应商身份交给品牌标识，
+    // 脸上只留解析出的模型 ID（mockup ?view=chat 四态样品）。
+    expect(screen.getByTestId("provider-pill")).toHaveTextContent("gpt-5");
 
     // 点击「跟随 agent 绑定」清回（无瞬态选择）。
     await user.click(screen.getByTestId("provider-pill"));
@@ -337,7 +336,7 @@ describe("ProviderPill · 新建会话 ModelTarget 选择器", () => {
     );
   });
 
-  it("选中 fixed-model → pill 显示供应商名 · 模型 ID", async () => {
+  it("选中 fixed-model → pill 显示解析出的模型 ID", async () => {
     appMocks.ListLLMProviders.mockResolvedValue({ items: ALL_PROVIDERS });
     appMocks.ListLLMModels.mockResolvedValue({
       items: [
@@ -359,7 +358,7 @@ describe("ProviderPill · 新建会话 ModelTarget 选择器", () => {
     );
 
     expect(screen.getByTestId("provider-pill")).toHaveTextContent(
-      "Acme Resp · gpt-5-codex",
+      "gpt-5-codex",
     );
   });
 
@@ -434,7 +433,7 @@ describe("ProviderPill · 新建会话 ModelTarget 选择器", () => {
     ).toBeInTheDocument();
   });
 
-  it("chat 弹层给出两条互不替代的说明：列表上方 ↻ 图例（会不会变）+ 底部「自下一轮生效」（何时生效）", async () => {
+  it("chat 弹层不再总述 ↻ 图例（会不会变已下放到每行副行），只留底部「自下一轮生效」（何时生效）", async () => {
     appMocks.ListLLMProviders.mockResolvedValue({ items: ALL_PROVIDERS });
     render(<Harness backendType="builtin" />);
 
@@ -444,19 +443,14 @@ describe("ProviderPill · 新建会话 ModelTarget 选择器", () => {
     const user = userEvent.setup();
     await user.click(pill);
 
-    const legend = await screen.findByTestId("dynamic-legend");
-    expect(legend).toHaveTextContent(
-      "Follow this provider's default — can change from the next turn; a fixed model never changes.",
-    );
+    // 「跟随默认会不会变」这件事已经收进每一行 provider-default 的副行（「当前 <模型>」）
+    // + ↻ 标记，弹层顶部不再总述一遍图例。
+    expect(screen.queryByTestId("dynamic-legend")).not.toBeInTheDocument();
+    // 「何时生效」是另一件事，没有别处替它说 —— 底部这条必须留着，且留在列表之后。
     const switchNote = screen.getByText(
       "Switching takes effect from the next turn; the turn in progress is unaffected",
     );
-    // 两条说的是不同的事，谁都不能顶掉谁；且不叠成一堵字墙 —— 图例贴着它解释的选项列表，
-    // 切换说明留在弹层底部。
     const list = screen.getByRole("listbox");
-    expect(
-      legend.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
     expect(
       list.compareDocumentPosition(switchNote) &
         Node.DOCUMENT_POSITION_FOLLOWING,
@@ -490,8 +484,8 @@ describe("ProviderPill · 新建会话 ModelTarget 选择器", () => {
   });
 });
 
-describe("ProviderPill · Composer 四态", () => {
-  it("Given an existing session follows an agent fixed binding, when the bound model resolves, then the pill shows the follow marker and resolved model", async () => {
+describe("ProviderPill · Composer 四态（mockup ?view=chat：单行，脸上写实际会跑哪个模型）", () => {
+  it("Given an existing session follows an agent fixed binding, when the bound model resolves, then the pill shows the follow marker and resolved model on one line", async () => {
     appMocks.ListLLMProviders.mockResolvedValue({
       items: [ANTHROPIC_PROVIDER],
     });
@@ -510,8 +504,31 @@ describe("ProviderPill · Composer 四态", () => {
 
     const pill = await screen.findByTestId("provider-pill");
     await waitFor(() => expect(pill).toHaveTextContent("claude-sonnet-4-5"));
-    expect(pill).toHaveTextContent("Follow agent binding");
+    // 单行：模式前缀 + 解析出的模型 ID 挤在同一行，不再有第二行副标题。
+    expect(pill).toHaveTextContent("Follow agent binding · claude-sonnet-4-5");
+    expect(
+      within(pill).queryByTestId("model-target-trigger-sub"),
+    ).not.toBeInTheDocument();
+    // 26px 单行高度必须真的赢过 Picker 触发按钮的默认 h-9（cn 走 tailwind-merge）。
+    expect(pill).toHaveClass("h-[26px]");
+    expect(pill).not.toHaveClass("h-9");
+    expect(pill).not.toHaveClass("min-h-9");
+    // 未选态同样是中性 .pill：不许出现常亮的高亮边框/文字。
+    expect(pill).toHaveClass(
+      "cursor-pointer",
+      "border-border",
+      "bg-card",
+      "text-foreground",
+    );
+    expect(pill).not.toHaveClass("bg-muted");
+    // 可点控件要有 hover 反馈，但只许动背景 —— 边框变色是用户明确否掉的那种反馈。
+    expect(pill).toHaveClass("hover:bg-accent");
+    expect(pill.className).not.toMatch(/hover:border-/);
+    // focus-visible ring 是键盘用户的唯一定位手段，不能被 hover 改动顺手抹掉。
+    expect(pill).toHaveClass("focus-visible:ring-2");
     expect(screen.getByTestId("follow-agent-icon")).toBeInTheDocument();
+    // 跟随 Agent 态由人形图标表达，不挂供应商品牌标识（mockup 四态样品第一格）。
+    expect(within(pill).queryByRole("img")).not.toBeInTheDocument();
   });
 
   it("Given an existing session follows an agent provider default, when the default resolves, then the pill shows the resolved model with a dynamic marker", async () => {
@@ -558,13 +575,25 @@ describe("ProviderPill · Composer 四态", () => {
 
     const pill = await screen.findByTestId("provider-pill");
     await waitFor(() => expect(pill).toHaveTextContent("gpt-5"));
-    expect(pill).toHaveTextContent("Follow provider default");
+    // 模式改由 ↻ 表达，模式名不再占 pill 的脸；供应商身份交给品牌标识。
+    expect(pill).not.toHaveTextContent("Follow provider default");
+    expect(pill).not.toHaveTextContent("Acme Resp");
     expect(
       screen.getByTestId("provider-pill-dynamic-icon"),
     ).toBeInTheDocument();
     expect(
       within(pill).getByRole("img", { name: "OpenAI" }),
     ).toBeInTheDocument();
+    expect(
+      within(pill).queryByTestId("model-target-trigger-sub"),
+    ).not.toBeInTheDocument();
+    // 选中态不再靠常亮描边宣示自己：一律中性 .pill 配色，模式交给图标与 ↻ 表达。
+    expect(pill).toHaveClass("border-border", "bg-card", "text-foreground");
+    expect(pill).not.toHaveClass("border-primary-text/60");
+    expect(pill).not.toHaveClass("text-primary-text");
+    expect(pill).not.toHaveClass("bg-primary-soft");
+    // mockup 的 .pill 是 cursor:pointer；tailwind v4 把 button 默认光标改成了 default。
+    expect(pill).toHaveClass("cursor-pointer");
   });
 
   it("Given a fixed model is selected, when it resolves, then the pill marks it fixed without a dynamic icon", async () => {
@@ -587,9 +616,14 @@ describe("ProviderPill · Composer 四态", () => {
 
     const pill = await screen.findByTestId("provider-pill");
     await waitFor(() => expect(pill).toHaveTextContent("gpt-5-codex"));
-    expect(pill).toHaveTextContent("Fixed model");
+    // 固定态 = 品牌标识 + 等宽模型 ID，没有 ↻ 也没有模式名。
+    expect(pill).not.toHaveTextContent("Fixed model");
+    expect(within(pill).getByRole("img")).toBeInTheDocument();
     expect(
       screen.queryByTestId("provider-pill-dynamic-icon"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(pill).queryByTestId("model-target-trigger-sub"),
     ).not.toBeInTheDocument();
   });
 
@@ -610,11 +644,183 @@ describe("ProviderPill · Composer 四态", () => {
 
     const pill = await screen.findByTestId("provider-pill");
     await waitFor(() => expect(pill).toHaveTextContent("mk-deleted"));
-    expect(pill).toHaveTextContent("No longer valid");
+    // 失效态单行：等宽目标 · 已失效，整颗 pill 走 mockup 的 .pill.warn 配色。
+    expect(pill).toHaveTextContent("mk-deleted · No longer valid");
+    // 失效是唯一保留配色信号的一态（mockup .pill.warn）。
     expect(pill).toHaveClass(
-      "border-status-waiting/60",
+      "cursor-pointer",
+      "border-status-waiting",
       "bg-status-waiting-bg",
+      "text-status-waiting",
     );
+    expect(
+      within(pill).queryByTestId("model-target-trigger-sub"),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("ProviderPill · 顶部特殊项副行（mockup：→ + 品牌标识 + 供应商 · 模型）", () => {
+  it("Given the agent binding resolves to a provider and model, When the picker opens, Then the follow-agent option's resolution line carries the arrow, the provider brand mark and a monospaced model id", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER],
+    });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [model("mk-sonnet", "claude-sonnet-4-5")],
+    });
+
+    render(
+      <Harness
+        backendType="claudecode"
+        sessionId={42}
+        boundProviderKey="acme-anthropic"
+        boundModelKey="mk-sonnet"
+      />,
+    );
+
+    const pill = await screen.findByTestId("provider-pill");
+    await waitFor(() => expect(pill).toHaveTextContent("claude-sonnet-4-5"));
+
+    const user = userEvent.setup();
+    await user.click(pill);
+
+    const follow = within(screen.getByRole("listbox")).getByRole("option", {
+      name: /Follow agent binding/i,
+    });
+    const resolution = within(follow).getByTestId("special-resolution");
+    // 解析结果不是一串纯文字：箭头点出「解析到」，品牌标识让绑定的供应商一眼可认。
+    expect(resolution).toHaveTextContent("→");
+    expect(
+      within(resolution).getByRole("img", { name: "Anthropic" }),
+    ).toBeInTheDocument();
+    expect(resolution).toHaveTextContent("Acme Claude");
+    // 模型 ID 是标识符，按 mockup 单独走等宽，不跟着供应商名一起排。
+    expect(within(resolution).getByText("claude-sonnet-4-5")).toHaveClass(
+      "font-mono",
+    );
+  });
+
+  it("Given the bound provider cannot be resolved in the catalog, When the picker opens, Then the resolution line stays plain text instead of rendering half a brand mark", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER],
+    });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [model("mk-sonnet", "claude-sonnet-4-5")],
+    });
+
+    render(
+      <Harness
+        backendType="claudecode"
+        sessionId={42}
+        boundProviderKey="ghost-provider"
+        boundModelKey=""
+      />,
+    );
+
+    const pill = await screen.findByTestId("provider-pill");
+    await waitFor(() => expect(pill).not.toBeDisabled());
+
+    const user = userEvent.setup();
+    await user.click(pill);
+
+    const follow = within(screen.getByRole("listbox")).getByRole("option", {
+      name: /Follow agent binding/i,
+    });
+    expect(follow).toHaveTextContent("ghost-provider");
+    expect(follow).not.toHaveTextContent("→");
+    expect(within(follow).queryByRole("img")).not.toBeInTheDocument();
+    expect(
+      within(follow).queryByTestId("special-resolution"),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("ProviderPill · 跟随 Agent 且后端走 CLI 自身登录态（spec L118：副行要写出它解析成什么）", () => {
+  async function openFollowOption() {
+    const pill = await screen.findByTestId("provider-pill");
+    await waitFor(() => expect(pill).not.toBeDisabled());
+    await userEvent.setup().click(pill);
+    return {
+      pill,
+      follow: within(screen.getByRole("listbox")).getByRole("option", {
+        name: /Follow agent binding/i,
+      }),
+    };
+  }
+
+  it("Given the agent backend is bound to a provider, When the pill and picker render, Then neither claims the CLI login state", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER],
+    });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [model("mk-sonnet", "claude-sonnet-4-5")],
+    });
+    render(
+      <Harness
+        backendType="claudecode"
+        sessionId={42}
+        boundProviderKey="acme-anthropic"
+        boundModelKey="mk-sonnet"
+      />,
+    );
+
+    const { pill, follow } = await openFollowOption();
+    expect(pill).toHaveTextContent("Follow agent binding · claude-sonnet-4-5");
+    expect(pill).not.toHaveTextContent("CLI login state");
+    expect(follow).not.toHaveTextContent(
+      "Determined by the CLI's own login account",
+    );
+    expect(
+      within(within(follow).getByTestId("special-resolution")).getByRole("img"),
+    ).toBeInTheDocument();
+  });
+
+  it("Given the agent backend is known to have no provider bound, When the pill and picker render, Then both say the CLI's own login account decides", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER],
+    });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [model("mk-sonnet", "claude-sonnet-4-5")],
+    });
+    // 空串 = 会话详情已加载且该 Agent 后端确实没绑供应商（≠ 还没加载出来）。
+    render(
+      <Harness
+        backendType="claudecode"
+        sessionId={42}
+        boundProviderKey=""
+        boundModelKey=""
+      />,
+    );
+
+    const { pill, follow } = await openFollowOption();
+    expect(pill).toHaveTextContent("Follow agent binding · CLI login state");
+    const resolution = within(follow).getByTestId("special-resolution");
+    expect(resolution).toHaveTextContent("→");
+    expect(resolution).toHaveTextContent(
+      "Determined by the CLI's own login account",
+    );
+    // 没有供应商可认领，就别画半个空标识。
+    expect(within(resolution).queryByRole("img")).not.toBeInTheDocument();
+  });
+
+  it("Given the agent binding is not loaded yet, When the pill and picker render, Then neither flashes the CLI login state", async () => {
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [ANTHROPIC_PROVIDER],
+    });
+    appMocks.ListLLMModels.mockResolvedValue({
+      items: [model("mk-sonnet", "claude-sonnet-4-5")],
+    });
+    // boundProviderKey 未传 = undefined = 会话详情/新建目标还没到，「不知道」不等于「没绑」。
+    render(<Harness backendType="claudecode" sessionId={42} />);
+
+    const { pill, follow } = await openFollowOption();
+    expect(pill).toHaveTextContent("Follow agent binding");
+    expect(pill).not.toHaveTextContent("CLI login state");
+    expect(follow).not.toHaveTextContent(
+      "Determined by the CLI's own login account",
+    );
+    expect(
+      within(follow).queryByTestId("special-resolution"),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -634,11 +840,15 @@ describe("ProviderPill · 已有会话（决策 1/9/10：选择立即持久化 +
     );
 
     // 目录异步加载（providers 空时 catalogLoading 已为 false，不能只等 not.toBeDisabled），
-    // 必须等模型目录解析完成、pill 标签显示「供应商 · 模型」才断言。
+    // 必须等模型目录解析完成、pill 写出解析到的模型 ID 才断言。
     await waitFor(() =>
       expect(screen.getByTestId("provider-pill")).toHaveTextContent(
-        "Acme Claude · claude-sonnet-4-5",
+        "claude-sonnet-4-5",
       ),
+    );
+    // 单行形态下供应商身份由品牌标识承担，人读名不再挤进 pill 的脸。
+    expect(screen.getByTestId("provider-pill")).not.toHaveTextContent(
+      "Acme Claude",
     );
   });
 
@@ -890,10 +1100,18 @@ describe("ProviderPill · 远端执行（gap 1：chat Picker 接收 daemon 能�
       "title",
       "Local only — sync to this device first",
     );
-    // 弹层底部出现远端门控说明。
+    // 灰掉的原因每一行自己已经写了（上面的 title + 行内提示），底部不再总述一遍；
+    // 留在底部的只有「同步会把 API Key 复制过去」这条后果承诺。
+    expect(
+      within(listbox).getAllByText("Local only — sync to this device first")
+        .length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getByRole("button", { name: "Sync Acme Chat to this device" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Disabled items need sync to the device or an unsupported capability",
+        "Syncing copies the API key to that device and needs your explicit confirmation",
       ),
     ).toBeInTheDocument();
   });
