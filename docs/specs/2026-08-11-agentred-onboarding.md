@@ -2,9 +2,7 @@
 
 <!-- File: docs/specs/2026-08-11-agentred-onboarding.md -->
 
-> Status: Approved（决策 1 的「只在页空态内出现」、用户故事 4 的实现方式与设计段 A 的同一前置已被
-> [2026-08-14 加下一台设备的引导：随时可达，不只在空态](./2026-08-14-add-device-guidance.md) 取代，
-> 见下方逐条标注；其余部分仍然有效）
+> Status: Approved（引导的出现方式由 [2026-08-14 加下一台设备的引导](./2026-08-14-add-device-guidance.md) 定稿）
 > Owner: 桌面端前端（远端设备页）+ cmd/agentred + 发布流水线
 > Last updated: 2026-08-11
 
@@ -31,13 +29,13 @@
 1. 作为**首次使用远端的用户**，我想在「远端设备」页按「安装 → 启动服务 → 配对」逐步被引导，以便从零接入一台远端机器，而不是面对两句命令猜流程。
 2. 作为**需要长期运行远端的用户**，我想把 agentred 注册为开机自启的后台服务，以便终端关闭也不离线。
 3. 作为**想手动安装的用户**，我想按平台看到可复制、可验证的安装命令。
-4. 作为**已配好设备的老用户**，我不希望引导打扰我；设备列表、在线状态、添加/管理能力照常工作。（本条的**实现方式**被 [2026-08-14 加下一台设备的引导](./2026-08-14-add-device-guidance.md) 决策 1 取代：原先靠「有设备时引导根本不出现」满足，现在靠「引导不常驻、只在用户从唯一入口召唤时才展开」满足——不打扰仍然成立，但引导对老用户随时可达。）
+4. 作为**已配好设备的老用户**，我不希望引导常驻打扰我，只在我从页头入口召唤时展开；设备列表、在线状态、添加/管理能力照常工作。
 
 ## Design decisions
 
 | # | Decision | Basis and rejected option |
 |---|---|---|
-| 1 | **三步引导放在「远端设备」页~~空态~~内（页面内步骤条展开）**，不新建独立页面或弹窗。（「只在空态内出现」这一限定被 [2026-08-14 加下一台设备的引导](./2026-08-14-add-device-guidance.md) 决策 1 取代：设备列表为空时引导自动展开且不提供收起；已有设备时默认收起，由页头唯一的「添加 agentred」入口召唤后展开在仍然可见的设备列表上方，并可收起。本行其余部分——页面内步骤条、不新建独立页面或弹窗——不变。） | 信息量大、需要跨步骤状态与命令复制，页面内步骤条最稳，且与设置页既有布局一致。Rejected: 弹窗 — 塞不下命令+清单；独立路由 — 打断设置页上下文。 |
+| 1 | **三步引导放在「远端设备」页内（页面内步骤条展开）**，不新建独立页面或弹窗；设备列表为空时自动展开且不提供收起，已有设备时默认收起，由页头唯一的「添加 agentred」入口召唤后展开在仍然可见的设备列表上方，并可收起。 | 信息量大、需要跨步骤状态与命令复制，页面内步骤条最稳，且与设置页既有布局一致。Rejected: 弹窗 — 塞不下命令+清单；独立路由 — 打断设置页上下文。 |
 | 2 | **新增 agentred 后台服务闭环**：`service install/start/status/restart/stop/uninstall`；Linux 用 user 级 systemd（尝试 `loginctl enable-linger`）、macOS 用 launchd LaunchAgent、Windows 用用户级计划任务，默认不创建系统级服务。 | 真正的闭环，优先用户级以减少权限要求；Linux host policy 不允许 linger 时，注册仍成功但必须输出可执行的修复命令。Rejected: 只做前台引导 — 运维门槛仍在；系统级 systemd / Windows Service — 默认需要管理员，跨平台体验割裂。 |
 | 3 | **发布流程新增 agentred 独立资产构建**：release 与 nightly 各加一个 job，产出 `agentred-<version>-<goos>-<goarch>`（darwin/linux 用 tar.gz、windows 用 zip）+ `SHA256SUMS`，并保留 `SHA256SUMS.txt` 兼容现有桌面更新，上传到同一个 GitHub Release。 | 桌面与远端不是同一台机器，打进桌面安装包无意义；独立资产是「可从正常通道获得」的前提。Rejected: 只改 README — 仍没有可安装产物。 |
 | 4 | **新增 `install.sh`（POSIX sh）与 `install.ps1`（Windows）作为发布资产**，UI 显示真实一键安装命令；脚本负责识别 OS/arch、下载对应资产、校验 SHA256SUMS；Unix 安装到可写的 `/usr/local/bin`，不可写则 `~/.local/bin` 并提示 PATH；Windows 安装到 `%LOCALAPPDATA%\Programs\agentred\` 并写入用户 PATH。 | 一键入口命令简短、可用，Windows 不要求管理员 PowerShell。Rejected: 只显示手动下载命令 — 又长又易错；不校验 — 无法保证完整性。 |
@@ -49,9 +47,9 @@
 
 ## Design
 
-### A. 首次使用：三步引导（「远端设备」页空态）
+### A. 接入一台设备：三步引导（「远端设备」页内）
 
-前置：~~设备列表为空（未配对任何设备）时，~~「远端设备」页显示三步步条（安装 agentred → 启动远端服务 → 配对并验证），当前步骤展开；步骤完成标记 ✓。~~有设备时完全走现有设备列表，不出现引导。~~ **引导的出现条件（含本节标题里的「页空态」）已被 [2026-08-14 加下一台设备的引导](./2026-08-14-add-device-guidance.md) 决策 1 取代**：设备列表为空时引导自动展开且不提供收起；已有设备时默认收起，由页头唯一的「添加 agentred」入口召唤后展开在仍然可见的设备列表上方，并可收起。
+前置：「远端设备」页显示三步步条（安装 agentred → 启动远端服务 → 配对并验证），当前步骤展开；步骤完成标记 ✓。设备列表为空时引导自动展开且不提供收起；已有设备时默认收起，由页头唯一的「添加 agentred」入口召唤后展开在仍然可见的设备列表上方，并可收起。
 
 - **步骤 1 · 安装**：平台选择（Linux / macOS / Windows）。选中的平台决定显示的安装命令（带复制按钮，`data-selectable-text`，复制成功 toast）：
   - Linux / macOS：`curl -fsSL https://github.com/agentre-ai/agentre/releases/latest/download/install.sh | sh`
@@ -61,7 +59,7 @@
   - 后台服务：`agentred service install --start`、`agentred service status`、`agentred service restart` 各带复制按钮；「确认服务已运行」清单（编号 1/2/3）：在远端终端运行 `agentred service status` 看到 `Daemon running`、确认监听地址含 `ws://…:7456/rpc`、保持服务运行。
   - 前台运行：`agentred run` 复制，提示保持终端开启、关闭即停止。
   - 点击「服务已运行，下一步 →」进入步骤 3。
-- **步骤 3 · 配对**：`agentred pair` 复制；连接地址 + 6 位配对码输入（可选名称），字段与校验规则与现有 `AddDeviceDialog` 一致（`URL_RE` / 6 位大写码）；提交走现有配对流程（`RemoteDeviceAdd`），失败在步骤内展示具体原因；成功后设备出现在列表并显示在线（现有 watcher），引导行提示「下一步配置 Agent 后端」。
+- **步骤 3 · 配对**：`agentred pair` 复制；连接地址 + 6 位配对码输入（可选名称），字段与校验规则由 `device-pairing-form.tsx` 的 `DevicePairingForm` 提供（`URL_RE` / 6 位大写码）；提交走现有配对流程（`RemoteDeviceAdd`），失败在步骤内展示具体原因；成功后设备出现在列表并显示在线（现有 watcher），引导行提示「下一步配置 Agent 后端」。
 
 ### B. agentred 后台服务闭环（`cmd/agentred service`）
 
