@@ -10,6 +10,10 @@ import { cn } from "@/lib/utils";
 import { splitStreamingMarkdown } from "@/lib/streaming-markdown";
 
 import { CodeBlock } from "./code-block";
+import {
+  MARKDOWN_AUTOLINK_TAG,
+  rehypeMarkdownAutolinks,
+} from "./markdown-autolinks";
 import { MarkdownImage } from "./markdown-image";
 import { RichLink } from "./rich-link";
 
@@ -325,9 +329,20 @@ const MarkdownInner = React.memo(function MarkdownInner({
         <MarkdownImage src={src} alt={alt} cwd={cwd} sessionId={sessionId} />
       ),
     };
+    // 自定义元素名不在 JSX.IntrinsicElements 里,Components 类型只收内建标签,
+    // 这里以宽类型挂载。自动链接与调用方 token 各自只渲染自己的命中范围。
+    (base as Record<string, unknown>)[MARKDOWN_AUTOLINK_TAG] = ({
+      href,
+      children,
+    }: {
+      href?: string;
+      children?: React.ReactNode;
+    }) => (
+      <RichLink href={href} cwd={cwd}>
+        {children}
+      </RichLink>
+    );
     if (decorator) {
-      // INLINE_TOKEN_TAG 是自定义元素名,不在 JSX.IntrinsicElements 里,
-      // Components 类型只收内建标签,这里以宽类型挂载。
       (base as Record<string, unknown>)[INLINE_TOKEN_TAG] = ({
         payload,
       }: {
@@ -340,16 +355,19 @@ const MarkdownInner = React.memo(function MarkdownInner({
   const rehypePlugins = React.useMemo<
     ReactMarkdownOptions["rehypePlugins"]
   >(() => {
-    if (!decorator) return markdownRehypePlugins;
-    return [
-      ...(markdownRehypePlugins ?? []),
-      rehypeInlineTokens(
-        decorator.tokenize as (
-          text: string,
-        ) => MarkdownInlineSegment<unknown>[],
-      ),
-    ];
-  }, [decorator]);
+    const plugins = [...(markdownRehypePlugins ?? [])];
+    if (decorator) {
+      plugins.push(
+        rehypeInlineTokens(
+          decorator.tokenize as (
+            text: string,
+          ) => MarkdownInlineSegment<unknown>[],
+        ),
+      );
+    }
+    plugins.push(rehypeMarkdownAutolinks(cwd, [INLINE_TOKEN_TAG]));
+    return plugins;
+  }, [cwd, decorator]);
 
   return (
     <ReactMarkdown

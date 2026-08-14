@@ -24,6 +24,7 @@ const WWW_PREFIX = /^www\./i;
 const FILE_PROTOCOL = /^file:\/\//i;
 const ABS_POSIX = /^\//;
 const ABS_WINDOWS = /^[A-Za-z]:[\\/]/;
+const SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 const LINE_SUFFIX = /:(\d+)(?::(\d+))?$/;
 
 function stripLineSuffix(p: string): {
@@ -58,10 +59,66 @@ function fileURLToPath(href: string): string {
   return decodeLocalPath(path);
 }
 
-function classifyLocalPathKind(fullPath: string, cwd?: string): LocalPathKind {
+function classifyLocalPathKind(
+  fullPath: string,
+  cwd?: string,
+  relativeSource?: string,
+): LocalPathKind {
   if (cwd && fullPath === cwd) return "folder";
-  if (fullPath.endsWith("/") || /[\\/]$/.test(fullPath)) return "folder";
+  if (/[\\/]$/.test(fullPath)) return "folder";
+  if (relativeSource) {
+    const base = relativeSource.split(/[\\/]/).pop() ?? "";
+    if (base !== "" && !base.includes(".")) return "folder";
+  }
   return "file";
+}
+
+function resolveRelativePath(path: string, cwd: string): string {
+  const windows = ABS_WINDOWS.test(cwd);
+  const separator = windows ? "\\" : "/";
+  const normalizedCwd = cwd.replace(/[\\/]+/g, separator);
+  const normalizedPath = path.replace(/[\\/]+/g, separator);
+  const trailingSeparator = /[\\/]$/.test(path);
+
+  let root = separator;
+  let cwdRest: string;
+  if (windows) {
+    root = normalizedCwd.slice(0, 2);
+    cwdRest = normalizedCwd.slice(2).replace(/^\\+/, "");
+  } else {
+    cwdRest = normalizedCwd.replace(/^\/+/, "");
+  }
+
+  const parts = cwdRest.split(separator).filter(Boolean);
+  for (const part of normalizedPath.split(separator)) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+
+  const joined = parts.join(separator);
+  const fullPath = windows
+    ? `${root}${joined ? separator + joined : separator}`
+    : `${root}${joined}`;
+  return trailingSeparator && !fullPath.endsWith(separator)
+    ? `${fullPath}${separator}`
+    : fullPath;
+}
+
+function internalRelativePath(fullPath: string, cwd: string): string | null {
+  const windows = ABS_WINDOWS.test(cwd);
+  const normalizedFull = fullPath.replace(/\\/g, "/");
+  const normalizedCwd = cwd.replace(/\\/g, "/").replace(/\/$/, "");
+  const comparableFull = windows
+    ? normalizedFull.toLowerCase()
+    : normalizedFull;
+  const comparableCwd = windows ? normalizedCwd.toLowerCase() : normalizedCwd;
+  if (comparableFull === comparableCwd) return "";
+  if (!comparableFull.startsWith(`${comparableCwd}/`)) return null;
+  return normalizedFull.slice(normalizedCwd.length + 1);
 }
 
 export function classifyLink(
@@ -74,19 +131,26 @@ export function classifyLink(
   if (WWW_PREFIX.test(href)) return { kind: "url", url: `http://${href}` };
 
   let rawPath: string;
+  let relativeSource: string | undefined;
   if (FILE_PROTOCOL.test(href)) {
     rawPath = fileURLToPath(href);
   } else if (ABS_POSIX.test(href) || ABS_WINDOWS.test(href)) {
     rawPath = decodeLocalPath(href);
+  } else if (cwd && !SCHEME.test(href) && !href.startsWith("#")) {
+    const relative = stripLineSuffix(decodeLocalPath(href));
+    relativeSource = relative.path;
+    rawPath = resolveRelativePath(relative.path, cwd);
+    if (relative.line !== undefined) rawPath += `:${relative.line}`;
+    if (relative.col !== undefined) rawPath += `:${relative.col}`;
   } else {
     return { kind: "unknown", href };
   }
 
   const { path: fullPath, line, col } = stripLineSuffix(rawPath);
-  const pathKind = classifyLocalPathKind(fullPath, cwd);
+  const pathKind = classifyLocalPathKind(fullPath, cwd, relativeSource);
 
-  if (cwd && (fullPath === cwd || fullPath.startsWith(cwd + "/"))) {
-    const relPath = fullPath === cwd ? "" : fullPath.slice(cwd.length + 1);
+  const relPath = cwd ? internalRelativePath(fullPath, cwd) : null;
+  if (relPath !== null) {
     return {
       kind: "local-internal",
       fullPath,

@@ -38,4 +38,38 @@ describe("StreamingMarkdown", () => {
     const { container } = render(<StreamingMarkdown text="just growing" />);
     expect(container.querySelectorAll(".markdown-body")).toHaveLength(1);
   });
+
+  it("Given an incomplete trusted filename in the active tail, when a later chunk completes it, then only the complete target becomes a link", () => {
+    const view = render(
+      <StreamingMarkdown text="Inspect main.g" cwd="/work/proj" />,
+    );
+    expect(screen.queryByRole("link")).toBeNull();
+
+    view.rerender(
+      <StreamingMarkdown text="Inspect main.go" cwd="/work/proj" />,
+    );
+    expect(screen.getByRole("link", { name: /main\.go/ })).toBeInTheDocument();
+  });
+
+  it("Given an autolink in a committed segment, when only the streaming tail grows, then the committed link node remains stable", () => {
+    const view = render(
+      <StreamingMarkdown
+        text={"README.md\n\nInspect main.g"}
+        cwd="/work/proj"
+      />,
+    );
+    const committedLink = screen.getByRole("link", { name: /README\.md/ });
+
+    view.rerender(
+      <StreamingMarkdown
+        text={"README.md\n\nInspect main.go"}
+        cwd="/work/proj"
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: /README\.md/ })).toBe(
+      committedLink,
+    );
+    expect(screen.getByRole("link", { name: /main\.go/ })).toBeInTheDocument();
+  });
 });

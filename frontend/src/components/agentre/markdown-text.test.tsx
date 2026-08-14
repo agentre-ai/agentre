@@ -71,6 +71,92 @@ describe("MarkdownText", () => {
   });
 });
 
+describe("MarkdownText automatic RichLinks", () => {
+  it("Given ordinary prose with multiple allowed targets, when rendered, then each target is a RichLink and relative clicks use the resolved absolute path", () => {
+    const text =
+      'Open "README.md", frontend/src/chat.tsx:42:7，and https://example.com/a.';
+    const { container } = render(<MarkdownText text={text} cwd="/work/proj" />);
+
+    const links = screen.getAllByRole("link");
+    expect(links.map((link) => link.textContent)).toEqual([
+      expect.stringContaining("README.md"),
+      expect.stringContaining("frontend/src/chat.tsx:42:7"),
+      expect.stringContaining("https://example.com/a"),
+    ]);
+    expect(container.textContent).toContain(text);
+
+    fireEvent.click(screen.getByRole("link", { name: /chat\.tsx:42:7/ }));
+    expect(appMocks.OpenPath).toHaveBeenCalledWith(
+      "/work/proj/frontend/src/chat.tsx:42:7",
+    );
+  });
+
+  it("Given existing Markdown links and images, when rendered, then their descendants are not scanned into nested links", () => {
+    const { container } = render(
+      <MarkdownText
+        text={
+          "[README.md](https://example.com/readme) ![frontend/src/logo.png](logo.png)"
+        }
+        cwd="/work/proj"
+      />,
+    );
+
+    expect(container.querySelectorAll("a")).toHaveLength(1);
+    expect(container.querySelector("a a")).toBeNull();
+    expect(container.querySelector("img")?.getAttribute("alt")).toBe(
+      "frontend/src/logo.png",
+    );
+  });
+
+  it("Given whole-target inline code, when rendered, then it is clickable while retaining the existing code appearance", () => {
+    render(<MarkdownText text="`docs/My Guide.md`" cwd="/work/proj" />);
+
+    const link = screen.getByRole("link", { name: /docs\/My Guide\.md/ });
+    const code = link.closest("code");
+    expect(code).not.toBeNull();
+    expect(code).toHaveClass("font-mono", "bg-muted");
+    expect(code?.textContent).toContain("docs/My Guide.md");
+  });
+
+  it("Given mixed inline code and fenced code, when rendered, then neither code region is partially autolinked", () => {
+    const { container } = render(
+      <MarkdownText
+        text={
+          "Run `cat frontend/src/chat.tsx` instead.\n\n```sh\ncat frontend/src/chat.tsx\n```\n"
+        }
+        cwd="/work/proj"
+      />,
+    );
+
+    expect(container.querySelectorAll("a")).toHaveLength(0);
+    expect(container.textContent).toContain("cat frontend/src/chat.tsx");
+  });
+
+  it("Given no cwd, when relative targets appear, then they remain non-interactive text", () => {
+    const { container } = render(
+      <MarkdownText text="README.md ./docs/guide.md frontend/src/chat.tsx" />,
+    );
+
+    expect(container.querySelector("a")).toBeNull();
+    expect(container.textContent).toBe(
+      "README.md ./docs/guide.md frontend/src/chat.tsx",
+    );
+  });
+
+  it("Given unsafe and ambiguous prose, when rendered, then it creates no navigable href", () => {
+    const { container } = render(
+      <MarkdownText
+        text={
+          "javascript:alert(1) data:text/plain,x example.com github.com/owner/repo foo.bar 2026/08/14"
+        }
+        cwd="/work/proj"
+      />,
+    );
+
+    expect(container.querySelector("a")).toBeNull();
+  });
+});
+
 describe("MarkdownText inline decorator", () => {
   // bobDecorator:测试用的最小装饰器 —— 把字面 "@Bob" 切成可点击 token,
   // 其余原样保留。只测接缝本身,不绑 mention 业务。
