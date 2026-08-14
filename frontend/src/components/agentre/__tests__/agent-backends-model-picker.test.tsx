@@ -411,6 +411,56 @@ describe("ModelTargetPicker", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("triggerLabel 可以是节点：节点原样渲染在主行，无障碍名来自显式字符串而不是节点内容", () => {
+    // 主行要放品牌标识（role=img，自带标签）+ 模式徽标，纯字符串装不下。
+    const nodeLabel = (
+      <span>
+        <span
+          role="img"
+          aria-label="Anthropic brand"
+          data-testid="trigger-brand"
+        />
+        <span>Anthropic</span>
+        <span data-testid="trigger-mode-chip">Follow default</span>
+      </span>
+    );
+    const { rerender } = render(
+      <ModelTargetPicker
+        scenario="backend"
+        backendType="claudecode"
+        selected={{ providerKey: "k-anthropic", modelKey: "" }}
+        onChange={vi.fn()}
+        catalog={catalog()}
+        triggerLabel={nodeLabel}
+      />,
+    );
+    // 没传 aria-label 时名字回落到目录解析出的字符串，绝不让节点里的品牌标识
+    // 和徽标参与无障碍名计算（否则屏幕阅读器会念出重复的品牌名）。
+    const trigger = screen.getByRole("button", {
+      name: "Anthropic · claude-sonnet-4-6",
+    });
+    expect(within(trigger).getByTestId("trigger-brand")).toBeInTheDocument();
+    expect(within(trigger).getByTestId("trigger-mode-chip")).toHaveTextContent(
+      "Follow default",
+    );
+
+    // 显式 aria-label 仍然优先 —— 既有消费方按名字定位不回归。
+    rerender(
+      <ModelTargetPicker
+        scenario="backend"
+        aria-label="Model binding"
+        backendType="claudecode"
+        selected={{ providerKey: "k-anthropic", modelKey: "" }}
+        onChange={vi.fn()}
+        catalog={catalog()}
+        triggerLabel={nodeLabel}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: "Model binding" }),
+    ).toBeInTheDocument();
+  });
+
   it("搜索可过滤，空目录渲染空态", async () => {
     const user = userEvent.setup();
     render(

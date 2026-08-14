@@ -90,6 +90,7 @@ export function ProviderWorkspace({
   onRetryModels,
   testingDefault,
   testingModelId,
+  passedModelTests,
   providerRefCounts,
   modelRefCounts,
   modelRefsLoading,
@@ -100,6 +101,8 @@ export function ProviderWorkspace({
   modelsLoading: boolean;
   testingDefault: boolean;
   testingModelId: number | null;
+  // 会话内瞬时的「已通过」：model.id → 本次测试耗时；不持久化，刷新即消失。
+  passedModelTests: ReadonlyMap<number, string>;
   providerRefCounts: ReferenceCounts | null;
   modelRefCounts: Map<string, ReferenceCounts>;
   modelRefsLoading: boolean;
@@ -571,6 +574,7 @@ export function ProviderWorkspace({
                 const refCount = totalReferences(
                   modelRefCounts.get(model.modelKey),
                 );
+                const passedDuration = passedModelTests.get(model.id);
                 const del = modelDeleteability(
                   model,
                   provider.defaultModelKey,
@@ -639,8 +643,21 @@ export function ProviderWorkspace({
                               </span>
                             )}
                           </span>
-                          <span className="truncate font-mono text-2xs text-muted-foreground">
-                            {model.modelId}
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <span className="truncate font-mono text-2xs text-muted-foreground">
+                              {model.modelId}
+                            </span>
+                            {passedDuration ? (
+                              <span
+                                className="shrink-0 rounded-sm bg-status-running/10 px-1.5 py-0.5 text-2xs font-medium text-status-running"
+                                title={t(
+                                  "llmProviders.modelsTable.testPassedHint",
+                                  { duration: passedDuration },
+                                )}
+                              >
+                                {t("llmProviders.modelsTable.testPassed")}
+                              </span>
+                            ) : null}
                           </span>
                           {selected.has(model.id) ? (
                             <span

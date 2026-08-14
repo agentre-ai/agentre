@@ -110,7 +110,6 @@
       "cliResolution": "Effective model is determined by the CLI's own login account",
       "modeFollow": "Follow default",
       "modeFixed": "Fixed",
-      "targetWithMode": "{{provider}} · {{mode}}",
       "followResolution": "Effective model: {{model}} · follows default changes from the next turn",
       "fixedResolution": "Effective model: {{model}} · unaffected by provider default changes",
       "invalidTarget": "Invalid target · {{target}}",
@@ -1714,7 +1713,6 @@
     },
     "empty": {
       "addFirst": "Add First Provider",
-      "apiKeyHelp": "How to get an API key",
       "chain": "LLM providers → Agent backends → Agent chats",
       "description": "Add a provider such as Anthropic, OpenAI, or a compatible endpoint, then choose a default model.",
       "goToBackend": "Go to Agent backends",
@@ -1863,7 +1861,8 @@
       "modelCount": "{{count}} models"
     },
     "page": {
-      "add": "New Provider"
+      "add": "New Provider",
+      "loadingProviders": "Loading providers…"
     },
     "workspace": {
       "ariaLabel": "{{name}} models",
@@ -1924,6 +1923,8 @@
       "deleteModelNamed": "Delete {{model}}",
       "deleteBlockedDefault": "Default model: set another default before deleting",
       "deleteTitle": "Delete (requires confirmation)",
+      "testPassed": "Passed",
+      "testPassedHint": "Passed in this session · {{duration}}",
       "disableBlockedDefault": "Default model: set another default before disabling",
       "enableNamed": "Enable {{model}}",
       "selectAll": "Select all models",

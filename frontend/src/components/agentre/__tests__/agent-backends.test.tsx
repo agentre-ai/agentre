@@ -475,6 +475,47 @@ describe("AgentBackendsPanel", () => {
     ).toBeVisible();
   });
 
+  it("Given a provider-bound backend, When the editor renders, Then the trigger's first line carries the brand logo, the provider name and a follow/fixed chip", async () => {
+    const user = userEvent.setup();
+    installAppMock();
+    render(<AgentBackendsPanel />);
+    const row = (await screen.findByText("默认助手")).closest(
+      '[role="listitem"]',
+    ) as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /Edit/ }));
+    const dialog = await screen.findByRole("dialog");
+    const trigger = within(dialog).getByRole("button", {
+      name: "Model binding",
+    });
+
+    // mockup 06-backend 的触发器主行 = 品牌标识 + 供应商名 + 模式徽标，
+    // 与列表行的绑定面包屑（backend-binding）同一套处理，不是一串扁平文案。
+    expect(
+      within(trigger).getByRole("img", { name: "Anthropic" }),
+    ).toBeInTheDocument();
+    expect(within(trigger).getByTestId("binding-mode-chip")).toHaveTextContent(
+      "Follow default",
+    );
+    // 主行变成节点后，无障碍名仍只由显式 aria-label 决定，不被品牌标识念出来。
+    expect(trigger).toHaveAccessibleName("Model binding");
+
+    // 边界：固定到具体模型后，同一个徽标翻成「固定」。
+    await user.click(trigger);
+    const listbox = await screen.findByRole("listbox", {
+      name: "Model binding",
+    });
+    const fixedOption = within(listbox)
+      .getAllByRole("option")
+      .find((option) => option.getAttribute("data-kind") === "fixed");
+    await user.click(fixedOption as HTMLElement);
+    await waitFor(() => {
+      expect(
+        within(trigger).getByTestId("binding-mode-chip"),
+      ).toHaveTextContent("Fixed");
+    });
+    expect(trigger).toHaveAccessibleName("Model binding");
+  });
+
   it("Given remote catalog requests overlap, When an old device responds last, Then it cannot replace the current device catalog", async () => {
     const user = userEvent.setup();
     const oldCatalog = deferred<unknown[]>();

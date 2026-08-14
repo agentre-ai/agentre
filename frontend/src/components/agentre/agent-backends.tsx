@@ -2524,23 +2524,52 @@ function ProviderConfigureCta({ onConfigure }: { onConfigure?: () => void }) {
   );
 }
 
-function bindingTriggerLabel(
-  t: Translate,
-  target: ResolvedModelTarget,
-): string {
-  if (target.mode === "native") return t("agentBackends.binding.cliLogin");
-  if (target.mode === "invalid") {
-    return t("agentBackends.binding.invalidTarget", {
-      target: target.providerName || target.modelId,
-    });
+// 触发按钮主行：品牌标识 + 供应商名 + 跟随/固定徽标 —— 和列表行的绑定面包屑
+// （BackendRowBinding）同一套处理，让「绑了谁、是不是跟随」在收起状态下也一眼可读。
+// 按钮的无障碍名由 ModelTargetPicker 的 aria-label 决定，这里只管视觉主行。
+function BindingTriggerLabel({ target }: { target: ResolvedModelTarget }) {
+  const { t } = useTranslation();
+  if (target.mode === "native") {
+    return (
+      <span className="min-w-0 truncate">
+        {t("agentBackends.binding.cliLogin")}
+      </span>
+    );
   }
-  return t("agentBackends.binding.targetWithMode", {
-    provider: target.providerName,
-    mode:
-      target.mode === "provider-default"
-        ? t("agentBackends.binding.modeFollow")
-        : t("agentBackends.binding.modeFixed"),
-  });
+  if (target.mode === "invalid") {
+    return (
+      <span className="min-w-0 truncate">
+        {t("agentBackends.binding.invalidTarget", {
+          target: target.providerName || target.modelId,
+        })}
+      </span>
+    );
+  }
+  const follow = target.mode === "provider-default";
+  return (
+    <>
+      <LlmProviderLogo
+        providerType={target.providerType}
+        providerName={target.providerName}
+        className="size-3.5 shrink-0"
+      />
+      <span className="min-w-0 truncate font-medium">
+        {target.providerName}
+      </span>
+      <Badge
+        data-testid="binding-mode-chip"
+        variant="secondary"
+        className={cn(
+          "shrink-0 rounded-sm px-1 py-0 text-2xs font-normal",
+          follow && "bg-primary-soft text-primary-text",
+        )}
+      >
+        {follow
+          ? t("agentBackends.binding.modeFollow")
+          : t("agentBackends.binding.modeFixed")}
+      </Badge>
+    </>
+  );
 }
 
 function bindingTriggerSub(t: Translate, target: ResolvedModelTarget): string {
@@ -2817,7 +2846,7 @@ function ModelTargetField({
           openOnMount={openPickerOnMount}
           supportsFixedModel={supportsFixedModel}
           remoteCatalog={remoteCatalog}
-          triggerLabel={bindingTriggerLabel(t, resolvedTarget)}
+          triggerLabel={<BindingTriggerLabel target={resolvedTarget} />}
           triggerSub={bindingTriggerSub(t, resolvedTarget)}
           aria-label={t("agentBackends.binding.label")}
         />

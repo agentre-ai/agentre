@@ -1378,25 +1378,84 @@ describe("LlmProvidersPanel", () => {
     );
   });
 
-  it("Given providers exist, When the panel loads, Then a single New Provider entry precedes the workspace and the old toolbar and nav add entry are gone", async () => {
+  it("Given providers exist, When the panel loads, Then its single New Provider entry is handed to the page header slot and the old toolbar and nav add entry are gone", async () => {
     installAppMock({
       ListLLMProviders: vi.fn(() =>
         Promise.resolve({ items: [makeProvider()] }),
       ),
       ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
     });
-    render(<LlmProvidersPanel />);
+    render(
+      <LlmProvidersPanel
+        renderHeader={(actions) => (
+          <div data-testid="page-header">{actions}</div>
+        )}
+      />,
+    );
 
     await screen.findByRole("region", { name: /Anthropic models/ });
 
-    // 唯一新增入口（页头），不再有外层重复卡片标题与左栏底部添加入口
+    // mockup 注解①：唯一新增入口交给页头 slot 渲染，面板自己不再留一层 strip
     expect(
-      screen.getByRole("button", { name: "New Provider" }),
+      within(screen.getByTestId("page-header")).getByRole("button", {
+        name: "New Provider",
+      }),
     ).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("button", { name: "New Provider" }),
+    ).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Add Provider" })).toBeNull();
     expect(screen.queryByText("Configured Providers")).toBeNull();
     // mockup 注解①：删掉「已配置的供应商 / 共 N 个」重复计数条，不再单独占一层 strip
     expect(screen.queryByText("1 total")).toBeNull();
+  });
+
+  it("Given the page header slot renders the New Provider entry, When it is clicked, Then the create dialog opens", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+    });
+    render(
+      <LlmProvidersPanel
+        renderHeader={(actions) => (
+          <div data-testid="page-header">{actions}</div>
+        )}
+      />,
+    );
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    await user.click(
+      within(screen.getByTestId("page-header")).getByRole("button", {
+        name: "New Provider",
+      }),
+    );
+
+    expect(
+      await screen.findByRole("dialog", { name: "New LLM Provider" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Given no providers exist, When the panel loads, Then the page header slot gets no add entry and the empty state keeps the only one", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() => Promise.resolve({ items: [] })),
+    });
+    render(
+      <LlmProvidersPanel
+        renderHeader={(actions) => (
+          <div data-testid="page-header">{actions}</div>
+        )}
+      />,
+    );
+
+    await screen.findByRole("button", { name: "Add First Provider" });
+
+    expect(
+      within(screen.getByTestId("page-header")).queryByRole("button"),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "New Provider" })).toBeNull();
   });
 
   it("Given a provider is selected, When the workspace renders, Then the header splits into identity and metadata rows with the combined switch first, then Test Connection, Discover Models and More", async () => {
@@ -2304,5 +2363,237 @@ describe("LlmProvidersPanel", () => {
         }),
       );
     });
+  });
+
+  it("Given a blocked model delete, When Disable instead succeeds, Then the panel flashes the disabled model and reloads the model list", async () => {
+    let referenced = false;
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel(),
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              name: "",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+      LLMModelRefCounts: vi.fn((req: unknown) =>
+        Promise.resolve({
+          counts:
+            referenced && (req as { modelKey?: string }).modelKey === "mk-opus"
+              ? { backends: 1, sessions: 2, routes: 0 }
+              : { backends: 0, sessions: 0, routes: 0 },
+        }),
+      ),
+    });
+    const user = setupMenuUser();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    const listCallsBefore = (mocks.ListLLMModels as ReturnType<typeof vi.fn>)
+      .mock.calls.length;
+
+    referenced = true;
+    await user.click(
+      screen.getByRole("button", { name: "More actions for claude-opus-4-1" }),
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Delete claude-opus-4-1" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: /Delete model/ });
+    await user.click(
+      await within(dialog).findByRole("button", { name: "Disable instead" }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.SetLLMModelEnabled).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 12, enabled: false }),
+      );
+    });
+    // 后端已改状态，工作区必须跟着刷新并把结果说出来，而不是留在陈旧的启用态
+    expect(
+      await screen.findByText("Model claude-opus-4-1 disabled"),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        (mocks.ListLLMModels as ReturnType<typeof vi.fn>).mock.calls.length,
+      ).toBeGreaterThan(listCallsBefore);
+    });
+  });
+
+  it("Given a blocked provider delete, When Disable instead succeeds, Then the panel flashes the disabled provider and reloads the provider list", async () => {
+    let referenced = false;
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+      LLMProviderRefCounts: vi.fn(() =>
+        Promise.resolve({
+          counts: referenced
+            ? { backends: 2, sessions: 1, routes: 0 }
+            : { backends: 0, sessions: 0, routes: 0 },
+        }),
+      ),
+    });
+    const user = setupMenuUser();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("region", { name: /Anthropic models/ });
+    const providerCallsBefore = (
+      mocks.ListLLMProviders as ReturnType<typeof vi.fn>
+    ).mock.calls.length;
+
+    referenced = true;
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Delete Anthropic" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: /Delete provider/,
+    });
+    await user.click(
+      await within(dialog).findByRole("button", { name: "Disable instead" }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.SetLLMProviderEnabled).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 1, enabled: false }),
+      );
+    });
+    expect(
+      await screen.findByText("Provider Anthropic disabled"),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        (mocks.ListLLMProviders as ReturnType<typeof vi.fn>).mock.calls.length,
+      ).toBeGreaterThan(providerCallsBefore);
+    });
+  });
+
+  it("Given a long endpoint, When the nav item renders, Then the endpoint owns its own truncating line and the model count is a separate element that cannot be truncated away", async () => {
+    const endpoint = "https://example.invalid/v1/openai/compatible/gateway";
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeProvider({
+              name: "Long Endpoint Provider",
+              baseUrl: endpoint,
+              modelCount: 7,
+            }),
+          ],
+        }),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    const nav = await screen.findByRole("complementary", {
+      name: "Provider list",
+    });
+    const item = await within(nav).findByRole("button", {
+      name: /Long Endpoint Provider/,
+    });
+
+    // endpoint 独占一行：截断只吃 endpoint 自己
+    const endpointEl = within(item).getByText(endpoint);
+    expect(endpointEl.className).toContain("truncate");
+
+    // 计数是同级独立元素，不参与 endpoint 的截断
+    const countEl = within(item).getByText("7 models");
+    expect(endpointEl.contains(countEl)).toBe(false);
+    expect(countEl.className).toContain("shrink-0");
+    expect(countEl.className).not.toContain("truncate");
+  });
+
+  it("Given no providers, When the empty state renders, Then it carries no vendor-specific API key documentation link", async () => {
+    installAppMock();
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("button", { name: "Add First Provider" });
+    // 供应商可能是 OpenAI / 兼容端点，硬编码 Anthropic 文档链接是错的
+    expect(screen.queryByText("How to get an API key")).toBeNull();
+    expect(
+      document.querySelector('a[href^="https://docs.anthropic.com"]'),
+    ).toBeNull();
+  });
+
+  it("Given the provider list is still loading, When the spinner renders, Then it says providers are loading, not models", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() => new Promise(() => {})),
+    });
+    render(<LlmProvidersPanel />);
+
+    expect(await screen.findByText("Loading providers…")).toBeInTheDocument();
+    expect(screen.queryByText("Loading models…")).toBeNull();
+  });
+
+  it("Given a model row test succeeds, When it completes, Then only that row gains a transient Passed chip", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            makeModel(),
+            makeModel({
+              id: 12,
+              modelKey: "mk-opus",
+              modelId: "claude-opus-4-1",
+              name: "",
+              isDefault: false,
+            }),
+          ],
+        }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Test claude-opus-4-1" }),
+    );
+
+    const testedRow = await waitFor(() => {
+      const row = rowForModel("claude-opus-4-1");
+      expect(within(row).getByText("Passed")).toBeInTheDocument();
+      return row;
+    });
+    expect(within(testedRow).getByText("Passed")).toBeInTheDocument();
+    expect(
+      within(rowForModel("claude-sonnet-4-5")).queryByText("Passed"),
+    ).toBeNull();
+  });
+
+  it("Given a model row test fails, When it completes, Then the row shows no Passed chip", async () => {
+    installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({ items: [makeProvider()] }),
+      ),
+      ListLLMModels: vi.fn(() => Promise.resolve({ items: [makeModel()] })),
+      TestLLMProvider: vi.fn(() =>
+        Promise.resolve({ ok: false, message: "401 unauthorized" }),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<LlmProvidersPanel />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Test claude-sonnet-4-5" }),
+    );
+
+    await screen.findByText(/401 unauthorized/);
+    expect(
+      within(rowForModel("claude-sonnet-4-5")).queryByText("Passed"),
+    ).toBeNull();
   });
 });

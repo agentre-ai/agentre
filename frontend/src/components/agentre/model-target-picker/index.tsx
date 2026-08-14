@@ -95,9 +95,11 @@ export type ModelTargetPickerProps = {
   align?: "start" | "end";
   className?: string;
   title?: string;
-  // triggerLabel：覆盖触发按钮主行文案。chat 场景「未选但 agent 已绑 provider」时显示
+  // triggerLabel：覆盖触发按钮主行。chat 场景「未选但 agent 已绑 provider」时显示
   // 绑定供应商名，而不是顶部特殊项「跟随 Agent 绑定」；undefined 时按目录解析。
-  triggerLabel?: string;
+  // 可以是节点（backend 编辑器的主行 = 品牌标识 + 供应商名 + 跟随/固定徽标）；此时
+  // 按钮的无障碍名改由 aria-label 决定，节点内容不参与名字计算（见 triggerAriaLabel）。
+  triggerLabel?: React.ReactNode;
   // triggerSub：可选触发按钮副行。后端编辑器用它展示当前解析出的生效模型与模式后果；
   // 未传时保持 model-pill / chat 等既有消费方的单行形态。
   triggerSub?: React.ReactNode;
@@ -516,6 +518,13 @@ export function ModelTargetPicker({
   }, [activeIndex]);
 
   const triggerText = triggerLabel ?? selectedLabel;
+  // 主行是纯文本时按钮可以继续靠内容拿无障碍名（既有消费方形态不变）；主行是节点时
+  // 内容里有品牌标识（role=img，自带品牌名）和模式徽标，让它们参与名字计算会念出
+  // 重复且不稳定的名字 —— 所以名字只认显式字符串：aria-label 优先，其次目录解析结果。
+  const isTextTriggerLabel =
+    typeof triggerText === "string" || typeof triggerText === "number";
+  const triggerAriaLabel =
+    ariaLabel ?? (isTextTriggerLabel ? undefined : selectedLabel);
 
   // 最近使用横条：紧跟在顶部特殊项之后、供应商分组之前（mockup 的列表次序），
   // 自带「最近使用」标签，单行横向可移除 chip，不占竖列表位。
@@ -570,7 +579,7 @@ export function ModelTargetPicker({
           disabled={disabled}
           data-testid={testId}
           title={title}
-          aria-label={ariaLabel}
+          aria-label={triggerAriaLabel}
           aria-expanded={open}
           aria-haspopup="listbox"
           className={cn(
@@ -600,7 +609,12 @@ export function ModelTargetPicker({
             <span className="flex min-w-0 flex-col items-start gap-0.5">
               <span
                 className={cn(
-                  "max-w-full truncate",
+                  "max-w-full",
+                  // 节点主行自己是一排图标 + 文字 + 徽标，得撑成 flex 行；纯文本主行
+                  // 保持既有的单行截断。
+                  isTextTriggerLabel
+                    ? "truncate"
+                    : "flex min-w-0 items-center gap-1.5",
                   invalid ? "text-status-waiting" : "text-foreground",
                 )}
               >

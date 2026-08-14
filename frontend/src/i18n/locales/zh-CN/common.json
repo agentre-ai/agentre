@@ -110,7 +110,6 @@
       "cliResolution": "生效模型由该 CLI 自身的登录账号决定",
       "modeFollow": "跟随默认",
       "modeFixed": "固定",
-      "targetWithMode": "{{provider}} · {{mode}}",
       "followResolution": "生效模型：{{model}} · 默认变化会从下一轮起跟随",
       "fixedResolution": "生效模型：{{model}} · 不受供应商默认变化影响",
       "invalidTarget": "目标已失效 · {{target}}",
@@ -1714,7 +1713,6 @@
     },
     "empty": {
       "addFirst": "新增第一个供应商",
-      "apiKeyHelp": "如何获取 API Key",
       "chain": "LLM 供应商 → Agent 后端 → Agent 对话",
       "description": "先添加一个供应商（Anthropic、OpenAI 或兼容端点），并选择默认模型即可使用。",
       "goToBackend": "去 Agent 后端",
@@ -1863,7 +1861,8 @@
       "modelCount": "{{count}} 个模型"
     },
     "page": {
-      "add": "新增供应商"
+      "add": "新增供应商",
+      "loadingProviders": "正在加载供应商…"
     },
     "workspace": {
       "ariaLabel": "{{name}} 模型工作区",
@@ -1924,6 +1923,8 @@
       "deleteModelNamed": "删除 {{model}}",
       "deleteBlockedDefault": "默认模型：需先另设默认才能删除",
       "deleteTitle": "删除（需二次确认）",
+      "testPassed": "已通过",
+      "testPassedHint": "本次会话内测试通过 · {{duration}}",
       "disableBlockedDefault": "默认模型：需先另设默认才能停用",
       "enableNamed": "启用/停用 {{model}}",
       "selectAll": "全选模型",

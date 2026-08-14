@@ -1176,9 +1176,19 @@ describe("App", () => {
     expect(within(workspace).getByText("Sonnet")).toBeInTheDocument();
     expect(within(workspace).queryByText("mk-sonnet")).not.toBeInTheDocument();
 
+    // mockup 注解①：唯一的「新增供应商」入口落在 H1 页头行内，不再单独占一层 strip
+    const pageHeader = screen
+      .getByRole("heading", { level: 1, name: "LLM Providers" })
+      .closest('[data-slot="settings-page-header"]');
+    expect(pageHeader).not.toBeNull();
     expect(
-      screen.getByRole("button", { name: "New Provider" }),
+      within(pageHeader as HTMLElement).getByRole("button", {
+        name: "New Provider",
+      }),
     ).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("button", { name: "New Provider" }),
+    ).toHaveLength(1);
   });
 
   it("tests an LLM provider by calling the configured model", async () => {

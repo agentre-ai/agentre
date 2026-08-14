@@ -353,17 +353,35 @@ function SettingsNav({
 }
 
 type SettingsPageHeaderProps = {
+  actions?: React.ReactNode;
   description: string;
   title: string;
 };
 
-function SettingsPageHeader({ description, title }: SettingsPageHeaderProps) {
-  return (
+function SettingsPageHeader({
+  actions,
+  description,
+  title,
+}: SettingsPageHeaderProps) {
+  const heading = (
     <div className="flex max-w-3xl flex-col gap-1.5">
       <h1 className="text-2xl font-semibold tracking-normal">{title}</h1>
       <p className="text-sm leading-relaxed text-muted-foreground">
         {description}
       </p>
+    </div>
+  );
+
+  // 没有页级操作的设置页不套外层行，DOM 与加 actions 之前保持一致。
+  if (!actions) return heading;
+
+  return (
+    <div
+      data-slot="settings-page-header"
+      className="flex flex-wrap items-start justify-between gap-3"
+    >
+      {heading}
+      <div className="flex shrink-0 items-center gap-2">{actions}</div>
     </div>
   );
 }
@@ -560,33 +578,41 @@ function LlmProviderSettings({
   const { t } = useTranslation();
   const navigate = useNavigate();
 
+  // 「新增供应商」是页级操作，位置属于 H1 行，但它开的创建弹窗归面板自己管：
+  // 这里把页头(以及必须夹在页头与工作区之间的黄条)交给面板渲染，面板只把按钮
+  // 塞进 actions 槽，弹窗状态不用上提。
   return (
-    <>
-      <SettingsPageHeader
-        title={t("settings.llmProvider.title")}
-        description={t("settings.llmProvider.description")}
-      />
-      {providerGap ? (
-        <Alert className="border-status-waiting/40 bg-status-waiting/10 text-status-waiting">
-          <AlertCircle className="size-4" aria-hidden="true" />
-          <AlertTitle className="text-xs font-semibold">
-            {t("settings.llmProvider.gapBanner.title")}
-          </AlertTitle>
-          <AlertDescription className="text-2xs leading-relaxed">
-            {t("settings.llmProvider.gapBanner.description")}
-            <Button
-              type="button"
-              variant="link"
-              className="h-auto px-0 text-2xs"
-              onClick={() => navigate("/org")}
-            >
-              {t("settings.llmProvider.gapBanner.goToOrg")}
-            </Button>
-          </AlertDescription>
-        </Alert>
-      ) : null}
-      <LlmProvidersPanel onOpenAgentBackends={onOpenAgentBackends} />
-    </>
+    <LlmProvidersPanel
+      onOpenAgentBackends={onOpenAgentBackends}
+      renderHeader={(actions) => (
+        <>
+          <SettingsPageHeader
+            title={t("settings.llmProvider.title")}
+            description={t("settings.llmProvider.description")}
+            actions={actions}
+          />
+          {providerGap ? (
+            <Alert className="border-status-waiting/40 bg-status-waiting/10 text-status-waiting">
+              <AlertCircle className="size-4" aria-hidden="true" />
+              <AlertTitle className="text-xs font-semibold">
+                {t("settings.llmProvider.gapBanner.title")}
+              </AlertTitle>
+              <AlertDescription className="text-2xs leading-relaxed">
+                {t("settings.llmProvider.gapBanner.description")}
+                <Button
+                  type="button"
+                  variant="link"
+                  className="h-auto px-0 text-2xs"
+                  onClick={() => navigate("/org")}
+                >
+                  {t("settings.llmProvider.gapBanner.goToOrg")}
+                </Button>
+              </AlertDescription>
+            </Alert>
+          ) : null}
+        </>
+      )}
+    />
   );
 }
 
