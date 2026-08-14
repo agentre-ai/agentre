@@ -66,7 +66,7 @@ func (s *chatSvc) effectiveLLMForTurn(ctx context.Context, prov *llm_provider_en
 // keys-only 配置只填 Mode / ProviderKey / ModelKey（task 6 决策 11）：daemon 按 wire
 // 的 key 从自家目录解析真实 Provider/Model，desktop 不透传解析结果或任何凭证。
 func (s *chatSvc) effectiveLLMForNonRemoteTurn(ctx context.Context, sess *chat_entity.Session, be *agent_backend_entity.AgentBackend, prov *llm_provider_entity.LLMProvider) (*agentruntime.EffectiveLLMConfig, error) {
-	if be != nil && be.IsRemote() {
+	if beTargetsRemote(be) {
 		return remoteKeysOnlyEffective(sess, be), nil
 	}
 	return s.effectiveLLMForTurn(ctx, prov, sessionModelKeyFor(sess, be, prov))

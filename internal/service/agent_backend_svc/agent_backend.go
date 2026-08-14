@@ -401,7 +401,7 @@ func (s *agentBackendSvc) test(ctx context.Context, req *TestBackendRequest, tra
 		return nil, err
 	}
 	if entity.IsOpenClaw() {
-		if entity.IsRemote() && !remote_device_svc.IsSelfDevice(entity.DeviceID) {
+		if remote_device_svc.TargetsAnotherMachine(entity.DeviceID) {
 			return &TestBackendResponse{OK: false, Code: "OPENCLAW_REMOTE_SECRET_UNAVAILABLE"}, nil
 		}
 		return s.testOpenClaw(ctx, req, entity, transientToken)
@@ -416,7 +416,7 @@ func (s *agentBackendSvc) test(ctx context.Context, req *TestBackendRequest, tra
 		if !errors.Is(err, ErrRemoteDeviceNotFound) {
 			return nil, i18n.NewError(ctx, code.InvalidParameter)
 		}
-		if !remote_device_svc.IsSelfDevice(entity.DeviceID) {
+		if remote_device_svc.TargetsAnotherMachine(entity.DeviceID) {
 			return &TestBackendResponse{OK: false, Message: i18n.NewError(ctx, code.RemoteDeviceNotFound).Error()}, nil
 		}
 	} else if ok {
@@ -659,7 +659,7 @@ func (s *agentBackendSvc) resolveOpenClawRuntimeConfig(ctx context.Context, back
 	if backend == nil || !backend.IsOpenClaw() {
 		return openclawgateway.Config{}, i18n.NewError(ctx, code.AgentBackendNotFound)
 	}
-	if backend.IsRemote() && !remote_device_svc.IsSelfDevice(backend.DeviceID) {
+	if remote_device_svc.TargetsAnotherMachine(backend.DeviceID) {
 		return openclawgateway.Config{}, ErrOpenClawRemoteSecretUnavailable
 	}
 	if err := backend.Check(ctx); err != nil {
@@ -1032,7 +1032,6 @@ func (s *agentBackendSvc) toItem(ctx context.Context, b *agent_backend_entity.Ag
 		OpenClawAgentID:       b.OpenClawAgentID,
 		OpenClawDefaultModel:  b.OpenClawDefaultModel,
 		OpenClawSessionMode:   b.OpenClawSessionMode,
-		DeviceID:              b.DeviceID,
 		Createtime:            b.Createtime,
 		Updatetime:            b.Updatetime,
 	}
@@ -1048,14 +1047,20 @@ func (s *agentBackendSvc) toItem(ctx context.Context, b *agent_backend_entity.Ag
 		item.LLMProviderModel = s.effectiveModelID(ctx, b, p)
 		item.LLMProviderActive = p.IsActive()
 	}
-	if legacyID, ok := b.DeviceIDInt(); ok && remote_device_svc.Default() != nil {
-		if dv, err := remote_device_svc.Default().Get(ctx, legacyID); err == nil && dv != nil {
+	// 展示口径的设备标识：本机档（空 DeviceID / R13 认领后的本机指纹）一律空串，
+	// 见 remote_device_svc.ExternalDeviceID —— 本机指纹不会出现在配对表里，照远端
+	// 解析只会得到「没名字 + 离线」，组织架构页据此渲染成「这台电脑未配对它」。
+	if deviceID := remote_device_svc.ExternalDeviceID(b.DeviceID); deviceID != "" {
+		item.DeviceID = deviceID
+		if legacyID, ok := b.DeviceIDInt(); ok && remote_device_svc.Default() != nil {
+			if dv, err := remote_device_svc.Default().Get(ctx, legacyID); err == nil && dv != nil {
+				item.DeviceName = dv.Name
+				item.Online = dv.Online
+			}
+		} else if dv, err := pairedDeviceView(ctx, deviceID); err == nil && dv != nil {
 			item.DeviceName = dv.Name
 			item.Online = dv.Online
 		}
-	} else if dv, err := pairedDeviceView(ctx, b.DeviceID); err == nil && dv != nil {
-		item.DeviceName = dv.Name
-		item.Online = dv.Online
 	}
 	return item
 }

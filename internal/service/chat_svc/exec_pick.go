@@ -208,7 +208,7 @@ func (s *chatSvc) evalExecTargetAvailability(
 	}
 	// 指向本机的档（DeviceID == 本机指纹）不是「远端配对设备」：它是这台桌面端自己，
 	// 按本地判据判可用（R14 把自己排第一的前提是它能被本地派发）。
-	if !s.beIsSelf(ctx, be) && be.IsRemote() {
+	if beTargetsRemote(be) {
 		reason, hint, err := s.evalRemoteDeviceAvailability(ctx, be)
 		if err != nil {
 			return "", "", err
@@ -245,7 +245,7 @@ func (s *chatSvc) evalExecTargetAvailability(
 // 拿不到）如实回 daemon——desktop 归类只在派发通道选择用，误归 daemon 也只是回到
 // 既有 agentred 通道的报错，不会派错机器。
 func (s *chatSvc) execTargetKind(ctx context.Context, be *agent_backend_entity.AgentBackend) string {
-	if be == nil || be.IsLocal() || s.beIsSelf(ctx, be) {
+	if !beTargetsRemote(be) {
 		return "local"
 	}
 	if strings.HasPrefix(be.DeviceID, "sha256:") {
@@ -393,7 +393,7 @@ func (s *chatSvc) evalExecTargetProjectPath(ctx context.Context, be *agent_backe
 	if configured {
 		return "", "", nil
 	}
-	if be.IsLocal() || remote_device_svc.IsSelfDevice(be.DeviceID) {
+	if !beTargetsRemote(be) {
 		return BlockReasonExecTargetProjectPathMissing, i18n.T(ctx, code.ChatExecTargetHintLocalPathMissing), nil
 	}
 	return BlockReasonExecTargetProjectPathMissing, i18n.T(ctx, code.ChatExecTargetHintRemotePathMissing), nil
@@ -407,7 +407,7 @@ func (s *chatSvc) evalExecTargetProjectPath(ctx context.Context, be *agent_backe
 func (s *chatSvc) execTargetProjectPath(
 	ctx context.Context, be *agent_backend_entity.AgentBackend, projectID int64,
 ) (string, bool, error) {
-	if be.IsLocal() || remote_device_svc.IsSelfDevice(be.DeviceID) {
+	if !beTargetsRemote(be) {
 		p, err := project_repo.Project().Find(ctx, projectID)
 		if err != nil {
 			return "", false, operationFailedWithCause(ctx, err, zap.Int64("projectId", projectID))
@@ -482,7 +482,7 @@ func blockReasonForBackend(
 		if remoteProviderKnownMissing(be) {
 			return false, BlockReasonRemoteProviderMissing, i18n.T(ctx, code.ChatBackendHintRemoteProviderMissing)
 		}
-		if be.IsRemote() && !remote_device_svc.IsSelfDevice(be.DeviceID) {
+		if beTargetsRemote(be) {
 			return true, "", ""
 		}
 		if !gatewayRunning {
@@ -490,7 +490,7 @@ func blockReasonForBackend(
 		}
 		return true, "", ""
 	case agent_backend_entity.TypeOpenClaw:
-		if be.IsRemote() && !remote_device_svc.IsSelfDevice(be.DeviceID) {
+		if beTargetsRemote(be) {
 			return false, BlockReasonRemoteOpenClawUnavailable, i18n.T(ctx, code.ChatBackendHintRemoteOpenClaw)
 		}
 		return true, "", ""
