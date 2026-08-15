@@ -45,6 +45,13 @@ func (a *App) ServerCancelLogin() error {
 	return server_svc.Server().CancelLogin(a.ctx)
 }
 
+// ServerOffline reports whether the Server is currently out of reach (a boot
+// refresh is backing off). The UI reads it on mount because the server.state
+// event may have fired before the panel existed.
+func (a *App) ServerOffline() bool {
+	return server_svc.Server().Offline()
+}
+
 // ServerListDevices returns the user's devices known to the Server.
 func (a *App) ServerListDevices() ([]server_svc.Device, error) {
 	return server_svc.Server().ListDevices(a.ctx)

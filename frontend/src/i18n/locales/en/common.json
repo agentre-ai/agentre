@@ -2422,7 +2422,9 @@
       },
       "signIn": "Sign in",
       "status": {
-        "signedIn": "Signed in to {{server}}"
+        "signedIn": "Signed in to {{server}}",
+        "serverOffline": "Server offline",
+        "serverOfflineHint": "Can't reach the server; retrying automatically. Your sign-in is kept — no need to sign in again."
       },
       "title": "Sign in to your account",
       "waiting": {

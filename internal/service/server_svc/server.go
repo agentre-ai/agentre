@@ -3,6 +3,7 @@ package server_svc
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/agentre-ai/agentre/internal/daemon/client"
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
@@ -19,6 +20,12 @@ type ServerSvc interface {
 	ListDevices(ctx context.Context) ([]Device, error)
 	Logout(ctx context.Context) error
 	Refresh(ctx context.Context) error
+	// RefreshWithBackoff 是开机热身用的刷新：服务端够不着时保留登录态、标记离线
+	// 并退避重试；只有服务端明确拒绝凭据才清掉本地登录。会一直跑到成功/被拒/登出/
+	// ctx 结束，调用方自己决定是否放进 goroutine。
+	RefreshWithBackoff(ctx context.Context)
+	// Offline 报告服务端此刻够不着（退避重试进行中）。
+	Offline() bool
 	ClearLogin(ctx context.Context) error
 	// CheckURL validates that the given Server URL is reachable + healthy without
 	// affecting the singleton service's state. Returns the hub-reported version.
@@ -63,12 +70,15 @@ type service struct {
 	mu            sync.Mutex
 	client        *serverClient
 	loginInFlight bool
+	offline       bool      // 服务端够不着；由 markOffline/markOnline 翻转
 	emitState     func(any) // 由 bootstrap 注入的 Wails 事件发射器；测试时可为 nil
+	// sleepFn 是退避等待，单测注入假等待用；返回 false 表示 ctx 结束、别再试了。
+	sleepFn func(ctx context.Context, d time.Duration) bool
 }
 
 // New 构造一个 service。client + emit 由 bootstrap 装配。
 func New(client *serverClient, emit func(any)) ServerSvc {
-	return &service{client: client, emitState: emit}
+	return &service{client: client, emitState: emit, sleepFn: waitOrDone}
 }
 
 // Refresh exposes the package-private refresh() for callers like bootstrap.HubBoot.

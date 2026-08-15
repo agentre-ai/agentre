@@ -2422,7 +2422,9 @@
       },
       "signIn": "登录",
       "status": {
-        "signedIn": "已登录 {{server}}"
+        "signedIn": "已登录 {{server}}",
+        "serverOffline": "服务端离线",
+        "serverOfflineHint": "连不上服务端，正在自动重试。登录状态保留着，无需重新登录。"
       },
       "title": "登录账号",
       "waiting": {

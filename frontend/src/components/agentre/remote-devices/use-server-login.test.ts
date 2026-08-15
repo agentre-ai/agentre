@@ -8,13 +8,33 @@ vi.mock("../../../../wailsjs/go/app/App", () => ({
   ServerStartLogin: vi.fn(),
   ServerPollLoginToken: vi.fn(),
   ServerCancelLogin: vi.fn(),
+  ServerOffline: vi.fn(),
 }));
 
-import { ServerGetState, ServerLogout } from "../../../../wailsjs/go/app/App";
+vi.mock("../../../../wailsjs/runtime/runtime", () => ({
+  EventsOn: vi.fn(() => vi.fn()),
+}));
+
+import {
+  ServerGetState,
+  ServerLogout,
+  ServerOffline,
+} from "../../../../wailsjs/go/app/App";
+import { EventsOn } from "../../../../wailsjs/runtime/runtime";
 import { useServerLogin, isLoggedIn } from "./use-server-login";
 
 const mockGetState = ServerGetState as unknown as ReturnType<typeof vi.fn>;
 const mockLogout = ServerLogout as unknown as ReturnType<typeof vi.fn>;
+const mockOffline = ServerOffline as unknown as ReturnType<typeof vi.fn>;
+const mockEventsOn = EventsOn as unknown as ReturnType<typeof vi.fn>;
+
+/** 拿到 useServerLogin 注册在 "server.state" 上的那个回调。 */
+function serverStateHandler(): (payload: unknown) => void {
+  const call = mockEventsOn.mock.calls.find((c) => c[0] === "server.state");
+  if (!call)
+    throw new Error("useServerLogin did not subscribe to server.state");
+  return call[1] as (payload: unknown) => void;
+}
 
 const loggedOutState = {
   ID: 1,
@@ -39,6 +59,10 @@ const loggedInState = {
 beforeEach(() => {
   mockGetState.mockReset();
   mockLogout.mockReset();
+  mockOffline.mockReset();
+  mockEventsOn.mockReset();
+  mockEventsOn.mockImplementation(() => vi.fn());
+  mockOffline.mockResolvedValue(false);
 });
 
 describe("isLoggedIn (mirrors server_state_entity.ServerState.IsLoggedIn)", () => {
@@ -113,5 +137,47 @@ describe("useServerLogin", () => {
     });
     expect(mockGetState).toHaveBeenCalled();
     expect(result.current.loggedIn).toBe(true);
+  });
+});
+
+// 服务端够不着不再等于登出(bootstrap/server.go 过去一律清登录)。此时登录态原样
+// 留着,界面要说的是「服务端离线」,而不是把用户推回登录页。
+describe("useServerLogin — 服务端离线", () => {
+  it("takes the initial offline flag from the backend, since the event may predate mount", async () => {
+    mockGetState.mockResolvedValue(loggedInState);
+    mockOffline.mockResolvedValue(true);
+    const { result } = renderHook(() => useServerLogin());
+    await waitFor(() => expect(result.current.serverOffline).toBe(true));
+    expect(result.current.loggedIn).toBe(true);
+  });
+
+  it("flips on server_offline and back on server_online without touching the login", async () => {
+    mockGetState.mockResolvedValue(loggedInState);
+    const { result } = renderHook(() => useServerLogin());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.serverOffline).toBe(false);
+
+    act(() => {
+      serverStateHandler()({ kind: "server_offline", reason: "unreachable" });
+    });
+    expect(result.current.serverOffline).toBe(true);
+    expect(result.current.loggedIn).toBe(true);
+
+    act(() => {
+      serverStateHandler()({ kind: "server_online" });
+    });
+    expect(result.current.serverOffline).toBe(false);
+  });
+
+  it("re-reads the persisted state when the backend reports logged_out", async () => {
+    mockGetState.mockResolvedValueOnce(loggedInState);
+    const { result } = renderHook(() => useServerLogin());
+    await waitFor(() => expect(result.current.loggedIn).toBe(true));
+
+    mockGetState.mockResolvedValueOnce(loggedOutState);
+    await act(async () => {
+      serverStateHandler()({ kind: "logged_out", reason: "refresh_expired" });
+    });
+    await waitFor(() => expect(result.current.loggedIn).toBe(false));
   });
 });

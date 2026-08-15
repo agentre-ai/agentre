@@ -3,6 +3,7 @@ import { ArrowRight, CircleCheck, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -31,12 +32,14 @@ import { useServerLogin } from "./use-server-login";
 function AccountStatus({
   loading,
   loggedIn,
+  serverOffline,
   serverURL,
   onSignIn,
   onSignOut,
 }: {
   loading: boolean;
   loggedIn: boolean;
+  serverOffline: boolean;
   serverURL: string;
   onSignIn: () => void;
   onSignOut: () => void;
@@ -60,6 +63,16 @@ function AccountStatus({
           server: hostOf(serverURL),
         })}
       </span>
+      {/* 服务端够不着:登录还在,后端在退避重试。说清是服务端的事,别让用户去重登。 */}
+      {serverOffline && (
+        <Badge
+          variant="outline"
+          className="border-status-waiting/40 text-status-waiting"
+          title={t("remoteDevices.login.status.serverOfflineHint")}
+        >
+          {t("remoteDevices.login.status.serverOffline")}
+        </Badge>
+      )}
       <Button variant="ghost" size="sm" onClick={onSignOut}>
         {t("remoteDevices.login.actions.signOut")}
       </Button>
@@ -104,14 +117,19 @@ export function RemoteDevicesPanel({
   }, []);
 
   const onlineCount = devices.filter((d) => d.online).length;
-  // 决策 1:零设备时引导就是这一页(且无处可退,不给收起);已有设备时它默认收起,
-  // 由页头那唯一一个入口召唤。加载中/加载失败在下面提前返回,两种情况都到不了这里。
-  const guideDismissible = devices.length > 0;
-  const guideOpen = !guideDismissible || guideRequested;
   // 账号设备清单里的桌面端（R19）：不参与 LAN 配对行合并，单独作为可展开行。
   const desktopDevices = (accountDevices ?? []).filter(
     (d) => d.Kind === "desktop",
   );
+  // 决策 1:整页一行都没有时引导就是这一页(且无处可退,不给收起);只要页面上还有
+  // 一行设备,它就默认收起,由页头那唯一一个入口召唤 —— 引导不自作主张展开。
+  // 加载中/加载失败在下面提前返回,两种情况都到不了这里。
+  //
+  // 「有没有设备」要按整页算:账号清单里的桌面端(含本机自己那一行)也是实打实的
+  // 一行。此前只数 LAN 配对行,于是登录后一屏桌面端行摆在那儿、引导却钉死在它们
+  // 上面还收不起来。
+  const hasDeviceRow = devices.length > 0 || desktopDevices.length > 0;
+  const guideOpen = !hasDeviceRow || guideRequested;
   const reloadInBackground = () => {
     void reload().catch(() => {});
   };
@@ -171,6 +189,7 @@ export function RemoteDevicesPanel({
           <AccountStatus
             loading={serverLogin.loading}
             loggedIn={serverLogin.loggedIn}
+            serverOffline={serverLogin.serverOffline}
             serverURL={serverLogin.state?.ServerURL ?? ""}
             onSignIn={() => setLoginOpen(true)}
             onSignOut={() => {
@@ -196,9 +215,7 @@ export function RemoteDevicesPanel({
 
       {guideOpen ? (
         <AgentredOnboarding
-          onDismiss={
-            guideDismissible ? () => setGuideRequested(false) : undefined
-          }
+          onDismiss={hasDeviceRow ? () => setGuideRequested(false) : undefined}
           onSubmit={async (request) => {
             await add(request);
             setGuideRequested(false);

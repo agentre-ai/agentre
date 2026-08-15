@@ -91,14 +91,13 @@ func ServerBoot(ctx context.Context) {
 			return nil
 		}
 
-		// Best-effort refresh on boot — keeps access token fresh after long sleep.
-		// If the refresh token itself has expired, scrub local state so the UI does
-		// not stay on the Connected panel until the user triggers another call.
-		if err := server_svc.Server().Refresh(ctx); err != nil {
-			logger.Default().Warn("server boot: refresh failed; clearing local login", zap.Error(err))
-			_ = server_svc.Server().ClearLogin(ctx)
-			return nil
-		}
+		// Refresh on boot — keeps the access token fresh after a long sleep.
+		//
+		// 刷新失败**不等于**该登出：服务端够不着 / 5xx 时 RefreshWithBackoff 保留
+		// 登录态、把自己标成离线并退避重试，只有服务端明确拒绝这份 refresh_token
+		// 才清本地登录。（旧实现一律清，一次服务端停机就把 keychain 里的凭据删了，
+		// 服务端恢复也回不来，用户只能重新扫码登录。）
+		server_svc.Server().RefreshWithBackoff(ctx)
 		return nil
 	})
 }

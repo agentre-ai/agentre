@@ -5,10 +5,15 @@ import {
   ServerCheckURL,
   ServerGetState,
   ServerLogout,
+  ServerOffline,
   ServerPollLoginToken,
   ServerStartLogin,
 } from "../../../../wailsjs/go/app/App";
+import { EventsOn } from "../../../../wailsjs/runtime/runtime";
 import type { server_state_entity } from "../../../../wailsjs/go/models";
+
+/** 后端 server_svc 发在这个频道上的联机状态变化。 */
+const SERVER_STATE_EVENT = "server.state";
 
 export type ServerState = server_state_entity.ServerState;
 
@@ -35,6 +40,8 @@ export function isLoggedIn(state: ServerState | null): boolean {
 export function useServerLogin() {
   const [state, setState] = useState<ServerState | null>(null);
   const [loading, setLoading] = useState(true);
+  // 服务端够不着 ≠ 登出:登录态原样留着,后端在退避重试,界面只标「服务端离线」。
+  const [serverOffline, setServerOffline] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -49,11 +56,34 @@ export function useServerLogin() {
 
   useEffect(() => {
     void refresh().finally(() => setLoading(false));
+    // 初值从后端读:离线是开机热身时就可能发生的事,那会儿这个面板还没挂载,
+    // 光订阅事件会漏掉它。
+    ServerOffline()
+      .then(setServerOffline)
+      .catch(() => {});
+  }, [refresh]);
+
+  useEffect(() => {
+    const off = EventsOn(SERVER_STATE_EVENT, (payload: unknown) => {
+      const kind = (payload as { kind?: string } | null)?.kind;
+      if (kind === "server_offline") {
+        setServerOffline(true);
+        return;
+      }
+      if (kind === "server_online") {
+        setServerOffline(false);
+        return;
+      }
+      // logged_in / logged_out:身份变了,重读 server_state —— 它才是登录态的事实源。
+      void refresh().catch(() => {});
+    });
+    return () => off?.();
   }, [refresh]);
 
   return {
     state,
     loggedIn: isLoggedIn(state),
+    serverOffline,
     loading,
     refresh,
     // refresh 放在 finally:ServerLogout 会真的失败(logout.go 的 ClearLoginFields

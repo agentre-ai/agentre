@@ -52,6 +52,8 @@ func (s stubServerSvc) ListDevices(context.Context) ([]server_svc.Device, error)
 }
 func (s stubServerSvc) Logout(context.Context) error                            { return nil }
 func (s stubServerSvc) Refresh(context.Context) error                           { return nil }
+func (s stubServerSvc) RefreshWithBackoff(context.Context)                      {}
+func (s stubServerSvc) Offline() bool                                           { return false }
 func (s stubServerSvc) ClearLogin(context.Context) error                        { return nil }
 func (s stubServerSvc) CheckURL(context.Context, string) (string, error)        { return "", nil }
 func (s stubServerSvc) SetEmitter(func(any))                                    {}

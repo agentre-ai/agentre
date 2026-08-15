@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 
 const ZERO_SERVER_STATE = {
   ID: 1,
@@ -37,6 +38,9 @@ vi.mock("../../../../wailsjs/go/app/App", () => ({
   ServerPollLoginToken: vi.fn(),
   ServerCancelLogin: vi.fn(),
   ServerLogout: vi.fn(),
+  ServerOffline: vi.fn().mockResolvedValue(false),
+  // 账号清单里 kind=desktop 的行(R19)展开时才会调它;这里只为让模块解析得到。
+  PeerListSessions: vi.fn().mockResolvedValue({ sessions: [] }),
 }));
 
 vi.mock("../../../../wailsjs/runtime/runtime", () => ({
@@ -55,6 +59,7 @@ import {
   ServerStartLogin,
   ServerPollLoginToken,
   ServerLogout,
+  ServerOffline,
 } from "../../../../wailsjs/go/app/App";
 import { RemoteDevicesPanel } from "./remote-devices-panel";
 import type { DeviceView } from "./use-remote-devices";
@@ -71,6 +76,7 @@ const mockPollLoginToken = ServerPollLoginToken as unknown as ReturnType<
   typeof vi.fn
 >;
 const mockLogout = ServerLogout as unknown as ReturnType<typeof vi.fn>;
+const mockOffline = ServerOffline as unknown as ReturnType<typeof vi.fn>;
 
 describe("RemoteDevicesPanel", () => {
   beforeEach(() => {
@@ -86,6 +92,8 @@ describe("RemoteDevicesPanel", () => {
     mockPollLoginToken.mockReset();
     mockLogout.mockReset();
     mockLogout.mockResolvedValue(undefined);
+    mockOffline.mockReset();
+    mockOffline.mockResolvedValue(false);
   });
 
   it("shows an accessible loading state instead of a blank page", () => {
@@ -208,6 +216,90 @@ describe("RemoteDevicesPanel", () => {
     ).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Add agentred" }),
+    ).toBeInTheDocument();
+  });
+
+  // 账号下的桌面端(R19)也是页面上实打实的一行。「零设备」这个判断此前只数 LAN
+  // 配对行,于是登录后一屏设备摆在那里、引导却钉死在上面且没有收起控件。
+  it("summons the guide from the entry point when the only devices are other desktops of the account", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue([]);
+    mockGetState.mockResolvedValue(LOGGED_IN_SERVER_STATE);
+    mockServerList.mockResolvedValue([
+      {
+        ID: 11,
+        Name: "studio-mac",
+        Kind: "desktop",
+        Platform: "darwin",
+        Version: "0.3.0",
+        Fingerprint: "fp-desktop-2",
+        LastSeenAt: 1_700_000_000_000,
+        Status: 1,
+        Online: true,
+        IsThisDevice: false,
+      },
+    ]);
+
+    render(
+      <MemoryRouter>
+        <RemoteDevicesPanel />
+      </MemoryRouter>,
+    );
+    await screen.findByTestId("desktop-device-row");
+
+    expect(
+      screen.queryByRole("heading", { name: "Install agentred" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Add agentred" }));
+
+    expect(
+      screen.getByRole("heading", { name: "Install agentred" }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("desktop-device-row")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Collapse guide" }),
+    ).toBeInTheDocument();
+  });
+
+  // 本机自己那一行也是一行:页面不空白,引导就不自作主张展开。
+  it("stays collapsed when this desktop is the only listed device", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue([]);
+    mockGetState.mockResolvedValue(LOGGED_IN_SERVER_STATE);
+    mockServerList.mockResolvedValue([
+      {
+        ID: 7,
+        Name: "this-mac",
+        Kind: "desktop",
+        Platform: "darwin",
+        Version: "0.3.0",
+        Fingerprint: "sha256:abc",
+        LastSeenAt: 1_700_000_000_000,
+        Status: 1,
+        Online: true,
+        IsThisDevice: true,
+      },
+    ]);
+
+    render(
+      <MemoryRouter>
+        <RemoteDevicesPanel />
+      </MemoryRouter>,
+    );
+    await screen.findByTestId("desktop-device-row");
+
+    expect(
+      screen.queryByRole("heading", { name: "Install agentred" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Add agentred" }));
+
+    expect(
+      screen.getByRole("heading", { name: "Install agentred" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Collapse guide" }),
     ).toBeInTheDocument();
   });
 
@@ -662,6 +754,26 @@ describe("RemoteDevicesPanel", () => {
       );
       expect(
         screen.getByRole("button", { name: "Sign out" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Sign in" }),
+      ).not.toBeInTheDocument();
+    });
+
+    // 服务端够不着时后端不再清登录(bootstrap/server.go 曾经一律清)。界面要说的是
+    // 「服务端离线,正在重试」,身份仍然摆在那儿 —— 而不是把用户推回登录入口。
+    it("says the server is offline while keeping the signed-in identity", async () => {
+      mockList.mockResolvedValueOnce([]);
+      mockGetState.mockResolvedValue(LOGGED_IN_SERVER_STATE);
+      mockOffline.mockResolvedValue(true);
+
+      render(<RemoteDevicesPanel />);
+
+      await waitFor(() =>
+        expect(screen.getByText("Server offline")).toBeInTheDocument(),
+      );
+      expect(
+        screen.getByText("Signed in to hub.example.com"),
       ).toBeInTheDocument();
       expect(
         screen.queryByRole("button", { name: "Sign in" }),

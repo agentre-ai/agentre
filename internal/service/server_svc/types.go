@@ -37,6 +37,10 @@ var (
 	ErrAccessDenied      = errors.New("server: access denied")
 	ErrLoginExpired      = errors.New("server: device code expired")
 	ErrRefreshFailed     = errors.New("server: refresh failed")
+	// ErrRefreshRejected 表示服务端**明确**拒绝了本机存着的 refresh_token
+	// （轮换过 / 被吊销 / 设备已删）。只有它才代表「凭据真的没了」，也只有它
+	// 才允许清掉本地登录；服务端够不着、5xx、反代 404 一律不是。
+	ErrRefreshRejected = errors.New("server: refresh token rejected")
 	// ErrDesktopAppNotRunning identifies an addressable desktop whose Agentre
 	// App process is not currently registered with the relay. It is deliberately
 	// distinct from client.ErrRelayDaemonOffline, which remains agentred-only.
