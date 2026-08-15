@@ -57,8 +57,10 @@ type App struct {
 	peerMu           sync.Mutex
 	peerCancel       context.CancelFunc
 	peerDone         chan struct{}
-	ccUsageStop      func()
-	terminalSvc      *terminal_svc.Service
+	// peerRestartMu 串行化「停旧登记 + 建新登记」这一对操作，见 restartInboundPeer。
+	peerRestartMu sync.Mutex
+	ccUsageStop   func()
+	terminalSvc   *terminal_svc.Service
 
 	// quitConfirmed 标记本次退出已被用户确认(或自动更新重启),OnBeforeClose 见到即放行。
 	quitConfirmed   atomic.Bool
@@ -116,9 +118,7 @@ func (a *App) Startup(ctx context.Context) {
 	// Server 联机：绑定 wails 事件源后启动 boot 协程（最长一次刷新）。
 	server_svc.Server().SetEmitter(func(payload any) {
 		wailsruntime.EventsEmit(a.ctx, "server.state", payload)
-		if state, ok := payload.(map[string]any); ok && state["kind"] == "logged_in" {
-			a.startInboundPeer(context.Background())
-		}
+		a.onServerStateEvent(payload)
 	})
 	bootstrap.ServerBoot(context.Background())
 	a.startInboundPeer(context.Background())

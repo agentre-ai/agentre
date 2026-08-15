@@ -1642,7 +1642,13 @@ function useProjectTerminalLocations(projectID: number) {
       setConfigured(new Set((rows ?? []).map((r) => r.deviceId))),
     );
   }, [projectID]);
-  return { devices, configured, loadLocations };
+  // 终端位置按 LAN 配对行的 id 索引（ProjectLocationList.deviceId），账号独有的
+  // 那些机器没有配对行，也就没有可落位的 location，不进这个菜单。
+  const lanDevices = React.useMemo(
+    () => devices.flatMap((d) => (d.lan ? [d.lan] : [])),
+    [devices],
+  );
+  return { devices: lanDevices, configured, loadLocations };
 }
 
 // NewTerminalSubMenu —— ProjectCard「更多操作」里的「新建终端」子菜单。

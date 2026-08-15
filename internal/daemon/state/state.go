@@ -142,6 +142,71 @@ func (s *State) Unclaim() {
 	})
 }
 
+// AdoptClaimFromDisk re-reads state.json and adopts an account claim that
+// appeared there while this in-memory state was still unclaimed. It reports
+// whether a claim was adopted.
+//
+// This exists because `agentred login` is a separate process: it writes the
+// credential to state.json and exits, so a daemon that was started before the
+// login holds a stale in-memory copy and would otherwise stay unclaimed — and
+// therefore off the relay — until the next restart.
+//
+// It is deliberately one-way and claim-only: an already-claimed state is left
+// untouched (this process owns its own claim, including a refresh rotation it
+// has not flushed yet), and nothing outside the claim is read back from disk.
+func (s *State) AdoptClaimFromDisk() (bool, error) {
+	if s.IsClaimed() {
+		return false, nil
+	}
+	dir := s.Dir()
+	if dir == "" {
+		return false, errors.New("state: dir not bound; load via Load(dir) first")
+	}
+	// 直接读文件而不是走 Load：Load 在文件缺失时会写一份带**新** UUID 的默认状态，
+	// 那会把这个 daemon 的身份换掉。这里只想看一眼盘上有没有认领，不该有任何写入。
+	b, err := os.ReadFile(filepath.Join(dir, stateFileName)) //nolint:gosec // 与 Load 同一路径，来自数据目录而非请求输入
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read state.json: %w", err)
+	}
+	var onDisk State
+	if err := json.Unmarshal(b, &onDisk); err != nil {
+		return false, fmt.Errorf("parse state.json: %w", err)
+	}
+	if onDisk.SchemaVersion != CurrentSchemaVersion {
+		return false, fmt.Errorf(
+			"state.json schemaVersion %d does not match expected %d; refusing to adopt its claim",
+			onDisk.SchemaVersion, CurrentSchemaVersion,
+		)
+	}
+	// onDisk 是 Unmarshal 出来的，mu 为 nil —— 只能直接读字段，不能调它的方法。
+	if onDisk.AccountID == "" {
+		return false, nil
+	}
+
+	adopted := false
+	s.Mutate(func(st *State) {
+		// 再查一次：读盘这段时间里本进程可能已经自己完成了认领（比如 RPC 触发的
+		// 登录），那份是更新的，不能被盘上这份盖掉。
+		if st.AccountID != "" {
+			return
+		}
+		st.AccountID = onDisk.AccountID
+		st.HubServerURL = onDisk.HubServerURL
+		st.Credential = onDisk.Credential
+		st.VerificationPublicKeyPEM = onDisk.VerificationPublicKeyPEM
+		st.VerificationCurrentKID = onDisk.VerificationCurrentKID
+		st.VerificationPublicKeys = cloneStrings(onDisk.VerificationPublicKeys)
+		st.MaxTokenLifetimeSeconds = onDisk.MaxTokenLifetimeSeconds
+		st.RevokedJTIs = append([]string(nil), onDisk.RevokedJTIs...)
+		st.RevocationsAsOf = onDisk.RevocationsAsOf
+		adopted = true
+	})
+	return adopted, nil
+}
+
 // Snapshot returns a deep-ish copy safe for read-only callers. Maps are
 // shallow-copied since their value types are immutable structs in this
 // codebase (PairedPeer, LLMProviderMeta) — callers must not mutate the

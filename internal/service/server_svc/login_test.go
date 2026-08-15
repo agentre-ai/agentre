@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync/atomic"
 	"testing"
 
@@ -92,6 +93,10 @@ func TestStartLogin_Success(t *testing.T) {
 		body := authorizeBody.Load()
 		So(body, ShouldNotBeNil)
 		So((*body)["device_kind"], ShouldEqual, "desktop")
+		// 主机名是账号侧拿到这台机器名字的唯一途径：设备流不带它，服务端只能拿
+		// 指纹缩写当名字，设备列表里每台机器就都长得一样了。
+		wantHostname, _ := os.Hostname()
+		So((*body)["name"], ShouldEqual, wantHostname)
 		// 能力概念已从账号侧移除，桌面端不再自报一份没人校验的清单。
 		_, hasCaps := (*body)["capabilities"]
 		So(hasCaps, ShouldBeFalse)

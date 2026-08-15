@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -301,4 +302,111 @@ func TestHubLink_GivenAccessTokenProvider_WhenRunning_ThenEachDialReResolvesTheT
 	mu.Lock()
 	assert.Equal(t, "Bearer token-2", authHeaders[1], "each dial must re-resolve the token provider")
 	mu.Unlock()
+}
+
+// TestHubLink_GivenServerURLProvider_WhenTheDaemonIsNotClaimedYet_ThenItWaitsAndConnectsAfterLogin
+// 覆盖「先起服务、后 agentred login」这条路径：daemon 启动时还没被认领，链路必须留在
+// 重试循环里等，而不是当作「不存在」——login 是另一个进程，它写完 state.json 就退出，
+// 没有任何东西会回来把链路建起来。
+func TestHubLink_GivenServerURLProvider_WhenTheDaemonIsNotClaimedYet_ThenItWaitsAndConnectsAfterLogin(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	conns := make(chan *websocket.Conn, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		conns <- ws
+		for {
+			if _, _, err := ws.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	var serverURL atomic.Value
+	serverURL.Store("") // 还没认领：解析不出端点
+	var resolved atomic.Int64
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	link := NewHubLink(HubLinkOptions{
+		ServerURLProvider: func() string {
+			resolved.Add(1)
+			return serverURL.Load().(string)
+		},
+		AccessTokenProvider: func() string { return "token-1" },
+		HeartbeatInterval:   100 * time.Millisecond,
+		RetryInitial:        time.Second,
+		RetryMax:            4 * time.Second,
+		RetryWait:           func(context.Context, time.Duration) error { return nil },
+		Random:              func() float64 { return 1 },
+	})
+	runDone := make(chan error, 1)
+	go func() { runDone <- link.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		require.NoError(t, <-runDone)
+	})
+
+	// 未认领期间：Run 必须还活着并反复重新解析，而不是退出或空连一气。
+	require.Eventually(t, func() bool { return resolved.Load() >= 3 }, 2*time.Second, 10*time.Millisecond,
+		"未认领时 Run 应当留在重试循环里反复重新解析端点")
+	select {
+	case <-conns:
+		t.Fatal("端点解析不出来时不该发起连接")
+	default:
+	}
+
+	// 另一个进程完成了 login。
+	serverURL.Store(server.URL)
+	select {
+	case <-conns:
+	case <-time.After(2 * time.Second):
+		t.Fatal("认领之后同一个 Run 循环应当连上去，不需要重启进程")
+	}
+}
+
+// 未认领是稳态,不是反复发生的故障:LAN-only 的 daemon 可以一直不登录,而重试退避
+// 封顶 60s —— 每轮都记一行就是每天一千多行噪声,还会把真正的失败淹掉。只在进入这个
+// 状态时记一次。
+func TestHubLink_GivenNoAccount_WhenRetryingForever_ThenSaysSoOnceNotEveryRound(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		lines []string
+	)
+	var rounds atomic.Int64
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	link := NewHubLink(HubLinkOptions{
+		ServerURLProvider: func() string {
+			rounds.Add(1)
+			return "" // 一直没有账号
+		},
+		AccessTokenProvider: func() string { return "" },
+		HeartbeatInterval:   100 * time.Millisecond,
+		RetryInitial:        time.Second,
+		RetryMax:            4 * time.Second,
+		RetryWait:           func(context.Context, time.Duration) error { return nil },
+		Random:              func() float64 { return 1 },
+		Logf: func(format string, args ...any) {
+			mu.Lock()
+			defer mu.Unlock()
+			lines = append(lines, fmt.Sprintf(format, args...))
+		},
+	})
+	runDone := make(chan error, 1)
+	go func() { runDone <- link.Run(ctx) }()
+
+	require.Eventually(t, func() bool { return rounds.Load() >= 5 }, 2*time.Second, 10*time.Millisecond,
+		"重试循环应当一直在跑")
+	cancel()
+	require.NoError(t, <-runDone)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, lines, 1, "转了 %d 轮，只该说一次「还没有账号可连」，实际记了 %d 行", rounds.Load(), len(lines))
+	assert.Contains(t, lines[0], "no account")
 }

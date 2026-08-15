@@ -147,3 +147,70 @@ func requireEventuallyNil(t *testing.T, condition func() bool, msg string) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// 换服务器/换账号重新登录时，入站登记必须跟着换。
+//
+// 登记是在建立时绑定服务端地址与设备凭据的，登录事件只是「有一次登录发生了」——
+// 不重建就等于继续用上一次登录的身份挂在上一个服务端上：新账号那边看不到这台
+// 桌面端（控制台恒显示离线），而旧账号那边它还在线。桌面端的登录发生在同一个
+// 进程内，所以这条路径完全靠事件驱动，没有重启进程这个兜底。
+func TestAppInboundPeer_GivenLiveRegistration_WhenLoggingIntoAnotherServer_ThenRebuilds(t *testing.T) {
+	first := &inboundPeerStub{started: make(chan struct{}), stopped: make(chan struct{})}
+	second := &inboundPeerStub{started: make(chan struct{}), stopped: make(chan struct{})}
+	calls := 0
+	previous := newInboundPeer
+	newInboundPeer = func(context.Context) (inboundPeer, error) {
+		calls++
+		if calls == 1 {
+			return first, nil
+		}
+		return second, nil
+	}
+	t.Cleanup(func() { newInboundPeer = previous })
+
+	app := &App{}
+	app.onServerStateEvent(map[string]any{"kind": "logged_in"})
+	select {
+	case <-first.started:
+	case <-time.After(time.Second):
+		t.Fatal("第一次登录没有建立入站登记")
+	}
+
+	// 不登出，直接登录到另一个服务端。
+	app.onServerStateEvent(map[string]any{"kind": "logged_in"})
+	select {
+	case <-first.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("重新登录必须先停掉指向旧服务端的登记")
+	}
+	select {
+	case <-second.started:
+	case <-time.After(time.Second):
+		t.Fatal("重新登录必须按新的登录状态重建登记")
+	}
+	app.stopInboundPeer(context.Background())
+}
+
+// 退出登录后，那条中转登记必须停：它挂在 context.Background() 上，不主动停就要
+// 一直活到应用退出——已经登出的桌面端仍以旧凭据在旧服务端上保持可寻址。
+func TestAppInboundPeer_GivenRegistration_WhenLoggedOut_ThenStops(t *testing.T) {
+	stub := &inboundPeerStub{started: make(chan struct{}), stopped: make(chan struct{})}
+	previous := newInboundPeer
+	newInboundPeer = func(context.Context) (inboundPeer, error) { return stub, nil }
+	t.Cleanup(func() { newInboundPeer = previous })
+
+	app := &App{}
+	app.onServerStateEvent(map[string]any{"kind": "logged_in"})
+	select {
+	case <-stub.started:
+	case <-time.After(time.Second):
+		t.Fatal("登录没有建立入站登记")
+	}
+
+	app.onServerStateEvent(map[string]any{"kind": "logged_out"})
+	select {
+	case <-stub.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("登出必须停掉入站登记")
+	}
+}

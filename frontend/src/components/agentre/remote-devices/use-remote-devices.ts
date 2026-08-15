@@ -37,10 +37,17 @@ export type AccountSource = {
   devices: server_svc.Device[];
 };
 
-/** 合并后的一行设备:LAN 视图 + 可选账号设备 + 可达路径。 */
-export type DeviceRowModel = DeviceView & {
-  /** 账号来源的设备(指纹匹配);undefined = 仅 LAN 来源。 */
-  account?: server_svc.Device;
+/** 一行设备里两种来源共有的部分。 */
+type DeviceRowBase = {
+  /**
+   * 列表键。配对行 id 与账号设备 ID 是两个各自自增的序列,会撞号,
+   * 所以键自带来源前缀。
+   */
+  key: string;
+  name: string;
+  /** 这台机器此刻有没有一条在用的可达路径。 */
+  online: boolean;
+  lastSeenAt: number;
   /** 可达路径 chips。 */
   paths: DevicePath[];
   /** 未认领:仅本机配对、账号清单里没有这台机器的指纹(且清单已知)。 */
@@ -49,6 +56,30 @@ export type DeviceRowModel = DeviceView & {
   viaRelay: boolean;
 };
 
+/**
+ * 有本机 LAN 配对行(paired_agentreds)的一行。TLS 信任、LAN 地址,以及刷新直连 /
+ * 改名 / 改 TLS / 删配对这组动作,作用的都是 lan 这一行。
+ */
+export type LanDeviceRow = DeviceRowBase & {
+  lan: DeviceView;
+  /** 账号来源的设备(指纹匹配);undefined = 这台机器还没认领到账号。 */
+  account?: server_svc.Device;
+};
+
+/** 账号独有的一行:账号清单里有、本机没有配对行 —— 中转是它唯一一条路径。 */
+export type AccountDeviceRow = DeviceRowBase & {
+  lan?: undefined;
+  account: server_svc.Device;
+};
+
+/** 合并后的一行设备。lan 在不在,就是这一行有没有 LAN 来源。 */
+export type DeviceRowModel = LanDeviceRow | AccountDeviceRow;
+
+/**
+ * 按设备指纹把两个来源合成「一行一台机器」:LAN 独有、两边都有、账号独有
+ * 三种都产生行(全外连接)。以 LAN 为左表做左连接会漏掉最后一种 —— 一台
+ * 只登记在账号里、本机从没配对过的 agentred 就整台看不见。
+ */
 export function mergeDeviceSources(
   lan: DeviceView[],
   account: AccountSource,
@@ -59,8 +90,10 @@ export function mergeDeviceSources(
       accountByFp.set(d.Fingerprint, d);
     }
   }
-  return lan.map((d) => {
+  const claimedFingerprints = new Set<string>();
+  const rows: DeviceRowModel[] = lan.map((d) => {
     const acc = accountByFp.get(d.daemonFingerprint);
+    if (acc) claimedFingerprints.add(d.daemonFingerprint);
     const online = d.online;
     const paths: DevicePath[] = [
       { kind: "lan", state: online ? "in-use" : "dead" },
@@ -78,7 +111,11 @@ export function mergeDeviceSources(
       });
     }
     return {
-      ...d,
+      key: `lan:${d.id}`,
+      name: d.name,
+      online: online || relayInUse,
+      lastSeenAt: d.lastSeenAt,
+      lan: d,
       account: acc,
       paths,
       // 指纹为空的 LAN 行无从与账号清单对照(accountByFp 也不收空键),缺少依据时
@@ -87,6 +124,30 @@ export function mergeDeviceSources(
       viaRelay: relayInUse,
     };
   });
+
+  // 账号独有:账号清单里有、没有任何配对行认领这个指纹。accountByFp 已按指纹
+  // 去重、且不收空指纹 —— 没有指纹的账号行既无从与 LAN 对照,也无从经中转寻址。
+  for (const acc of accountByFp.values()) {
+    if (claimedFingerprints.has(acc.Fingerprint)) continue;
+    // kind=desktop 的机器由 DesktopDeviceRow 单独成行(R19),这里再出一行
+    // 就是同一台机器在面板上出现两次。
+    if (acc.Kind === "desktop") continue;
+    const relayReachable = acc.Online;
+    rows.push({
+      key: `account:${acc.ID}`,
+      name: acc.Name || acc.Fingerprint,
+      online: relayReachable,
+      lastSeenAt: acc.LastSeenAt,
+      account: acc,
+      // 没有配对行 → 没有 LAN 路径,中转是唯一一条。
+      paths: [{ kind: "relay", state: relayReachable ? "in-use" : "dead" }],
+      // 它就在账号清单里,按定义不是未认领。
+      unclaimed: false,
+      viaRelay: relayReachable,
+    });
+  }
+
+  return rows;
 }
 
 type StateEvent = {

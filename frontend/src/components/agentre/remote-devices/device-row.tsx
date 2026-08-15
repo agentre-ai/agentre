@@ -13,13 +13,19 @@ import { DeviceProvidersSync } from "./device-providers-sync";
 import { relativeTime, friendlyLastError } from "./format";
 import type { DevicePath, DeviceRowModel } from "./use-remote-devices";
 
-type Props = {
-  device: DeviceRowModel;
-  now: number;
+/** 作用在 LAN 配对行(paired_agentreds)上的那组动作。 */
+export type DeviceRowActions = {
   onRefresh: () => void;
   onRename: () => void;
   onEditTLS: () => void;
   onRemove: () => void;
+};
+
+type Props = {
+  device: DeviceRowModel;
+  now: number;
+  /** 账号独有的行没有配对行,这组动作无处落脚 —— 不传就不画菜单。 */
+  actions?: DeviceRowActions;
 };
 
 function tlsBadgeVariant(
@@ -46,7 +52,7 @@ function tlsBadgeLabel(mode: string, t: TFunction): string {
 }
 
 function dotColor(device: DeviceRowModel): string {
-  if (device.lastError === "tofu_mismatch") return "bg-destructive";
+  if (device.lan?.lastError === "tofu_mismatch") return "bg-destructive";
   if (device.online) return "bg-status-running";
   return "bg-muted-foreground";
 }
@@ -113,17 +119,12 @@ function UnclaimedNote({ t }: { t: TFunction }) {
   );
 }
 
-export function DeviceRow({
-  device,
-  now,
-  onRefresh,
-  onRename,
-  onEditTLS,
-  onRemove,
-}: Props) {
+export function DeviceRow({ device, now, actions }: Props) {
   const { t } = useTranslation();
-  const friendlyErr = friendlyLastError(device.lastError, t);
-  const isTofu = device.lastError === "tofu_mismatch";
+  // LAN 配对行。undefined = 这一行只来自账号清单,没有本机配对行可依附。
+  const lan = device.lan;
+  const friendlyErr = friendlyLastError(lan?.lastError ?? "", t);
+  const isTofu = lan?.lastError === "tofu_mismatch";
   const [showProviders, setShowProviders] = useState(false);
 
   return (
@@ -148,13 +149,19 @@ export function DeviceRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="font-medium truncate">{device.name}</span>
-            <Badge variant={tlsBadgeVariant(device.tlsMode)}>
-              {tlsBadgeLabel(device.tlsMode, t)}
-            </Badge>
+            {/* TLS 信任模式是配对行上的字段。 */}
+            {lan ? (
+              <Badge variant={tlsBadgeVariant(lan.tlsMode)}>
+                {tlsBadgeLabel(lan.tlsMode, t)}
+              </Badge>
+            ) : null}
           </div>
           <div className="text-xs text-muted-foreground truncate">
-            {/* R15:地址位显示 LAN url,或中转路径在用时的「经中转」。 */}
-            {device.viaRelay ? t("remoteDevices.status.viaRelay") : device.url}
+            {/* R15:地址位显示 LAN url,或中转路径在用时的「经中转」。账号独有的
+                行没有 LAN 地址,中转就是它唯一的地址形态。 */}
+            {lan && !device.viaRelay
+              ? lan.url
+              : t("remoteDevices.status.viaRelay")}
             <span className="mx-2">·</span>
             {device.lastSeenAt > 0
               ? t("remoteDevices.status.lastConnected", {
@@ -170,13 +177,15 @@ export function DeviceRow({
             ))}
           </div>
         ) : null}
-        <DeviceActionMenu
-          onRefresh={onRefresh}
-          onRename={onRename}
-          onEditTLS={onEditTLS}
-          onRemove={onRemove}
-          onToggleProviders={() => setShowProviders((s) => !s)}
-        />
+        {actions ? (
+          <DeviceActionMenu
+            onRefresh={actions.onRefresh}
+            onRename={actions.onRename}
+            onEditTLS={actions.onEditTLS}
+            onRemove={actions.onRemove}
+            onToggleProviders={() => setShowProviders((s) => !s)}
+          />
+        ) : null}
       </div>
       {device.unclaimed ? <UnclaimedNote t={t} /> : null}
       {friendlyErr ? (
@@ -187,12 +196,12 @@ export function DeviceRow({
         </div>
       ) : null}
       {/* R18：daemon 版本过旧是这台设备的固有属性，说明就落在这台设备这一行。 */}
-      {device.daemonOutdated ? (
+      {lan?.daemonOutdated ? (
         <div className="text-xs text-status-waiting">
           {t("remoteDevices.status.daemonOutdated")}
         </div>
       ) : null}
-      {showProviders ? <DeviceProvidersSync deviceId={device.id} /> : null}
+      {showProviders && lan ? <DeviceProvidersSync deviceId={lan.id} /> : null}
     </div>
   );
 }
