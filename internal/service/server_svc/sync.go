@@ -88,7 +88,7 @@ func (s *service) SyncPush(ctx context.Context, items []syncwire.PushItem) ([]sy
 			UpdatedAt:           it.UpdatedAt,
 			DeletedAt:           it.DeletedAt,
 			AgentredFingerprint: it.AgentredFingerprint,
-			ScopeSyncID:         it.ProjectSyncID,
+			ScopeSyncID:         it.ScopeSyncID,
 			Payload:             json.RawMessage(it.Payload),
 		})
 	}
@@ -149,7 +149,7 @@ func (s *service) SyncPull(ctx context.Context, cursor int64, limit int) (*syncw
 			items = append(items, syncwire.PullItem{
 				Kind:                it.Kind,
 				SyncID:              it.SyncID,
-				ProjectSyncID:       it.ScopeSyncID,
+				ScopeSyncID:         it.ScopeSyncID,
 				AgentredFingerprint: it.AgentredFingerprint,
 				Payload:             []byte(it.Payload),
 				Version:             it.Version,
