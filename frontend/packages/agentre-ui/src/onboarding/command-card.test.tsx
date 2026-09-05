@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CommandCard } from "./command-card";
@@ -82,15 +82,18 @@ describe("CommandCard", () => {
 
   it("execCommand 也复制不成：不谎报已复制，命令仍留在页面上可手抄", async () => {
     setClipboard(undefined);
+    const execCommand = vi.fn().mockReturnValue(false);
     Object.defineProperty(document, "execCommand", {
       configurable: true,
-      value: vi.fn().mockReturnValue(false),
+      value: execCommand,
     });
 
     render(<CommandCard label="Remote terminal" command="agentred pair" />);
     fireEvent.click(screen.getByRole("button", { name: /copy/i }));
 
-    await Promise.resolve();
+    // 先等这次复制真的尝试过并把结果送回组件 —— 少了这一步，下面那句
+    // queryByText 只是在断言「这一拍还没重渲染」，谎报「已复制」也照样绿。
+    await waitFor(() => expect(execCommand).toHaveBeenCalledWith("copy"));
     expect(screen.queryByText("Copied")).toBeNull();
     expect(screen.getByRole("group")).toHaveTextContent("agentred pair");
   });
