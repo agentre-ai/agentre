@@ -815,6 +815,7 @@ export type {
   PickerMachine,
   ProjectCandidateView,
   ProjectCreateDraft,
+  ProjectCreateMachinesPort,
   ProjectCreateOutcome,
   ProjectCreatePorts,
   ProjectDeletePorts,
