@@ -58,7 +58,7 @@ func TestRootSubcommands(t *testing.T) {
 // logged-out state by removing every account-derived local cache — credential,
 // verification key, and revocation list — exclusively through state.json.
 //
-// This fixture records no HubServerURL, so there is nowhere to notify and the
+// This fixture records no AccountServerURL, so there is nowhere to notify and the
 // command stays purely local: the default HTTP transport is a tripwire proving
 // the local clear itself never depends on the network. A daemon that *does* know
 // its server best-effort revokes the authorization first — see
