@@ -8,9 +8,9 @@ import (
 	"github.com/agentre-hub/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-hub/agentre/internal/pkg/transcript"
+	"github.com/agentre-hub/agentre/internal/pkg/transcript/turn"
 	"github.com/agentre-hub/agentre/internal/repository/chat_repo"
-	"github.com/agentre-hub/agentre/internal/service/chat_svc/handlers"
-	"github.com/agentre-hub/agentre/internal/service/chat_svc/turn"
 )
 
 // dispatcher_adapters.go 给 turn dispatcher 注入持久化 + 数据写入能力。
@@ -178,21 +178,18 @@ func (compactInspectorAdapter) MessageSeq(msg any) int {
 	return m.Seq
 }
 
-// buildHandlersWithAdapters 返回填充了 chat_svc 适配器的 handler 实例。
-func buildHandlersWithAdapters(_ *chatSvc) (
-	handlers.UsageUpdateHandler,
-	handlers.ErrorHandler,
-	handlers.ContextWindowUpdatedHandler,
-	handlers.PermissionModeChangedHandler,
-	handlers.PlanUpdatedHandler,
-	handlers.CompactBoundaryHandler,
-) {
-	return handlers.UsageUpdateHandler{Writer: usageWriterAdapter{}},
-		handlers.ErrorHandler{Writer: errorWriterAdapter{}},
-		handlers.ContextWindowUpdatedHandler{Writer: contextWindowWriterAdapter{}},
-		handlers.PermissionModeChangedHandler{Writer: permissionModeWriterAdapter{}},
-		handlers.PlanUpdatedHandler{Writer: planWriterAdapter{}},
-		handlers.CompactBoundaryHandler{Inspector: compactInspectorAdapter{}}
+// buildAdapters 把 chat_svc 的持久化适配器打包交给共享注册表
+// (transcript.NewTurnDispatcher)。注册表本身不在这里 —— 两个宿主共用一张,
+// 宿主之间的差异全部收在这几格上。
+func buildAdapters(_ *chatSvc) transcript.Adapters {
+	return transcript.Adapters{
+		Usage:          usageWriterAdapter{},
+		Error:          errorWriterAdapter{},
+		ContextWindow:  contextWindowWriterAdapter{},
+		PermissionMode: permissionModeWriterAdapter{},
+		Plan:           planWriterAdapter{},
+		Compact:        compactInspectorAdapter{},
+	}
 }
 
 // sessionTransitionerAdapter 把 turn.SessionTransitioner 调到 chatSvc 的

@@ -10,8 +10,8 @@ import (
 
 	"github.com/agentre-hub/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-hub/agentre/internal/pkg/code"
+	chatblocks "github.com/agentre-hub/agentre/internal/pkg/transcript/blocks"
 	"github.com/agentre-hub/agentre/internal/repository/chat_repo"
-	chatblocks "github.com/agentre-hub/agentre/internal/service/chat_svc/blocks"
 )
 
 // TranscriptBlockWindow 是一次下发多少条消息的完整正文。

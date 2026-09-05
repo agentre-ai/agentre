@@ -12,9 +12,9 @@ import (
 	"github.com/agentre-hub/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-hub/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime"
+	chatblocks "github.com/agentre-hub/agentre/internal/pkg/transcript/blocks"
+	"github.com/agentre-hub/agentre/internal/pkg/transcript/turn"
 	"github.com/agentre-hub/agentre/internal/repository/chat_repo"
-	chatblocks "github.com/agentre-hub/agentre/internal/service/chat_svc/blocks"
-	"github.com/agentre-hub/agentre/internal/service/chat_svc/turn"
 )
 
 // startSubagentActivityWatcher 为某 claudecode 会话惰性启动一个 watcher goroutine,订阅

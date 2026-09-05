@@ -10,8 +10,8 @@ import (
 
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime/canonical"
 	"github.com/agentre-hub/agentre/internal/pkg/code"
+	chatblocks "github.com/agentre-hub/agentre/internal/pkg/transcript/blocks"
 	"github.com/agentre-hub/agentre/internal/repository/chat_repo"
-	chatblocks "github.com/agentre-hub/agentre/internal/service/chat_svc/blocks"
 )
 
 // SessionWrittenPaths 列出本会话里 AI 写过的文件路径,按首次出现顺序去重。

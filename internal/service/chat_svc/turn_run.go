@@ -15,10 +15,10 @@ import (
 	"github.com/agentre-hub/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-hub/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-hub/agentre/internal/pkg/transcript/handlers"
+	"github.com/agentre-hub/agentre/internal/pkg/transcript/turn"
 	"github.com/agentre-hub/agentre/internal/repository/chat_repo"
-	"github.com/agentre-hub/agentre/internal/service/chat_svc/handlers"
 	"github.com/agentre-hub/agentre/internal/service/chat_svc/ipc"
-	"github.com/agentre-hub/agentre/internal/service/chat_svc/turn"
 	"github.com/agentre-hub/agentre/internal/service/chat_svc/view"
 )
 
