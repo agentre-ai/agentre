@@ -5,10 +5,13 @@ import (
 	"gorm.io/gorm"
 )
 
-// migration202608080007 建最终的 hooks / hook_events 两张表。
-func migration202608080007() *gormigrate.Migration {
+// migration202609040107 建 hooks / hook_events 两张表。
+//
+// hooks 只有定时触发一种形态：调度由 schedule_expr + timezone + next_run_at 描述，
+// 表上不留「触发类型」鉴别列 —— 取值集合大小为 1 的鉴别列不承担任何分派。
+func migration202609040107() *gormigrate.Migration {
 	return &gormigrate.Migration{
-		ID: "202608080007",
+		ID: "202609040107",
 		Migrate: func(tx *gorm.DB) error {
 			if err := tx.Exec(`CREATE TABLE IF NOT EXISTS hooks (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -16,7 +19,6 @@ func migration202608080007() *gormigrate.Migration {
 	interpreter TEXT NOT NULL DEFAULT 'bash',
 	interpreter_path TEXT NOT NULL DEFAULT '',
 	command TEXT NOT NULL DEFAULT '',
-	trigger_type TEXT NOT NULL DEFAULT 'schedule',
 	schedule_expr TEXT NOT NULL DEFAULT '',
 	timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
 	env_json TEXT NOT NULL DEFAULT '[]',

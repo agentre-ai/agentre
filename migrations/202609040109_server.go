@@ -5,7 +5,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// migration202608080009 建 server_state（联机状态单行表）+ paired_agentreds（LAN 直连
+// migration202609040109 建 server_state（联机状态单行表）+ paired_agentreds（LAN 直连
 // 已配对设备表）。
 //
 // server_state 用 CHECK (id=1) 锁成单行 —— 桌面端只关心唯一的「当前 Server 连接」，
@@ -14,9 +14,9 @@ import (
 //
 // paired_agentreds 用 partial unique index (url) WHERE status=1，让 soft-delete 的旧行
 // 不阻塞同 URL 重新配对。
-func migration202608080009() *gormigrate.Migration {
+func migration202609040109() *gormigrate.Migration {
 	return &gormigrate.Migration{
-		ID: "202608080009",
+		ID: "202609040109",
 		Migrate: func(tx *gorm.DB) error {
 			if err := tx.Exec(`CREATE TABLE IF NOT EXISTS server_state (
 	id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
@@ -50,7 +50,12 @@ func migration202608080009() *gormigrate.Migration {
 )`).Error; err != nil {
 				return err
 			}
-			return tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_paired_agentreds_url ON paired_agentreds(url) WHERE status = 1`).Error
+			if err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_paired_agentreds_url
+ON paired_agentreds(url) WHERE status = 1 AND url != ''`).Error; err != nil {
+				return err
+			}
+			return tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_paired_agentreds_fingerprint
+ON paired_agentreds(daemon_fingerprint) WHERE status = 1 AND daemon_fingerprint != ''`).Error
 		},
 		Rollback: func(tx *gorm.DB) error {
 			if err := tx.Exec(`DROP TABLE IF EXISTS paired_agentreds`).Error; err != nil {
