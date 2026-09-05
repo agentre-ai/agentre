@@ -221,13 +221,18 @@ func (r *Runtime) ensureCursorLoaded(ctx context.Context, sid int64, ss *session
 
 // ── 通知分发(实时 + 补齐共用)────────────────────────────────────────────────
 
-// dispatchNotification 是五类通知的统一入口。R6 的三条规则都在这里:
+// dispatchNotification 是五类通知的统一入口。R6 的三条规则都在这里,而它们**只**
+// 管持久帧(spec 2026-09-05 决策 4):
 //   - seq == 游标 + 1  → 消费并推进游标
 //   - seq >  游标 + 1  → **不消费**,改从游标发起一次增量拉取,拉平后再继续
 //   - seq <= 游标      → 丢弃(重复投递)
 //
-// seq == 0 表示对面是不盖 seq 的老 daemon(帧上是 omitempty 的可选追加字段),
-// 此时没有游标可言,直接消费,行为与今天完全一致。
+// 预览帧在闸门**之前**放行:它按定义不属于这条编号时间线,既不推进游标也不参与去重,
+// 只为即时呈现而来(覆盖同一内容的持久帧随后到达时以持久帧为准)。判别取帧上显式的
+// preview 这一格,不看 seq —— 预览帧本就不带 seq,若拿 seq=0 当判据,一条恰好带上
+// 编号的预览帧就会被读成「不大于游标」而整条吞掉,正是决策 4 点名要避免的形态。
+//
+// 剩下的 seq == 0 是「这条帧没有序号」:没有游标可言,直接消费。
 func (r *Runtime) dispatchNotification(
 	ctx context.Context,
 	method string,
@@ -235,7 +240,7 @@ func (r *Runtime) dispatchNotification(
 	frame any,
 ) (any, error) {
 	head, ok := frameRoute(frame)
-	if !ok || head.Seq == 0 {
+	if !ok || head.Preview || head.Seq == 0 {
 		return h(r, ctx, frame)
 	}
 	// 序号闸门按**本进程认识的那条会话**记游标:线上身份是 conversation_id,进程内
@@ -417,26 +422,30 @@ func (r *Runtime) skipSeq(sid int64, ss *sessionSync, seq int64) {
 }
 
 // stampSeq 按 method 把日志载荷解成对应的帧、盖上 seq、再重新序列化。
-// frameRoute 读出一条通知帧的路由信息。三类帧都带会话与序号,但它们是各自独立的
-// 结构体、没有公共接口 —— 按 ISP 在消费方做一次类型分派,wire 那边不必为此多长出
-// 一组访问器。
+// frameRoute 读出一条通知帧的路由信息:会话、序号,以及它属于哪一级(预览 / 持久)。
+// 四类帧都带会话与序号,但它们是各自独立的结构体、没有公共接口 —— 按 ISP 在消费方
+// 做一次类型分派,wire 那边不必为此多长出一组访问器。
+//
+// 只有事件帧分级:终态与开轮那三类帧本身就是消息级派生帧,一律持久。
 func frameRoute(frame any) (struct {
 	ConversationID string
 	Seq            int64
+	Preview        bool
 }, bool) {
 	type route = struct {
 		ConversationID string
 		Seq            int64
+		Preview        bool
 	}
 	switch f := frame.(type) {
 	case *wire.EventFrame:
-		return route{f.ConversationID, f.Seq}, true
+		return route{f.ConversationID, f.Seq, f.Preview}, true
 	case *wire.RunResultDoneFrame:
-		return route{f.ConversationID, f.Seq}, true
+		return route{ConversationID: f.ConversationID, Seq: f.Seq}, true
 	case *wire.AutonomousTurnStartedFrame:
-		return route{f.ConversationID, f.Seq}, true
+		return route{ConversationID: f.ConversationID, Seq: f.Seq}, true
 	case *wire.TurnStartedFrame:
-		return route{f.ConversationID, f.Seq}, true
+		return route{ConversationID: f.ConversationID, Seq: f.Seq}, true
 	}
 	return route{}, false
 }

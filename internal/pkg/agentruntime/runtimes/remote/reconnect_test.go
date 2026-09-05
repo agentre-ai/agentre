@@ -611,6 +611,76 @@ func TestLiveFrame_SeqNotNewerThanCursor_Discarded(t *testing.T) {
 	assert.Empty(t, rig.conn1.methodCalls(wire.MethodSessionPull), "重复帧不该触发补洞")
 }
 
+// ── 两级帧:预览帧不进闸门,持久帧才进 ────────────────────────────────────────
+
+// collectTexts 在若干次同步投递之后把已经交付的 TextDelta 收齐(channel 不关,
+// 所以不能用 drainTexts)。want 是期待的条数,收满即返回。
+func collectTexts(t *testing.T, ch <-chan agentruntime.Event, want int) []string {
+	t.Helper()
+	var out []string
+	require.Eventually(t, func() bool {
+		for {
+			select {
+			case ev := <-ch:
+				if td, ok := ev.(agentruntime.TextDelta); ok {
+					out = append(out, td.Text)
+				}
+			default:
+				return len(out) >= want
+			}
+		}
+	}, 3*time.Second, 5*time.Millisecond, "只收到 %v", out)
+	return out
+}
+
+// Given 本地游标为 5;
+// When  预览帧到达 —— 而且刻意各带一个「走闸门必被吞掉」的 seq(5 撞去重、9 撞跳号);
+// Then  它们照常交付,游标不动,也不触发补洞拉取。
+//
+// 判别的是帧上的 preview 这一格,不是编号:预览帧按契约本就不带 seq,而这里给它带上
+// 一个,是要证明**任何** seq 取值都不能把一条预览帧送进「seq 不大于游标即重复」那条
+// 路(spec 决策 4:预览帧必须在协议上可区分,不能靠 seq=0 表达)。收尾那条持久帧
+// seq=6 仍然被当作「游标 + 1」交付,正是"游标没被预览帧动过"的判据 —— 预览帧若推进了
+// 游标(到 5 或 9),它要么被判重复丢掉、要么触发一次白拉取。
+func TestPreviewFrame_NeitherAdvancesTheCursorNorEntersDedup(t *testing.T) {
+	rig := newReconnectRig(t)
+	rig.cursor.setLoad(func(int64, string) (int64, bool, error) { return 5, true, nil })
+
+	rig.conn1.deliver(t, wire.NotifyEvent, wire.EventFrame{ConversationID: convOf(rigSessionID),
+		Preview: true, Seq: 5, Event: agentruntime.TextDelta{Text: "预览-撞去重"}})
+	rig.conn1.deliver(t, wire.NotifyEvent, wire.EventFrame{ConversationID: convOf(rigSessionID),
+		Preview: true, Seq: 9, Event: agentruntime.TextDelta{Text: "预览-撞跳号"}})
+	rig.conn1.deliver(t, wire.NotifyEvent, wire.EventFrame{ConversationID: convOf(rigSessionID),
+		Seq: 6, Event: agentruntime.TextDelta{Text: "持久"}})
+
+	assert.Equal(t, []string{"预览-撞去重", "预览-撞跳号", "持久"},
+		collectTexts(t, rig.events, 3),
+		"预览帧不进闸门、不动游标,随后的持久帧仍是游标 + 1")
+	assert.Empty(t, rig.conn1.methodCalls(wire.MethodSessionPull),
+		"预览帧的 seq 不该被读成跳号")
+}
+
+// Given 一条预览帧刚把同一段内容呈现过(按契约不带 seq);
+// When  覆盖它的持久帧带着 seq = 游标 + 1 到达,随后同一条持久帧被重复投递;
+// Then  第一条推进游标并交付,重复的那条进去重路径被丢弃。
+//
+// 这是上一条的对照面:同样的内容,持久帧**要**参与补齐与去重。
+func TestDurableFrame_CoveringPreviewContent_AdvancesCursorAndDedups(t *testing.T) {
+	rig := newReconnectRig(t)
+	rig.cursor.setLoad(func(int64, string) (int64, bool, error) { return 5, true, nil })
+
+	rig.conn1.deliver(t, wire.NotifyEvent, wire.EventFrame{ConversationID: convOf(rigSessionID),
+		Preview: true, Event: agentruntime.TextDelta{Text: "同一段内容"}})
+	rig.conn1.deliver(t, wire.NotifyEvent, wire.EventFrame{ConversationID: convOf(rigSessionID),
+		Seq: 6, Event: agentruntime.TextDelta{Text: "同一段内容"}})
+	rig.conn1.deliver(t, wire.NotifyEvent, wire.EventFrame{ConversationID: convOf(rigSessionID),
+		Seq: 6, Event: agentruntime.TextDelta{Text: "同一段内容"}})
+
+	assert.Equal(t, []string{"同一段内容", "同一段内容"}, collectTexts(t, rig.events, 2),
+		"持久帧推进游标,重投的同号持久帧被去重丢弃")
+	assert.Empty(t, rig.conn1.methodCalls(wire.MethodSessionPull), "重复的持久帧不该触发补洞")
+}
+
 // ── 回放到的旧轮次终态帧不得终结当前这一轮 ───────────────────────────────────
 
 // Given 客户端关掉又重开(游标停在上一轮中段,而那之后 daemon 上又跑完了几轮),
