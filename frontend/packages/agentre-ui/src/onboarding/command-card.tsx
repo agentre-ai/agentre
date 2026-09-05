@@ -56,6 +56,7 @@ export function CommandCard({
           type="button"
           variant="ghost"
           size="xs"
+          aria-label={t("onboarding.copyLabel", { label })}
           data-testid={copyTestId}
           onClick={() => {
             copyTextToClipboard(command)

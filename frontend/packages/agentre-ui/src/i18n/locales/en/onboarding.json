@@ -2,6 +2,7 @@
   "onboarding": {
     "copy": "Copy",
     "copied": "Copied",
+    "copyLabel": "Copy {{label}}",
     "stepNav": "Step {{number}}: {{title}}",
     "dismiss": "Collapse guide",
     "install": {

@@ -2,6 +2,7 @@
   "onboarding": {
     "copy": "复制",
     "copied": "已复制",
+    "copyLabel": "复制{{label}}",
     "stepNav": "第 {{number}} 步：{{title}}",
     "dismiss": "收起引导",
     "install": {
