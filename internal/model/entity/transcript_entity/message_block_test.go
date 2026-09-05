@@ -1,4 +1,4 @@
-package chat_entity_test
+package transcript_entity_test
 
 import (
 	"bytes"
@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/agentre-hub/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-hub/agentre/internal/model/entity/transcript_entity"
 )
 
 // TestEncodeBlockData 覆盖块正文编码的三条分支(决策 3/4):未超阈值原样存、超阈值压缩存、
@@ -18,54 +18,54 @@ func TestEncodeBlockData(t *testing.T) {
 	t.Run("未超阈值原样存储", func(t *testing.T) {
 		raw := []byte(`{"text":"hi"}`)
 
-		codec, data := chat_entity.EncodeBlockData(raw)
+		codec, data := transcript_entity.EncodeBlockData(raw)
 
-		assert.Equal(t, chat_entity.BlockCodecRaw, codec)
+		assert.Equal(t, transcript_entity.BlockCodecRaw, codec)
 		assert.True(t, bytes.Equal(raw, data), "raw codec 必须原样存储正文")
 	})
 
 	t.Run("超阈值且可压缩时压缩存储", func(t *testing.T) {
 		raw := []byte(`{"text":"` + strings.Repeat("agentre", 2000) + `"}`)
-		require.Greater(t, len(raw), chat_entity.BlockCompressThreshold)
+		require.Greater(t, len(raw), transcript_entity.BlockCompressThreshold)
 
-		codec, data := chat_entity.EncodeBlockData(raw)
+		codec, data := transcript_entity.EncodeBlockData(raw)
 
-		assert.Equal(t, chat_entity.BlockCodecDeflate, codec)
+		assert.Equal(t, transcript_entity.BlockCodecDeflate, codec)
 		assert.Less(t, len(data), len(raw), "压缩后必须比原文小")
 
-		got, err := chat_entity.DecodeBlockData(codec, data)
+		got, err := transcript_entity.DecodeBlockData(codec, data)
 		require.NoError(t, err)
 		assert.True(t, bytes.Equal(raw, got), "解压必须逐字节还原")
 	})
 
 	t.Run("超阈值但压缩后变大时回落原样存储", func(t *testing.T) {
-		raw := make([]byte, chat_entity.BlockCompressThreshold+1)
+		raw := make([]byte, transcript_entity.BlockCompressThreshold+1)
 		_, err := rand.Read(raw)
 		require.NoError(t, err)
 
-		codec, data := chat_entity.EncodeBlockData(raw)
+		codec, data := transcript_entity.EncodeBlockData(raw)
 
-		assert.Equal(t, chat_entity.BlockCodecRaw, codec)
+		assert.Equal(t, transcript_entity.BlockCodecRaw, codec)
 		assert.True(t, bytes.Equal(raw, data))
 	})
 
 	t.Run("恰好等于阈值不压缩", func(t *testing.T) {
-		raw := bytes.Repeat([]byte("a"), chat_entity.BlockCompressThreshold)
+		raw := bytes.Repeat([]byte("a"), transcript_entity.BlockCompressThreshold)
 
-		codec, _ := chat_entity.EncodeBlockData(raw)
+		codec, _ := transcript_entity.EncodeBlockData(raw)
 
-		assert.Equal(t, chat_entity.BlockCodecRaw, codec)
+		assert.Equal(t, transcript_entity.BlockCodecRaw, codec)
 	})
 
 	t.Run("未知 codec 报错而不是静默返回原始字节", func(t *testing.T) {
-		_, err := chat_entity.DecodeBlockData(99, []byte("x"))
+		_, err := transcript_entity.DecodeBlockData(99, []byte("x"))
 		assert.Error(t, err)
 	})
 }
 
 // TestMessageBlockTableName 钉住块表名——迁移 DDL 与实体必须落在同一张表上。
 func TestMessageBlockTableName(t *testing.T) {
-	assert.Equal(t, "chat_message_blocks", (&chat_entity.MessageBlock{}).TableName())
+	assert.Equal(t, "chat_message_blocks", (&transcript_entity.MessageBlock{}).TableName())
 }
 
 // TestDiffBlocks 覆盖「按差分落块」的四种形态。
@@ -85,7 +85,7 @@ func TestDiffBlocks(t *testing.T) {
 		prev := doc(block("text", "a"), block("tool_use", "b"))
 		next := doc(block("text", "a"), block("tool_use", "b"), block("tool_result", "c"))
 
-		diff, err := chat_entity.DiffBlocks(7, prev, next)
+		diff, err := transcript_entity.DiffBlocks(7, prev, next)
 
 		require.NoError(t, err)
 		require.Len(t, diff.Upserts, 1, "未变化的块一个都不许重写")
@@ -99,7 +99,7 @@ func TestDiffBlocks(t *testing.T) {
 		prev := doc(block("text", "a"), block("subagent_state", "running"))
 		next := doc(block("text", "a"), block("subagent_state", "done"))
 
-		diff, err := chat_entity.DiffBlocks(7, prev, next)
+		diff, err := transcript_entity.DiffBlocks(7, prev, next)
 
 		require.NoError(t, err)
 		require.Len(t, diff.Upserts, 1)
@@ -110,7 +110,7 @@ func TestDiffBlocks(t *testing.T) {
 	t.Run("完全没变化时不产出任何语句", func(t *testing.T) {
 		same := doc(block("text", "a"), block("tool_use", "b"))
 
-		diff, err := chat_entity.DiffBlocks(7, same, same)
+		diff, err := transcript_entity.DiffBlocks(7, same, same)
 
 		require.NoError(t, err)
 		assert.Empty(t, diff.Upserts)
@@ -121,7 +121,7 @@ func TestDiffBlocks(t *testing.T) {
 		prev := doc(block("text", "a"), block("tool_use", "b"), block("tool_result", "c"))
 		next := doc(block("text", "a"))
 
-		diff, err := chat_entity.DiffBlocks(7, prev, next)
+		diff, err := transcript_entity.DiffBlocks(7, prev, next)
 
 		require.NoError(t, err)
 		assert.Empty(t, diff.Upserts, "留下的那块没变,不必重写")
@@ -131,7 +131,7 @@ func TestDiffBlocks(t *testing.T) {
 	t.Run("上一版为空(首次 checkpoint)时整份都是 upsert", func(t *testing.T) {
 		next := doc(block("text", "a"), block("tool_use", "b"))
 
-		diff, err := chat_entity.DiffBlocks(7, "[]", next)
+		diff, err := transcript_entity.DiffBlocks(7, "[]", next)
 
 		require.NoError(t, err)
 		assert.Len(t, diff.Upserts, 2)
@@ -142,10 +142,10 @@ func TestDiffBlocks(t *testing.T) {
 		big := strings.Repeat("agentre", 2000)
 		next := doc(block("text", big))
 
-		diff, err := chat_entity.DiffBlocks(7, "[]", next)
+		diff, err := transcript_entity.DiffBlocks(7, "[]", next)
 
 		require.NoError(t, err)
 		require.Len(t, diff.Upserts, 1)
-		assert.Equal(t, chat_entity.BlockCodecDeflate, diff.Upserts[0].Codec)
+		assert.Equal(t, transcript_entity.BlockCodecDeflate, diff.Upserts[0].Codec)
 	})
 }

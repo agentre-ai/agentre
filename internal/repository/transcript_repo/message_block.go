@@ -1,4 +1,4 @@
-package chat_repo
+package transcript_repo
 
 import (
 	"context"
@@ -8,12 +8,12 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"github.com/agentre-hub/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-hub/agentre/internal/model/entity/transcript_entity"
 )
 
 // insertBlocks 写入一条消息的全部块行。空块集合不产生任何语句。
 func insertBlocks(ctx context.Context, messageID int64, blocksJSON string) error {
-	rows, err := chat_entity.SplitBlocksJSON(messageID, blocksJSON)
+	rows, err := transcript_entity.SplitBlocksJSON(messageID, blocksJSON)
 	if err != nil {
 		return err
 	}
@@ -44,7 +44,7 @@ func replaceBlocks(ctx context.Context, messageID int64, blocksJSON string) erro
 // upsert 走 (message_id, idx) 唯一索引:同一条语句既覆盖「就地改写」也覆盖「末尾新增」,
 // 不必先查再分流。
 func syncBlocks(ctx context.Context, messageID int64, prev, next string) error {
-	diff, err := chat_entity.DiffBlocks(messageID, prev, next)
+	diff, err := transcript_entity.DiffBlocks(messageID, prev, next)
 	if err != nil {
 		return err
 	}
@@ -71,18 +71,18 @@ const loadBlocksBatch = 500
 
 // loadBlocks 取回若干条消息的块行,按 message_id 归组。types 非空时只取这几类块 ——
 // 派生视图要的就是「按类型点查」,筛选留在 SQL 里,整条转录不必读回内存再过一遍。
-func loadBlocks(ctx context.Context, messageIDs []int64, types []string) (map[int64][]*chat_entity.MessageBlock, error) {
+func loadBlocks(ctx context.Context, messageIDs []int64, types []string) (map[int64][]*transcript_entity.MessageBlock, error) {
 	if len(messageIDs) == 0 {
 		return nil, nil
 	}
-	grouped := make(map[int64][]*chat_entity.MessageBlock, len(messageIDs))
+	grouped := make(map[int64][]*transcript_entity.MessageBlock, len(messageIDs))
 	for start := 0; start < len(messageIDs); start += loadBlocksBatch {
 		end := min(start+loadBlocksBatch, len(messageIDs))
 		q := db.Ctx(ctx).Where("message_id IN ?", messageIDs[start:end])
 		if len(types) > 0 {
 			q = q.Where("`type` IN ?", types)
 		}
-		var rows []*chat_entity.MessageBlock
+		var rows []*transcript_entity.MessageBlock
 		if err := q.Order("message_id ASC, idx ASC").Find(&rows).Error; err != nil {
 			return nil, err
 		}
@@ -95,7 +95,7 @@ func loadBlocks(ctx context.Context, messageIDs []int64, types []string) (map[in
 
 // fillBlocks 给一批消息填上它们的正文,使实体在内存里照旧携带块(决策 7)。
 // types 非空时只填这几类块,其余块不进内存。
-func fillBlocks(ctx context.Context, msgs []*chat_entity.Message, types []string) error {
+func fillBlocks(ctx context.Context, msgs []*transcript_entity.Message, types []string) error {
 	ids := make([]int64, 0, len(msgs))
 	for _, m := range msgs {
 		if m != nil && m.ID > 0 {
@@ -110,7 +110,7 @@ func fillBlocks(ctx context.Context, msgs []*chat_entity.Message, types []string
 		if m == nil {
 			continue
 		}
-		blocksJSON, err := chat_entity.JoinBlocks(grouped[m.ID])
+		blocksJSON, err := transcript_entity.JoinBlocks(grouped[m.ID])
 		if err != nil {
 			return err
 		}
@@ -128,6 +128,14 @@ func deleteBlocksOfMessages(ctx context.Context, where string, args ...any) erro
 	).Error
 }
 
+// DeleteBlocksOfMessages 是 deleteBlocksOfMessages 的导出形式,供仓外调用方（如
+// chat_repo 的会话级恢复流程 replacement_recovery.go）按同一条筛选条件删块行,不必
+// 各自重写一份「先删块再删消息」的顺序（块行必须先于宿主消息删除，否则会在两条语句
+// 之间短暂变成孤儿）。
+func DeleteBlocksOfMessages(ctx context.Context, where string, args ...any) error {
+	return deleteBlocksOfMessages(ctx, where, args...)
+}
+
 // findSubagentStateBlock 按定位键点查本会话里的 subagent_state 块,取 message_id 最大的
 // 一条(后台任务的发起消息)。无命中返回 (nil, nil)。
 //
@@ -138,17 +146,17 @@ func deleteBlocksOfMessages(ctx context.Context, where string, args ...any) erro
 // USING INDEX ux_chat_message_blocks_message_idx`(全表串扫)/ 按 type 扫遍全库的
 // subagent_state 块,正是拆块表要消灭的那个形态。它不改变结果集:上面已经把
 // toolCallID 为空的调用挡掉了。
-func findSubagentStateBlock(ctx context.Context, sessionID int64, toolCallID string) (*chat_entity.MessageBlock, error) {
+func findSubagentStateBlock(ctx context.Context, sessionID int64, toolCallID string) (*transcript_entity.MessageBlock, error) {
 	if toolCallID == "" {
 		return nil, nil
 	}
-	var row chat_entity.MessageBlock
+	var row transcript_entity.MessageBlock
 	err := db.Ctx(ctx).
-		Model(&chat_entity.MessageBlock{}).
+		Model(&transcript_entity.MessageBlock{}).
 		Joins("JOIN `chat_messages` ON `chat_messages`.`id` = `chat_message_blocks`.`message_id`").
 		Where("`chat_messages`.`session_id` = ? AND `chat_message_blocks`.`type` = ?"+
 			" AND `chat_message_blocks`.`tool_call_id` = ? AND `chat_message_blocks`.`tool_call_id` <> ''",
-			sessionID, chat_entity.BlockTypeSubagentState, toolCallID).
+			sessionID, transcript_entity.BlockTypeSubagentState, toolCallID).
 		Order("`chat_message_blocks`.`message_id` DESC").
 		Limit(1).
 		Take(&row).Error
@@ -166,13 +174,13 @@ func findSubagentStateBlock(ctx context.Context, sessionID int64, toolCallID str
 // 按 task_id 找只能这样:task_id 不是列,它在块正文的 JSON 里(而且大块还是 deflate
 // 的),没有索引可用。走 (type, message_id) 索引把范围收到「本会话的 subagent_state」
 // —— 一次派遣一条,量级是个位数到几十,不是全表扫。
-func findSubagentStateBlocks(ctx context.Context, sessionID int64) ([]chat_entity.MessageBlock, error) {
-	var rows []chat_entity.MessageBlock
+func findSubagentStateBlocks(ctx context.Context, sessionID int64) ([]transcript_entity.MessageBlock, error) {
+	var rows []transcript_entity.MessageBlock
 	err := db.Ctx(ctx).
-		Model(&chat_entity.MessageBlock{}).
+		Model(&transcript_entity.MessageBlock{}).
 		Joins("JOIN `chat_messages` ON `chat_messages`.`id` = `chat_message_blocks`.`message_id`").
 		Where("`chat_messages`.`session_id` = ? AND `chat_message_blocks`.`type` = ?",
-			sessionID, chat_entity.BlockTypeSubagentState).
+			sessionID, transcript_entity.BlockTypeSubagentState).
 		Order("`chat_message_blocks`.`message_id` DESC").
 		Find(&rows).Error
 	if err != nil {
@@ -182,8 +190,8 @@ func findSubagentStateBlocks(ctx context.Context, sessionID int64) ([]chat_entit
 }
 
 // updateBlockData 就地改写一个块行的正文(重新按阈值编码)。
-func updateBlockData(ctx context.Context, row *chat_entity.MessageBlock, data []byte) error {
-	codec, encoded := chat_entity.EncodeBlockData(data)
+func updateBlockData(ctx context.Context, row *transcript_entity.MessageBlock, data []byte) error {
+	codec, encoded := transcript_entity.EncodeBlockData(data)
 	return db.Ctx(ctx).Exec(
 		"UPDATE `chat_message_blocks` SET `codec`=?,`data`=? WHERE message_id = ? AND idx = ?",
 		codec, encoded, row.MessageID, row.Idx,
@@ -195,7 +203,7 @@ func appendBlocks(ctx context.Context, messageID int64, blocksJSON string) error
 	if blocksJSON == "" || blocksJSON == "[]" {
 		return nil
 	}
-	rows, err := chat_entity.SplitBlocksJSON(messageID, blocksJSON)
+	rows, err := transcript_entity.SplitBlocksJSON(messageID, blocksJSON)
 	if err != nil {
 		return err
 	}

@@ -1,4 +1,4 @@
-package chat_repo_test
+package transcript_repo_test
 
 import (
 	"bytes"
@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/agentre-hub/agentre/internal/model/entity/chat_entity"
-	"github.com/agentre-hub/agentre/internal/repository/chat_repo"
+	"github.com/agentre-hub/agentre/internal/model/entity/transcript_entity"
+	"github.com/agentre-hub/agentre/internal/repository/transcript_repo"
 )
 
 // blockDataContains 是 sqlmock 自定义参数匹配器:校验写回块行的正文包含全部指定子串,
@@ -38,7 +38,7 @@ func (m blockDataContains) Match(v driver.Value) bool {
 // subagentBlockRows 造一行 subagent_state 块行(未压缩),供块级方法的点查用例返回。
 func subagentBlockRows(messageID int64, toolCallID, data string) *sqlmock.Rows {
 	return sqlmock.NewRows([]string{"message_id", "idx", "type", "tool_call_id", "codec", "data"}).
-		AddRow(messageID, 0, "subagent_state", toolCallID, chat_entity.BlockCodecRaw, []byte(data))
+		AddRow(messageID, 0, "subagent_state", toolCallID, transcript_entity.BlockCodecRaw, []byte(data))
 }
 
 // emptyBlockRows 是「定位不到目标块」的空结果集。
@@ -62,7 +62,7 @@ func TestSubagentStateFromBlockData(t *testing.T) {
 	const input = `{"parent_tool_call_id":"tu1","task_id":"b0n82mqaj","kind":"local_bash","status":"running"}`
 
 	t.Run("读出 task_id + status", func(t *testing.T) {
-		taskID, status, err := chat_repo.SubagentStateFromBlockData([]byte(input))
+		taskID, status, err := transcript_repo.SubagentStateFromBlockData([]byte(input))
 		require.NoError(t, err)
 		assert.Equal(t, "b0n82mqaj", taskID)
 		assert.Equal(t, "running", status)
@@ -70,14 +70,14 @@ func TestSubagentStateFromBlockData(t *testing.T) {
 
 	t.Run("旧块无 task_id:taskID 空但 status 仍读得出", func(t *testing.T) {
 		const legacy = `{"parent_tool_call_id":"tu1","kind":"local_bash","status":"running"}`
-		taskID, status, err := chat_repo.SubagentStateFromBlockData([]byte(legacy))
+		taskID, status, err := transcript_repo.SubagentStateFromBlockData([]byte(legacy))
 		require.NoError(t, err)
 		assert.Equal(t, "", taskID)
 		assert.Equal(t, "running", status)
 	})
 
 	t.Run("非法 JSON 返回 error", func(t *testing.T) {
-		_, _, err := chat_repo.SubagentStateFromBlockData([]byte("{not json"))
+		_, _, err := transcript_repo.SubagentStateFromBlockData([]byte("{not json"))
 		assert.Error(t, err)
 	})
 }
@@ -87,7 +87,7 @@ func TestFlipSubagentInBlockData(t *testing.T) {
 	const input = `{"parent_tool_call_id":"tu1","kind":"local_bash","description":"sleep 20","total_tokens":12345,"duration_ms":6789,"status":"running","tool_uses":42,"nested_tool_call_ids":["n1","n2"]}`
 
 	t.Run("翻转 status,其余字段全保留", func(t *testing.T) {
-		out, flipped, err := chat_repo.FlipSubagentInBlockData([]byte(input), "completed", "")
+		out, flipped, err := transcript_repo.FlipSubagentInBlockData([]byte(input), "completed", "")
 		require.NoError(t, err)
 		assert.True(t, flipped)
 
@@ -107,7 +107,7 @@ func TestFlipSubagentInBlockData(t *testing.T) {
 	})
 
 	t.Run("非空 summary 同时写入", func(t *testing.T) {
-		out, flipped, err := chat_repo.FlipSubagentInBlockData([]byte(input), "completed", "Background command completed")
+		out, flipped, err := transcript_repo.FlipSubagentInBlockData([]byte(input), "completed", "Background command completed")
 		require.NoError(t, err)
 		assert.True(t, flipped)
 		outData := blockData(t, out)
@@ -117,7 +117,7 @@ func TestFlipSubagentInBlockData(t *testing.T) {
 	})
 
 	t.Run("非法正文返回 error", func(t *testing.T) {
-		_, flipped, err := chat_repo.FlipSubagentInBlockData([]byte("{not json"), "completed", "")
+		_, flipped, err := transcript_repo.FlipSubagentInBlockData([]byte("{not json"), "completed", "")
 		require.Error(t, err)
 		assert.False(t, flipped)
 	})
@@ -127,7 +127,7 @@ func TestFlipSubagentInBlockData(t *testing.T) {
 func TestAppendNestedToolCallIDsInBlockData(t *testing.T) {
 	t.Run("追加进空数组", func(t *testing.T) {
 		const base = `{"parent_tool_call_id":"toolu_agent","status":"running","nested_tool_call_ids":[]}`
-		out, ok, err := chat_repo.AppendNestedToolCallIDsInBlockData([]byte(base), []string{"sub_bash"})
+		out, ok, err := transcript_repo.AppendNestedToolCallIDsInBlockData([]byte(base), []string{"sub_bash"})
 		require.NoError(t, err)
 		assert.True(t, ok)
 		ids, _ := blockData(t, out)["nested_tool_call_ids"].([]any)
@@ -136,7 +136,7 @@ func TestAppendNestedToolCallIDsInBlockData(t *testing.T) {
 
 	t.Run("childIDs 去重", func(t *testing.T) {
 		const withExisting = `{"parent_tool_call_id":"toolu_agent","status":"running","nested_tool_call_ids":["existing_id"]}`
-		out, ok, err := chat_repo.AppendNestedToolCallIDsInBlockData([]byte(withExisting), []string{"existing_id", "new_id"})
+		out, ok, err := transcript_repo.AppendNestedToolCallIDsInBlockData([]byte(withExisting), []string{"existing_id", "new_id"})
 		require.NoError(t, err)
 		assert.True(t, ok)
 		ids, _ := blockData(t, out)["nested_tool_call_ids"].([]any)
@@ -144,7 +144,7 @@ func TestAppendNestedToolCallIDsInBlockData(t *testing.T) {
 	})
 
 	t.Run("非法正文返回 error", func(t *testing.T) {
-		_, ok, err := chat_repo.AppendNestedToolCallIDsInBlockData([]byte("{not json"), []string{"x"})
+		_, ok, err := transcript_repo.AppendNestedToolCallIDsInBlockData([]byte("{not json"), []string{"x"})
 		require.Error(t, err)
 		assert.False(t, ok)
 	})
@@ -165,17 +165,17 @@ func TestFlipAndAppendCompose(t *testing.T) {
 	}
 
 	t.Run("Flip-then-Append", func(t *testing.T) {
-		flipped, _, err := chat_repo.FlipSubagentInBlockData([]byte(base), "completed", "done")
+		flipped, _, err := transcript_repo.FlipSubagentInBlockData([]byte(base), "completed", "done")
 		require.NoError(t, err)
-		result, _, err := chat_repo.AppendNestedToolCallIDsInBlockData(flipped, []string{"sub_bash"})
+		result, _, err := transcript_repo.AppendNestedToolCallIDsInBlockData(flipped, []string{"sub_bash"})
 		require.NoError(t, err)
 		assertBothPresent(t, result)
 	})
 
 	t.Run("Append-then-Flip", func(t *testing.T) {
-		appended, _, err := chat_repo.AppendNestedToolCallIDsInBlockData([]byte(base), []string{"sub_bash"})
+		appended, _, err := transcript_repo.AppendNestedToolCallIDsInBlockData([]byte(base), []string{"sub_bash"})
 		require.NoError(t, err)
-		result, _, err := chat_repo.FlipSubagentInBlockData(appended, "completed", "done")
+		result, _, err := transcript_repo.FlipSubagentInBlockData(appended, "completed", "done")
 		require.NoError(t, err)
 		assertBothPresent(t, result)
 	})
@@ -192,9 +192,9 @@ func TestMessageRepo_List(t *testing.T) {
 	mock.ExpectQuery("SELECT \\* FROM `chat_message_blocks` WHERE message_id IN \\(\\?,\\?\\)").
 		WithArgs(int64(1), int64(2)).
 		WillReturnRows(sqlmock.NewRows([]string{"message_id", "idx", "type", "tool_call_id", "codec", "data"}).
-			AddRow(1, 0, "text", "", chat_entity.BlockCodecRaw, []byte(`{"text":"hi"}`)))
+			AddRow(1, 0, "text", "", transcript_entity.BlockCodecRaw, []byte(`{"text":"hi"}`)))
 
-	got, err := chat_repo.NewMessage().List(ctx, 3)
+	got, err := transcript_repo.NewMessage().List(ctx, 3)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 	assert.Equal(t, "user", got[0].Role)
@@ -210,7 +210,7 @@ func TestMessageRepo_NextSeq(t *testing.T) {
 		WithArgs(int64(3)).
 		WillReturnRows(sqlmock.NewRows([]string{"next"}).AddRow(5))
 
-	got, err := chat_repo.NewMessage().NextSeq(ctx, 3)
+	got, err := transcript_repo.NewMessage().NextSeq(ctx, 3)
 	assert.NoError(t, err)
 	assert.Equal(t, 5, got)
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -231,8 +231,8 @@ func TestMessageRepo_Create(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(42, 1))
 	mock.ExpectCommit()
 
-	m := &chat_entity.Message{SessionID: 3, Role: "user", BlocksJSON: "[]", Seq: 1}
-	err := chat_repo.NewMessage().Create(ctx, m)
+	m := &transcript_entity.Message{SessionID: 3, Role: "user", BlocksJSON: "[]", Seq: 1}
+	err := transcript_repo.NewMessage().Create(ctx, m)
 	assert.NoError(t, err)
 	assert.Equal(t, int64(42), m.ID)
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -253,13 +253,13 @@ func TestMessageRepo_CreateReplacementStage(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(52, 1))
 	mock.ExpectCommit()
 
-	message := &chat_entity.Message{
+	message := &transcript_entity.Message{
 		SessionID:  -3,
 		Role:       "user",
 		BlocksJSON: "[]",
 		Seq:        5,
 	}
-	err := chat_repo.NewMessage().Create(ctx, message)
+	err := transcript_repo.NewMessage().Create(ctx, message)
 	require.NoError(t, err)
 	assert.Equal(t, int64(52), message.ID)
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -276,7 +276,7 @@ func TestMessageRepo_Find(t *testing.T) {
 		WithArgs(int64(42)).
 		WillReturnRows(emptyBlockRows())
 
-	got, err := chat_repo.NewMessage().Find(ctx, 42)
+	got, err := transcript_repo.NewMessage().Find(ctx, 42)
 	assert.NoError(t, err)
 	assert.NotNil(t, got)
 	assert.Equal(t, int64(42), got.ID)
@@ -290,7 +290,7 @@ func TestMessageRepo_Find_NotFound(t *testing.T) {
 		WithArgs(int64(99), 1).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
-	got, err := chat_repo.NewMessage().Find(ctx, 99)
+	got, err := transcript_repo.NewMessage().Find(ctx, 99)
 	assert.NoError(t, err)
 	assert.Nil(t, got, "missing row 应返回 nil 而不是 ErrRecordNotFound")
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -318,12 +318,12 @@ func TestMessageRepo_FlipSubagentStatus_FlipsMatchingBlock(t *testing.T) {
 		`{"parent_tool_call_id":"tu1","kind":"local_bash","description":"sleep 20","status":"running"}`))
 	// 命中后只重写那一个块行,不再读出并重写宿主消息的全部块。
 	mock.ExpectExec("UPDATE `chat_message_blocks` SET `codec`=\\?,`data`=\\? WHERE message_id = \\? AND idx = \\?").
-		WithArgs(chat_entity.BlockCodecRaw, blockDataContains{substrings: []string{
+		WithArgs(transcript_entity.BlockCodecRaw, blockDataContains{substrings: []string{
 			`"status":"completed"`, `"summary":"Background command completed"`, `"description":"sleep 20"`,
 		}}, int64(42), 0).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	err := chat_repo.NewMessage().FlipSubagentStatus(ctx, 3, "tu1", "completed", "Background command completed")
+	err := transcript_repo.NewMessage().FlipSubagentStatus(ctx, 3, "tu1", "completed", "Background command completed")
 	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -334,7 +334,7 @@ func TestMessageRepo_FlipSubagentStatus_NoMatchSilentNil(t *testing.T) {
 	// 定位不到目标块 → 不写库,静默返回 nil(任务可能已 evict / 非本会话)。
 	expectSubagentBlockLookup(mock, 3, "tu-missing", emptyBlockRows())
 
-	err := chat_repo.NewMessage().FlipSubagentStatus(ctx, 3, "tu-missing", "completed", "")
+	err := transcript_repo.NewMessage().FlipSubagentStatus(ctx, 3, "tu-missing", "completed", "")
 	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -342,8 +342,8 @@ func TestMessageRepo_FlipSubagentStatus_NoMatchSilentNil(t *testing.T) {
 func TestMessageRepo_FlipSubagentStatus_EmptyArgsShortCircuit(t *testing.T) {
 	ctx, _, _ := testutils.Database(t)
 
-	require.NoError(t, chat_repo.NewMessage().FlipSubagentStatus(ctx, 3, "", "completed", ""))
-	require.NoError(t, chat_repo.NewMessage().FlipSubagentStatus(ctx, 3, "tu1", "", ""))
+	require.NoError(t, transcript_repo.NewMessage().FlipSubagentStatus(ctx, 3, "", "completed", ""))
+	require.NoError(t, transcript_repo.NewMessage().FlipSubagentStatus(ctx, 3, "tu1", "", ""))
 }
 
 func TestMessageRepo_AppendSubagentChildren_AppendsBlocks(t *testing.T) {
@@ -354,7 +354,7 @@ func TestMessageRepo_AppendSubagentChildren_AppendsBlocks(t *testing.T) {
 	expectSubagentBlockLookup(mock, 3, "toolu_agent", subagentBlockRows(42, "toolu_agent",
 		`{"parent_tool_call_id":"toolu_agent","kind":"local_bash","status":"running","nested_tool_call_ids":[]}`))
 	mock.ExpectExec("UPDATE `chat_message_blocks` SET `codec`=\\?,`data`=\\? WHERE message_id = \\? AND idx = \\?").
-		WithArgs(chat_entity.BlockCodecRaw, blockDataContains{substrings: []string{`"sub_bash"`}}, int64(42), 0).
+		WithArgs(transcript_entity.BlockCodecRaw, blockDataContains{substrings: []string{`"sub_bash"`}}, int64(42), 0).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// 子块作为新块行追加到该消息正文末尾,idx 从当前最大值往后排。
 	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(idx\\), -1\\) \\+ 1 FROM `chat_message_blocks` WHERE message_id = \\?").
@@ -362,11 +362,11 @@ func TestMessageRepo_AppendSubagentChildren_AppendsBlocks(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"next"}).AddRow(2))
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT INTO `chat_message_blocks`").
-		WithArgs(int64(42), 2, "tool_use", "sub_bash", chat_entity.BlockCodecRaw, sqlmock.AnyArg()).
+		WithArgs(int64(42), 2, "tool_use", "sub_bash", transcript_entity.BlockCodecRaw, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	err := chat_repo.NewMessage().AppendSubagentChildren(ctx, 3, "toolu_agent", childBlocksJSON, []string{"sub_bash"})
+	err := transcript_repo.NewMessage().AppendSubagentChildren(ctx, 3, "toolu_agent", childBlocksJSON, []string{"sub_bash"})
 	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -376,7 +376,7 @@ func TestMessageRepo_AppendSubagentChildren_NoMatchSilentNil(t *testing.T) {
 
 	expectSubagentBlockLookup(mock, 3, "toolu_missing", emptyBlockRows())
 
-	err := chat_repo.NewMessage().AppendSubagentChildren(ctx, 3, "toolu_missing", `[{"type":"tool_use","data":{}}]`, []string{"x"})
+	err := transcript_repo.NewMessage().AppendSubagentChildren(ctx, 3, "toolu_missing", `[{"type":"tool_use","data":{}}]`, []string{"x"})
 	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -394,7 +394,7 @@ func TestMessageRepo_FindAssistantBySubagentToolCallID_ReturnsMatch(t *testing.T
 		WithArgs(int64(42)).
 		WillReturnRows(emptyBlockRows())
 
-	got, err := chat_repo.NewMessage().FindAssistantBySubagentToolCallID(ctx, 3, "toolu_agent")
+	got, err := transcript_repo.NewMessage().FindAssistantBySubagentToolCallID(ctx, 3, "toolu_agent")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, int64(42), got.ID)
@@ -406,7 +406,7 @@ func TestMessageRepo_FindAssistantBySubagentToolCallID_NoMatchNil(t *testing.T) 
 
 	expectSubagentBlockLookup(mock, 3, "toolu_missing", emptyBlockRows())
 
-	got, err := chat_repo.NewMessage().FindAssistantBySubagentToolCallID(ctx, 3, "toolu_missing")
+	got, err := transcript_repo.NewMessage().FindAssistantBySubagentToolCallID(ctx, 3, "toolu_missing")
 	require.NoError(t, err)
 	assert.Nil(t, got, "无命中 subagent_state 应返回 (nil, nil)")
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -415,7 +415,7 @@ func TestMessageRepo_FindAssistantBySubagentToolCallID_NoMatchNil(t *testing.T) 
 func TestMessageRepo_FindAssistantBySubagentToolCallID_EmptyToolCallID(t *testing.T) {
 	ctx, _, _ := testutils.Database(t)
 
-	got, err := chat_repo.NewMessage().FindAssistantBySubagentToolCallID(ctx, 3, "")
+	got, err := transcript_repo.NewMessage().FindAssistantBySubagentToolCallID(ctx, 3, "")
 	require.NoError(t, err)
 	assert.Nil(t, got, "空 toolCallID 短路返回 (nil, nil),不查库")
 }
@@ -426,7 +426,7 @@ func TestMessageRepo_FindSubagentState(t *testing.T) {
 	expectSubagentBlockLookup(mock, 3, "tu1", subagentBlockRows(42, "tu1",
 		`{"parent_tool_call_id":"tu1","task_id":"b0n82mqaj","status":"running"}`))
 
-	taskID, status, found, err := chat_repo.NewMessage().FindSubagentState(ctx, 3, "tu1")
+	taskID, status, found, err := transcript_repo.NewMessage().FindSubagentState(ctx, 3, "tu1")
 	require.NoError(t, err)
 	assert.True(t, found)
 	assert.Equal(t, "b0n82mqaj", taskID)
@@ -439,7 +439,7 @@ func TestMessageRepo_FindSubagentState_NoMatch(t *testing.T) {
 
 	expectSubagentBlockLookup(mock, 3, "tu-missing", emptyBlockRows())
 
-	_, _, found, err := chat_repo.NewMessage().FindSubagentState(ctx, 3, "tu-missing")
+	_, _, found, err := transcript_repo.NewMessage().FindSubagentState(ctx, 3, "tu-missing")
 	require.NoError(t, err)
 	assert.False(t, found)
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -455,7 +455,7 @@ func TestMessageRepo_LatestAssistant(t *testing.T) {
 	mock.ExpectQuery("SELECT \\* FROM `chat_message_blocks` WHERE message_id IN \\(\\?\\)").
 		WithArgs(int64(42)).
 		WillReturnRows(emptyBlockRows())
-	got, err := chat_repo.NewMessage().LatestAssistant(ctx, 7)
+	got, err := transcript_repo.NewMessage().LatestAssistant(ctx, 7)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, int64(42), got.ID)
@@ -468,7 +468,7 @@ func TestMessageRepo_LatestAssistant_None(t *testing.T) {
 	mock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE session_id = \\? AND role = \\? ORDER BY seq DESC,`chat_messages`.`id` LIMIT \\?").
 		WithArgs(int64(7), "assistant", 1).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
-	got, err := chat_repo.NewMessage().LatestAssistant(ctx, 7)
+	got, err := transcript_repo.NewMessage().LatestAssistant(ctx, 7)
 	require.NoError(t, err)
 	assert.Nil(t, got)
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -482,7 +482,7 @@ func TestPatchSubagentProgressInBlockData(t *testing.T) {
 	const base = `{"parent_tool_call_id":"toolu_agent","kind":"local_agent","description":"T7","status":"running","total_tokens":84739,"tool_uses":9,"last_tool_name":"Read","nested_tool_call_ids":["n1"]}`
 
 	t.Run("进度字段被更新", func(t *testing.T) {
-		out, ok, err := chat_repo.PatchSubagentProgressInBlockData([]byte(base), chat_repo.SubagentProgress{
+		out, ok, err := transcript_repo.PatchSubagentProgressInBlockData([]byte(base), transcript_repo.SubagentProgress{
 			TotalTokens: 132480, ToolUses: 21, DurationMs: 754000, LastToolName: "Edit",
 		})
 		require.NoError(t, err)
@@ -499,7 +499,7 @@ func TestPatchSubagentProgressInBlockData(t *testing.T) {
 	})
 
 	t.Run("零值字段不覆盖已有值", func(t *testing.T) {
-		out, ok, err := chat_repo.PatchSubagentProgressInBlockData([]byte(base), chat_repo.SubagentProgress{
+		out, ok, err := transcript_repo.PatchSubagentProgressInBlockData([]byte(base), transcript_repo.SubagentProgress{
 			ToolUses: 12, // 只有工具数是新的,其余零值
 		})
 		require.NoError(t, err)
@@ -511,14 +511,14 @@ func TestPatchSubagentProgressInBlockData(t *testing.T) {
 	})
 
 	t.Run("全零进度不改写", func(t *testing.T) {
-		out, ok, err := chat_repo.PatchSubagentProgressInBlockData([]byte(base), chat_repo.SubagentProgress{})
+		out, ok, err := transcript_repo.PatchSubagentProgressInBlockData([]byte(base), transcript_repo.SubagentProgress{})
 		require.NoError(t, err)
 		assert.False(t, ok)
 		assert.Equal(t, base, string(out))
 	})
 
 	t.Run("非法正文返回 error", func(t *testing.T) {
-		_, ok, err := chat_repo.PatchSubagentProgressInBlockData([]byte("{not json"), chat_repo.SubagentProgress{ToolUses: 3})
+		_, ok, err := transcript_repo.PatchSubagentProgressInBlockData([]byte("{not json"), transcript_repo.SubagentProgress{ToolUses: 3})
 		require.Error(t, err)
 		assert.False(t, ok)
 	})
@@ -526,7 +526,7 @@ func TestPatchSubagentProgressInBlockData(t *testing.T) {
 	// 后台子代理跨轮写回模型(R6/A9):子代理在会话空闲活动轮解出实际模型,靠这条
 	// 定向 patch 落回发起消息;其它字段(status/kind/进度数字)必须原样保留。
 	t.Run("模型字段被写入且不影响其它字段", func(t *testing.T) {
-		out, ok, err := chat_repo.PatchSubagentProgressInBlockData([]byte(base), chat_repo.SubagentProgress{
+		out, ok, err := transcript_repo.PatchSubagentProgressInBlockData([]byte(base), transcript_repo.SubagentProgress{
 			Model: "claude-haiku-4-5-20251001",
 		})
 		require.NoError(t, err)
@@ -542,7 +542,7 @@ func TestPatchSubagentProgressInBlockData(t *testing.T) {
 
 	t.Run("空模型不覆盖已记录模型", func(t *testing.T) {
 		const withModel = `{"parent_tool_call_id":"toolu_agent","kind":"local_agent","status":"running","total_tokens":84739,"tool_uses":9,"model":"claude-opus-5"}`
-		out, ok, err := chat_repo.PatchSubagentProgressInBlockData([]byte(withModel), chat_repo.SubagentProgress{
+		out, ok, err := transcript_repo.PatchSubagentProgressInBlockData([]byte(withModel), transcript_repo.SubagentProgress{
 			ToolUses: 12, // 只有工具数更新,Model 留空(first-wins,已记录的模型不该被空值抹掉)
 		})
 		require.NoError(t, err)
@@ -561,12 +561,12 @@ func TestMessageRepo_PatchSubagentProgress_UpdatesMatchingBlock(t *testing.T) {
 	expectSubagentBlockLookup(mock, 3, "tu1", subagentBlockRows(42, "tu1",
 		`{"parent_tool_call_id":"tu1","kind":"local_agent","status":"running","tool_uses":9}`))
 	mock.ExpectExec("UPDATE `chat_message_blocks` SET `codec`=\\?,`data`=\\? WHERE message_id = \\? AND idx = \\?").
-		WithArgs(chat_entity.BlockCodecRaw, blockDataContains{substrings: []string{
+		WithArgs(transcript_entity.BlockCodecRaw, blockDataContains{substrings: []string{
 			`"tool_uses":21`, `"total_tokens":132480`,
 		}}, int64(42), 0).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	err := chat_repo.NewMessage().PatchSubagentProgress(ctx, 3, "tu1", chat_repo.SubagentProgress{ToolUses: 21, TotalTokens: 132480})
+	err := transcript_repo.NewMessage().PatchSubagentProgress(ctx, 3, "tu1", transcript_repo.SubagentProgress{ToolUses: 21, TotalTokens: 132480})
 	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -577,7 +577,7 @@ func TestMessageRepo_PatchSubagentProgress_NoMatchSilentNil(t *testing.T) {
 
 	expectSubagentBlockLookup(mock, 3, "tu-missing", emptyBlockRows())
 
-	err := chat_repo.NewMessage().PatchSubagentProgress(ctx, 3, "tu-missing", chat_repo.SubagentProgress{ToolUses: 3})
+	err := transcript_repo.NewMessage().PatchSubagentProgress(ctx, 3, "tu-missing", transcript_repo.SubagentProgress{ToolUses: 3})
 	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -590,7 +590,7 @@ func TestMessageRepo_PatchSubagentProgress_NoMatchSilentNil(t *testing.T) {
 // 改成单列 UPDATE 后,这条路径在结构上就碰不到块表。
 func TestMessageRepo_UpdateUsage(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
-	repo := chat_repo.NewMessage()
+	repo := transcript_repo.NewMessage()
 
 	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE `chat_messages` SET `cache_creation_tokens`=\\?,`cached_tokens`=\\?,`completion_tokens`=\\?,`prompt_tokens`=\\?,`reasoning_tokens`=\\?,`total_input_tokens`=\\?,`updatetime`=\\? WHERE id = \\?").
@@ -598,7 +598,7 @@ func TestMessageRepo_UpdateUsage(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	require.NoError(t, repo.UpdateUsage(ctx, 42, chat_repo.MessageUsage{
+	require.NoError(t, repo.UpdateUsage(ctx, 42, transcript_repo.MessageUsage{
 		PromptTokens:        1,
 		CompletionTokens:    2,
 		CachedTokens:        3,
@@ -613,7 +613,7 @@ func TestMessageRepo_UpdateUsage(t *testing.T) {
 // 存一个字符串不该把整条正文一起重写。
 func TestMessageRepo_UpdateErrorText(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
-	repo := chat_repo.NewMessage()
+	repo := transcript_repo.NewMessage()
 
 	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE `chat_messages` SET `error_text`=\\?,`updatetime`=\\? WHERE id = \\?").
@@ -636,7 +636,7 @@ func TestMessageRepo_ListMeta(t *testing.T) {
 			AddRow(1, 3, "user", 1).
 			AddRow(2, 3, "assistant", 2))
 
-	got, err := chat_repo.NewMessage().ListMeta(ctx, 3)
+	got, err := transcript_repo.NewMessage().ListMeta(ctx, 3)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 	assert.Equal(t, "", got[0].BlocksJSON, "元数据查询不取正文,BlocksJSON 留空串表示「没补过」")
@@ -652,11 +652,11 @@ func TestMessageRepo_FillBlocks(t *testing.T) {
 	mock.ExpectQuery("SELECT \\* FROM `chat_message_blocks` WHERE message_id IN \\(\\?\\)").
 		WithArgs(int64(2)).
 		WillReturnRows(sqlmock.NewRows([]string{"message_id", "idx", "type", "tool_call_id", "codec", "data"}).
-			AddRow(2, 1, "text", "", chat_entity.BlockCodecRaw, []byte(`{"text":"b"}`)).
-			AddRow(2, 0, "text", "", chat_entity.BlockCodecRaw, []byte(`{"text":"a"}`)))
+			AddRow(2, 1, "text", "", transcript_entity.BlockCodecRaw, []byte(`{"text":"b"}`)).
+			AddRow(2, 0, "text", "", transcript_entity.BlockCodecRaw, []byte(`{"text":"a"}`)))
 
-	window := []*chat_entity.Message{{ID: 2, SessionID: 3, Role: "assistant", Seq: 2}}
-	require.NoError(t, chat_repo.NewMessage().FillBlocks(ctx, window))
+	window := []*transcript_entity.Message{{ID: 2, SessionID: 3, Role: "assistant", Seq: 2}}
+	require.NoError(t, transcript_repo.NewMessage().FillBlocks(ctx, window))
 	assert.Equal(t,
 		`[{"type":"text","data":{"text":"a"}},{"type":"text","data":{"text":"b"}}]`,
 		window[0].BlocksJSON, "块按 idx 升序重组")
@@ -671,13 +671,13 @@ func TestMessageRepo_FillBlocksByType(t *testing.T) {
 	mock.ExpectQuery("SELECT \\* FROM `chat_message_blocks` WHERE message_id IN \\(\\?,\\?\\) AND `type` IN \\(\\?,\\?\\)").
 		WithArgs(int64(1), int64(2), "tool_use", "subagent_state").
 		WillReturnRows(sqlmock.NewRows([]string{"message_id", "idx", "type", "tool_call_id", "codec", "data"}).
-			AddRow(2, 3, "tool_use", "tu1", chat_entity.BlockCodecRaw, []byte(`{"id":"tu1"}`)))
+			AddRow(2, 3, "tool_use", "tu1", transcript_entity.BlockCodecRaw, []byte(`{"id":"tu1"}`)))
 
-	msgs := []*chat_entity.Message{
+	msgs := []*transcript_entity.Message{
 		{ID: 1, SessionID: 3, Role: "user", Seq: 1},
 		{ID: 2, SessionID: 3, Role: "assistant", Seq: 2},
 	}
-	require.NoError(t, chat_repo.NewMessage().FillBlocksByType(ctx, msgs, []string{"tool_use", "subagent_state"}))
+	require.NoError(t, transcript_repo.NewMessage().FillBlocksByType(ctx, msgs, []string{"tool_use", "subagent_state"}))
 	assert.Equal(t, "[]", msgs[0].BlocksJSON, "没有命中类型的消息拿到空正文而不是空串")
 	assert.Equal(t, `[{"type":"tool_use","data":{"id":"tu1"}}]`, msgs[1].BlocksJSON)
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -688,8 +688,8 @@ func TestMessageRepo_FillBlocksByType(t *testing.T) {
 func TestMessageRepo_FillBlocksByType_NoTypes(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 
-	msgs := []*chat_entity.Message{{ID: 1, SessionID: 3, Role: "user", Seq: 1}}
-	require.NoError(t, chat_repo.NewMessage().FillBlocksByType(ctx, msgs, nil))
+	msgs := []*transcript_entity.Message{{ID: 1, SessionID: 3, Role: "user", Seq: 1}}
+	require.NoError(t, transcript_repo.NewMessage().FillBlocksByType(ctx, msgs, nil))
 	assert.Equal(t, "[]", msgs[0].BlocksJSON)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -710,20 +710,20 @@ func TestMessageRepo_ResumeSubagentByTaskID_ReopensTheEarlierCard(t *testing.T) 
 	ctx, _, mock := testutils.Database(t)
 
 	rows := sqlmock.NewRows([]string{"message_id", "idx", "type", "tool_call_id", "codec", "data"}).
-		AddRow(int64(41), 2, "subagent_state", "tu-other", chat_entity.BlockCodecRaw,
+		AddRow(int64(41), 2, "subagent_state", "tu-other", transcript_entity.BlockCodecRaw,
 			[]byte(`{"parent_tool_call_id":"tu-other","task_id":"OTHER","status":"completed"}`)).
-		AddRow(int64(42), 5, "subagent_state", "tu-A", chat_entity.BlockCodecRaw,
+		AddRow(int64(42), 5, "subagent_state", "tu-A", transcript_entity.BlockCodecRaw,
 			[]byte(`{"parent_tool_call_id":"tu-A","task_id":"T","status":"failed","summary":"API error","tool_uses":61}`))
 	expectSubagentBlocksByType(mock, 3, rows)
 	mock.ExpectExec("UPDATE `chat_message_blocks` SET `codec`=\\?,`data`=\\? WHERE message_id = \\? AND idx = \\?").
-		WithArgs(chat_entity.BlockCodecRaw, blockDataContains{substrings: []string{
+		WithArgs(transcript_entity.BlockCodecRaw, blockDataContains{substrings: []string{
 			`"status":"running"`,
 			`"resumes":[{"status":"failed","summary":"API error"}]`,
 			`"tool_uses":61`,
 		}}, int64(42), 5).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	got, err := chat_repo.NewMessage().ResumeSubagentByTaskID(ctx, 3, "T", "running")
+	got, err := transcript_repo.NewMessage().ResumeSubagentByTaskID(ctx, 3, "T", "running")
 	assert.NoError(t, err)
 	assert.Equal(t, "tu-A", got, "交回原卡的 tool_call_id,调用方据此把恢复段的新 tool call 路由到它")
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -733,7 +733,7 @@ func TestMessageRepo_ResumeSubagentByTaskID_NoMatchSilentEmpty(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 	expectSubagentBlocksByType(mock, 3, emptyBlockRows())
 
-	got, err := chat_repo.NewMessage().ResumeSubagentByTaskID(ctx, 3, "MISSING", "running")
+	got, err := transcript_repo.NewMessage().ResumeSubagentByTaskID(ctx, 3, "MISSING", "running")
 	assert.NoError(t, err)
 	assert.Equal(t, "", got)
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -741,7 +741,7 @@ func TestMessageRepo_ResumeSubagentByTaskID_NoMatchSilentEmpty(t *testing.T) {
 
 func TestMessageRepo_ResumeSubagentByTaskID_EmptyArgsShortCircuit(t *testing.T) {
 	ctx, _, _ := testutils.Database(t)
-	got, err := chat_repo.NewMessage().ResumeSubagentByTaskID(ctx, 3, "", "running")
+	got, err := transcript_repo.NewMessage().ResumeSubagentByTaskID(ctx, 3, "", "running")
 	require.NoError(t, err)
 	require.Equal(t, "", got, "task_id 为空不查库 —— 空 task_id 匹配不出唯一的卡")
 }

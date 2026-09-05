@@ -1,4 +1,4 @@
-package chat_repo_test
+package transcript_repo_test
 
 import (
 	"bytes"
@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/agentre-hub/agentre/internal/model/entity/chat_entity"
-	"github.com/agentre-hub/agentre/internal/repository/chat_repo"
+	"github.com/agentre-hub/agentre/internal/model/entity/transcript_entity"
+	"github.com/agentre-hub/agentre/internal/repository/transcript_repo"
 )
 
 // deflatedMatcher 校验落库的块正文解压后与预期原文逐字节相等 —— AnyArg() 查不出
@@ -26,7 +26,7 @@ func (m deflatedMatcher) Match(v driver.Value) bool {
 	if !ok {
 		return false
 	}
-	got, err := chat_entity.DecodeBlockData(chat_entity.BlockCodecDeflate, data)
+	got, err := transcript_entity.DecodeBlockData(transcript_entity.BlockCodecDeflate, data)
 	if err != nil {
 		return false
 	}
@@ -38,9 +38,9 @@ func (m deflatedMatcher) Match(v driver.Value) bool {
 func mixedBlocksJSON(t *testing.T) (string, []cagoblocks.StoredBlock) {
 	t.Helper()
 	big := strings.Repeat("agentre-block-payload ", 500) // > 4 KiB
-	require.Greater(t, len(big), chat_entity.BlockCompressThreshold)
+	require.Greater(t, len(big), transcript_entity.BlockCompressThreshold)
 
-	m := &chat_entity.Message{}
+	m := &transcript_entity.Message{}
 	require.NoError(t, m.SetBlocks([]cagoblocks.ContentBlock{
 		&cagoblocks.TextBlock{Text: "hello"},
 		&cagoblocks.ToolUseBlock{ID: "tu-1", Name: "bash"},
@@ -65,16 +65,16 @@ func TestMessageRepo_CreateSplitsBlocksIntoRows(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(42, 1))
 	mock.ExpectExec("INSERT INTO `chat_message_blocks`").
 		WithArgs(
-			int64(42), 0, "text", "", chat_entity.BlockCodecRaw, []byte(stored[0].Data),
-			int64(42), 1, "tool_use", "tu-1", chat_entity.BlockCodecRaw, []byte(stored[1].Data),
-			int64(42), 2, "tool_result", "tu-1", chat_entity.BlockCodecRaw, []byte(stored[2].Data),
-			int64(42), 3, "text", "", chat_entity.BlockCodecDeflate, deflatedMatcher{want: []byte(stored[3].Data)},
+			int64(42), 0, "text", "", transcript_entity.BlockCodecRaw, []byte(stored[0].Data),
+			int64(42), 1, "tool_use", "tu-1", transcript_entity.BlockCodecRaw, []byte(stored[1].Data),
+			int64(42), 2, "tool_result", "tu-1", transcript_entity.BlockCodecRaw, []byte(stored[2].Data),
+			int64(42), 3, "text", "", transcript_entity.BlockCodecDeflate, deflatedMatcher{want: []byte(stored[3].Data)},
 		).
 		WillReturnResult(sqlmock.NewResult(0, 4))
 	mock.ExpectCommit()
 
-	m := &chat_entity.Message{SessionID: 3, Role: "assistant", BlocksJSON: blocksJSON, Seq: 1}
-	require.NoError(t, chat_repo.NewMessage().Create(ctx, m))
+	m := &transcript_entity.Message{SessionID: 3, Role: "assistant", BlocksJSON: blocksJSON, Seq: 1}
+	require.NoError(t, transcript_repo.NewMessage().Create(ctx, m))
 	assert.Equal(t, int64(42), m.ID)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -88,7 +88,7 @@ func TestMessageRepo_FindReassemblesBlocksByteEqual(t *testing.T) {
 	rows := sqlmock.NewRows([]string{"message_id", "idx", "type", "tool_call_id", "codec", "data"})
 	// 乱序返回,证明重组顺序来自 idx 而不是行顺序。
 	for _, idx := range []int{3, 0, 2, 1} {
-		codec, data := chat_entity.EncodeBlockData(stored[idx].Data)
+		codec, data := transcript_entity.EncodeBlockData(stored[idx].Data)
 		toolCallID := ""
 		switch idx {
 		case 1, 2:
@@ -105,7 +105,7 @@ func TestMessageRepo_FindReassemblesBlocksByteEqual(t *testing.T) {
 		WithArgs(int64(42)).
 		WillReturnRows(rows)
 
-	got, err := chat_repo.NewMessage().Find(ctx, 42)
+	got, err := transcript_repo.NewMessage().Find(ctx, 42)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, blocksJSON, got.BlocksJSON, "重组出的正文必须与写入前逐字节相等")
@@ -130,7 +130,7 @@ func TestMessageRepo_DeleteFromSeqRemovesBlockRows(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 4))
 	mock.ExpectCommit()
 
-	deleted, err := chat_repo.NewMessage().DeleteFromSeq(ctx, 3, 5)
+	deleted, err := transcript_repo.NewMessage().DeleteFromSeq(ctx, 3, 5)
 	require.NoError(t, err)
 	assert.Equal(t, int64(4), deleted)
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -141,7 +141,7 @@ func TestMessageRepo_DeleteFromSeqRemovesBlockRows(t *testing.T) {
 func TestMessageRepo_UpdateReplacesBlockRows(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 
-	m := &chat_entity.Message{ID: 42, SessionID: 3, Role: "assistant", Seq: 4}
+	m := &transcript_entity.Message{ID: 42, SessionID: 3, Role: "assistant", Seq: 4}
 	require.NoError(t, m.SetBlocks([]cagoblocks.ContentBlock{&cagoblocks.TextBlock{Text: "hi"}}))
 
 	mock.ExpectBegin()
@@ -150,11 +150,11 @@ func TestMessageRepo_UpdateReplacesBlockRows(t *testing.T) {
 		WithArgs(int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 3))
 	mock.ExpectExec("INSERT INTO `chat_message_blocks`").
-		WithArgs(int64(42), 0, "text", "", chat_entity.BlockCodecRaw, sqlmock.AnyArg()).
+		WithArgs(int64(42), 0, "text", "", transcript_entity.BlockCodecRaw, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	require.NoError(t, chat_repo.NewMessage().Update(ctx, m))
+	require.NoError(t, transcript_repo.NewMessage().Update(ctx, m))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -176,14 +176,14 @@ func TestMessageRepo_CheckpointBlocksWritesOnlyTheDelta(t *testing.T) {
 	mock.ExpectExec("UPDATE `chat_messages`").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO `chat_message_blocks`").
 		WithArgs(
-			int64(42), 2, "tool_result", "tu-1", chat_entity.BlockCodecRaw,
+			int64(42), 2, "tool_result", "tu-1", transcript_entity.BlockCodecRaw,
 			[]byte(`{"tool_use_id":"tu-1"}`),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	m := &chat_entity.Message{ID: 42, SessionID: 3, Role: "assistant", BlocksJSON: next, Seq: 1}
-	require.NoError(t, chat_repo.NewMessage().CheckpointBlocks(ctx, m, prev))
+	m := &transcript_entity.Message{ID: 42, SessionID: 3, Role: "assistant", BlocksJSON: next, Seq: 1}
+	require.NoError(t, transcript_repo.NewMessage().CheckpointBlocks(ctx, m, prev))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -202,8 +202,8 @@ func TestMessageRepo_CheckpointBlocksTruncatesShrunkTail(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	m := &chat_entity.Message{ID: 42, SessionID: 3, Role: "assistant", BlocksJSON: next, Seq: 1}
-	require.NoError(t, chat_repo.NewMessage().CheckpointBlocks(ctx, m, prev))
+	m := &transcript_entity.Message{ID: 42, SessionID: 3, Role: "assistant", BlocksJSON: next, Seq: 1}
+	require.NoError(t, transcript_repo.NewMessage().CheckpointBlocks(ctx, m, prev))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -217,7 +217,7 @@ func TestMessageRepo_CheckpointBlocksSkipsUnchangedBody(t *testing.T) {
 	mock.ExpectExec("UPDATE `chat_messages`").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	m := &chat_entity.Message{ID: 42, SessionID: 3, Role: "assistant", BlocksJSON: same, Seq: 1}
-	require.NoError(t, chat_repo.NewMessage().CheckpointBlocks(ctx, m, same))
+	m := &transcript_entity.Message{ID: 42, SessionID: 3, Role: "assistant", BlocksJSON: same, Seq: 1}
+	require.NoError(t, transcript_repo.NewMessage().CheckpointBlocks(ctx, m, same))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

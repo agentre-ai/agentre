@@ -1,4 +1,6 @@
-// Package chat_repo 提供 chat session / message 的持久化访问。
+// Package chat_repo 提供 chat session 的持久化访问。消息 / 块的仓储已抽成独立域
+// transcript_repo（决策 8，两个宿主共用一份）；message.go 只保留类型别名与转发函数,
+// 供尚未纳入该轮范围的调用方按旧 import path 继续引用。
 package chat_repo
 
 import (

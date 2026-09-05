@@ -1,4 +1,4 @@
-package chat_entity
+package transcript_entity
 
 import (
 	"context"
