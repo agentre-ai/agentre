@@ -2429,7 +2429,11 @@ func TestIntegration_MultiClientVisibility_GatesAllPeerAccessByLoggedInAccount(t
 			"这一轮必须落在发起端那条会话上,而不是调用方自己名下那条同号会话")
 
 		// 这一轮的转录落在发起端那条会话上,发起端补齐时读得到。
-		require.NotEmpty(t, daemonMessages(t, rig.d, convID(302)),
+		var page wire.SessionPullResult
+		require.NoError(t, callRig(t, peerB, wire.MethodSessionPull, wire.SessionPullParams{
+			ConversationID: convID(302), Cursor: 0, Limit: 200,
+		}, &page))
+		require.NotEmpty(t, page.Notifications,
 			"别的端跑的这一轮必须扇出/落库在发起端这条会话上(R6 / R18 的前提)")
 	})
 
@@ -2664,15 +2668,17 @@ func sessionOrigins(sessions []wire.SessionSummary) map[string]string {
 }
 
 // TestIntegration_SessionCatchup_ListAndPullReplayTheWholeTurn 覆盖补齐的主路径:
-// 跑完一轮后,客户端能列出这条会话(带生命周期状态与最新 seq)、并按游标把这一轮发出去
-// 的每一条通知按 seq 升序**逐条**重放出来 —— 补齐路径与实时路径投递的是同一批
-// (method, params),这是 R5 等价性在结构上成立的前提。
+// 跑完一轮后,客户端能列出这条会话(带生命周期状态与最新 seq)、并按游标把这条转录
+// 投影出的每一个持久帧按 seq 升序**逐条**重放出来。
+//
+// 补齐只服务持久帧(规格「两级帧与补齐」):两条 TextDelta 在累积器里合并成同一个
+// text 块,折出**一条**帧而不是两条;turnStarted / runResultDone 是没有编号的生命
+// 周期信号,不进这段转录。一轮因此只落 3 个持久帧:用户那句话、assistant 合并后的
+// 正文、收口的 Done。
 //
 // 同时钉住三条翻页边界:起始游标 0、每页按 limit 截断且 hasMore 为真、以及起始游标
-// 追平最新 seq 后返回空页且**游标不回退**(回退会让客户端把整段日志重放一遍)。
+// 追平最新 seq 后返回空页且**游标不回退**(回退会让客户端把整段转录重放一遍)。
 func TestIntegration_SessionCatchup_ListAndPullReplayTheWholeTurn(t *testing.T) {
-	t.Skip("补齐的读路径要换源到「块投影出的持久帧 + 帧编号台账」,归任务 6;" +
-		"在那之前 SESSION_PULL 如实交回空页,这条用例连同它钉的翻页边界一起等它恢复")
 	rig := bootRemoteRig(t, []agentruntime.Event{
 		agentruntime.TextDelta{Text: "hello"},
 		agentruntime.TextDelta{Text: " world"},
@@ -2681,9 +2687,8 @@ func TestIntegration_SessionCatchup_ListAndPullReplayTheWholeTurn(t *testing.T) 
 	events, _ := rig.startRun(t, 900)
 	_ = drainRuntimeEvents(t, events, 5*time.Second)
 
-	// 一轮 = 1 条 turnStarted + 3 条 runtime.event(两条 TextDelta + 一条 Done)
-	// + 1 条 runResultDone。
-	const wantTotal = 5
+	// 一轮 = 用户那句话 + assistant 合并后的正文块 + 收口的 Done,三个持久帧。
+	const wantTotal = 3
 
 	var list wire.SessionListResult
 	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionList, nil, &list))
@@ -2693,12 +2698,13 @@ func TestIntegration_SessionCatchup_ListAndPullReplayTheWholeTurn(t *testing.T) 
 	assert.Equal(t, string(agent_backend_entity.TypeClaudeCode), got.BackendType)
 	assert.Equal(t, wire.SessionLifecycleIdle, got.LifecycleState, "轮结束后会话等待下一轮")
 	assert.False(t, got.WaitingForInput)
-	assert.Equal(t, int64(wantTotal), got.LatestSeq, "最新 seq 取自通知日志的 MAX(seq)")
+	assert.Equal(t, int64(wantTotal), got.LatestSeq, "最新 seq 取自持久编号计数器")
 
-	// 按 limit=2 翻页拉平,把每一页的 seq / method 串起来。
+	// 按 limit=2 翻页拉平,把每一页的 seq / method / 帧内容串起来。
 	var (
 		seqs    []int64
 		methods []string
+		frames  []wire.EventFrame
 		cursor  int64
 		pages   int
 	)
@@ -2711,7 +2717,12 @@ func TestIntegration_SessionCatchup_ListAndPullReplayTheWholeTurn(t *testing.T) 
 		for _, n := range page.Notifications {
 			seqs = append(seqs, n.Seq)
 			methods = append(methods, n.Method)
-			require.NotEmpty(t, n.Params, "日志行必须带上那条通知的 params 原样")
+			raw, ok := n.Params.([]byte)
+			require.True(t, ok, "行必须带上那一帧的 params 原样")
+			require.NotEmpty(t, raw)
+			var frame wire.EventFrame
+			require.NoError(t, json.Unmarshal(raw, &frame))
+			frames = append(frames, frame)
 		}
 		require.Greater(t, page.Cursor, cursor-1)
 		cursor = page.Cursor
@@ -2720,13 +2731,21 @@ func TestIntegration_SessionCatchup_ListAndPullReplayTheWholeTurn(t *testing.T) 
 		}
 		require.Less(t, pages, 10, "翻页没有收敛")
 	}
-	assert.Equal(t, []int64{1, 2, 3, 4, 5}, seqs, "seq 必须从 1 起单调无洞")
-	assert.Equal(t, []string{
-		wire.NotifyTurnStarted,
-		wire.NotifyEvent, wire.NotifyEvent, wire.NotifyEvent, wire.NotifyRunResultDone,
-	}, methods, "补齐重放的就是那一轮本该发出的通知本身")
-	assert.Equal(t, 3, pages, "5 条 / 每页 2 条 = 3 页")
+	assert.Equal(t, []int64{1, 2, 3}, seqs, "seq 必须从 1 起单调无洞")
+	assert.Equal(t, []string{wire.NotifyEvent, wire.NotifyEvent, wire.NotifyEvent}, methods,
+		"补齐只服务持久帧:块级帧与消息级派生帧一律是 runtime.event")
+	assert.Equal(t, 2, pages, "3 条 / 每页 2 条 = 2 页")
 	assert.Equal(t, int64(wantTotal), cursor)
+	for _, frame := range frames {
+		assert.False(t, frame.Preview, "补齐服务的必须是持久帧,不是预览帧")
+	}
+	require.Len(t, frames, 3)
+	assert.Equal(t, agentruntime.UserMessageEvent{Text: "hi"}, frames[0].Event, "用户那句话原样在案")
+	assert.Equal(t, agentruntime.TextDelta{Text: "hello world"}, frames[1].Event,
+		"两条 TextDelta 已经在累积器里合并成一个块,补齐折出的是合并后的正文,不是逐 token 的过程")
+	done, ok := frames[2].Event.(agentruntime.Done)
+	require.True(t, ok, "第三帧必须是收口的 Done(消息级派生帧)")
+	assert.Zero(t, done.Model)
 
 	// 游标已追平最新 seq:空页,游标保持不变。
 	var tail wire.SessionPullResult
@@ -2815,9 +2834,8 @@ func TestIntegration_SessionCatchup_AttachRepointsTheLiveStream(t *testing.T) {
 		wire.SessionAttachParams{ConversationID: convID(901)}, &attached))
 	assert.Equal(t, convID(901), attached.ConversationID)
 	assert.Equal(t, wire.SessionLifecycleRunning, attached.LifecycleState, "一轮还在跑")
-	// 高水位由持久编号回答,而编号台账要等任务 6 才接上补齐这条读路径 —— 在那之前
-	// 它如实报 0(编不出一个宿主认不回来的号)。接管本身要验的是「实时流改推到这条
-	// 连接上」,下面那段才是。
+	assert.Positive(t, attached.LatestSeq, "接管要交回此刻的高水位供客户端接着补齐:"+
+		"起手落的那条用户消息此刻已经是一个持久帧")
 
 	close(gate)
 
@@ -2977,7 +2995,10 @@ func TestIntegration_SessionDelete_ScopedToTheCallersPeer(t *testing.T) {
 	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionList, nil, &mine))
 	require.Len(t, mine.Sessions, 1, "另一个对端删不掉别人的会话")
 
-	assert.NotEmpty(t, daemonMessages(t, rig.d, convID(904)), "它的转录也必须原封不动")
+	var page wire.SessionPullResult
+	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionPull,
+		wire.SessionPullParams{ConversationID: convID(904)}, &page))
+	assert.NotEmpty(t, page.Notifications, "它的转录也必须原封不动,补齐照常读得到")
 
 	// 配对身份点名别人的对端同样删不动(点名 origin 是账号级能力)。
 	var named wire.SessionDeleteResult
@@ -3117,13 +3138,12 @@ func TestIntegration_SessionCatchup_DaemonRestartMarksSessionsInterrupted(t *tes
 	require.NoError(t, callRig(t, first.cli, wire.MethodSessionList, nil, &before))
 	require.Len(t, before.Sessions, 1)
 	require.Equal(t, wire.SessionLifecycleIdle, before.Sessions[0].LifecycleState)
-	sessionID := daemonSessionID(t, first.d, convID(903))
-	wantTranscript := daemonMessagesOfSession(t, first.d, sessionID)
-	require.NotEmpty(t, wantTranscript)
+	wantSeq := before.Sessions[0].LatestSeq
+	require.Positive(t, wantSeq)
 
 	first.stop()
 
-	// 第二台 daemon:同一个数据目录 = 同一个库。
+	// 第二台 daemon:同一个数据目录 = 同一个库,同一份帧编号台账。
 	second := bootRigInDir(t, dir)
 
 	var after wire.SessionListResult
@@ -3131,13 +3151,13 @@ func TestIntegration_SessionCatchup_DaemonRestartMarksSessionsInterrupted(t *tes
 	require.Len(t, after.Sessions, 1, "重启不该让会话从清单里消失 —— 它的历史还在")
 	assert.Equal(t, wire.SessionLifecycleInterrupted, after.Sessions[0].LifecycleState)
 	assert.False(t, after.Sessions[0].WaitingForInput, "等待输入是实时叠加,重启后无人可答")
-	// 历史可读:转录不因重启而变。
-	after903 := daemonMessagesOfSession(t, second.d, sessionID)
-	require.Len(t, after903, len(wantTranscript), "中断态会话的转录必须照样在")
-	for i := range after903 {
-		assert.Equal(t, wantTranscript[i].BlocksJSON, after903[i].BlocksJSON,
-			"第 %d 条消息的正文不因重启而变", i)
-	}
+	assert.Equal(t, wantSeq, after.Sessions[0].LatestSeq, "转录与编号都不因重启而变")
+
+	// 历史可读:补齐照旧把这条转录的持久帧按原来的号交出来。
+	var page wire.SessionPullResult
+	require.NoError(t, callRig(t, second.cli, wire.MethodSessionPull,
+		wire.SessionPullParams{ConversationID: convID(903)}, &page))
+	assert.Len(t, page.Notifications, int(wantSeq), "中断态会话的历史必须照样拉得出来")
 
 	// 不可续跑。
 	var attached wire.SessionAttachResult
@@ -3183,32 +3203,6 @@ func (r *notifyRecorder) add(n recordedNotify) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.got = append(r.got, n)
-}
-
-// ordered 按 seq 升序去重后交出这次运行客户端**获得**的通知序列。去重是必要的:
-// 补齐期间 daemon 可能把同一条既推过来又在 pull 里带出来,R6 要求客户端丢弃后者;
-// 「同一条不被投递两次」由事件流的逐条相等去证(见用例末尾)。
-func (r *notifyRecorder) ordered() []recordedNotify {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	bySeq := map[int64]recordedNotify{}
-	seqs := make([]int64, 0, len(r.got))
-	for _, n := range r.got {
-		if n.Seq == 0 {
-			continue
-		}
-		if _, dup := bySeq[n.Seq]; dup {
-			continue
-		}
-		bySeq[n.Seq] = n
-		seqs = append(seqs, n.Seq)
-	}
-	sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
-	out := make([]recordedNotify, 0, len(seqs))
-	for _, s := range seqs {
-		out = append(out, bySeq[s])
-	}
-	return out
 }
 
 // splitSeq 把一帧拆成 (seq, 剥掉 seq 的规范化载荷)。实时帧带 seq、日志载荷不带,
@@ -3379,16 +3373,21 @@ func bootPhasedRig(t *testing.T, r *phasedBackendRunner) *pairedTestRig {
 }
 
 // awaitJournalDepth 等 daemon 侧的补齐水位攒够 want。读的是 daemon 自己的库,与补齐
-// RPC 同源 —— 换源到「块投影出的持久帧 + 帧编号台账」归任务 6,它的唯一调用方也在
-// 那之前跳过着。
-func awaitJournalDepth(t *testing.T, r *pairedTestRig, sessionID, want int64) {
+// RPC 同源(块投影出的持久帧 + 帧编号台账)。
+func awaitCheckpointContains(t *testing.T, r *pairedTestRig, sessionID int64, substrs ...string) {
 	t.Helper()
-	_ = r
-	reader := journalReader{}
 	require.Eventually(t, func() bool {
-		latest, err := reader.LatestSeq(context.Background(), rigDeviceFingerprint,
-			convID(sessionID))
-		return err == nil && latest >= want
+		rows := daemonMessages(t, r.d, convID(sessionID))
+		if len(rows) == 0 {
+			return false
+		}
+		blocks := rows[len(rows)-1].BlocksJSON
+		for _, s := range substrs {
+			if !strings.Contains(blocks, s) {
+				return false
+			}
+		}
+		return true
 	}, 10*time.Second, 10*time.Millisecond, "daemon 应在断连期间照常落库")
 }
 
@@ -3442,24 +3441,38 @@ func (c *connStateLog) sawAfterReconnect(sessionID int64) bool {
 }
 
 // TestIntegration_ReconnectCatchUp_MatchesUninterruptedRun 是本规格的**硬不变量**:
-// 同一次会话执行,「中途掐断连接、隔一会儿重连补齐」最终拿到的通知序列,必须与
-// 「全程不断连」逐条相等 —— method 相同、载荷字节相同、顺序相同、无重复、无遗漏。
+// 同一次会话执行,「中途掐断连接、隔一会儿重连补齐」最终落进 daemon 库里的转录,
+// 必须与「全程不断连」逐字节相同 —— 断连只影响推送,不影响累积与 checkpoint。
+//
+// 这不再是逐条比对客户端收到的原始事件流:补齐只服务持久帧,拉回来的是块级内容而
+// 不是逐 token 的过程(规格「两级帧与补齐」的**刻意行为变化**),断连期间产生的那段
+// 因此必然以不同的粒度到达 —— 直连时是若干条 TextDelta,补齐时是合并后的一个块。
+// 转录本身(消息行 + 块行)才是不随连接状态变化的那份真相,这正是「转录存储对齐」
+// 要保证的东西。
 //
 // 真 daemon + 真 WebSocket + 真 *remote.Runtime。两次运行跑同一段三阶段脚本,唯一
 // 区别是第二次在第一阶段之后 Close 掉那条 ws,并把重连推迟到 daemon 把第二阶段全部
 // 落完库之后 —— 断连期间那几条因此只可能从 runtime.session.pull 回来。第三阶段在
 // 补齐落定**之后**才产生,用来验证会话确实回到了实时推送,而不是补完就哑了。
 //
-// 记账点在 *remote.Runtime 之外的客户端侧:实时路径记 handler 收到的帧,补齐路径记
-// runtime.session.pull 的应答,两边都剥掉 seq 后规范化,因此可以逐条比对。
+// phase2 以一次工具往返收尾而不是纯文本增量:逐 token 的正文只在收口(FinishTurn)
+// 时才定稿落库(决策 5,ShouldCheckpointAfter 不认 TextDelta),ToolResult 是本轮唯一
+// 会触发 checkpoint 的时刻。没有它,断连期间产生的内容在重连那一刻根本还没落库,
+// 补齐也就无从谈起 —— 这不是本用例要验的东西,让 phase2 在落库之后再断连才问得到
+// 「重连补齐补不补得回来」。
 func TestIntegration_ReconnectCatchUp_MatchesUninterruptedRun(t *testing.T) {
-	t.Skip("同上:断连补齐要等任务 6 把读路径换源到块 + 帧编号台账")
 	const sid int64 = 100
+	toolInput, err := json.Marshal(map[string]any{"path": "README.md"})
+	require.NoError(t, err)
 	phase1 := []agentruntime.Event{agentruntime.TextDelta{Text: "one"}, agentruntime.TextDelta{Text: "two"}}
-	phase2 := []agentruntime.Event{agentruntime.TextDelta{Text: "three"}, agentruntime.TextDelta{Text: "four"}}
+	phase2 := []agentruntime.Event{
+		agentruntime.TextDelta{Text: "three"}, agentruntime.TextDelta{Text: "four"},
+		agentruntime.ToolCall{ID: "tu-1", Name: "Read", Input: toolInput},
+		agentruntime.ToolResult{ToolCallID: "tu-1", Content: "ok"},
+	}
 	phase3 := []agentruntime.Event{agentruntime.TextDelta{Text: "five"}, agentruntime.Done{}}
 
-	var baselineEvents []agentruntime.Event
+	var baselineTranscript []*transcript_entity.Message
 	var baselineResult agentruntime.RunResult
 
 	t.Run("uninterrupted", func(t *testing.T) {
@@ -3473,9 +3486,11 @@ func TestIntegration_ReconnectCatchUp_MatchesUninterruptedRun(t *testing.T) {
 		rt := rig.durableRunner(t, rec, nil, newConnStateLog())
 		events, result := rig.startRunOn(t, rt, sid)
 
-		baselineEvents = drainRuntimeEvents(t, events, 10*time.Second)
+		baselineEvents := drainRuntimeEvents(t, events, 10*time.Second)
 		baselineResult = *result
-		require.NotEmpty(t, rec.ordered(), "全程不断连也该收到通知")
+		require.NotEmpty(t, baselineEvents, "全程不断连也该收到事件")
+		baselineTranscript = daemonMessages(t, rig.d, convID(sid))
+		require.Len(t, baselineTranscript, 2, "一轮该落下用户 + assistant 两条消息")
 	})
 
 	t.Run("disconnect_then_catch_up", func(t *testing.T) {
@@ -3497,7 +3512,7 @@ func TestIntegration_ReconnectCatchUp_MatchesUninterruptedRun(t *testing.T) {
 		close(disconnected)
 
 		// 等 daemon 把第二阶段落完库(此刻推送无人接收),再放行重连。
-		awaitJournalDepth(t, rig, sid, int64(len(phase1)+len(phase2)))
+		awaitCheckpointContains(t, rig, sid, "four", `"type":"tool_result"`)
 		close(reconnectGate)
 
 		// 补齐落定 → 会话回到实时 → 第三阶段才开始产生。
@@ -3507,12 +3522,53 @@ func TestIntegration_ReconnectCatchUp_MatchesUninterruptedRun(t *testing.T) {
 
 		got = append(got, drainRuntimeEvents(t, events, 15*time.Second)...)
 
-		// 客户端投递出去的事件流逐条相等；这同时覆盖补齐、顺序与重复投递。
-		// typed Protobuf connection 不再暴露 string Call 包装面，因此不旁路窥探
-		// session.pull 响应，直接断言 Runtime 对调用方交付的最终序列。
-		assert.Equal(t, baselineEvents, got, "补齐后交付的事件流不得多一条、少一条或换序")
+		// 硬不变量:断连不改变最终落地的转录。daemon 侧的累积与 checkpoint 完全不
+		// 依赖有没有人在听,两次运行喂的是同一段事件脚本,落出来的消息行/块行必须
+		// 逐字节相同。
+		gotTranscript := daemonMessages(t, rig.d, convID(sid))
+		require.Len(t, gotTranscript, len(baselineTranscript))
+		for i := range gotTranscript {
+			assert.Equal(t, baselineTranscript[i].BlocksJSON, gotTranscript[i].BlocksJSON,
+				"第 %d 条消息的正文不因断连而变", i)
+		}
 		assert.Equal(t, baselineResult.StopErr, result.StopErr, "断连不得把终态污染成失败")
+
+		// 断连期间产生的工具往返只可能经 runtime.session.pull 到达:客户端那时没有
+		// 连接,不存在任何实时投递路径。这两条断言因此是本用例真正的判据 —— 补齐
+		// 若读不到真实转录(比如仍是空桩),客户端就永远不会知道这次工具调用发生过。
+		assert.Contains(t, got, agentruntime.ToolCall{ID: "tu-1", Name: "Read", Input: toolInput},
+			"断连期间产生的工具调用必须经补齐到达客户端")
+		assert.Contains(t, got, agentruntime.ToolResult{ToolCallID: "tu-1", Content: "ok"},
+			"断连期间产生的工具结果必须经补齐到达客户端")
+		joined := joinTextDeltas(got)
+		assert.Contains(t, joined, "three", "断连期间的正文同样只能经补齐到达")
+		assert.Contains(t, joined, "four", "断连期间的正文同样只能经补齐到达")
+
+		// 重连之后确实回到了实时推送,不是补完就哑了:第三阶段的内容必须经实时
+		// 推送到达,而不是只靠 daemon 自己把轮跑完。
+		assert.Contains(t, joined, "five",
+			"补齐落定后,第三阶段的内容必须经实时推送到达客户端")
+		var sawDone bool
+		for _, ev := range got {
+			if _, ok := ev.(agentruntime.Done); ok {
+				sawDone = true
+			}
+		}
+		assert.True(t, sawDone, "这一轮必须以 Done 收尾")
 	})
+}
+
+// joinTextDeltas 把一串事件里的 TextDelta 按到达顺序拼起来,供内容层面的比对——
+// 补齐服务的是合并后的块,直连服务的是逐 token 的增量,拼接后的正文才是两者都该
+// 认的公共尺度。
+func joinTextDeltas(events []agentruntime.Event) string {
+	var b strings.Builder
+	for _, ev := range events {
+		if td, ok := ev.(agentruntime.TextDelta); ok {
+			b.WriteString(td.Text)
+		}
+	}
+	return b.String()
 }
 
 // SelfFingerprint 满足 client.ProtobufConnection:本端在这条连接上出示的设备指纹。
