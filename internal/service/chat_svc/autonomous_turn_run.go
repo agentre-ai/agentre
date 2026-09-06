@@ -303,7 +303,7 @@ func (t *autonomousTurnRun) finalize(ctx context.Context) {
 			zap.Error(t.at.Result.StopErr))
 	}
 	_ = chat_repo.Message().Update(finalCtx, t.assistantMsg)
-	t.svc.publishPeerTurnDone(t.sessionID, t.assistantMsg)
+	t.svc.publishPeerTurnDone(finalCtx, t.sessionID, t.assistantMsg)
 
 	t.sess.AgentStatus = "idle"
 	if stopErr != nil {

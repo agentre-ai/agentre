@@ -2732,6 +2732,9 @@ func (s *chatSvc) persistAutoContinueTurn(
 		return nil, nil, nil, fmt.Errorf("persist auto-continue: %w", err)
 	}
 
+	// 接续轮插进来的 user 消息也在此刻取号,理由同 persistConsumedSteers。
+	s.publishPeerMessageFrames(ctx, sess.ID, newUser, true)
+
 	userEvent, err := toChatMessage(newUser)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("encode auto-continue user msg: %w", err)
@@ -2842,6 +2845,13 @@ func (s *chatSvc) persistConsumedSteers(
 		return chat_repo.Session().Update(txCtx, sess)
 	}); err != nil {
 		return nil, nil, fmt.Errorf("persist consumed steer: %w", err)
+	}
+
+	// 分段落地:收口的 assistant 与插进来的 user 都已落库,按转录顺序依次取号 ——
+	// 编号顺序就是补齐的重放顺序,晚一步取号的那条会排到整段之后。
+	s.publishPeerMessageFrames(ctx, sess.ID, current, true)
+	for _, msg := range userMsgs {
+		s.publishPeerMessageFrames(ctx, sess.ID, msg, true)
 	}
 
 	userEvents := make([]ChatMessage, 0, len(userMsgs))

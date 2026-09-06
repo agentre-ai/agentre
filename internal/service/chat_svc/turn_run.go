@@ -344,7 +344,7 @@ func (t *turnRun) finalize(ctx context.Context) {
 	_ = chat_repo.Message().Update(finalCtx, t.assistantMsg)
 	// 落库之后立刻把同一份统计发给对端订阅者:Peer Tab 的 meta 与本机看到的是
 	// 同一条 assistant 消息,数不该只有本机有。
-	t.svc.publishPeerTurnDone(t.sess.ID, t.assistantMsg)
+	t.svc.publishPeerTurnDone(finalCtx, t.sess.ID, t.assistantMsg)
 
 	// 对 finalize 时标 expired 的 AskUserQuestion emit 锁定 patch(形态同
 	// UserAskResolvedHandler):前端按 requestId merge,把在屏活卡立即翻到失效态,

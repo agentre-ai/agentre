@@ -4,14 +4,18 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sort"
 	"sync"
 	"time"
+
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
 
 	"github.com/agentre-hub/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
-	"github.com/agentre-hub/agentre/internal/pkg/transcript"
 	"github.com/agentre-hub/agentre/internal/repository/chat_repo"
+	"github.com/agentre-hub/agentre/internal/repository/transcript_repo"
 )
 
 // peerSessionPublication owns the one ordered notification universe for a
@@ -30,6 +34,9 @@ type peerSessionPublication struct {
 	// 建立这份宇宙的那一刻就定死,此后不再改 —— 每一帧都要盖它,而它是个不可变值,
 	// 所以不进锁、也不必回头查库。
 	conversationID string
+	// sessionID 是这条会话的本地主键 —— 帧编号台账按它分命名空间。与 conversationID
+	// 一样在建立这份宇宙时定死。
+	sessionID int64
 
 	mu      sync.Mutex
 	history []wire.EventFrame
@@ -42,6 +49,13 @@ type peerSessionPublication struct {
 	nextSeq     int64
 	initialized bool
 	subscribers map[string]*peerSessionSubscription
+	// published 记每个帧位置**当前**发布出去的那份内容的指纹。指纹变了说明那个块被
+	// 原地修补过,修补后的帧要取一个新的末尾号;没变就不再重发。
+	published map[transcript_repo.FrameKey]string
+
+	// publishMu 串行化「取号 → 发布」这一整段。取号要落库(不能在 mu 里做网络/磁盘
+	// IO),而两次发布若交错,后取到的号可能先进 history,对端就会看到乱序。
+	publishMu sync.Mutex
 
 	// wake carries a single-slot non-blocking signal for the flush worker;
 	// startOnce guarantees at most one worker per publication.
@@ -78,7 +92,9 @@ type peerSessionSubscription struct {
 func (s *chatSvc) peerPublication(sessionID int64, conversationID string) *peerSessionPublication {
 	value, _ := s.peerPublications.LoadOrStore(sessionID, &peerSessionPublication{
 		conversationID: conversationID,
+		sessionID:      sessionID,
 		subscribers:    map[string]*peerSessionSubscription{},
+		published:      map[transcript_repo.FrameKey]string{},
 		wake:           make(chan struct{}, 1),
 	})
 	publication := value.(*peerSessionPublication)
@@ -255,17 +271,15 @@ func (s *chatSvc) attachPeerTranscript(ctx context.Context, sessionID int64, con
 			publication.mu.Unlock()
 			return 0, nil, operationFailedWithCause(ctx, err)
 		}
-		history, createtimes, err := transcript.ProjectMessages(conversationID, messages)
+		keyed, err := projectMessageListFrames(conversationID, messages)
 		if err != nil {
 			publication.mu.Unlock()
 			return 0, nil, fmt.Errorf("synthesize desktop peer history: %w", err)
 		}
-		for index := range history {
-			history[index].Seq = int64(index + 1)
+		if err := numberPeerFramesLocked(ctx, publication, keyed); err != nil {
+			publication.mu.Unlock()
+			return 0, nil, operationFailedWithCause(ctx, err)
 		}
-		publication.history = history
-		publication.createtimes = createtimes
-		publication.nextSeq = int64(len(history))
 		publication.initialized = true
 	}
 	highWater := publication.nextSeq
@@ -286,11 +300,62 @@ func (s *chatSvc) attachPeerTranscript(ctx context.Context, sessionID int64, con
 	return highWater, detach, nil
 }
 
-// publishPeerEvent 把一条密封事件挂进该会话的对端通知宇宙。
+// numberPeerFramesLocked 给一整条转录的持久帧配编号,并把它装成这份宇宙的初始前缀。
+// 调用方持 publication.mu。
 //
-// 从前这里分成 publishPeerEvent / publishPeerEventRaw 两跳,中间隔着一次
-// json.Marshal —— 那次序列化只是为了填 EventFrame 上的 json.RawMessage;帧现在
-// 直接装密封值,两跳合成一跳。
+// 已有编号的帧原样沿用 —— 这正是「宿主重启后同一份内容仍是同一个 seq」。存量对话
+// (台账里一行都没有)在这里**惰性补齐**:按投影顺序依次取号并落库,没被访问过的对话
+// 不付出任何代价。
+//
+// 排完序按 seq 走:原地修补新增的那一帧取的是末尾新号,于是它出现在自己的 request 帧
+// 之后若干位 —— 与实时流序一致(spec「帧编号」)。
+func numberPeerFramesLocked(ctx context.Context, publication *peerSessionPublication, keyed []keyedFrame) error {
+	ledger, err := transcript_repo.FrameSeq().Load(ctx, publication.sessionID)
+	if err != nil {
+		return err
+	}
+	missing := make([]transcript_repo.FrameKey, 0, len(keyed))
+	missingAt := make([]int, 0, len(keyed))
+	for index := range keyed {
+		if seq, ok := ledger[keyed[index].key]; ok {
+			keyed[index].frame.Seq = seq
+			continue
+		}
+		missing = append(missing, keyed[index].key)
+		missingAt = append(missingAt, index)
+	}
+	seqs, err := transcript_repo.FrameSeq().Allocate(ctx, publication.sessionID, missing)
+	if err != nil {
+		return err
+	}
+	if len(seqs) != len(missing) {
+		return fmt.Errorf("frame seq allocation returned %d numbers for %d frames", len(seqs), len(missing))
+	}
+	for i, index := range missingAt {
+		keyed[index].frame.Seq = seqs[i]
+	}
+	sort.SliceStable(keyed, func(i, j int) bool { return keyed[i].frame.Seq < keyed[j].frame.Seq })
+	publication.history = make([]wire.EventFrame, 0, len(keyed))
+	publication.createtimes = make([]int64, 0, len(keyed))
+	for _, frame := range keyed {
+		publication.history = append(publication.history, frame.frame)
+		publication.createtimes = append(publication.createtimes, frame.createtime)
+		publication.published[frame.key] = frame.fingerprint
+		if frame.frame.Seq > publication.nextSeq {
+			publication.nextSeq = frame.frame.Seq
+		}
+	}
+	return nil
+}
+
+// publishPeerEvent 把一条密封事件当作**预览帧**挂进该会话的对端通知宇宙。
+//
+// 预览帧只为即时呈现:不带 seq、不进日志、不参与游标推进与去重,丢失即丢失
+// (spec「两级帧与补齐」)。逐 token 的生成过程因此照旧实时可见,而**同一段内容的
+// 持久帧**由 publishPeerMessageFrames 在它落库之后另行发出,并带着落库的编号。
+//
+// 从前这里给每一帧都发一个号:一次重启之后同一份内容会被重新编号,对端的游标随即
+// 指向一个宿主认不回来的号(问题 B)。
 func (s *chatSvc) publishPeerEvent(sessionID int64, event agentruntime.Event) {
 	if sessionID <= 0 || event == nil {
 		return
@@ -300,12 +365,8 @@ func (s *chatSvc) publishPeerEvent(sessionID int64, event agentruntime.Event) {
 		return
 	}
 	publication := value.(*peerSessionPublication)
+	frame := wire.EventFrame{ConversationID: publication.conversationID, Event: event, Preview: true}
 	publication.mu.Lock()
-	publication.nextSeq++
-	frame := wire.EventFrame{ConversationID: publication.conversationID, Event: event, Seq: publication.nextSeq}
-	publication.history = append(publication.history, frame)
-	// 实时帧的发生时刻就是此刻 —— 这一行是它离开产生它的那个事件循环的第一站。
-	publication.createtimes = append(publication.createtimes, time.Now().UnixMilli())
 	for _, subscription := range publication.subscribers {
 		// Queue only: the flush worker performs the (potentially blocking) relay
 		// write. Never Notify inline from a canonical event loop — a stalled
@@ -319,23 +380,93 @@ func (s *chatSvc) publishPeerEvent(sessionID int64, event agentruntime.Event) {
 	}
 }
 
-// publishPeerTurnDone 在一轮收口时把本轮统计随 Done 发给对端订阅者。
+// publishPeerMessageFrames 把一条**已落库**的消息此刻投影出的持久帧发给对端。
 //
-// 对端 Peer Tab 与浏览器控制台走的是同一个共享转录投影器,那边 meta 那一行
-// (模型 · 耗时 · 首字 · 速率)读的正是 done 事件上的这几格。这台桌面端此刻手里
-// 就有全套 —— 它自己刚算完并落了库 —— 所以送出去的是同一份数,与重连后从
-// transcript.ProjectMessages 读到的那一条同形。
+// 取号与落库不可分:号从台账里取(一次事务),取到了才发布 —— 落库失败就不发,否则
+// 对端会持有一个宿主认不回来的号(spec「帧编号」)。已发布过、内容没变的位置直接跳过;
+// 内容变了(块被原地修补)则取一个新的末尾号,已发布的编号一律不动。
 //
-// runtime 自己 emit 的 Done(只有 openclaw / piagent 有)留零,零读作「没上报」,
-// 不会把这一条覆盖掉。
-func (s *chatSvc) publishPeerTurnDone(sessionID int64, msg *chat_entity.Message) {
-	if msg == nil {
+// settled=false 是轮内 checkpoint:结尾那些还会继续长的正文块与消息级派生帧留到收口
+// 再发,见 settledPeerFrames。
+func (s *chatSvc) publishPeerMessageFrames(ctx context.Context, sessionID int64, msg *chat_entity.Message, final bool) {
+	if sessionID <= 0 || msg == nil {
 		return
 	}
-	s.publishPeerEvent(sessionID, agentruntime.Done{
-		Model: msg.Model, DurationMs: msg.DurationMs,
-		FirstTokenMs: msg.FirstTokenMs, TokensPerSec: msg.TokensPerSec,
-	})
+	value, ok := s.peerPublications.Load(sessionID)
+	if !ok {
+		return
+	}
+	publication := value.(*peerSessionPublication)
+	publication.publishMu.Lock()
+	defer publication.publishMu.Unlock()
+
+	publication.mu.Lock()
+	initialized := publication.initialized
+	publication.mu.Unlock()
+	// 没人 attach 过就没有编号宇宙可言:这条消息的号留给下一次 attach 惰性补齐。
+	if !initialized {
+		return
+	}
+	keyed, err := projectMessageFrames(publication.conversationID, msg)
+	if err != nil {
+		logger.Ctx(ctx).Warn("chat_svc: project peer durable frames failed",
+			zap.Int64("sessionId", sessionID), zap.Int64("messageId", msg.ID), zap.Error(err))
+		return
+	}
+	if !final {
+		keyed = settledPeerFrames(keyed)
+	}
+	publication.mu.Lock()
+	pending := make([]keyedFrame, 0, len(keyed))
+	for _, frame := range keyed {
+		if prev, ok := publication.published[frame.key]; ok && frame.fingerprint != "" && prev == frame.fingerprint {
+			continue
+		}
+		pending = append(pending, frame)
+	}
+	publication.mu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
+	keys := make([]transcript_repo.FrameKey, 0, len(pending))
+	for _, frame := range pending {
+		keys = append(keys, frame.key)
+	}
+	seqs, err := transcript_repo.FrameSeq().Allocate(context.WithoutCancel(ctx), sessionID, keys)
+	if err != nil || len(seqs) != len(pending) {
+		logger.Ctx(ctx).Warn("chat_svc: allocate peer frame seq failed; frames withheld",
+			zap.Int64("sessionId", sessionID), zap.Int64("messageId", msg.ID), zap.Error(err))
+		return
+	}
+	now := time.Now().UnixMilli()
+	publication.mu.Lock()
+	for index := range pending {
+		pending[index].frame.Seq = seqs[index]
+		publication.history = append(publication.history, pending[index].frame)
+		publication.createtimes = append(publication.createtimes, now)
+		publication.published[pending[index].key] = pending[index].fingerprint
+		if seqs[index] > publication.nextSeq {
+			publication.nextSeq = seqs[index]
+		}
+		for _, subscription := range publication.subscribers {
+			enqueuePeerFrame(subscription, pending[index].frame)
+		}
+	}
+	publication.mu.Unlock()
+	select {
+	case publication.wake <- struct{}{}:
+	default:
+	}
+}
+
+// publishPeerTurnDone 在一轮收口时把这条 assistant 消息的持久帧整份发给对端订阅者。
+//
+// 收口那一发是 final:结尾的正文块此刻已是终稿,消息级派生帧(usage / done)也才有值。
+// 对端 Peer Tab 与浏览器控制台走的是同一个共享转录投影器,那边 meta 那一行
+// (模型 · 耗时 · 首字 · 速率)读的正是 done 事件上的这几格 —— 它们与重连后补齐读到的
+// 是同一条,因为两边都出自 transcript.ProjectMessages。
+func (s *chatSvc) publishPeerTurnDone(ctx context.Context, sessionID int64, msg *chat_entity.Message) {
+	s.publishPeerMessageFrames(ctx, sessionID, msg, true)
 }
 
 func peerSubscriberKey(subscriber PeerSessionSubscriber) string {

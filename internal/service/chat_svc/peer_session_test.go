@@ -28,6 +28,7 @@ import (
 	"github.com/agentre-hub/agentre/internal/repository/chat_repo/mock_chat_repo"
 	"github.com/agentre-hub/agentre/internal/repository/project_repo"
 	"github.com/agentre-hub/agentre/internal/repository/project_repo/mock_project_repo"
+	"github.com/agentre-hub/agentre/internal/repository/transcript_repo"
 	"github.com/agentre-hub/agentre/internal/service/remote_device_svc"
 	"github.com/agentre-hub/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 )
@@ -39,7 +40,9 @@ type peerSessionTestDeps struct {
 	message *mock_chat_repo.MockMessageRepo
 	device  *mock_remote_device_svc.MockRemoteDeviceSvc
 	project *mock_project_repo.MockProjectRepo
-	svc     *chatSvc
+	// ledger 是帧编号台账。它按会话记账并活得比 svc 长，用例据此模拟「宿主重启」。
+	ledger *fakeFrameSeqLedger
+	svc    *chatSvc
 	// projects 是这台电脑上的项目清单，由用例按需摆好；projectListCalls 记下它被
 	// 读了几次——「一次列举只读一遍」是这份清单唯一的性能约束，它得测得到。
 	projects         []*project_entity.Project
@@ -56,10 +59,13 @@ func setupPeerSessionTest(t *testing.T) *peerSessionTestDeps {
 		message: mock_chat_repo.NewMockMessageRepo(ctrl),
 		device:  mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl),
 		project: mock_project_repo.NewMockProjectRepo(ctrl),
+		ledger:  &fakeFrameSeqLedger{},
 		svc:     NewChat(NoopEmitter{}).(*chatSvc),
 	}
 	prevAgent, prevBackend, prevSession, prevMessage, prevDevice := agent_repo.Agent(), agent_backend_repo.AgentBackend(), chat_repo.Session(), chat_repo.Message(), remote_device_svc.Default()
 	prevProject := project_repo.Project()
+	prevFrameSeq := transcript_repo.FrameSeq()
+	transcript_repo.RegisterFrameSeq(deps.ledger)
 	agent_repo.RegisterAgent(deps.agent)
 	agent_backend_repo.RegisterAgentBackend(deps.backend)
 	chat_repo.RegisterSession(deps.session)
@@ -92,6 +98,7 @@ func setupPeerSessionTest(t *testing.T) *peerSessionTestDeps {
 		chat_repo.RegisterMessage(prevMessage)
 		remote_device_svc.SetDefault(prevDevice)
 		project_repo.RegisterProject(prevProject)
+		transcript_repo.RegisterFrameSeq(prevFrameSeq)
 		ctrl.Finish()
 	})
 	return deps

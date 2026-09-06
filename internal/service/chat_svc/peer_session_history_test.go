@@ -39,7 +39,7 @@ func TestPeerSessionPull_GivenSnapshotAndEarlyLiveEvent_ThenKeepsOneOrderedSeqUn
 	require.NoError(t, err)
 	assert.Equal(t, int64(3), attached.LatestSeq, "history must be frozen as user_message, text, done")
 
-	deps.svc.publishPeerEvent(41, agentruntime.TextDelta{Text: "live"})
+	publishPeerDurableFrame(t, deps.svc, 41, 93, "live")
 	assert.Empty(t, subscriber.notifications(), "live output must wait behind the frozen snapshot")
 
 	first, err := deps.svc.PullPeerSession(ctx, wire.SessionPullParams{ConversationID: convID(41), Cursor: 0, Limit: 2}, subscriber)
@@ -80,7 +80,7 @@ func TestAttachPeerSession_GivenReconnectAfterLiveEvent_ThenRetainsLiveSeqForDed
 	attached, err := deps.svc.AttachPeerSession(ctx, wire.SessionAttachParams{ConversationID: convID(41)}, first)
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), attached.LatestSeq)
-	deps.svc.publishPeerEvent(41, agentruntime.TextDelta{Text: "live"})
+	publishPeerDurableFrame(t, deps.svc, 41, 93, "live")
 
 	second := newRecordingPeerSubscriber()
 	reconnected, err := deps.svc.AttachPeerSession(ctx, wire.SessionAttachParams{ConversationID: convID(41)}, second)
@@ -181,7 +181,7 @@ func TestPullPeerSession_GivenBufferedLiveFrameAndStalledNotify_ThenPublicationL
 	assert.Equal(t, int64(3), attached.LatestSeq)
 
 	// 拉平前先到一条实时帧（seq 4）：cursor < H，worker 不会投递，帧停在 pending。
-	deps.svc.publishPeerEvent(41, agentruntime.TextDelta{Text: "live-before-pull"})
+	publishPeerDurableFrame(t, deps.svc, 41, 93, "live-before-pull")
 	assert.Empty(t, subscriber.seenSeqs(), "cursor below H must retain live buffering")
 
 	// pull 拉满历史并进入 catch-up：缓冲的实时帧在此刻交付。
@@ -199,7 +199,7 @@ func TestPullPeerSession_GivenBufferedLiveFrameAndStalledNotify_ThenPublicationL
 	// 交付卡在对端的网络写（锁内、RED）时，本地 turn 再发布一条事件。
 	published := make(chan struct{})
 	go func() {
-		deps.svc.publishPeerEvent(41, agentruntime.TextDelta{Text: "live-during-stall"})
+		publishPeerDurableFrame(t, deps.svc, 41, 94, "live-during-stall")
 		close(published)
 	}()
 	select {
@@ -243,7 +243,7 @@ func TestPeerSessionLive_GivenWorkerStalledOnEarlierFrame_ThenPullDoesNotDeliver
 	require.NoError(t, err)
 
 	// 第一条实时帧（seq 1）：flush worker 进入投递并卡在对端写上。
-	deps.svc.publishPeerEvent(41, agentruntime.TextDelta{Text: "first"})
+	publishPeerDurableFrame(t, deps.svc, 41, 93, "first")
 	select {
 	case <-subscriber.entered:
 	case <-time.After(2 * time.Second):
@@ -251,7 +251,7 @@ func TestPeerSessionLive_GivenWorkerStalledOnEarlierFrame_ThenPullDoesNotDeliver
 	}
 
 	// 第二条实时帧（seq 2）到达后 peer 再 pull 一次：不得抢在 seq 1 之前交付。
-	deps.svc.publishPeerEvent(41, agentruntime.TextDelta{Text: "second"})
+	publishPeerDurableFrame(t, deps.svc, 41, 94, "second")
 	_, err = deps.svc.PullPeerSession(ctx, wire.SessionPullParams{ConversationID: convID(41), Cursor: 0}, subscriber)
 	require.NoError(t, err)
 	assert.Empty(t, subscriber.seenSeqs(), "a later live frame must not be delivered ahead of an earlier stalled one")
@@ -379,8 +379,8 @@ func TestPublishPeerTurnDone_GivenFinishedTurn_ThenPeersSeeTurnStats(t *testing.
 	_, err := deps.svc.AttachPeerSession(ctx, wire.SessionAttachParams{ConversationID: convID(41)}, subscriber)
 	require.NoError(t, err)
 
-	deps.svc.publishPeerTurnDone(41, &chat_entity.Message{
-		SessionID: 41, Role: "assistant",
+	deps.svc.publishPeerTurnDone(ctx, 41, &chat_entity.Message{
+		ID: 71, SessionID: 41, Role: "assistant", BlocksJSON: "[]",
 		Model: "claude-sonnet-4-6", DurationMs: 9640, FirstTokenMs: 8010, TokensPerSec: 14.2,
 	})
 
@@ -502,8 +502,8 @@ func TestPublishPeerEvent_GivenSubscriberFallsBehind_ThenQueueStaysBounded(t *te
 	require.NoError(t, err)
 	t.Cleanup(func() { close(stalled.released) })
 
-	for range peerSubscriberQueueDepth * 4 {
-		deps.svc.publishPeerEvent(41, agentruntime.TextDelta{Text: "flood"})
+	for i := range peerSubscriberQueueDepth * 4 {
+		publishPeerDurableFrame(t, deps.svc, 41, int64(100+i), "flood")
 	}
 
 	publication := deps.svc.peerPublication(41, convID(41))
