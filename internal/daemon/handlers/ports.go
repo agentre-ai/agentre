@@ -259,7 +259,8 @@ type JournalRow struct {
 // (写)分开声明是 ISP —— 跑一轮执行的一侧只写不读,补齐的一侧只读不写。
 //
 // 通知日志退役之后它的**数据源**换成了持久化的转录(块 → 帧的投影 + 帧编号台账),
-// 契约不变。换源本身是这一轮下一步(规格「两级帧与补齐」)的事。
+// 契约不变:交出的仍是「(seq, 那条通知的 params 原样)」。它只服务持久帧 —— 预览帧
+// 从不落库,补齐因此天然不重放逐 token 的过程(规格「两级帧与补齐」)。
 type JournalReaderPort interface {
 	ListSince(ctx context.Context, peerFingerprint, peerSessionID string, cursor int64, limit int) (rows []JournalRow, hasMore bool, err error)
 	LatestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error)

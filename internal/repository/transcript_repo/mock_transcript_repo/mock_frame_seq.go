@@ -21,7 +21,6 @@ import (
 type MockFrameSeqRepo struct {
 	ctrl     *gomock.Controller
 	recorder *MockFrameSeqRepoMockRecorder
-	isgomock struct{}
 }
 
 // MockFrameSeqRepoMockRecorder is the mock recorder for MockFrameSeqRepo.
@@ -54,6 +53,21 @@ func (m *MockFrameSeqRepo) Allocate(ctx context.Context, sessionID int64, keys [
 func (mr *MockFrameSeqRepoMockRecorder) Allocate(ctx, sessionID, keys any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Allocate", reflect.TypeOf((*MockFrameSeqRepo)(nil).Allocate), ctx, sessionID, keys)
+}
+
+// DeleteBySession mocks base method.
+func (m *MockFrameSeqRepo) DeleteBySession(ctx context.Context, sessionID int64) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteBySession", ctx, sessionID)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DeleteBySession indicates an expected call of DeleteBySession.
+func (mr *MockFrameSeqRepoMockRecorder) DeleteBySession(ctx, sessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteBySession", reflect.TypeOf((*MockFrameSeqRepo)(nil).DeleteBySession), ctx, sessionID)
 }
 
 // Load mocks base method.

@@ -2966,6 +2966,8 @@ func TestIntegration_SessionDelete_ClearsTheSessionAndItsTranscript(t *testing.T
 
 	assert.Empty(t, daemonMessagesOfSession(t, rig.d, sessionID),
 		"那条会话的转录必须一行不剩 —— 按本地主键直查,身份行没了也不留孤儿")
+	assert.Zero(t, daemonFrameSeqRows(t, rig.d, sessionID),
+		"帧编号台账同样是这条转录的一部分:身份行与它的全部转录一并消失")
 
 	// 再删一次:server 的删除待办会重放,报错会让它永远重放下去。
 	var again wire.SessionDeleteResult
@@ -3742,4 +3744,60 @@ func TestIntegration_MidTurnCrash_KeepsTheCheckpointedBlocks(t *testing.T) {
 	rows := daemonMessages(t, restarted.d, convID(701))
 	require.Len(t, rows, 2, "重启后消息行仍在")
 	assert.Equal(t, wantBlocks, rows[1].BlocksJSON, "崩溃前 checkpoint 过的块一个不少")
+}
+
+// daemonFrameSeqRows 数一数这条会话在帧编号台账里还剩几行。
+func daemonFrameSeqRows(t *testing.T, d *Daemon, sessionID int64) int64 {
+	t.Helper()
+	var count int64
+	require.NoError(t, d.db.Raw(
+		"SELECT COUNT(*) FROM chat_frame_seqs WHERE session_id = ?", sessionID).
+		Row().Scan(&count))
+	return count
+}
+
+// TestIntegration_SessionList_ReportsTheHighWaterWithoutNumberingAnything 钉住
+// 会话清单那条 RPC 的两件事,它们是同一条纪律的两半:
+//
+//   - 报出的「最新 seq」就是持久编号计数器的末尾 —— 随后按它去 pull,拿回的最后
+//     一帧的号必须正好等于它,否则对端会把两者的差当成跳号;
+//   - 它**一行都不写**。规格明写清单无副作用(remote.Runtime.turnStartFloor 正是
+//     靠这一条在每代连接开轮前探一次高水位),而惰性补齐编号的时机是「第一次需要
+//     发布或被补齐」——「未被访问的对话不付出任何代价」(规格「帧编号」)。拿真去
+//     分配一次来回答高水位,会让一次只读探测替这个对端的每一条对话都补齐编号。
+func TestIntegration_SessionList_ReportsTheHighWaterWithoutNumberingAnything(t *testing.T) {
+	rig := bootRemoteRig(t, []agentruntime.Event{
+		agentruntime.TextDelta{Text: "hello"},
+		agentruntime.Done{},
+	})
+	events, _ := rig.startRun(t, 905)
+	_ = drainRuntimeEvents(t, events, 5*time.Second)
+
+	sessionID := daemonSessionID(t, rig.d, convID(905))
+	require.NotZero(t, sessionID)
+	require.NotEmpty(t, daemonMessagesOfSession(t, rig.d, sessionID), "这一轮确实落了转录")
+	require.Zero(t, daemonFrameSeqRows(t, rig.d, sessionID),
+		"还没有人发布或补齐过它,台账此刻本来就该是空的")
+
+	var list wire.SessionListResult
+	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionList, nil, &list))
+	require.Len(t, list.Sessions, 1)
+	latest := list.Sessions[0].LatestSeq
+	require.Positive(t, latest, "有转录就有高水位")
+	assert.Zero(t, daemonFrameSeqRows(t, rig.d, sessionID),
+		"清单是只读探测:它不得给任何一条对话补齐编号")
+
+	// 再问一次:读两遍报的是同一个数,而不是第二次因为第一次写过了才稳定下来。
+	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionList, nil, &list))
+	assert.Equal(t, latest, list.Sessions[0].LatestSeq, "只读探测必须可重复")
+	assert.Zero(t, daemonFrameSeqRows(t, rig.d, sessionID))
+
+	// 补齐才是编号落库的时刻,而它落出来的末尾号必须正是清单报过的那个。
+	var page wire.SessionPullResult
+	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionPull,
+		wire.SessionPullParams{ConversationID: convID(905), Cursor: 0, Limit: 200}, &page))
+	require.NotEmpty(t, page.Notifications)
+	assert.Equal(t, latest, page.Notifications[len(page.Notifications)-1].Seq,
+		"清单报的高水位必须等于补齐拿回的最后一个号")
+	assert.Positive(t, daemonFrameSeqRows(t, rig.d, sessionID), "补齐这一刻才写台账")
 }

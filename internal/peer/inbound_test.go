@@ -415,7 +415,7 @@ func registerInboundPeerChat(t *testing.T) {
 	agents := mock_agent_repo.NewMockAgentRepo(ctrl)
 	backends := mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl)
 	sessions := mock_chat_repo.NewMockSessionRepo(ctrl)
-	messages := mock_chat_repo.NewMockMessageRepo(ctrl)
+	messages := mock_transcript_repo.NewMockMessageRepo(ctrl)
 	device := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
 	// 会话清单要交出每条对话的项目归属（账号那边的项目轴据此分组），因此项目仓储
 	// 也在这套桩里。这台电脑上没有项目：自由会话的那一维本来就该是空的。
@@ -440,7 +440,7 @@ func registerInboundPeerChat(t *testing.T) {
 	prevAgents := agent_repo.Agent()
 	prevBackends := agent_backend_repo.AgentBackend()
 	prevSessions := chat_repo.Session()
-	prevMessages := chat_repo.Message()
+	prevMessages := transcript_repo.Message()
 	prevDevice := remote_device_svc.Default()
 	prevProjects := project_repo.Project()
 	prevFrameSeqs := transcript_repo.FrameSeq()
@@ -449,7 +449,7 @@ func registerInboundPeerChat(t *testing.T) {
 	project_repo.RegisterProject(projects)
 	agent_backend_repo.RegisterAgentBackend(backends)
 	chat_repo.RegisterSession(sessions)
-	chat_repo.RegisterMessage(messages)
+	transcript_repo.RegisterMessage(messages)
 	remote_device_svc.SetDefault(device)
 	chat_svc.RegisterChat(chat_svc.NewChat(chat_svc.NoopEmitter{}))
 	t.Cleanup(func() {
@@ -457,7 +457,7 @@ func registerInboundPeerChat(t *testing.T) {
 		agent_repo.RegisterAgent(prevAgents)
 		agent_backend_repo.RegisterAgentBackend(prevBackends)
 		chat_repo.RegisterSession(prevSessions)
-		chat_repo.RegisterMessage(prevMessages)
+		transcript_repo.RegisterMessage(prevMessages)
 		remote_device_svc.SetDefault(prevDevice)
 		project_repo.RegisterProject(prevProjects)
 		transcript_repo.RegisterFrameSeq(prevFrameSeqs)

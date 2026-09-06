@@ -18,6 +18,7 @@ import (
 	"github.com/agentre-hub/agentre/internal/pkg/transcript/handlers"
 	"github.com/agentre-hub/agentre/internal/pkg/transcript/turn"
 	"github.com/agentre-hub/agentre/internal/repository/chat_repo"
+	"github.com/agentre-hub/agentre/internal/repository/transcript_repo"
 	"github.com/agentre-hub/agentre/internal/service/chat_svc/ipc"
 	"github.com/agentre-hub/agentre/internal/service/chat_svc/view"
 )
@@ -341,7 +342,7 @@ func (t *turnRun) finalize(ctx context.Context) {
 	// finalCtx：去掉 cancel 信号但保留 DB 句柄。abort 路径下 turnCtx 已 cancel，
 	// 用它写 Update 会静默失败，partial 内容就丢了。
 	finalCtx := context.WithoutCancel(ctx)
-	_ = chat_repo.Message().Update(finalCtx, t.assistantMsg)
+	_ = transcript_repo.Message().Update(finalCtx, t.assistantMsg)
 	// 落库之后立刻把同一份统计发给对端订阅者:Peer Tab 的 meta 与本机看到的是
 	// 同一条 assistant 消息,数不该只有本机有。
 	t.svc.publishPeerTurnDone(finalCtx, t.sess.ID, t.assistantMsg)

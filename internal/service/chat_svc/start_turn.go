@@ -19,6 +19,7 @@ import (
 	"github.com/agentre-hub/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-hub/agentre/internal/repository/chat_repo"
+	"github.com/agentre-hub/agentre/internal/repository/transcript_repo"
 )
 
 // turnStart 承载 startTurn 一次开轮期间的全部可变状态。字段逐一对应原先散在
@@ -145,16 +146,16 @@ func (ts *turnStart) persistTurnMessages(ctx context.Context) error {
 					return err
 				}
 			}
-			nextSeq, err := chat_repo.Message().NextSeq(txCtx, ts.sess.ID)
+			nextSeq, err := transcript_repo.Message().NextSeq(txCtx, ts.sess.ID)
 			if err != nil {
 				return err
 			}
 			ts.userMsg.Seq = nextSeq
-			if err := chat_repo.Message().Create(txCtx, ts.userMsg); err != nil {
+			if err := transcript_repo.Message().Create(txCtx, ts.userMsg); err != nil {
 				return err
 			}
 			ts.assistantMsg.Seq = nextSeq + 1
-			if err := chat_repo.Message().Create(txCtx, ts.assistantMsg); err != nil {
+			if err := transcript_repo.Message().Create(txCtx, ts.assistantMsg); err != nil {
 				return err
 			}
 			ts.sess.LastMessageAt = time.Now().UnixMilli()

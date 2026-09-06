@@ -33,6 +33,16 @@ var guardedDeclarations = map[string]string{
 	"func ProjectMessages(":            "internal/pkg/transcript/projection.go",
 	"func EventForStoredBlock(":        "internal/pkg/transcript/projection.go",
 	"case \"permission_mode_change\":": "internal/pkg/transcript/projection.go",
+	// 帧的**位置**(哪条消息的哪个块的第几帧)：编号挂靠的就是它，两个宿主必须由
+	// 同一行代码算出来。第二份位置计算 = 同一段内容在两台机器上拿到两套编号，而
+	// 那正是规格 2026-09-05 问题 B 要消灭的东西。
+	"func ProjectKeyedMessage(":  "internal/pkg/transcript/keyed.go",
+	"func ProjectKeyedMessages(": "internal/pkg/transcript/keyed.go",
+	// 单块投影必须清掉消息级派生的那几格、并砍掉尾部的派生帧；抄一份这两个私有
+	// 助手就是抄了一份位置计算。
+	"func clearMessageDerivedFields(":   "internal/pkg/transcript/keyed.go",
+	"func messageDerivedFrameCount(":    "internal/pkg/transcript/keyed.go",
+	"const MessageDerivedBlockIdx = -1": "internal/pkg/transcript/keyed.go",
 }
 
 // TestAccumulationAndProjectionHaveOneImplementation 判红条件：仓内除各自的 canonical

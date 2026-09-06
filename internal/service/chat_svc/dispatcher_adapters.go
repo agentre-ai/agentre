@@ -11,6 +11,7 @@ import (
 	"github.com/agentre-hub/agentre/internal/pkg/transcript"
 	"github.com/agentre-hub/agentre/internal/pkg/transcript/turn"
 	"github.com/agentre-hub/agentre/internal/repository/chat_repo"
+	"github.com/agentre-hub/agentre/internal/repository/transcript_repo"
 )
 
 // dispatcher_adapters.go 给 turn dispatcher 注入持久化 + 数据写入能力。
@@ -55,7 +56,7 @@ func (usageWriterAdapter) WriteUsage(ctx context.Context, msg any, u *agentrunti
 	if m.ID == 0 {
 		return nil
 	}
-	return chat_repo.Message().UpdateUsage(ctx, m.ID, chat_repo.MessageUsage{
+	return transcript_repo.Message().UpdateUsage(ctx, m.ID, transcript_repo.MessageUsage{
 		PromptTokens:        m.PromptTokens,
 		CompletionTokens:    m.CompletionTokens,
 		CachedTokens:        m.CachedTokens,
@@ -85,7 +86,7 @@ func (errorWriterAdapter) WriteErrorText(ctx context.Context, msg any, errText s
 	if m.ID == 0 {
 		return nil
 	}
-	return chat_repo.Message().UpdateErrorText(ctx, m.ID, errText)
+	return transcript_repo.Message().UpdateErrorText(ctx, m.ID, errText)
 }
 
 // contextWindowWriterAdapter 实现 handlers.ContextWindowWriter:同步内存中的
@@ -238,7 +239,7 @@ func (a subagentFlipperAdapter) FlipSubagentStatus(ctx context.Context, toolCall
 	}
 	// summary 是 CLI task_notification.summary(成功时子代理交回的报告,失败时中断
 	// 原因)。空串读作「这一帧没带」,FlipSubagentStatus 对空 summary 保持原值不动。
-	if err := chat_repo.Message().FlipSubagentStatus(ctx, a.sess.ID, toolCallID, status, summary); err != nil {
+	if err := transcript_repo.Message().FlipSubagentStatus(ctx, a.sess.ID, toolCallID, status, summary); err != nil {
 		return err
 	}
 	// 镜像到**会话级**流:派遣卡随更早那条消息早已落库,不在任何 liveBlocks 里,
@@ -261,7 +262,7 @@ func (a subagentFlipperAdapter) ResumeSubagentByTaskID(
 	if a.svc == nil || a.sess == nil || a.sess.ID <= 0 || taskID == "" {
 		return "", nil
 	}
-	return chat_repo.Message().ResumeSubagentByTaskID(ctx, a.sess.ID, taskID, status)
+	return transcript_repo.Message().ResumeSubagentByTaskID(ctx, a.sess.ID, taskID, status)
 }
 
 // newTurnContext 构造每轮 turn 的 TurnContext。stream 由调用方填(每轮 chat

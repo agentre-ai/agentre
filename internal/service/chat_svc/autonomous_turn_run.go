@@ -17,6 +17,7 @@ import (
 	"github.com/agentre-hub/agentre/internal/pkg/transcript/handlers"
 	"github.com/agentre-hub/agentre/internal/pkg/transcript/turn"
 	"github.com/agentre-hub/agentre/internal/repository/chat_repo"
+	"github.com/agentre-hub/agentre/internal/repository/transcript_repo"
 )
 
 // autonomousTurnRun 承载 driveAutonomousTurn 一轮自主续轮期间的全部可变状态。
@@ -60,7 +61,7 @@ func (t *autonomousTurnRun) persistTurnMessages(ctx context.Context) error {
 	}
 	return db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
 		txCtx := db.WithContextDB(ctx, tx)
-		nextSeq, err := chat_repo.Message().NextSeq(txCtx, t.sessionID)
+		nextSeq, err := transcript_repo.Message().NextSeq(txCtx, t.sessionID)
 		if err != nil {
 			return err
 		}
@@ -86,13 +87,13 @@ func (t *autonomousTurnRun) persistTurnMessages(ctx context.Context) error {
 			}); err != nil {
 				return err
 			}
-			if err := chat_repo.Message().Create(txCtx, t.userMsg); err != nil {
+			if err := transcript_repo.Message().Create(txCtx, t.userMsg); err != nil {
 				return err
 			}
 			nextSeq++
 		}
 		t.assistantMsg.Seq = nextSeq
-		if err := chat_repo.Message().Create(txCtx, t.assistantMsg); err != nil {
+		if err := transcript_repo.Message().Create(txCtx, t.assistantMsg); err != nil {
 			return err
 		}
 		t.sess.AgentStatus = "running"
@@ -302,7 +303,7 @@ func (t *autonomousTurnRun) finalize(ctx context.Context) {
 			zap.Int64("assistantMsgId", t.assistantMsg.ID),
 			zap.Error(t.at.Result.StopErr))
 	}
-	_ = chat_repo.Message().Update(finalCtx, t.assistantMsg)
+	_ = transcript_repo.Message().Update(finalCtx, t.assistantMsg)
 	t.svc.publishPeerTurnDone(finalCtx, t.sessionID, t.assistantMsg)
 
 	t.sess.AgentStatus = "idle"
@@ -321,7 +322,7 @@ func (t *autonomousTurnRun) finalize(ctx context.Context) {
 	// per-turn accumulator,只能定向重写持久化态。completedRef 为 nil(含 remote
 	// 不携带 CompletedTask 的情形)时跳过。
 	if t.completedRef != nil {
-		if err := chat_repo.Message().FlipSubagentStatus(finalCtx, t.sessionID, t.completedRef.ToolCallID, t.completedRef.Status, t.completedRef.Summary); err != nil {
+		if err := transcript_repo.Message().FlipSubagentStatus(finalCtx, t.sessionID, t.completedRef.ToolCallID, t.completedRef.Status, t.completedRef.Summary); err != nil {
 			logger.Ctx(finalCtx).Warn("chat_svc.driveAutonomousTurn: FlipSubagentStatus failed",
 				zap.Int64("sessionId", t.sessionID),
 				zap.String("toolUseId", t.completedRef.ToolCallID),

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"sort"
 	"sync"
 	"time"
 
@@ -14,7 +13,7 @@ import (
 	"github.com/agentre-hub/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
-	"github.com/agentre-hub/agentre/internal/repository/chat_repo"
+	"github.com/agentre-hub/agentre/internal/pkg/transcript"
 	"github.com/agentre-hub/agentre/internal/repository/transcript_repo"
 )
 
@@ -80,8 +79,8 @@ type peerSessionSubscription struct {
 	highWater  int64
 	cursor     int64
 	pending    []wire.EventFrame
-	// dropped 记这个订阅者被丢过帧。只用于日志:对端靠 seq 跳号自己发现并补齐,
-	// 不需要服务端告诉它。
+	// dropped 记这个订阅者被丢过帧。只用于日志:对端靠持久帧的 seq 跳号自己发现
+	// 并补齐,不需要服务端告诉它。
 	dropped bool
 	// flushing 表示这个订阅者此刻有一条投递在飞。每个订阅者至多一条 —— 它保证
 	// 这个订阅者收到的帧仍然有序,同时让**不同**订阅者彼此独立:一个卡住的对端
@@ -266,12 +265,12 @@ func (s *chatSvc) attachPeerTranscript(ctx context.Context, sessionID int64, con
 	// in 1..H or assigned after H and buffered for this subscriber.
 	publication.mu.Lock()
 	if !publication.initialized {
-		messages, err := chat_repo.Message().List(ctx, sessionID)
+		messages, err := transcript_repo.Message().List(ctx, sessionID)
 		if err != nil {
 			publication.mu.Unlock()
 			return 0, nil, operationFailedWithCause(ctx, err)
 		}
-		keyed, err := projectMessageListFrames(conversationID, messages)
+		keyed, err := transcript.ProjectKeyedMessages(conversationID, messages)
 		if err != nil {
 			publication.mu.Unlock()
 			return 0, nil, fmt.Errorf("synthesize desktop peer history: %w", err)
@@ -303,46 +302,21 @@ func (s *chatSvc) attachPeerTranscript(ctx context.Context, sessionID int64, con
 // numberPeerFramesLocked 给一整条转录的持久帧配编号,并把它装成这份宇宙的初始前缀。
 // 调用方持 publication.mu。
 //
-// 已有编号的帧原样沿用 —— 这正是「宿主重启后同一份内容仍是同一个 seq」。存量对话
-// (台账里一行都没有)在这里**惰性补齐**:按投影顺序依次取号并落库,没被访问过的对话
-// 不付出任何代价。
-//
-// 排完序按 seq 走:原地修补新增的那一帧取的是末尾新号,于是它出现在自己的 request 帧
-// 之后若干位 —— 与实时流序一致(spec「帧编号」)。
-func numberPeerFramesLocked(ctx context.Context, publication *peerSessionPublication, keyed []keyedFrame) error {
-	ledger, err := transcript_repo.FrameSeq().Load(ctx, publication.sessionID)
-	if err != nil {
+// 编号本身归共用的那一份(transcript_repo.NumberFrames):已有编号原样沿用、存量惰性
+// 补齐、按 seq 重排,两个宿主一字不差。这里只做桌面端自己的事 —— 把配好号的帧装进
+// 这份内存宇宙。
+func numberPeerFramesLocked(ctx context.Context, publication *peerSessionPublication, keyed []transcript.KeyedFrame) error {
+	if err := transcript_repo.NumberFrames(ctx, publication.sessionID, keyed); err != nil {
 		return err
 	}
-	missing := make([]transcript_repo.FrameKey, 0, len(keyed))
-	missingAt := make([]int, 0, len(keyed))
-	for index := range keyed {
-		if seq, ok := ledger[keyed[index].key]; ok {
-			keyed[index].frame.Seq = seq
-			continue
-		}
-		missing = append(missing, keyed[index].key)
-		missingAt = append(missingAt, index)
-	}
-	seqs, err := transcript_repo.FrameSeq().Allocate(ctx, publication.sessionID, missing)
-	if err != nil {
-		return err
-	}
-	if len(seqs) != len(missing) {
-		return fmt.Errorf("frame seq allocation returned %d numbers for %d frames", len(seqs), len(missing))
-	}
-	for i, index := range missingAt {
-		keyed[index].frame.Seq = seqs[i]
-	}
-	sort.SliceStable(keyed, func(i, j int) bool { return keyed[i].frame.Seq < keyed[j].frame.Seq })
 	publication.history = make([]wire.EventFrame, 0, len(keyed))
 	publication.createtimes = make([]int64, 0, len(keyed))
 	for _, frame := range keyed {
-		publication.history = append(publication.history, frame.frame)
-		publication.createtimes = append(publication.createtimes, frame.createtime)
-		publication.published[frame.key] = frame.fingerprint
-		if frame.frame.Seq > publication.nextSeq {
-			publication.nextSeq = frame.frame.Seq
+		publication.history = append(publication.history, frame.Frame)
+		publication.createtimes = append(publication.createtimes, frame.Createtime)
+		publication.published[frame.Key] = frame.Fingerprint
+		if frame.Frame.Seq > publication.nextSeq {
+			publication.nextSeq = frame.Frame.Seq
 		}
 	}
 	return nil
@@ -407,7 +381,7 @@ func (s *chatSvc) publishPeerMessageFrames(ctx context.Context, sessionID int64,
 	if !initialized {
 		return
 	}
-	keyed, err := projectMessageFrames(publication.conversationID, msg)
+	keyed, err := transcript.ProjectKeyedMessage(publication.conversationID, msg)
 	if err != nil {
 		logger.Ctx(ctx).Warn("chat_svc: project peer durable frames failed",
 			zap.Int64("sessionId", sessionID), zap.Int64("messageId", msg.ID), zap.Error(err))
@@ -417,9 +391,9 @@ func (s *chatSvc) publishPeerMessageFrames(ctx context.Context, sessionID int64,
 		keyed = settledPeerFrames(keyed)
 	}
 	publication.mu.Lock()
-	pending := make([]keyedFrame, 0, len(keyed))
+	pending := make([]transcript.KeyedFrame, 0, len(keyed))
 	for _, frame := range keyed {
-		if prev, ok := publication.published[frame.key]; ok && frame.fingerprint != "" && prev == frame.fingerprint {
+		if prev, ok := publication.published[frame.Key]; ok && frame.Fingerprint != "" && prev == frame.Fingerprint {
 			continue
 		}
 		pending = append(pending, frame)
@@ -430,7 +404,7 @@ func (s *chatSvc) publishPeerMessageFrames(ctx context.Context, sessionID int64,
 	}
 	keys := make([]transcript_repo.FrameKey, 0, len(pending))
 	for _, frame := range pending {
-		keys = append(keys, frame.key)
+		keys = append(keys, frame.Key)
 	}
 	seqs, err := transcript_repo.FrameSeq().Allocate(context.WithoutCancel(ctx), sessionID, keys)
 	if err != nil || len(seqs) != len(pending) {
@@ -441,15 +415,15 @@ func (s *chatSvc) publishPeerMessageFrames(ctx context.Context, sessionID int64,
 	now := time.Now().UnixMilli()
 	publication.mu.Lock()
 	for index := range pending {
-		pending[index].frame.Seq = seqs[index]
-		publication.history = append(publication.history, pending[index].frame)
+		pending[index].Frame.Seq = seqs[index]
+		publication.history = append(publication.history, pending[index].Frame)
 		publication.createtimes = append(publication.createtimes, now)
-		publication.published[pending[index].key] = pending[index].fingerprint
+		publication.published[pending[index].Key] = pending[index].Fingerprint
 		if seqs[index] > publication.nextSeq {
 			publication.nextSeq = seqs[index]
 		}
 		for _, subscription := range publication.subscribers {
-			enqueuePeerFrame(subscription, pending[index].frame)
+			enqueuePeerFrame(subscription, pending[index].Frame)
 		}
 	}
 	publication.mu.Unlock()

@@ -50,6 +50,7 @@ import (
 	"github.com/agentre-hub/agentre/internal/repository/chat_repo"
 	"github.com/agentre-hub/agentre/internal/repository/llm_provider_repo"
 	"github.com/agentre-hub/agentre/internal/repository/project_repo"
+	"github.com/agentre-hub/agentre/internal/repository/transcript_repo"
 	"github.com/agentre-hub/agentre/internal/service/chat_svc/goal"
 	"github.com/agentre-hub/agentre/internal/service/chat_svc/ipc"
 	"github.com/agentre-hub/agentre/internal/service/chat_svc/remotepool"
@@ -614,11 +615,11 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 	// 读路径是「元数据全量 + 块按需取」(决策 6,**不是**历史截断):元数据一条不少,
 	// 正文只取最近一个窗口。窗口外的正文有两条按需取回的路 —— 向上滚动走
 	// LoadMessageBlocks,派生视图走 LoadSessionBlocksByType 的按类型点查。
-	msgs, err := chat_repo.Message().ListMeta(ctx, sess.ID)
+	msgs, err := transcript_repo.Message().ListMeta(ctx, sess.ID)
 	if err != nil {
 		return nil, operationFailedWithCause(ctx, err)
 	}
-	if err := chat_repo.Message().FillBlocks(ctx, transcriptWindow(msgs)); err != nil {
+	if err := transcript_repo.Message().FillBlocks(ctx, transcriptWindow(msgs)); err != nil {
 		return nil, operationFailedWithCause(ctx, err)
 	}
 	resp := &LoadSessionResponse{
@@ -1713,7 +1714,7 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
 	}
 
-	target, err := chat_repo.Message().Find(ctx, req.MessageID)
+	target, err := transcript_repo.Message().Find(ctx, req.MessageID)
 	if err != nil {
 		return nil, operationFailedWithCause(ctx, err)
 	}
@@ -1739,7 +1740,7 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 		}
 	}()
 	if gate.reconciled {
-		target, err = chat_repo.Message().Find(ctx, req.MessageID)
+		target, err = transcript_repo.Message().Find(ctx, req.MessageID)
 		if err != nil {
 			return nil, operationFailedWithCause(ctx, err)
 		}
@@ -1755,7 +1756,7 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 	}
 
 	// 找紧邻 target 之前的最后一条 user 消息（按 seq）。
-	all, err := chat_repo.Message().List(ctx, sess.ID)
+	all, err := transcript_repo.Message().List(ctx, sess.ID)
 	if err != nil {
 		return nil, operationFailedWithCause(ctx, err)
 	}
@@ -1787,7 +1788,7 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 	anchorSeq := userAnchor.Seq
 	var replacement *transcriptReplacementLifecycle
 	preTx := func(txCtx context.Context) error {
-		_, derr := chat_repo.Message().DeleteFromSeq(txCtx, sess.ID, anchorSeq)
+		_, derr := transcript_repo.Message().DeleteFromSeq(txCtx, sess.ID, anchorSeq)
 		return derr
 	}
 	if be.IsPiAgent() {
@@ -1834,7 +1835,7 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
 	}
 
-	target, err := chat_repo.Message().Find(ctx, req.MessageID)
+	target, err := transcript_repo.Message().Find(ctx, req.MessageID)
 	if err != nil {
 		return nil, operationFailedWithCause(ctx, err)
 	}
@@ -1860,7 +1861,7 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 		}
 	}()
 	if gate.reconciled {
-		target, err = chat_repo.Message().Find(ctx, req.MessageID)
+		target, err = transcript_repo.Message().Find(ctx, req.MessageID)
 		if err != nil {
 			return nil, operationFailedWithCause(ctx, err)
 		}
@@ -1891,7 +1892,7 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 	anchorSeq := target.Seq
 	var replacement *transcriptReplacementLifecycle
 	preTx := func(txCtx context.Context) error {
-		_, derr := chat_repo.Message().DeleteFromSeq(txCtx, sess.ID, anchorSeq)
+		_, derr := transcript_repo.Message().DeleteFromSeq(txCtx, sess.ID, anchorSeq)
 		return derr
 	}
 	if be.IsPiAgent() {
@@ -2109,12 +2110,12 @@ func (s *chatSvc) startCompactTurn(
 
 	if err := db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
 		txCtx := db.WithContextDB(ctx, tx)
-		nextSeq, err := chat_repo.Message().NextSeq(txCtx, sess.ID)
+		nextSeq, err := transcript_repo.Message().NextSeq(txCtx, sess.ID)
 		if err != nil {
 			return err
 		}
 		assistantMsg.Seq = nextSeq
-		if err := chat_repo.Message().Create(txCtx, assistantMsg); err != nil {
+		if err := transcript_repo.Message().Create(txCtx, assistantMsg); err != nil {
 			return err
 		}
 		sess.AgentStatus = "running"
@@ -2460,7 +2461,7 @@ func (s *chatSvc) buildRunRequest(
 	}
 	if be.IsBuiltin() {
 		// builtin 没有持久化 session — 把历史从 chat_messages 重建后透传。
-		msgs, err := chat_repo.Message().List(ctx, sess.ID)
+		msgs, err := transcript_repo.Message().List(ctx, sess.ID)
 		if err != nil {
 			return agentruntime.RunRequest{}, err
 		}
@@ -2548,16 +2549,16 @@ func (s *chatSvc) persistUserAnchor(
 	}
 	userMsg.ForkAnchor = anchor
 	if !hardFailure {
-		_ = chat_repo.Message().Update(ctx, userMsg)
+		_ = transcript_repo.Message().Update(ctx, userMsg)
 		return nil
 	}
-	if err := chat_repo.Message().Update(ctx, userMsg); err != nil {
+	if err := transcript_repo.Message().Update(ctx, userMsg); err != nil {
 		logger.Ctx(ctx).Warn("chat_svc.persistUserAnchor: message update failed, retrying",
 			zap.Int64("sessionId", userMsg.SessionID),
 			zap.Int64("messageId", userMsg.ID),
 			zap.String("forkAnchor", userMsg.ForkAnchor),
 			zap.Error(err))
-		if retryErr := chat_repo.Message().Update(ctx, userMsg); retryErr != nil {
+		if retryErr := transcript_repo.Message().Update(ctx, userMsg); retryErr != nil {
 			logger.Ctx(ctx).Error("chat_svc.persistUserAnchor: message update failed after retry",
 				zap.Int64("sessionId", userMsg.SessionID),
 				zap.Int64("messageId", userMsg.ID),
@@ -2707,16 +2708,16 @@ func (s *chatSvc) persistAutoContinueTurn(
 
 	if err := db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
 		txCtx := db.WithContextDB(ctx, tx)
-		nextSeq, err := chat_repo.Message().NextSeq(txCtx, sess.ID)
+		nextSeq, err := transcript_repo.Message().NextSeq(txCtx, sess.ID)
 		if err != nil {
 			return err
 		}
 		newUser.Seq = nextSeq
-		if err := chat_repo.Message().Create(txCtx, newUser); err != nil {
+		if err := transcript_repo.Message().Create(txCtx, newUser); err != nil {
 			return err
 		}
 		newAssistant.Seq = nextSeq + 1
-		if err := chat_repo.Message().Create(txCtx, newAssistant); err != nil {
+		if err := transcript_repo.Message().Create(txCtx, newAssistant); err != nil {
 			return err
 		}
 		sess.LastMessageAt = time.Now().UnixMilli()
@@ -2805,10 +2806,10 @@ func (s *chatSvc) persistConsumedSteers(
 
 	if err := db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
 		txCtx := db.WithContextDB(ctx, tx)
-		if err := chat_repo.Message().Update(txCtx, current); err != nil {
+		if err := transcript_repo.Message().Update(txCtx, current); err != nil {
 			return err
 		}
-		nextSeq, err := chat_repo.Message().NextSeq(txCtx, sess.ID)
+		nextSeq, err := transcript_repo.Message().NextSeq(txCtx, sess.ID)
 		if err != nil {
 			return err
 		}
@@ -2825,13 +2826,13 @@ func (s *chatSvc) persistConsumedSteers(
 			if err := persistPeerMessageSource(msg, peerMessageSource{Device: steer.SourcePeer, Name: steer.SourceName}); err != nil {
 				return err
 			}
-			if err := chat_repo.Message().Create(txCtx, msg); err != nil {
+			if err := transcript_repo.Message().Create(txCtx, msg); err != nil {
 				return err
 			}
 			userMsgs = append(userMsgs, msg)
 		}
 		nextAssistant.Seq = nextSeq + len(userMsgs)
-		if err := chat_repo.Message().Create(txCtx, nextAssistant); err != nil {
+		if err := transcript_repo.Message().Create(txCtx, nextAssistant); err != nil {
 			return err
 		}
 		sess.LastMessageAt = time.Now().UnixMilli()

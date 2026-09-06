@@ -128,6 +128,22 @@ func (l *fakeFrameSeqLedger) Allocate(_ context.Context, sessionID int64, keys [
 	return seqs, nil
 }
 
+func (l *fakeFrameSeqLedger) DeleteBySession(_ context.Context, sessionID int64) (int64, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	kept := l.rows[:0]
+	var removed int64
+	for _, row := range l.rows {
+		if row.SessionID == sessionID {
+			removed++
+			continue
+		}
+		kept = append(kept, row)
+	}
+	l.rows = kept
+	return removed, nil
+}
+
 func (l *fakeFrameSeqLedger) rowCount() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -303,13 +319,13 @@ func TestProjectMessageListFrames_MatchesSharedProjection(t *testing.T) {
 	want, wantTimes, err := transcript.ProjectMessages("conv-1", messages)
 	require.NoError(t, err)
 
-	got, err := projectMessageListFrames("conv-1", messages)
+	got, err := transcript.ProjectKeyedMessages("conv-1", messages)
 	require.NoError(t, err)
 
 	require.Len(t, got, len(want))
 	for index := range want {
-		assert.Equal(t, want[index], got[index].frame, "第 %d 帧", index)
-		assert.Equal(t, wantTimes[index], got[index].createtime, "第 %d 帧的时刻", index)
+		assert.Equal(t, want[index], got[index].Frame, "第 %d 帧", index)
+		assert.Equal(t, wantTimes[index], got[index].Createtime, "第 %d 帧的时刻", index)
 	}
 }
 

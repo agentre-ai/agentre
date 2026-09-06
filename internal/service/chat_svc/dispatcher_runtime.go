@@ -8,7 +8,7 @@ import (
 
 	"github.com/agentre-hub/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-hub/agentre/internal/pkg/transcript/turn"
-	"github.com/agentre-hub/agentre/internal/repository/chat_repo"
+	"github.com/agentre-hub/agentre/internal/repository/transcript_repo"
 )
 
 // checkpointAssistantNew 中途 checkpoint(ToolResult 帧后调):把 acc.Snapshot
@@ -29,7 +29,7 @@ func (s *chatSvc) checkpointAssistantNew(ctx context.Context, msg *chat_entity.M
 			zap.Error(err))
 		return
 	}
-	if err := chat_repo.Message().CheckpointBlocks(context.WithoutCancel(ctx), msg, prevBlocksJSON); err != nil {
+	if err := transcript_repo.Message().CheckpointBlocks(context.WithoutCancel(ctx), msg, prevBlocksJSON); err != nil {
 		logger.Ctx(ctx).Warn("chat assistant checkpoint persist failed",
 			zap.Int64("messageID", msg.ID),
 			zap.Error(err))

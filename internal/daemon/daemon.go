@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -86,8 +85,8 @@ type Daemon struct {
 	// it through ctx (db.WithContextDB at the Run ctx boundary), never directly.
 	db *gorm.DB
 
-	// journal 是通知日志的写入口,Daemon 级一份(会话日志按 (对端, 会话) 分区,不随
-	// 连接生灭 —— 断连重连不重置任何序号)。
+	// transcript 是转录(消息行 + 块行)的写入口,Daemon 级一份 —— 生产者是活过连接
+	// 的 fanout goroutine,断连重连不重置任何东西。它取代了从前的通知日志(决策 1)。
 	transcript handlers.TranscriptPort
 
 	// sessionStore 是会话身份与生命周期的存取口,同样 Daemon 级。
@@ -1878,170 +1877,21 @@ func (t transcriptPurger) DeleteAll(ctx context.Context, peerFingerprint, peerSe
 	if err := transcript_repo.DeleteBlocksOfMessages(ctx, "session_id = ?", sessionID); err != nil {
 		return 0, err
 	}
+	// 台账也一并清:它给这条转录的每一帧记着号,转录没了那些行就没有主人。留着不会
+	// 让别的会话读错号(会话主键是 AUTOINCREMENT,不重用),但它是这条转录的一部分
+	// ——「身份行与它的全部转录一并消失」(规格「生命周期与删除」)。
+	if _, err := transcript_repo.FrameSeq().DeleteBySession(ctx, sessionID); err != nil {
+		return 0, err
+	}
 	return transcript_repo.Message().DeleteFromSeq(ctx, sessionID, 0)
 }
 
-// journalKeyedFrame is a durable frame together with the block/message
-// position that gives it a stable identity for numbering (the frame-seq
-// ledger). It mirrors desktop chat_svc's peer_frame_seq.go — the same "keyed
-// positional projection over the one shared block→frame projector" pattern —
-// kept host-local because the publication/dedup machinery wrapped around it
-// is host-owned (spec "复用边界": accumulator/projection are shared, the
-// emitter and its bookkeeping are not).
-type journalKeyedFrame struct {
-	key        transcript_repo.FrameKey
-	frame      wire.EventFrame
-	createtime int64
-}
-
-// journalMessageDerivedBlockIdx is the block index reserved for
-// message-level derived frames (UsageUpdate / ErrorEvent / Done) — they
-// don't belong to any block.
-const journalMessageDerivedBlockIdx = -1
-
-// journalMessageDerivedFrameCount is how many message-level frames a
-// single-block projection carries once its derived fields are cleared:
-// assistant messages always close with Done, user messages have none.
-func journalMessageDerivedFrameCount(m *transcript_entity.Message) int {
-	if m.Role == "assistant" {
-		return 1
-	}
-	return 0
-}
-
-// journalClearMessageDerivedFields zeroes the fields the message-level
-// derived frames read, so projecting one block in isolation doesn't also
-// emit a spurious UsageUpdate / ErrorEvent for it.
-func journalClearMessageDerivedFields(m *transcript_entity.Message) {
-	m.PromptTokens, m.CompletionTokens, m.CachedTokens = 0, 0, 0
-	m.CacheCreationTokens, m.ReasoningTokens, m.TotalInputTokens = 0, 0, 0
-	m.ErrorText = ""
-}
-
-// journalKeyedFramesForMessage splits one stored message into positionally
-// keyed durable frames: one projection per block (so a block's identity
-// never drifts when a later in-place patch inserts a frame after it), plus
-// the message-level derived frames keyed apart from any block. It calls the
-// one shared block→frame projector (transcript.ProjectMessages) instead of
-// re-deriving block semantics — a second switch over block types would trip
-// TestAccumulationAndProjectionHaveOneImplementation.
-func journalKeyedFramesForMessage(conversationID string, msg *transcript_entity.Message) ([]journalKeyedFrame, error) {
-	blocksJSON := msg.BlocksJSON
-	if blocksJSON == "" {
-		blocksJSON = "[]"
-	}
-	var raw []json.RawMessage
-	if err := json.Unmarshal([]byte(blocksJSON), &raw); err != nil {
-		return nil, fmt.Errorf("message %d blocks: %w", msg.ID, err)
-	}
-	out := make([]journalKeyedFrame, 0, len(raw)+1)
-	for idx, block := range raw {
-		single := *msg
-		single.BlocksJSON = "[" + string(block) + "]"
-		journalClearMessageDerivedFields(&single)
-		frames, createtimes, err := transcript.ProjectMessages(conversationID, []*transcript_entity.Message{&single})
-		if err != nil {
-			return nil, err
-		}
-		frames = frames[:len(frames)-journalMessageDerivedFrameCount(&single)]
-		for ordinal := range frames {
-			out = append(out, journalKeyedFrame{
-				key:        transcript_repo.FrameKey{MessageID: msg.ID, BlockIdx: idx, Ordinal: ordinal},
-				frame:      frames[ordinal],
-				createtime: createtimes[ordinal],
-			})
-		}
-	}
-	derived := *msg
-	derived.BlocksJSON = "[]"
-	frames, createtimes, err := transcript.ProjectMessages(conversationID, []*transcript_entity.Message{&derived})
-	if err != nil {
-		return nil, err
-	}
-	for ordinal := range frames {
-		out = append(out, journalKeyedFrame{
-			key:        transcript_repo.FrameKey{MessageID: msg.ID, BlockIdx: journalMessageDerivedBlockIdx, Ordinal: ordinal},
-			frame:      frames[ordinal],
-			createtime: createtimes[ordinal],
-		})
-	}
-	return out, nil
-}
-
-// journalKeyedFramesForSession splits an entire transcript into positionally
-// keyed durable frames, in the same message order the shared projector uses
-// (seq ASC, stable).
-func journalKeyedFramesForSession(conversationID string, messages []*transcript_entity.Message) ([]journalKeyedFrame, error) {
-	sorted := append([]*transcript_entity.Message(nil), messages...)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		if sorted[i] == nil {
-			return false
-		}
-		if sorted[j] == nil {
-			return true
-		}
-		return sorted[i].Seq < sorted[j].Seq
-	})
-	out := make([]journalKeyedFrame, 0, len(sorted))
-	for _, m := range sorted {
-		if m == nil {
-			continue
-		}
-		frames, err := journalKeyedFramesForMessage(conversationID, m)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, frames...)
-	}
-	return out, nil
-}
-
-// journalNumberFrames assigns each keyed frame its persistent seq: a
-// position already in the ledger keeps its number (a host restart must not
-// renumber unchanged content — spec "帧编号"), an unnumbered position is
-// allocated in projection order and persisted immediately (spec "两级帧与
-// 补齐": 存量对话在首次发布或补齐时惰性补齐). Frames come back sorted by
-// seq, matching real-time publish order.
-func journalNumberFrames(ctx context.Context, sessionID int64, keyed []journalKeyedFrame) ([]wire.EventFrame, []int64, error) {
-	ledger, err := transcript_repo.FrameSeq().Load(ctx, sessionID)
-	if err != nil {
-		return nil, nil, err
-	}
-	missing := make([]transcript_repo.FrameKey, 0, len(keyed))
-	missingAt := make([]int, 0, len(keyed))
-	for i := range keyed {
-		if seq, ok := ledger[keyed[i].key]; ok {
-			keyed[i].frame.Seq = seq
-			continue
-		}
-		missing = append(missing, keyed[i].key)
-		missingAt = append(missingAt, i)
-	}
-	seqs, err := transcript_repo.FrameSeq().Allocate(ctx, sessionID, missing)
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(seqs) != len(missing) {
-		return nil, nil, fmt.Errorf("frame seq allocation returned %d numbers for %d frames", len(seqs), len(missing))
-	}
-	for i, at := range missingAt {
-		keyed[at].frame.Seq = seqs[i]
-	}
-	sort.SliceStable(keyed, func(i, j int) bool { return keyed[i].frame.Seq < keyed[j].frame.Seq })
-	frames := make([]wire.EventFrame, len(keyed))
-	createtimes := make([]int64, len(keyed))
-	for i := range keyed {
-		frames[i] = keyed[i].frame
-		createtimes[i] = keyed[i].createtime
-	}
-	return frames, createtimes, nil
-}
-
 // journalReader 是补齐的读侧。它没有自己的存储:每次调用都现从 transcript_repo
-// 读出这条会话的消息与块,经共用投影器(internal/pkg/transcript)折成持久帧,
-// 缺号的位置当场惰性补齐并落库(与桌面端 chat_svc 的 attach 同一条纪律,那边在
-// numberPeerFramesLocked)。只投影持久帧:预览帧从不落库,补齐因此天然不带
-// 逐 token 的过程(规格「两级帧与补齐」)。
+// 读出这条会话的消息与块,经共用投影器(internal/pkg/transcript)折成持久帧。
+// 只投影持久帧:预览帧从不落库,补齐因此天然不带逐 token 的过程(规格「两级帧与补齐」)。
+//
+// 编号只在**真被补齐**时落库(durableFrames);清单那条只读探测按台账预测,不写一行
+// —— 「未被访问的对话不付出任何代价」(规格「帧编号」)。
 type journalReader struct{ db *gorm.DB }
 
 var _ handlers.JournalReaderPort = journalReader{}
@@ -2056,23 +1906,45 @@ func (j journalReader) localSessionID(ctx context.Context, peerFingerprint, peer
 	return row.ID, nil
 }
 
-// durableFrames 是 ListSince / LatestSeq / OldestSeq 共用的读取入口:解出本机会话、
-// 读回整段转录、投影并编号。三个方法读的必须是同一份计算结果,否则 List 报的高水位
-// 与 Pull 实际补到的末尾对不上,对端会把两者的差当成跳号。
-func (j journalReader) durableFrames(ctx context.Context, peerFingerprint, peerSessionID string) ([]wire.EventFrame, []int64, error) {
+// keyedFrames 是三个读方法共用的读取入口:解出本机会话、读回整段转录、投影出带位置
+// 的持久帧 —— **不取号**。三者必须读同一份计算结果,否则 List 报的高水位与 Pull 实际
+// 补到的末尾对不上,对端会把两者的差当成跳号。
+//
+// 取号(写库)刻意留在调用方:只有真被补齐的那一条路(ListSince)才惰性补齐编号,
+// 清单那条只读探测按台账预测(见 LatestSeq)。
+func (j journalReader) keyedFrames(ctx context.Context, peerFingerprint, peerSessionID string) (int64, []transcript.KeyedFrame, error) {
 	sessionID, err := j.localSessionID(ctx, peerFingerprint, peerSessionID)
 	if err != nil || sessionID == 0 {
-		return nil, nil, err
+		return 0, nil, err
 	}
 	messages, err := transcript_repo.Message().List(ctx, sessionID)
 	if err != nil {
-		return nil, nil, err
+		return 0, nil, err
 	}
-	keyed, err := journalKeyedFramesForSession(peerSessionID, messages)
+	keyed, err := transcript.ProjectKeyedMessages(peerSessionID, messages)
 	if err != nil {
+		return 0, nil, err
+	}
+	return sessionID, keyed, nil
+}
+
+// durableFrames 是补齐真正读的那一份:在 keyedFrames 之上把缺号的位置**当场补齐并
+// 落库**(与桌面端 chat_svc 的 attach 同一条纪律,那边在 numberPeerFramesLocked)。
+func (j journalReader) durableFrames(ctx context.Context, peerFingerprint, peerSessionID string) ([]wire.EventFrame, []int64, error) {
+	sessionID, keyed, err := j.keyedFrames(ctx, peerFingerprint, peerSessionID)
+	if err != nil || sessionID == 0 {
 		return nil, nil, err
 	}
-	return journalNumberFrames(ctx, sessionID, keyed)
+	if err := transcript_repo.NumberFrames(ctx, sessionID, keyed); err != nil {
+		return nil, nil, err
+	}
+	frames := make([]wire.EventFrame, len(keyed))
+	createtimes := make([]int64, len(keyed))
+	for i := range keyed {
+		frames[i] = keyed[i].Frame
+		createtimes[i] = keyed[i].Createtime
+	}
+	return frames, createtimes, nil
 }
 
 func (j journalReader) ListSince(ctx context.Context, peerFingerprint, peerSessionID string, cursor int64, limit int) ([]handlers.JournalRow, bool, error) {
@@ -2104,13 +1976,19 @@ func (j journalReader) ListSince(ctx context.Context, peerFingerprint, peerSessi
 	return rows, hasMore, nil
 }
 
+// LatestSeq 报这条会话的持久编号计数器此刻的末尾(规格「生命周期与删除」:会话列表
+// 报出的「最新 seq」来源从 journal 的 MAX(seq) 换成持久编号计数器)。
+//
+// 它**只读不写**:未编号的帧按「真去分配一次会拿到什么号」预测(PredictLatestSeq),
+// 而不是就地补齐编号。清单 RPC 是对端每代连接开轮前的一次探测,拿它给每一条对话
+// 补齐编号会让「未被访问的对话不付出任何代价」当场破掉。
 func (j journalReader) LatestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error) {
 	ctx = dbpkg.WithContextDB(ctx, j.db)
-	frames, _, err := j.durableFrames(ctx, peerFingerprint, peerSessionID)
-	if err != nil || len(frames) == 0 {
+	sessionID, keyed, err := j.keyedFrames(ctx, peerFingerprint, peerSessionID)
+	if err != nil || sessionID == 0 || len(keyed) == 0 {
 		return 0, err
 	}
-	return frames[len(frames)-1].Seq, nil
+	return transcript_repo.PredictLatestSeq(ctx, sessionID, keyed)
 }
 
 // OldestSeq 报这条会话现存最老的持久帧号。当前版本从不回收帧(决策 8「永不回收」
@@ -2118,8 +1996,8 @@ func (j journalReader) LatestSeq(ctx context.Context, peerFingerprint, peerSessi
 // PullPeerSession 同一条判据。
 func (j journalReader) OldestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error) {
 	ctx = dbpkg.WithContextDB(ctx, j.db)
-	frames, _, err := j.durableFrames(ctx, peerFingerprint, peerSessionID)
-	if err != nil || len(frames) == 0 {
+	_, keyed, err := j.keyedFrames(ctx, peerFingerprint, peerSessionID)
+	if err != nil || len(keyed) == 0 {
 		return 0, err
 	}
 	return 1, nil
