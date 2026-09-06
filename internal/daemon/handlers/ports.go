@@ -10,6 +10,7 @@ import (
 	"github.com/agentre-hub/agentre/internal/daemon/state"
 	"github.com/agentre-hub/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-hub/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-hub/agentre/internal/model/entity/transcript_entity"
 	"github.com/agentre-hub/agentre/pkg/wire/agentrewire"
 )
 
@@ -40,24 +41,31 @@ type NotifierPort interface {
 	Request(ctx context.Context, method string, params any, result any) error
 }
 
-// JournalPort 落库一条「本该发给客户端的通知」,返回库为它分配的 seq。
+// TranscriptPort 把这台机器上跑出来的转录落进库:与桌面端**同形**的消息行 + 块行
+// (决策 1 / 8)。它取代了从前的通知日志 —— 同一段内容不再有第二种存储形态,
+// daemon_notification_journal 已经退役。
 //
-// 它是「先落库，后推送」的接缝：会话通知的发送方先调 Append 拿到 seq，成功后才推送。
-// Append 返回 error 时 seq 不推进、该条通知也不推送，因此日志里的 seq 连续无洞 ——
-// 客户端拉到的连续 seq 就是完整序列。
+// 三个方法就是一轮转录的三个时刻:
 //
-// 会话身份是 (peerFingerprint, peerSessionID) 的组合:会话 id 是各客户端本地自增的,
-// 不同客户端必然重号。payload 是那条通知的 params 原样、且**不含 seq**；seq 是
-// 日志行自己的属性,推送时(实时与重连补齐同样)才盖到帧上。
+//   - StartTurn:起手。把发起这一轮的用户消息落成一条 user 消息行,并建一条空的
+//     assistant 消息行交回来。会话身份仍是 conversation_id;它到本机数字主键的翻译
+//     在实现里(决策 9),handlers 这一层不认识那个数字。
+//   - Checkpoint:轮内。每个 ToolResult(以及待决策的提出与作答等定稿时刻)之后一次,
+//     只写变化的块行。**在途那一轮抗崩溃只靠它**,不另立 WAL(决策 5)——再立一本
+//     「在途帧日志」就是把刚退役的通知日志换个名字请回来。
+//   - FinishTurn:收口。正文定稿 + 这一轮的模型 / 用量 / 计时 / 错误一起落库。
 //
-// 实现挂在 Daemon 级(一个 daemon 一份库),不是 per-connection —— 断连重连不该重置任何
-// 序号,见 daemon.bindConn 的注释。
+// 交回并在轮内一路带着的是**实体本身**,与桌面端 chat_svc 手里那条 assistantMsg 同形:
+// 这一轮的模型 / 用量 / 计时 / 错误由调用方就地写在它上面,收口时随正文一起落库。
+// 换成「按 id 传几个标量」会逼实现在每次 checkpoint 前把整条消息连正文读回来,而
+// checkpoint 是每个 ToolResult 一次的高频路径。
 //
-// 「某会话最新的 seq」的唯一真相源是通知日志本身(该会话的 MAX(seq),仓储的原子分配语句
-// 读的就是它)。会话表上不存第二份:那样的冗余列一旦与日志对不上,客户端的游标就会指向
-// 一个日志里并不存在的位置。
-type JournalPort interface {
-	Append(ctx context.Context, peerFingerprint, peerSessionID string, payload []byte) (seq int64, err error)
+// 实现挂在 Daemon 级(一个 daemon 一份库),不是 per-connection:转录的生产者是活过
+// 连接的 fanout goroutine。
+type TranscriptPort interface {
+	StartTurn(ctx context.Context, conversationID, userText string) (*transcript_entity.Message, error)
+	Checkpoint(ctx context.Context, m *transcript_entity.Message, prevBlocksJSON string) error
+	FinishTurn(ctx context.Context, m *transcript_entity.Message) error
 }
 
 // DBStat 是 agentred 自己那个库此刻的落盘事实:文件在哪、占了多少字节。
@@ -205,14 +213,14 @@ type SessionReasoningEffortPort interface {
 	SetReasoningEffort(ctx context.Context, peerFingerprint, peerSessionID, reasoningEffort string) (int64, error)
 }
 
-// JournalPurgePort 清空某会话的**全部**通知日志,返回删除行数。
+// TranscriptPurgePort 删掉某会话的**全部**转录(消息行 + 块行),返回删除的消息行数。
 //
-// 它是会话删除的另一半:只删会话行会留下一段没有主人的转录,而会话 id 是各客户端
-// 本地自增、会被复用的 —— 那段旧日志下一次就会被当成新会话的历史拉走。
+// 它是会话删除的另一半:只删会话身份行会留下一段没有主人的转录,而会话号是各客户端
+// 本地铸的 —— 那段旧转录下一次就会被当成新会话的历史读走。
 //
-// 与 JournalPort(写一条)/ JournalReaderPort(读)三者分开:一条路径只做一件事,
-// 而这条是唯一一条会让已落库的通知消失的路径。
-type JournalPurgePort interface {
+// 与写入侧(TranscriptPort)分开声明是 ISP:一条路径只做一件事,而这条是唯一一条会让
+// 已落库的转录消失的路径。
+type TranscriptPurgePort interface {
 	DeleteAll(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error)
 }
 
@@ -235,8 +243,8 @@ type SteerSourcePort interface {
 	Forget(queuedID string)
 }
 
-// JournalRow 是通知日志里的一行。Payload 是那条通知的 params 原样、**不含 seq**
-// (见 JournalPort)。
+// JournalRow 是补齐交出的一行。Payload 是那条通知的 params 原样、**不含 seq**;
+// seq 是行自己的属性,推送时才盖到帧上。
 type JournalRow struct {
 	Seq     int64
 	Payload []byte
@@ -247,8 +255,11 @@ type JournalRow struct {
 	Createtime int64
 }
 
-// JournalReaderPort 是通知日志的读出口:增量拉取与「最新 seq」。它与 JournalPort
+// JournalReaderPort 是补齐的读出口:增量拉取与「最新 seq」。它与 TranscriptPort
 // (写)分开声明是 ISP —— 跑一轮执行的一侧只写不读,补齐的一侧只读不写。
+//
+// 通知日志退役之后它的**数据源**换成了持久化的转录(块 → 帧的投影 + 帧编号台账),
+// 契约不变。换源本身是这一轮下一步(规格「两级帧与补齐」)的事。
 type JournalReaderPort interface {
 	ListSince(ctx context.Context, peerFingerprint, peerSessionID string, cursor int64, limit int) (rows []JournalRow, hasMore bool, err error)
 	LatestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error)

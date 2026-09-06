@@ -42,6 +42,7 @@ import (
 	"github.com/agentre-hub/agentre/internal/pkg/code"
 	"github.com/agentre-hub/agentre/internal/pkg/httpgateway"
 	"github.com/agentre-hub/agentre/internal/pkg/llmcatalog"
+	"github.com/agentre-hub/agentre/internal/pkg/transcript"
 	chatblocks "github.com/agentre-hub/agentre/internal/pkg/transcript/blocks"
 	"github.com/agentre-hub/agentre/internal/pkg/transcript/turn"
 	"github.com/agentre-hub/agentre/internal/repository/agent_backend_repo"
@@ -2661,18 +2662,10 @@ func eventShowsProgressAfterError(ev agentruntime.Event) bool {
 	}
 }
 
+// shouldCheckpointAssistantAfterEvent 转调共用的那一份(transcript.ShouldCheckpointAfter):
+// 「哪一帧之后 checkpoint」在两个宿主上必须是同一个判断,agentred 的 fanout 调的就是它。
 func shouldCheckpointAssistantAfterEvent(ev agentruntime.Event) bool {
-	switch ev.(type) {
-	case agentruntime.ToolResult,
-		agentruntime.UserAskRequest,
-		agentruntime.UserAskResolved,
-		agentruntime.ToolPermissionRequest,
-		agentruntime.ToolPermissionResolved,
-		agentruntime.PlanUpdated:
-		return true
-	default:
-		return false
-	}
+	return transcript.ShouldCheckpointAfter(ev)
 }
 
 // persistAutoContinueTurn 把 turn 结束时 DrainPending 取到的排队消息合并成一条

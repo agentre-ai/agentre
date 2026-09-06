@@ -28,10 +28,10 @@ import (
 	"github.com/agentre-hub/agentre/internal/daemon/pairing"
 	"github.com/agentre-hub/agentre/internal/daemon/protorpc"
 	"github.com/agentre-hub/agentre/internal/daemon/relaytransport"
-	"github.com/agentre-hub/agentre/internal/daemon/repository/notification_repo"
 	"github.com/agentre-hub/agentre/internal/daemon/repository/session_repo"
 	"github.com/agentre-hub/agentre/internal/daemon/sessions"
 	"github.com/agentre-hub/agentre/internal/daemon/state"
+	"github.com/agentre-hub/agentre/internal/model/entity/transcript_entity"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime/runtimes/remote/protowire"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
@@ -39,6 +39,8 @@ import (
 	"github.com/agentre-hub/agentre/internal/pkg/pty"
 	"github.com/agentre-hub/agentre/internal/pkg/pty/local"
 	"github.com/agentre-hub/agentre/internal/pkg/syncwire"
+	"github.com/agentre-hub/agentre/internal/pkg/transcript/turn"
+	"github.com/agentre-hub/agentre/internal/repository/transcript_repo"
 	"github.com/agentre-hub/agentre/pkg/wire/agentrewire"
 )
 
@@ -84,7 +86,7 @@ type Daemon struct {
 
 	// journal 是通知日志的写入口,Daemon 级一份(会话日志按 (对端, 会话) 分区,不随
 	// 连接生灭 —— 断连重连不重置任何序号)。
-	journal handlers.JournalPort
+	transcript handlers.TranscriptPort
 
 	// sessionStore 是会话身份与生命周期的存取口,同样 Daemon 级。
 	sessionStore daemonSessionStore
@@ -749,8 +751,10 @@ func New(opts Options) (*Daemon, error) {
 	// agentred 的组装根,位置对应桌面端 internal/bootstrap/cago.go 里 RunMigrations
 	// 之后的那批 RegisterXxx。实现本身无状态(句柄经 ctx 传),同进程多个 Daemon
 	// 注册同一个实现互不干扰。
-	notification_repo.RegisterNotification(notification_repo.NewNotification())
 	session_repo.RegisterSession(session_repo.NewSession())
+	// 转录(消息 + 块)与桌面端共用同一份仓储实现(决策 8):两个进程各一个库,
+	// 句柄经 ctx 传,所以同一份实现在这里注册一次即可。
+	transcript_repo.RegisterMessage(transcript_repo.NewMessage())
 	// R10:daemon 启动时把库里全部非终态会话标记为已中断。它们的子进程随上一个 daemon
 	// 进程消亡了,不扫的话客户端重连后会看到一批 running 的僵尸会话、接管上去无限期等待。
 	// 清扫失败即 New 失败:扫不动说明库本身有问题,而通知落库也走同一个库,让 daemon
@@ -782,7 +786,7 @@ func New(opts Options) (*Daemon, error) {
 
 	d := &Daemon{
 		opts: opts, state: st, db: gormDB,
-		journal:      notificationJournal{db: gormDB},
+		transcript:   transcriptStore{db: gormDB},
 		sessionStore: daemonSessionStore{db: gormDB},
 		pairing:      pm, ratelim: rl,
 		auth: auth, protobufRegistry: protorpc.NewRegistry(),
@@ -807,7 +811,7 @@ func New(opts Options) (*Daemon, error) {
 	})
 	d.catchup = handlers.NewSessionCatchupHandlers(handlers.SessionCatchupDeps{
 		Sessions:          d.sessionStore,
-		Journal:           journalReader{db: gormDB},
+		Journal:           journalReader{},
 		LoggedInAccountID: d.loggedInAccountID,
 	})
 	d.activity = handlers.NewActivityHandlers(handlers.ActivityDeps{Sessions: d.sessionStore})
@@ -821,7 +825,7 @@ func New(opts Options) (*Daemon, error) {
 	})
 	d.sessionDelete = handlers.NewSessionDeleteHandlers(handlers.SessionDeleteDeps{
 		Sessions:          d.sessionStore,
-		Journal:           journalPurger{db: gormDB},
+		Transcript:        transcriptPurger{db: gormDB},
 		LoggedInAccountID: d.loggedInAccountID,
 	})
 	d.gateway = httpgateway.New("127.0.0.1", 0, NewProviderLookup(st))
@@ -1417,9 +1421,9 @@ func (d *Daemon) newRuntimeHandlers() *handlers.RuntimeHandlers {
 	return handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
 		// 会话通知的推送目标在发送那一刻按会话解析,不捕获 n:RuntimeHandlers 是
 		// per-conn 的,而它起的 fanout goroutine 会活过这条连接。
-		NotifyFor: d.notifierForPeer,
-		Journal:   d.journal,
-		Sessions:  d.sessionStore,
+		NotifyFor:  d.notifierForPeer,
+		Transcript: d.transcript,
+		Sessions:   d.sessionStore,
 		// R17:queuedID → 提交方对端映射是 Daemon 级的 —— Steer RPC 可能落在任意一条
 		// 连接(同设备多条连接 / 他端接管),而 SteerConsumed 由发起会话那条连接的
 		// fanout 发出,两者必须共享同一张表。
@@ -1568,24 +1572,66 @@ func (d *Daemon) DBStat() handlers.DBStat {
 
 var _ handlers.DBStatPort = (*Daemon)(nil)
 
-// notificationJournal 是 handlers.JournalPort 的 daemon 级实现:把「本该发出的通知」
-// 写进本实例的 daemon_notification_journal,seq 由仓储在同一条语句里分配。
+// transcriptStore 是 handlers.TranscriptPort 的 daemon 级实现:把一轮执行的转录写进
+// 本实例的库,用的是与桌面端**同一份**消息与块仓储(transcript_repo,决策 8)。
 //
-// 它自己往 ctx 上注入本 Daemon 的 db 句柄:通知的生产者是脱离请求 ctx 的 fanout
+// 它自己往 ctx 上注入本 Daemon 的 db 句柄:转录的生产者是脱离请求 ctx 的 fanout
 // goroutine(它可能拿到的只是一个裸 ctx),而 daemon 故意不写 db.SetDefault(同进程
 // 多个 Daemon 会互相串库,见 Daemon.db 注释),所以句柄只能从这里给。
-type notificationJournal struct{ db *gorm.DB }
+type transcriptStore struct{ db *gorm.DB }
 
-func (j notificationJournal) Append(ctx context.Context, peerFingerprint, peerSessionID string, payload []byte) (int64, error) {
-	row := &notification_repo.NotificationLog{
-		ConversationID:  peerSessionID,
-		PeerFingerprint: peerFingerprint,
-		Payload:         string(payload),
+var _ handlers.TranscriptPort = transcriptStore{}
+
+// StartTurn 落下用户那一行(userText 为空则跳过)并建一条空的 assistant 消息。
+//
+// 会话身份是 conversation_id,而共用的消息实体按**本机数字主键**挂靠(决策 9)——
+// 翻译在这里做一次,handlers 那一层不认识那个数字。会话行还没建成时交回
+// (nil, nil):这一轮的转录就此不落,而不是拿它陪葬打断执行。
+func (t transcriptStore) StartTurn(
+	ctx context.Context, conversationID, userText string,
+) (*transcript_entity.Message, error) {
+	ctx = dbpkg.WithContextDB(ctx, t.db)
+	sessionID, err := session_repo.Session().LocalID(ctx, conversationID)
+	if err != nil {
+		return nil, err
 	}
-	if err := notification_repo.Notification().Append(dbpkg.WithContextDB(ctx, j.db), row); err != nil {
-		return 0, err
+	if sessionID == 0 {
+		return nil, nil
 	}
-	return row.Seq, nil
+	seq, err := transcript_repo.Message().NextSeq(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if userText != "" {
+		// 用户那一行的正文也走共用的累积器:一句纯文本落成什么块,两个宿主必须一致。
+		acc := turn.New()
+		acc.AddText(userText)
+		user := &transcript_entity.Message{SessionID: sessionID, Role: "user", Seq: seq}
+		if err := user.SetBlocks(acc.Finalize()); err != nil {
+			return nil, err
+		}
+		if err := transcript_repo.Message().Create(ctx, user); err != nil {
+			return nil, err
+		}
+		seq++
+	}
+	assistant := &transcript_entity.Message{
+		SessionID: sessionID, Role: "assistant", Seq: seq, BlocksJSON: "[]",
+	}
+	if err := transcript_repo.Message().Create(ctx, assistant); err != nil {
+		return nil, err
+	}
+	return assistant, nil
+}
+
+func (t transcriptStore) Checkpoint(
+	ctx context.Context, m *transcript_entity.Message, prevBlocksJSON string,
+) error {
+	return transcript_repo.Message().CheckpointBlocks(dbpkg.WithContextDB(ctx, t.db), m, prevBlocksJSON)
+}
+
+func (t transcriptStore) FinishTurn(ctx context.Context, m *transcript_entity.Message) error {
+	return transcript_repo.Message().Update(dbpkg.WithContextDB(ctx, t.db), m)
 }
 
 // daemonSessionStore 同时是 handlers 的会话生命周期写入口与查询出口:两个接口在
@@ -1808,52 +1854,49 @@ func sessionRecordOf(row *session_repo.DaemonSession) handlers.SessionRecord {
 	}
 }
 
-// journalPurger 是通知日志的删除侧(会话删除用)。它与 notificationJournal(写一条)
-// 和 journalReader(读)分开:整段清空是唯一一条会让已落库的通知消失的路径,handlers
-// 那边也按 ISP 单独声明了它(JournalPurgePort)。
-type journalPurger struct{ db *gorm.DB }
+// transcriptPurger 是转录的删除侧(会话删除用)。它与写入侧(transcriptStore)分开:
+// 整段清空是唯一一条会让已落库的转录消失的路径,handlers 那边也按 ISP 单独声明了它
+// (TranscriptPurgePort)。
+//
+// 块行必须先于宿主消息删除,否则会在两条语句之间短暂变成孤儿 —— 顺序由
+// transcript_repo 的导出口收口,这里不自己重写一份。
+type transcriptPurger struct{ db *gorm.DB }
 
-var _ handlers.JournalPurgePort = journalPurger{}
+var _ handlers.TranscriptPurgePort = transcriptPurger{}
 
-func (j journalPurger) DeleteAll(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error) {
-	return notification_repo.Notification().DeleteAll(
-		dbpkg.WithContextDB(ctx, j.db), peerFingerprint, peerSessionID)
+func (t transcriptPurger) DeleteAll(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error) {
+	ctx = dbpkg.WithContextDB(ctx, t.db)
+	// 按对端收窄:这一层就是权限边界本身,一个对端点名别人的对话号必须删不掉一行。
+	// 走 Find(它按对端收窄)而不是 LocalID(它不收窄,服务的是本机写入侧)。
+	row, err := session_repo.Session().Find(ctx, peerFingerprint, peerSessionID)
+	if err != nil || row == nil || row.ID == 0 {
+		return 0, err
+	}
+	sessionID := row.ID
+	if err := transcript_repo.DeleteBlocksOfMessages(ctx, "session_id = ?", sessionID); err != nil {
+		return 0, err
+	}
+	return transcript_repo.Message().DeleteFromSeq(ctx, sessionID, 0)
 }
 
-// journalReader 是通知日志的读侧(补齐用),写侧见 notificationJournal。
-type journalReader struct{ db *gorm.DB }
+// journalReader 是补齐的读侧。通知日志退役之后它**还没有**换上新的数据源:
+// 补齐要读的是块投影出的持久帧 + 帧编号台账,那是这一轮下一步的事(规格
+// 「两级帧与补齐」)。在那之前它如实交回空:交回一段读不回来的旧日志,或者凭空
+// 编一个号,都会让对端的游标指向一个宿主认不回来的位置。
+type journalReader struct{}
 
 var _ handlers.JournalReaderPort = journalReader{}
 
-func (j journalReader) ListSince(ctx context.Context, peerFingerprint, peerSessionID string, cursor int64, limit int) ([]handlers.JournalRow, bool, error) {
-	rows, hasMore, err := notification_repo.Notification().ListSince(
-		dbpkg.WithContextDB(ctx, j.db), peerFingerprint, peerSessionID, cursor, limit)
-	if err != nil {
-		return nil, false, err
-	}
-	out := make([]handlers.JournalRow, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, handlers.JournalRow{
-			Seq:        row.Seq,
-			Payload:    []byte(row.Payload),
-			Createtime: row.Createtime,
-		})
-	}
-	return out, hasMore, nil
+func (journalReader) ListSince(context.Context, string, string, int64, int) ([]handlers.JournalRow, bool, error) {
+	return nil, false, nil
 }
 
-func (j journalReader) LatestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error) {
-	return notification_repo.Notification().LatestSeq(
-		dbpkg.WithContextDB(ctx, j.db), peerFingerprint, peerSessionID)
-}
+func (journalReader) LatestSeq(context.Context, string, string) (int64, error) { return 0, nil }
 
-func (j journalReader) OldestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error) {
-	return notification_repo.Notification().OldestSeq(
-		dbpkg.WithContextDB(ctx, j.db), peerFingerprint, peerSessionID)
-}
+func (journalReader) OldestSeq(context.Context, string, string) (int64, error) { return 0, nil }
 
-func (j journalReader) LatestSeqByPeer(ctx context.Context, peerFingerprint string) (map[string]int64, error) {
-	return notification_repo.Notification().LatestSeqByPeer(dbpkg.WithContextDB(ctx, j.db), peerFingerprint)
+func (journalReader) LatestSeqByPeer(context.Context, string) (map[string]int64, error) {
+	return map[string]int64{}, nil
 }
 
 // closeDB 关闭 openDB 拿到的句柄。只在 New 的失败路径上用:Daemon 构造失败时若不关,

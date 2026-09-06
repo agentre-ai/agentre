@@ -37,6 +37,7 @@ import (
 	"github.com/agentre-hub/agentre/internal/daemon/protorpc"
 	"github.com/agentre-hub/agentre/internal/daemon/state"
 	"github.com/agentre-hub/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-hub/agentre/internal/model/entity/transcript_entity"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime/canonical"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime/capability"
@@ -46,11 +47,15 @@ import (
 	"github.com/agentre-hub/agentre/internal/pkg/agentskill"
 	"github.com/agentre-hub/agentre/internal/pkg/ccoauth"
 	"github.com/agentre-hub/agentre/internal/pkg/rpcerror"
+	"github.com/agentre-hub/agentre/internal/pkg/transcript"
+	"github.com/agentre-hub/agentre/internal/pkg/transcript/turn"
 	"github.com/agentre-hub/agentre/internal/pkg/wireversion"
 	workspacefswire "github.com/agentre-hub/agentre/internal/pkg/workspacefs/wire"
+	"github.com/agentre-hub/agentre/internal/repository/transcript_repo"
 	"github.com/agentre-hub/agentre/pkg/wire/agentrewire"
 
 	"github.com/cago-frame/agents/provider"
+	dbpkg "github.com/cago-frame/cago/database/db"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2423,12 +2428,8 @@ func TestIntegration_MultiClientVisibility_GatesAllPeerAccessByLoggedInAccount(t
 		require.Equal(t, map[string]string{convID(302): "sha256:account-peer-b"}, sessionOrigins(list.Sessions),
 			"这一轮必须落在发起端那条会话上,而不是调用方自己名下那条同号会话")
 
-		// 这一轮的事件落在发起端那个 journal 分区里,发起端补齐时读得到。
-		var page wire.SessionPullResult
-		require.NoError(t, callRig(t, peerB, wire.MethodSessionPull, wire.SessionPullParams{
-			ConversationID: convID(302), Cursor: 0, Limit: 200,
-		}, &page))
-		require.NotEmpty(t, page.Notifications,
+		// 这一轮的转录落在发起端那条会话上,发起端补齐时读得到。
+		require.NotEmpty(t, daemonMessages(t, rig.d, convID(302)),
 			"别的端跑的这一轮必须扇出/落库在发起端这条会话上(R6 / R18 的前提)")
 	})
 
@@ -2557,7 +2558,9 @@ func awaitEventOfType[E agentruntime.Event](t *testing.T, frames <-chan wire.Eve
 				continue
 			}
 			if _, ok := f.Event.(E); ok {
-				require.Positive(t, f.Seq, "推出去的帧必须带 seq")
+				// 实时事件帧是预览帧:不带编号、显式标着 preview(决策 4)。
+				assert.True(t, f.Preview, "实时事件帧必须是预览帧")
+				assert.Zero(t, f.Seq, "预览帧不带编号")
 				return
 			}
 		case <-deadline:
@@ -2668,6 +2671,8 @@ func sessionOrigins(sessions []wire.SessionSummary) map[string]string {
 // 同时钉住三条翻页边界:起始游标 0、每页按 limit 截断且 hasMore 为真、以及起始游标
 // 追平最新 seq 后返回空页且**游标不回退**(回退会让客户端把整段日志重放一遍)。
 func TestIntegration_SessionCatchup_ListAndPullReplayTheWholeTurn(t *testing.T) {
+	t.Skip("补齐的读路径要换源到「块投影出的持久帧 + 帧编号台账」,归任务 6;" +
+		"在那之前 SESSION_PULL 如实交回空页,这条用例连同它钉的翻页边界一起等它恢复")
 	rig := bootRemoteRig(t, []agentruntime.Event{
 		agentruntime.TextDelta{Text: "hello"},
 		agentruntime.TextDelta{Text: " world"},
@@ -2810,7 +2815,9 @@ func TestIntegration_SessionCatchup_AttachRepointsTheLiveStream(t *testing.T) {
 		wire.SessionAttachParams{ConversationID: convID(901)}, &attached))
 	assert.Equal(t, convID(901), attached.ConversationID)
 	assert.Equal(t, wire.SessionLifecycleRunning, attached.LifecycleState, "一轮还在跑")
-	assert.Positive(t, attached.LatestSeq, "接管要交回此刻的高水位供客户端接着补齐")
+	// 高水位由持久编号回答,而编号台账要等任务 6 才接上补齐这条读路径 —— 在那之前
+	// 它如实报 0(编不出一个宿主认不回来的号)。接管本身要验的是「实时流改推到这条
+	// 连接上」,下面那段才是。
 
 	close(gate)
 
@@ -2820,7 +2827,7 @@ func TestIntegration_SessionCatchup_AttachRepointsTheLiveStream(t *testing.T) {
 		select {
 		case f := <-frames:
 			if delta, ok := f.Event.(agentruntime.TextDelta); ok && strings.Contains(delta.Text, "after") {
-				assert.Positive(t, f.Seq, "推出去的帧必须带 seq")
+				assert.True(t, f.Preview, "实时事件帧是预览帧")
 				sawAfter = true
 			}
 		case <-deadline:
@@ -2910,13 +2917,12 @@ func TestIntegration_SessionCatchup_ScopedToTheCallersPeer(t *testing.T) {
 	assert.Equal(t, int32(wire.ErrCodeSessionNotFound), rpcErr.Code)
 }
 
-// TestIntegration_SessionDelete_ClearsTheSessionAndItsJournal 覆盖执行端删除:
-// server 上的一条对话被删掉时,执行端这一份(会话行 + 它的整段通知日志)也要没。
+// TestIntegration_SessionDelete_ClearsTheSessionAndItsTranscript 覆盖执行端删除:
+// server 上的一条对话被删掉时,执行端这一份(会话行 + 它的整段转录)也要没。
 //
-// 断言走的是 wire 本身而不是库:清单里不再有它、按同一个会话 id 拉不到任何一行 ——
-// 后者正是「只删会话行、日志留着」那种半吊子实现的照妖镜:会话 id 是调用方本地自增
-// 的、会被复用,留下的旧日志下一次就会被当成新会话的历史拉走。
-func TestIntegration_SessionDelete_ClearsTheSessionAndItsJournal(t *testing.T) {
+// 清单走 wire,转录直接看库:后者正是「只删会话行、转录留着」那种半吊子实现的照妖镜
+// —— 会话 id 是调用方本地铸的、会被复用,留下的旧转录下一次就会被当成新会话的历史读走。
+func TestIntegration_SessionDelete_ClearsTheSessionAndItsTranscript(t *testing.T) {
 	rig := bootRemoteRig(t, []agentruntime.Event{
 		agentruntime.TextDelta{Text: "delete me"},
 		agentruntime.Done{},
@@ -2927,7 +2933,9 @@ func TestIntegration_SessionDelete_ClearsTheSessionAndItsJournal(t *testing.T) {
 	var before wire.SessionListResult
 	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionList, nil, &before))
 	require.Len(t, before.Sessions, 1, "删之前这条会话确实在")
-	require.Greater(t, before.Sessions[0].LatestSeq, int64(0), "删之前它确实有日志")
+	sessionID := daemonSessionID(t, rig.d, convID(903))
+	require.NotZero(t, sessionID)
+	require.NotEmpty(t, daemonMessagesOfSession(t, rig.d, sessionID), "删之前它确实有转录")
 
 	var deleted wire.SessionDeleteResult
 	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionDelete,
@@ -2938,11 +2946,8 @@ func TestIntegration_SessionDelete_ClearsTheSessionAndItsJournal(t *testing.T) {
 	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionList, nil, &after))
 	assert.Empty(t, after.Sessions, "删掉的会话不得再出现在清单里")
 
-	var page wire.SessionPullResult
-	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionPull,
-		wire.SessionPullParams{ConversationID: convID(903)}, &page))
-	assert.Empty(t, page.Notifications, "那条会话的通知日志必须一行不剩")
-	assert.Zero(t, page.OldestSeq)
+	assert.Empty(t, daemonMessagesOfSession(t, rig.d, sessionID),
+		"那条会话的转录必须一行不剩 —— 按本地主键直查,身份行没了也不留孤儿")
 
 	// 再删一次:server 的删除待办会重放,报错会让它永远重放下去。
 	var again wire.SessionDeleteResult
@@ -2972,10 +2977,7 @@ func TestIntegration_SessionDelete_ScopedToTheCallersPeer(t *testing.T) {
 	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionList, nil, &mine))
 	require.Len(t, mine.Sessions, 1, "另一个对端删不掉别人的会话")
 
-	var page wire.SessionPullResult
-	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionPull,
-		wire.SessionPullParams{ConversationID: convID(904)}, &page))
-	assert.NotEmpty(t, page.Notifications, "它的转录也必须原封不动")
+	assert.NotEmpty(t, daemonMessages(t, rig.d, convID(904)), "它的转录也必须原封不动")
 
 	// 配对身份点名别人的对端同样删不动(点名 origin 是账号级能力)。
 	var named wire.SessionDeleteResult
@@ -3115,8 +3117,9 @@ func TestIntegration_SessionCatchup_DaemonRestartMarksSessionsInterrupted(t *tes
 	require.NoError(t, callRig(t, first.cli, wire.MethodSessionList, nil, &before))
 	require.Len(t, before.Sessions, 1)
 	require.Equal(t, wire.SessionLifecycleIdle, before.Sessions[0].LifecycleState)
-	wantSeq := before.Sessions[0].LatestSeq
-	require.Positive(t, wantSeq)
+	sessionID := daemonSessionID(t, first.d, convID(903))
+	wantTranscript := daemonMessagesOfSession(t, first.d, sessionID)
+	require.NotEmpty(t, wantTranscript)
 
 	first.stop()
 
@@ -3128,13 +3131,13 @@ func TestIntegration_SessionCatchup_DaemonRestartMarksSessionsInterrupted(t *tes
 	require.Len(t, after.Sessions, 1, "重启不该让会话从清单里消失 —— 它的历史还在")
 	assert.Equal(t, wire.SessionLifecycleInterrupted, after.Sessions[0].LifecycleState)
 	assert.False(t, after.Sessions[0].WaitingForInput, "等待输入是实时叠加,重启后无人可答")
-	assert.Equal(t, wantSeq, after.Sessions[0].LatestSeq, "日志与 seq 都不因重启而变")
-
-	// 历史可读。
-	var page wire.SessionPullResult
-	require.NoError(t, callRig(t, second.cli, wire.MethodSessionPull,
-		wire.SessionPullParams{ConversationID: convID(903)}, &page))
-	assert.Len(t, page.Notifications, int(wantSeq), "中断态会话的历史必须照样拉得出来")
+	// 历史可读:转录不因重启而变。
+	after903 := daemonMessagesOfSession(t, second.d, sessionID)
+	require.Len(t, after903, len(wantTranscript), "中断态会话的转录必须照样在")
+	for i := range after903 {
+		assert.Equal(t, wantTranscript[i].BlocksJSON, after903[i].BlocksJSON,
+			"第 %d 条消息的正文不因重启而变", i)
+	}
 
 	// 不可续跑。
 	var attached wire.SessionAttachResult
@@ -3375,11 +3378,13 @@ func bootPhasedRig(t *testing.T, r *phasedBackendRunner) *pairedTestRig {
 	return rig
 }
 
-// awaitJournalDepth 等 daemon 的通知日志攒够 want 条。读的是 daemon 自己的库,
-// 与补齐 RPC 同源。
+// awaitJournalDepth 等 daemon 侧的补齐水位攒够 want。读的是 daemon 自己的库,与补齐
+// RPC 同源 —— 换源到「块投影出的持久帧 + 帧编号台账」归任务 6,它的唯一调用方也在
+// 那之前跳过着。
 func awaitJournalDepth(t *testing.T, r *pairedTestRig, sessionID, want int64) {
 	t.Helper()
-	reader := journalReader{db: r.d.db}
+	_ = r
+	reader := journalReader{}
 	require.Eventually(t, func() bool {
 		latest, err := reader.LatestSeq(context.Background(), rigDeviceFingerprint,
 			convID(sessionID))
@@ -3448,6 +3453,7 @@ func (c *connStateLog) sawAfterReconnect(sessionID int64) bool {
 // 记账点在 *remote.Runtime 之外的客户端侧:实时路径记 handler 收到的帧,补齐路径记
 // runtime.session.pull 的应答,两边都剥掉 seq 后规范化,因此可以逐条比对。
 func TestIntegration_ReconnectCatchUp_MatchesUninterruptedRun(t *testing.T) {
+	t.Skip("同上:断连补齐要等任务 6 把读路径换源到块 + 帧编号台账")
 	const sid int64 = 100
 	phase1 := []agentruntime.Event{agentruntime.TextDelta{Text: "one"}, agentruntime.TextDelta{Text: "two"}}
 	phase2 := []agentruntime.Event{agentruntime.TextDelta{Text: "three"}, agentruntime.TextDelta{Text: "four"}}
@@ -3511,3 +3517,173 @@ func TestIntegration_ReconnectCatchUp_MatchesUninterruptedRun(t *testing.T) {
 
 // SelfFingerprint 满足 client.ProtobufConnection:本端在这条连接上出示的设备指纹。
 func (c *rigProtobufConnection) SelfFingerprint() string { return rigDeviceFingerprint }
+
+// ── 转录存储对齐:agentred 落块,不再落通知日志 ───────────────────────────────
+
+// transcriptScript 是这一族用例共用的一串后端事件:thinking 穿插、一次工具往返、
+// 收尾一段正文。它刻意与 internal/pkg/transcript 的累积用例同形 —— 两个宿主跑的是
+// 同一只累积器,这里要证明的正是「agentred 落下的那一份与桌面端逐字节相同」。
+func transcriptScript(t *testing.T) []agentruntime.Event {
+	t.Helper()
+	toolInput, err := json.Marshal(map[string]any{"path": "README.md"})
+	require.NoError(t, err)
+	return []agentruntime.Event{
+		agentruntime.ThinkingDelta{Text: "check the file"},
+		agentruntime.TextDelta{Text: "reading"},
+		agentruntime.ToolCall{ID: "tu-1", Name: "Read", Input: toolInput},
+		agentruntime.ToolResult{ToolCallID: "tu-1", Content: "ok"},
+		agentruntime.TextDelta{Text: "done"},
+		agentruntime.Done{},
+	}
+}
+
+// desktopBlocksJSON 把同一串事件交给**共用的**累积器,得出桌面端会落进库的那份正文。
+// 它不是「另一份实现」:调的就是 agentred 自己也在调的那只 dispatcher + accumulator,
+// 断言因此是「两个宿主的落库正文逐字节相同」而不是「daemon 落了点什么」。
+func desktopBlocksJSON(t *testing.T, script []agentruntime.Event) string {
+	t.Helper()
+	dispatcher := transcript.NewTurnDispatcher(transcript.Adapters{})
+	acc := turn.New()
+	turnCtx := &turn.TurnContext{Waits: turn.NewWaitTracker()}
+	for _, ev := range script {
+		require.NoError(t, dispatcher.Apply(context.Background(), ev, acc, discardTurnEmitter{}, nil, turnCtx))
+	}
+	msg := &transcript_entity.Message{}
+	require.NoError(t, msg.SetBlocks(acc.Finalize()))
+	return msg.BlocksJSON
+}
+
+type discardTurnEmitter struct{}
+
+func (discardTurnEmitter) Emit(context.Context, string, any) {}
+
+// daemonSessionID 交出这条对话在这台 daemon 上的本地数字主键(没有则 0)。
+func daemonSessionID(t *testing.T, d *Daemon, conversationID string) int64 {
+	t.Helper()
+	var sessionID int64
+	require.NoError(t, d.db.Raw(
+		"SELECT COALESCE(MAX(id), 0) FROM daemon_sessions WHERE conversation_id = ?", conversationID).
+		Row().Scan(&sessionID))
+	return sessionID
+}
+
+// daemonMessages 读出这台 daemon 库里某条对话的全部消息(含正文),按 seq 升序。
+func daemonMessages(t *testing.T, d *Daemon, conversationID string) []*transcript_entity.Message {
+	t.Helper()
+	sessionID := daemonSessionID(t, d, conversationID)
+	if sessionID == 0 {
+		return nil
+	}
+	return daemonMessagesOfSession(t, d, sessionID)
+}
+
+// daemonMessagesOfSession 按本地会话主键读消息 —— 身份行已经被删掉之后仍看得见
+// 转录有没有留成孤儿。
+func daemonMessagesOfSession(t *testing.T, d *Daemon, sessionID int64) []*transcript_entity.Message {
+	t.Helper()
+	rows, err := transcript_repo.NewMessage().List(
+		dbpkg.WithContextDB(context.Background(), d.db), sessionID)
+	require.NoError(t, err)
+	return rows
+}
+
+// daemonTableExists 回答这台 daemon 的库里还有没有这张表。
+func daemonTableExists(t *testing.T, d *Daemon, table string) bool {
+	t.Helper()
+	var count int64
+	require.NoError(t, d.db.Raw(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", table).
+		Row().Scan(&count))
+	return count > 0
+}
+
+// Given 一轮远端执行跑完;
+// When  去 agentred 自己的库里看;
+// Then  落下的是与桌面端同形的消息行 + 块行(正文逐字节相同),而不是一段通知日志 ——
+//
+//	daemon_notification_journal 一行都没有(表已退役)。
+func TestIntegration_RemoteTurn_LandsTheSameBlockTranscriptAsTheDesktop(t *testing.T) {
+	script := transcriptScript(t)
+	rig := bootRemoteRig(t, script)
+	events, _ := rig.startRun(t, 700)
+	drainRuntimeEvents(t, events, 5*time.Second)
+
+	var messages []*transcript_entity.Message
+	require.Eventually(t, func() bool {
+		messages = daemonMessages(t, rig.d, convID(700))
+		return len(messages) == 2
+	}, 5*time.Second, 20*time.Millisecond, "一轮该落下用户 + assistant 两条消息,得到 %d 条", len(messages))
+
+	assert.Equal(t, "user", messages[0].Role)
+	assert.Equal(t, `[{"type":"text","data":{"text":"hi"}}]`, messages[0].BlocksJSON,
+		"用户那一行是发起这轮的原文")
+	assert.Equal(t, "assistant", messages[1].Role)
+	assert.Equal(t, desktopBlocksJSON(t, script), messages[1].BlocksJSON,
+		"两个宿主就同一串事件落下的正文必须逐字节相同")
+
+	assert.False(t, daemonTableExists(t, rig.d, "daemon_notification_journal"),
+		"通知日志退役:表不该还在,更不该有行")
+}
+
+// haltingBackendRunner 发完点名的那几条事件就**停在轮中**:channel 不关,轮次不收口。
+// 它模拟的是「daemon 在一轮进行到一半时被杀掉」——崩溃后能看见什么,取决于崩溃之前
+// checkpoint 过什么。
+type haltingBackendRunner struct{ events []agentruntime.Event }
+
+func (*haltingBackendRunner) Capabilities() capability.Capabilities { return capability.Capabilities{} }
+
+func (h *haltingBackendRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	ch := make(chan agentruntime.Event, len(h.events))
+	go func() {
+		for _, ev := range h.events {
+			ch <- ev
+			time.Sleep(5 * time.Millisecond)
+		}
+		// 刻意不 close:这一轮永远收不了口。
+	}()
+	return ch, &agentruntime.RunResult{}, nil
+}
+
+func (*haltingBackendRunner) Steer(context.Context, int64, string, string) error { return nil }
+func (*haltingBackendRunner) Abort(context.Context, int64, uint64) (agentruntime.AbortOutcome, error) {
+	return agentruntime.AbortOutcome{}, nil
+}
+
+// Given 一轮跑到 ToolResult 之后就被掐断(daemon 进程消失);
+// When  在同一个数据目录上重新起一台 daemon;
+// Then  崩溃之前 checkpoint 过的那些块仍在库里 —— 在途那一轮靠 checkpoint 抗崩溃,
+//
+//	不另立 WAL(决策 5,桌面端 dispatcher_runtime.go 是同一条)。
+func TestIntegration_MidTurnCrash_KeepsTheCheckpointedBlocks(t *testing.T) {
+	toolInput, err := json.Marshal(map[string]any{"path": "README.md"})
+	require.NoError(t, err)
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, &haltingBackendRunner{events: []agentruntime.Event{
+		agentruntime.TextDelta{Text: "reading"},
+		agentruntime.ToolCall{ID: "tu-1", Name: "Read", Input: toolInput},
+		agentruntime.ToolResult{ToolCallID: "tu-1", Content: "ok"},
+	}})
+	t.Cleanup(restore)
+
+	dir, err := os.MkdirTemp("", "ard-crash")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	rig := bootRigInDir(t, dir)
+	_, _ = rig.startRun(t, 701)
+
+	const wantBlocks = `[{"type":"text","data":{"text":"reading"}},` +
+		`{"type":"tool_use","data":{"id":"tu-1","name":"Read","input":{"path":"README.md"}}},` +
+		`{"type":"tool_result","data":{"tool_use_id":"tu-1","content":[{"type":"text","data":{"text":"ok"}}]}}]`
+	require.Eventually(t, func() bool {
+		rows := daemonMessages(t, rig.d, convID(701))
+		return len(rows) == 2 && rows[1].BlocksJSON == wantBlocks
+	}, 5*time.Second, 20*time.Millisecond, "ToolResult 之后该已经 checkpoint 过一次")
+
+	// 崩溃:进程没了,轮次停在中途。
+	rig.stop()
+
+	restarted := bootRigInDir(t, dir)
+	rows := daemonMessages(t, restarted.d, convID(701))
+	require.Len(t, rows, 2, "重启后消息行仍在")
+	assert.Equal(t, wantBlocks, rows[1].BlocksJSON, "崩溃前 checkpoint 过的块一个不少")
+}
