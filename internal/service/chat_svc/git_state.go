@@ -6,7 +6,6 @@ import (
 
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"github.com/agentre-hub/agentre/internal/daemon/client"
 	"github.com/agentre-hub/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-hub/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime/runtimes/remote/protowire"
@@ -16,6 +15,7 @@ import (
 	"github.com/agentre-hub/agentre/internal/repository/agent_repo"
 	"github.com/agentre-hub/agentre/internal/repository/chat_repo"
 	"github.com/agentre-hub/agentre/pkg/wire/agentrewire"
+	"github.com/agentre-hub/agentre/pkg/wire/wirecall"
 )
 
 // GetSessionGitState 拉某 session 的 git 状态快照。
@@ -84,7 +84,7 @@ func (s *chatSvc) getSessionGitStateRemote(ctx context.Context, sess *chat_entit
 	}
 	defer lease.Release()
 
-	response, err := client.WorkspaceFsGitState(ctx, lease.Client(), &agentrewire.WorkspaceFsGitStateRequest{Root: cwd})
+	response, err := wirecall.WorkspaceFsGitState(ctx, lease.Client(), &agentrewire.WorkspaceFsGitStateRequest{Root: cwd})
 	if err != nil {
 		return notARepoResponse()
 	}

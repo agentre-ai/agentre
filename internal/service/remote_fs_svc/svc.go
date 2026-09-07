@@ -14,13 +14,13 @@ import (
 
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"github.com/agentre-hub/agentre/internal/daemon/client"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime/runtimes/remote/protowire"
 	"github.com/agentre-hub/agentre/internal/pkg/code"
 	"github.com/agentre-hub/agentre/internal/pkg/remotefs/pathguard"
 	"github.com/agentre-hub/agentre/internal/pkg/remotefs/wire"
 	"github.com/agentre-hub/agentre/internal/service/remote_device_svc"
 	"github.com/agentre-hub/agentre/pkg/wire/agentrewire"
+	"github.com/agentre-hub/agentre/pkg/wire/wirecall"
 )
 
 // RemoteFsSvc 给 Wails 绑定层调,deviceID 字符串化(与 ProjectLocationSvc 一致)。
@@ -93,7 +93,7 @@ func (s *remoteFsImpl) ListDir(ctx context.Context, deviceID, path string) (*Lis
 	}
 	defer lease.Release()
 
-	protoResp, cerr := client.RemoteFsListDir(ctx, lease.Client(),
+	protoResp, cerr := wirecall.RemoteFsListDir(ctx, lease.Client(),
 		&agentrewire.RemoteFsListDirRequest{Path: path})
 	if cerr != nil {
 		return nil, mapCallErr(ctx, cerr)
@@ -135,7 +135,7 @@ func (s *remoteFsImpl) Mkdir(ctx context.Context, deviceID, parent, name string)
 	}
 	defer lease.Release()
 
-	resp, cerr := client.RemoteFsMkdir(ctx, lease.Client(),
+	resp, cerr := wirecall.RemoteFsMkdir(ctx, lease.Client(),
 		&agentrewire.RemoteFsMkdirRequest{Parent: parent, Name: name})
 	if cerr != nil {
 		return nil, mapCallErr(ctx, cerr)

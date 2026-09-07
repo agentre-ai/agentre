@@ -11,12 +11,12 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
-	"github.com/agentre-hub/agentre/internal/daemon/client"
 	"github.com/agentre-hub/agentre/internal/daemon/handlers"
 	"github.com/agentre-hub/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-hub/agentre/internal/pkg/code"
 	"github.com/agentre-hub/agentre/internal/service/remote_device_svc"
 	"github.com/agentre-hub/agentre/pkg/wire/agentrewire"
+	"github.com/agentre-hub/agentre/pkg/wire/wirecall"
 )
 
 // ErrRemoteDialFailed 把 dial 阶段任何失败（网络 / TLS / token 等）统一抽象成
@@ -56,8 +56,8 @@ func (realRemoteCLI) ResolveCLIPath(ctx context.Context, deviceID int64, backend
 	return &ResolveCLIPathResponse{Path: resp.Path, Found: resp.Found}, nil
 }
 
-func resolveRemoteCLIPath(ctx context.Context, conn client.Caller, backendType string) (*agentrewire.CLIResolvePathResponse, error) {
-	return client.CLIResolvePath(ctx, conn, &agentrewire.CLIResolvePathRequest{Type: backendType})
+func resolveRemoteCLIPath(ctx context.Context, conn wirecall.Caller, backendType string) (*agentrewire.CLIResolvePathResponse, error) {
+	return wirecall.CLIResolvePath(ctx, conn, &agentrewire.CLIResolvePathRequest{Type: backendType})
 }
 
 func (realRemoteCLI) Probe(ctx context.Context, deviceID int64, req handlers.CLIProbeParams) (*handlers.CLIProbeResult, error) {
@@ -77,8 +77,8 @@ func (realRemoteCLI) Probe(ctx context.Context, deviceID int64, req handlers.CLI
 	return &handlers.CLIProbeResult{Text: resp.Text}, nil
 }
 
-func probeRemoteCLI(ctx context.Context, conn client.Caller, request handlers.CLIProbeParams) (*agentrewire.CLIProbeResponse, error) {
-	return client.CLIProbe(ctx, conn, &agentrewire.CLIProbeRequest{
+func probeRemoteCLI(ctx context.Context, conn wirecall.Caller, request handlers.CLIProbeParams) (*agentrewire.CLIProbeResponse, error) {
+	return wirecall.CLIProbe(ctx, conn, &agentrewire.CLIProbeRequest{
 		BackendType: request.BackendType, LlmProviderKey: request.LLMProviderKey, CliPath: request.CLIPath,
 		Sandbox: request.Sandbox, Approval: request.Approval, Model: request.Model,
 	})

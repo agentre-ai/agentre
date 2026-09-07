@@ -10,11 +10,11 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"github.com/agentre-hub/agentre/internal/daemon/client"
 	"github.com/agentre-hub/agentre/internal/pkg/ccoauth"
 	"github.com/agentre-hub/agentre/internal/service/cc_usage_svc"
 	"github.com/agentre-hub/agentre/internal/service/remote_device_svc"
 	"github.com/agentre-hub/agentre/pkg/wire/agentrewire"
+	"github.com/agentre-hub/agentre/pkg/wire/wirecall"
 )
 
 // GetCCUsage 给前端 hook 主动拉指定 device 的缓存状态。
@@ -57,7 +57,7 @@ func (a *App) buildCCUsageResolver() cc_usage_svc.FetcherResolver {
 				return nil, errors.Join(cc_usage_svc.ErrDeviceOffline, lerr)
 			}
 			defer lease.Release()
-			res, cerr := client.ClaudeCodeUsage(ctx, lease.Client(), &agentrewire.ClaudeCodeUsageRequest{})
+			res, cerr := wirecall.ClaudeCodeUsage(ctx, lease.Client(), &agentrewire.ClaudeCodeUsageRequest{})
 			if cerr != nil {
 				return nil, errors.Join(ccoauth.ErrNetwork, cerr)
 			}

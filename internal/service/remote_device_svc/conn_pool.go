@@ -18,6 +18,7 @@ import (
 	"github.com/agentre-hub/agentre/pkg/wire/agentrewire"
 	"github.com/agentre-hub/agentre/pkg/wire/protorpc"
 	"github.com/agentre-hub/agentre/pkg/wire/rpcerror"
+	"github.com/agentre-hub/agentre/pkg/wire/wirecall"
 )
 
 // ErrPoolClosed 在 Pool.Close 之后调 Borrow 返回。生产路径只在 bootstrap
@@ -150,10 +151,10 @@ func (l *lease) Client() client.ProtobufConnection {
 	return noopCloseClient{ProtobufConnection: l.e.client}
 }
 func (l *lease) LLMUpsert(ctx context.Context, request *agentrewire.LLMUpsertRequest) (*agentrewire.LLMUpsertResponse, error) {
-	return client.LLMUpsert(ctx, l.e.client, request)
+	return wirecall.LLMUpsert(ctx, l.e.client, request)
 }
 func (l *lease) SelfUpdate(ctx context.Context, request *agentrewire.AgentredSelfUpdateRequest) (*agentrewire.AgentredSelfUpdateResponse, error) {
-	return client.AgentredSelfUpdate(ctx, l.e.client, request)
+	return wirecall.AgentredSelfUpdate(ctx, l.e.client, request)
 }
 func (l *lease) Closed() <-chan struct{} { return l.e.closedCh }
 func (l *lease) Release() {
