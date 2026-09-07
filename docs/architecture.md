@@ -25,8 +25,11 @@ internal/
   buildinfo/                   (CommitID ldflag target)
 migrations/                    (gormigrate sequential migrations, filename prefix YYYYMMDDNNNN)
 pkg/                           (externally reusable packages: agentred, claudecode, codex, piagent, and the shared
-                                wire module — wire/agentrewire generated messages, wire/protorpc the RPC engine
-                                and wire/rpcerror its error shape, all consumed by agentre-server too)
+                                wire module, consumed by agentre-server too — see pkg/wire/README.md for the
+                                subpackage map, the dependency direction and the "add an RPC method" checklist:
+                                wire/agentrewire generated messages, wire/protorpc the RPC engine, wire/wirecall
+                                the one place method IDs pair with message types, wire/relayenvelope the relay
+                                channel envelope, wire/wirelimits the payload budget, wire/rpcerror the error shape)
 frontend/                      (React 19 + TS + Vite + Tailwind; wailsjs/ is wails-generated, gitignored)
   packages/agentre-ui/         (@agentre-hub/agentre-ui —— the shared frontend layer, also consumed by agentre-server;
                                 design tokens + transcript renderer + data contract. See below and frontend.md)
