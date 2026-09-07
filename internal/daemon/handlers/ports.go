@@ -11,6 +11,7 @@ import (
 	"github.com/agentre-hub/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-hub/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-hub/agentre/internal/model/entity/transcript_entity"
+	"github.com/agentre-hub/agentre/internal/pkg/transcript"
 	"github.com/agentre-hub/agentre/pkg/wire/agentrewire"
 )
 
@@ -48,8 +49,10 @@ type NotifierPort interface {
 // 三个方法就是一轮转录的三个时刻:
 //
 //   - StartTurn:起手。把发起这一轮的用户消息落成一条 user 消息行,并建一条空的
-//     assistant 消息行交回来。会话身份仍是 conversation_id;它到本机数字主键的翻译
-//     在实现里(决策 9),handlers 这一层不认识那个数字。
+//     assistant 消息行,两行一并交回来。会话身份仍是 conversation_id;它到本机数字
+//     主键的翻译在实现里(决策 9),handlers 这一层不认识那个数字。用户那一行也要
+//     交回来,是因为它起手就定稿了 —— 调用方当场把它作为持久帧发出去,取到的号才
+//     排在这一轮的最前面(没有用户文本的自主续轮交回 nil)。
 //   - Checkpoint:轮内。每个 ToolResult(以及待决策的提出与作答等定稿时刻)之后一次,
 //     只写变化的块行。**在途那一轮抗崩溃只靠它**,不另立 WAL(决策 5)——再立一本
 //     「在途帧日志」就是把刚退役的通知日志换个名字请回来。
@@ -62,10 +65,17 @@ type NotifierPort interface {
 //
 // 实现挂在 Daemon 级(一个 daemon 一份库),不是 per-connection:转录的生产者是活过
 // 连接的 fanout goroutine。
+//   - AllocateFrameSeqs:发布。块落了库才轮到取号,取到了才发得出去 —— 实时发布的
+//     持久帧与补齐交出的那一份因此永远是同一串号(决策 3 /「帧编号」)。它属于写入侧
+//     而不是补齐读侧:一条持续在线的对端靠它推进游标,重连补齐才只补它真缺的那一段。
 type TranscriptPort interface {
-	StartTurn(ctx context.Context, conversationID, userText string) (*transcript_entity.Message, error)
+	StartTurn(ctx context.Context, conversationID, userText string) (user, assistant *transcript_entity.Message, err error)
 	Checkpoint(ctx context.Context, m *transcript_entity.Message, prevBlocksJSON string) error
 	FinishTurn(ctx context.Context, m *transcript_entity.Message) error
+	// AllocateFrameSeqs 依次给这些帧位置取下一个号并落库,返回与 keys 一一对应的编号。
+	// 取号失败即没有分配,调用方据此**不发布**这一帧 —— 否则对端会持有一个宿主认不
+	// 回来的号。
+	AllocateFrameSeqs(ctx context.Context, sessionID int64, keys []transcript.FrameKey) ([]int64, error)
 }
 
 // DBStat 是 agentred 自己那个库此刻的落盘事实:文件在哪、占了多少字节。

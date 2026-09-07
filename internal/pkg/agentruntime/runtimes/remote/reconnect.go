@@ -79,8 +79,33 @@ type ConnStateFunc func(sessionID int64, st SessionConnState)
 // OnSessionConnState 实现 ConnStateObserver。
 func (f ConnStateFunc) OnSessionConnState(sessionID int64, st SessionConnState) { f(sessionID, st) }
 
+// PreviewSink 接收**预览帧**里那条事件:逐片段增量与过场状态,即时呈现用。
+//
+// 它与 Run 交回的那条事件流是两件事,而这正是规格 2026-09-05「两级帧与补齐」定下的
+// 分工:预览帧只用于即时呈现,**不得进转录**;转录与游标的唯一来源是持久帧。两者
+// 走同一条 channel 的话,消费方就分不出「这一段该不该累积」——它今天只有追加语义,
+// 于是同一段内容既按预览追加一次、又随持久帧再来一次,重连补齐就重发对端已经看过
+// 的内容(硬不变量 1 的「重」)。
+//
+// 没接 sink 时预览帧就地丢弃:它按定义丢失即丢失、不补。宿主要逐 token 呈现就接一只
+// (桌面端在 chat_svc 接,见 previewSink)。
+type PreviewSink interface {
+	OnPreviewEvent(sessionID int64, ev agentruntime.Event)
+}
+
+// PreviewSinkFunc 是 PreviewSink 的函数式实现。
+type PreviewSinkFunc func(sessionID int64, ev agentruntime.Event)
+
+// OnPreviewEvent 实现 PreviewSink。
+func (f PreviewSinkFunc) OnPreviewEvent(sessionID int64, ev agentruntime.Event) { f(sessionID, ev) }
+
 // Option 是 New 的可选配置。
 type Option func(*Runtime)
+
+// WithPreviewSink 注入预览帧的呈现出口。不接则预览帧就地丢弃(见 PreviewSink)。
+func WithPreviewSink(sink PreviewSink) Option {
+	return func(r *Runtime) { r.previewSink = sink }
+}
 
 // WithReconnect 注入重连端口。**没有它就没有重连**:断连一律回落到今天的
 // 「注入 ErrDaemonDisconnected 并 close events」。

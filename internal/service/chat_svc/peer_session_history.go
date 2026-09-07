@@ -48,9 +48,10 @@ type peerSessionPublication struct {
 	nextSeq     int64
 	initialized bool
 	subscribers map[string]*peerSessionSubscription
-	// published 记每个帧位置**当前**发布出去的那份内容的指纹。指纹变了说明那个块被
-	// 原地修补过,修补后的帧要取一个新的末尾号;没变就不再重发。
-	published map[transcript_repo.FrameKey]string
+	// publisher 记每个帧位置**当前**发布出去的那份内容,据此挑出此刻该发的帧。它是
+	// 两个宿主共用的那一份(transcript.FramePublisher):轮内哪些帧还不该发、哪一次
+	// 原地修补要重发,桌面端与 agentred 必须一字不差。
+	publisher *transcript.FramePublisher
 
 	// publishMu 串行化「取号 → 发布」这一整段。取号要落库(不能在 mu 里做网络/磁盘
 	// IO),而两次发布若交错,后取到的号可能先进 history,对端就会看到乱序。
@@ -93,7 +94,7 @@ func (s *chatSvc) peerPublication(sessionID int64, conversationID string) *peerS
 		conversationID: conversationID,
 		sessionID:      sessionID,
 		subscribers:    map[string]*peerSessionSubscription{},
-		published:      map[transcript_repo.FrameKey]string{},
+		publisher:      transcript.NewFramePublisher(),
 		wake:           make(chan struct{}, 1),
 	})
 	publication := value.(*peerSessionPublication)
@@ -311,10 +312,10 @@ func numberPeerFramesLocked(ctx context.Context, publication *peerSessionPublica
 	}
 	publication.history = make([]wire.EventFrame, 0, len(keyed))
 	publication.createtimes = make([]int64, 0, len(keyed))
-	for _, frame := range keyed {
+	for i, frame := range keyed {
 		publication.history = append(publication.history, frame.Frame)
 		publication.createtimes = append(publication.createtimes, frame.Createtime)
-		publication.published[frame.Key] = frame.Fingerprint
+		publication.publisher.Commit(keyed[i : i+1])
 		if frame.Frame.Seq > publication.nextSeq {
 			publication.nextSeq = frame.Frame.Seq
 		}
@@ -360,8 +361,9 @@ func (s *chatSvc) publishPeerEvent(sessionID int64, event agentruntime.Event) {
 // 对端会持有一个宿主认不回来的号(spec「帧编号」)。已发布过、内容没变的位置直接跳过;
 // 内容变了(块被原地修补)则取一个新的末尾号,已发布的编号一律不动。
 //
-// settled=false 是轮内 checkpoint:结尾那些还会继续长的正文块与消息级派生帧留到收口
-// 再发,见 settledPeerFrames。
+// final=false 是轮内 checkpoint:结尾那些还会继续长的正文块与消息级派生帧留到收口
+// 再发。挑帧本身归共用的那一份(transcript.FramePublisher) —— agentred 实时发布走的
+// 是同一只。
 func (s *chatSvc) publishPeerMessageFrames(ctx context.Context, sessionID int64, msg *chat_entity.Message, final bool) {
 	if sessionID <= 0 || msg == nil {
 		return
@@ -387,17 +389,8 @@ func (s *chatSvc) publishPeerMessageFrames(ctx context.Context, sessionID int64,
 			zap.Int64("sessionId", sessionID), zap.Int64("messageId", msg.ID), zap.Error(err))
 		return
 	}
-	if !final {
-		keyed = settledPeerFrames(keyed)
-	}
 	publication.mu.Lock()
-	pending := make([]transcript.KeyedFrame, 0, len(keyed))
-	for _, frame := range keyed {
-		if prev, ok := publication.published[frame.Key]; ok && frame.Fingerprint != "" && prev == frame.Fingerprint {
-			continue
-		}
-		pending = append(pending, frame)
-	}
+	pending := publication.publisher.Pending(keyed, final)
 	publication.mu.Unlock()
 	if len(pending) == 0 {
 		return
@@ -418,7 +411,7 @@ func (s *chatSvc) publishPeerMessageFrames(ctx context.Context, sessionID int64,
 		pending[index].Frame.Seq = seqs[index]
 		publication.history = append(publication.history, pending[index].Frame)
 		publication.createtimes = append(publication.createtimes, now)
-		publication.published[pending[index].Key] = pending[index].Fingerprint
+		publication.publisher.Commit(pending[index : index+1])
 		if seqs[index] > publication.nextSeq {
 			publication.nextSeq = seqs[index]
 		}

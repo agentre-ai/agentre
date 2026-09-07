@@ -1590,29 +1590,37 @@ var _ handlers.TranscriptPort = transcriptStore{}
 // (nil, nil):这一轮的转录就此不落,而不是拿它陪葬打断执行。
 func (t transcriptStore) StartTurn(
 	ctx context.Context, conversationID, userText string,
-) (*transcript_entity.Message, error) {
+) (*transcript_entity.Message, *transcript_entity.Message, error) {
 	ctx = dbpkg.WithContextDB(ctx, t.db)
 	sessionID, err := session_repo.Session().LocalID(ctx, conversationID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if sessionID == 0 {
-		return nil, nil
+		return nil, nil, nil
+	}
+	// 这一轮的帧要接在历史后面取号,所以历史里还没有号的那些帧得先补齐 —— 否则新
+	// 内容先占掉小号,历史随后被编到它后面,补齐交出的转录里回答排在提问前面。
+	// 补的是同一份(transcript_repo.NumberFrames),与补齐读侧一字不差;已经有号的
+	// 一个不动,所以第二轮起它只是一次读。
+	if err := t.numberBacklog(ctx, conversationID, sessionID); err != nil {
+		return nil, nil, err
 	}
 	seq, err := transcript_repo.Message().NextSeq(ctx, sessionID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	var user *transcript_entity.Message
 	if userText != "" {
 		// 用户那一行的正文也走共用的累积器:一句纯文本落成什么块,两个宿主必须一致。
 		acc := turn.New()
 		acc.AddText(userText)
-		user := &transcript_entity.Message{SessionID: sessionID, Role: "user", Seq: seq}
+		user = &transcript_entity.Message{SessionID: sessionID, Role: "user", Seq: seq}
 		if err := user.SetBlocks(acc.Finalize()); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := transcript_repo.Message().Create(ctx, user); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		seq++
 	}
@@ -1620,9 +1628,33 @@ func (t transcriptStore) StartTurn(
 		SessionID: sessionID, Role: "assistant", Seq: seq, BlocksJSON: "[]",
 	}
 	if err := transcript_repo.Message().Create(ctx, assistant); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return assistant, nil
+	return user, assistant, nil
+}
+
+// numberBacklog 给这条转录里此刻还没有号的既有帧补齐编号。开轮时调一次。
+func (t transcriptStore) numberBacklog(ctx context.Context, conversationID string, sessionID int64) error {
+	messages, err := transcript_repo.Message().List(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if len(messages) == 0 {
+		return nil
+	}
+	keyed, err := transcript.ProjectKeyedMessages(conversationID, messages)
+	if err != nil {
+		return err
+	}
+	return transcript_repo.NumberFrames(ctx, sessionID, keyed)
+}
+
+// AllocateFrameSeqs 给这些帧位置取下一串号并落库。取号与发布不可分:调用方取到了才
+// 发得出去(规格「帧编号」)。
+func (t transcriptStore) AllocateFrameSeqs(
+	ctx context.Context, sessionID int64, keys []transcript.FrameKey,
+) ([]int64, error) {
+	return transcript_repo.FrameSeq().Allocate(dbpkg.WithContextDB(ctx, t.db), sessionID, keys)
 }
 
 func (t transcriptStore) Checkpoint(
@@ -1913,10 +1945,11 @@ func (j journalReader) localSessionID(ctx context.Context, peerFingerprint, peer
 // 取号(写库)刻意留在调用方:只有真被补齐的那一条路(ListSince)才惰性补齐编号,
 // 清单那条只读探测按台账预测(见 LatestSeq)。
 func (j journalReader) keyedFrames(ctx context.Context, peerFingerprint, peerSessionID string) (int64, []transcript.KeyedFrame, error) {
-	sessionID, err := j.localSessionID(ctx, peerFingerprint, peerSessionID)
-	if err != nil || sessionID == 0 {
+	row, err := session_repo.Session().Find(ctx, peerFingerprint, peerSessionID)
+	if err != nil || row == nil || row.ID == 0 {
 		return 0, nil, err
 	}
+	sessionID := row.ID
 	messages, err := transcript_repo.Message().List(ctx, sessionID)
 	if err != nil {
 		return 0, nil, err
@@ -1925,7 +1958,25 @@ func (j journalReader) keyedFrames(ctx context.Context, peerFingerprint, peerSes
 	if err != nil {
 		return 0, nil, err
 	}
+	if row.LifecycleState == wire.SessionLifecycleRunning && len(messages) > 0 {
+		keyed = withoutUnsettledTail(keyed, messages[len(messages)-1].ID)
+	}
 	return sessionID, keyed, nil
+}
+
+// withoutUnsettledTail 砍掉在飞那条消息里还没定稿的尾巴(还会继续长的正文块、以及
+// 这一轮还没发生的 usage / done)。
+//
+// 编号是一次性的:分配与落库不可分,一个位置取过号就不再改。补齐若给一条**在飞**消息
+// 结尾那个还在长的正文块取了号,收口时它的内容变了,同一个位置只能再取一个新的末尾号
+// —— 对端于是拿到同一段话的两份。定稿判据因此必须与实时发布那一侧是同一行代码
+// (transcript.SettledFrames),两个时刻在同一帧上定稿。
+func withoutUnsettledTail(keyed []transcript.KeyedFrame, inflightMessageID int64) []transcript.KeyedFrame {
+	head := len(keyed)
+	for head > 0 && keyed[head-1].Key.MessageID == inflightMessageID {
+		head--
+	}
+	return append(keyed[:head:head], transcript.SettledFrames(keyed[head:])...)
 }
 
 // durableFrames 是补齐真正读的那一份:在 keyedFrames 之上把缺号的位置**当场补齐并

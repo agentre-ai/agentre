@@ -43,6 +43,12 @@ var guardedDeclarations = map[string]string{
 	"func clearMessageDerivedFields(":   "internal/pkg/transcript/keyed.go",
 	"func messageDerivedFrameCount(":    "internal/pkg/transcript/keyed.go",
 	"const MessageDerivedBlockIdx = -1": "internal/pkg/transcript/keyed.go",
+	// 「此刻该发哪些帧」：轮内哪些帧还不该发（结尾还会继续长的正文块 / 消息级派生
+	// 帧）、哪一次原地修补要重发。桌面端的对端发布与 agentred 的实时发布共用一份 ——
+	// 抄第二份就等于让两台机器在不同的时刻给同一段内容取号。
+	"func (p *FramePublisher) Pending(": "internal/pkg/transcript/publish.go",
+	"func SettledFrames(":               "internal/pkg/transcript/publish.go",
+	"func isGrowingTextBlock(":          "internal/pkg/transcript/publish.go",
 }
 
 // TestAccumulationAndProjectionHaveOneImplementation 判红条件：仓内除各自的 canonical

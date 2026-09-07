@@ -283,10 +283,11 @@ type fakeTranscriptStore struct {
 
 func (f *fakeTranscriptStore) StartTurn(
 	_ context.Context, conversationID, userText string,
-) (*transcript_entity.Message, error) {
+) (*transcript_entity.Message, *transcript_entity.Message, error) {
+	var user *transcript_entity.Message
 	if userText != "" {
 		f.next++
-		user := &transcript_entity.Message{
+		user = &transcript_entity.Message{
 			ID: f.next, Role: "user",
 			BlocksJSON: `[{"type":"text","data":{"text":"` + userText + `"}}]`,
 		}
@@ -297,7 +298,7 @@ func (f *fakeTranscriptStore) StartTurn(
 	assistant := &transcript_entity.Message{ID: f.next, Role: "assistant", BlocksJSON: "[]"}
 	f.msgs = append(f.msgs, assistant)
 	f.conv = append(f.conv, conversationID)
-	return assistant, nil
+	return user, assistant, nil
 }
 
 func (f *fakeTranscriptStore) FinishTurn(_ context.Context, _ *transcript_entity.Message) error {

@@ -255,8 +255,9 @@ func TestIntegration_FullFlow(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, convID(42), ack.GetConversationId())
 
-	// 8. Drain at least one text_delta frame.
-	got := drainEventFrames(t, events, 3*time.Second, 1)
+	// 8. Drain at least one text_delta frame. 这一轮的第一帧是用户那一行的**持久帧**
+	// (宿主实时发布,规格「两级帧与补齐」第 3 条),逐 token 的 text_delta 跟在它后面。
+	got := drainEventFrames(t, events, 3*time.Second, 2)
 	var sawText bool
 	for _, f := range got {
 		assert.Equal(t, convID(42), f.ConversationID)
@@ -570,6 +571,10 @@ type pairedTestRig struct {
 	cli    *client.ProtobufClient
 	proto  client.ProtobufConnection
 	runner *remote.Runtime
+	// previews 收下这条 runtime 收到的**预览帧**。预览帧只用于即时呈现,不进 Run
+	// 交回的那条事件流(那条流是消费方的转录来源) —— 要断言「逐 token 的文本实时
+	// 到了」就看这里,断言「转录是什么」则看事件流。
+	previews *previewLog
 	// token 是配对拿到的 deviceToken:同一台设备再开一条连接时走 auth.connect
 	// (真机上的设备监视心跳 / 刷新探测就是这么接的),见 connectSameDevice。
 	token string
@@ -642,9 +647,11 @@ func bootRigInDir(t *testing.T, dir string) *pairedTestRig {
 	require.NoError(t, err)
 	require.NotEmpty(t, pairResp.GetDeviceToken())
 
+	previews := newPreviewLog()
 	return &pairedTestRig{dir: dir, d: d, cli: cli, proto: cli,
-		runner: remote.New(cli, remote.WithConversationIDResolver(convID)),
-		token:  pairResp.GetDeviceToken(), stop: stop}
+		runner:   remote.New(cli, remote.WithConversationIDResolver(convID), remote.WithPreviewSink(previews)),
+		previews: previews,
+		token:    pairResp.GetDeviceToken(), stop: stop}
 }
 
 // connectSameDevice 再开一条**同一台设备**的已认证连接(auth.connect,与桌面端的
@@ -749,10 +756,12 @@ func TestIntegration_RemoteRuntime_EventRoundTrip(t *testing.T) {
 			agentruntime.Done{},
 		})
 		events, result := rig.startRun(t, 100)
-		got := drainRuntimeEvents(t, events, 5*time.Second)
+		_ = drainRuntimeEvents(t, events, 5*time.Second)
 
+		// 逐 token 的增量是**预览帧**:它只走呈现出口,不进转录(转录里是合并成一个
+		// 块之后的那一份)。协议无损往返要验的正是这条实时流。
 		var texts []string
-		for _, ev := range got {
+		for _, ev := range rig.previews.events() {
 			if td, ok := ev.(agentruntime.TextDelta); ok {
 				texts = append(texts, td.Text)
 			}
@@ -774,8 +783,9 @@ func TestIntegration_RemoteRuntime_EventRoundTrip(t *testing.T) {
 			agentruntime.Done{},
 		})
 		events, _ := rig.startRun(t, 200)
-		got := drainRuntimeEvents(t, events, 5*time.Second)
+		_ = drainRuntimeEvents(t, events, 5*time.Second)
 
+		got := rig.previews.events()
 		var seen agentruntime.PlanUpdated
 		var found bool
 		for _, ev := range got {
@@ -800,10 +810,10 @@ func TestIntegration_RemoteRuntime_EventRoundTrip(t *testing.T) {
 			agentruntime.Done{},
 		})
 		events, _ := rig.startRun(t, 300)
-		got := drainRuntimeEvents(t, events, 5*time.Second)
+		_ = drainRuntimeEvents(t, events, 5*time.Second)
 
 		var totals []int
-		for _, ev := range got {
+		for _, ev := range rig.previews.events() {
 			if uu, ok := ev.(agentruntime.UsageUpdate); ok {
 				totals = append(totals, uu.TotalInputTokens)
 			}
@@ -828,10 +838,10 @@ func TestIntegration_RemoteRuntime_EventRoundTrip(t *testing.T) {
 			agentruntime.Done{},
 		})
 		events, _ := rig.startRun(t, 400)
-		got := drainRuntimeEvents(t, events, 5*time.Second)
+		_ = drainRuntimeEvents(t, events, 5*time.Second)
 
 		var kinds []string
-		for _, ev := range got {
+		for _, ev := range rig.previews.events() {
 			switch ev.(type) {
 			case agentruntime.SubagentStarted:
 				kinds = append(kinds, "started")
@@ -900,29 +910,14 @@ func TestIntegration_SteerConsumedCarriesSubmitterSource(t *testing.T) {
 	rt := &steerAwareRunner{}
 	rig := bootSteerAwareRig(t, rt)
 
-	events, _ := rig.startRun(t, 700)
+	_, _ = rig.startRun(t, 700)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
 	require.NoError(t, rig.runner.Steer(ctx, 700, "q-1", "follow-up from this device"))
 
-	var consumed agentruntime.SteerConsumed
-	deadline := time.After(5 * time.Second)
-found:
-	for {
-		select {
-		case ev, ok := <-events:
-			if !ok {
-				t.Fatal("events channel closed before SteerConsumed arrived")
-			}
-			if sc, isSteer := ev.(agentruntime.SteerConsumed); isSteer {
-				consumed = sc
-				break found
-			}
-		case <-deadline:
-			t.Fatal("timed out waiting for SteerConsumed to round-trip")
-		}
-	}
+	// SteerConsumed 是过场信号,走实时的**预览帧**这条路(它不落块,补齐里没有它)。
+	consumed := awaitPreviewOfType[agentruntime.SteerConsumed](t, rig.previews)
 
 	require.Len(t, consumed.Steers, 1, "SteerConsumed must carry exactly the consumed steer")
 	assert.Equal(t, "q-1", consumed.Steers[0].QueuedID)
@@ -966,15 +961,9 @@ func TestIntegration_StrayConnDoesNotStealSessionNotifications(t *testing.T) {
 		"never-authenticated connection must be rejected by requireAuth")
 
 	events, _ := rig.startRun(t, 700)
-	got := drainRuntimeEvents(t, events, 5*time.Second)
+	_ = drainRuntimeEvents(t, events, 5*time.Second)
 
-	var texts []string
-	for _, ev := range got {
-		if td, ok := ev.(agentruntime.TextDelta); ok {
-			texts = append(texts, td.Text)
-		}
-	}
-	assert.Equal(t, []string{"hello", " world"}, texts,
+	assert.Equal(t, "hello world", rig.previews.joined(),
 		"a stray unauthenticated connection must not divert the paired device's session notifications")
 }
 
@@ -1202,25 +1191,18 @@ func awaitLifecycle(t *testing.T, cli client.ProtobufConnection, sid int64, stat
 	}, 5*time.Second, 20*time.Millisecond, "会话 %d 没有进入 %s", sid, state)
 }
 
-// awaitText 等下一条 TextDelta 并断言文本,超时即失败(会话被推去了别处 / 挂起时就是
+// awaitText 等某段正文实时到达并断言它,超时即失败(会话被推去了别处 / 挂起时就是
 // 这个表现:客户端既没有错误也没有事件,只是永远收不到)。
-func awaitText(t *testing.T, events <-chan agentruntime.Event, want string) {
+//
+// 看的是**预览流**:逐 token 的增量是预览帧,只走呈现出口、不进转录(转录里是合并
+// 成块之后的那一份,而且要等 checkpoint)。「推送有没有落在这条连接上」问的正是
+// 实时那一条。
+func awaitText(t *testing.T, previews *previewLog, want string) {
 	t.Helper()
-	deadline := time.After(5 * time.Second)
-	for {
-		select {
-		case ev, ok := <-events:
-			if !ok {
-				t.Fatalf("events channel closed while waiting for %q", want)
-			}
-			if td, isText := ev.(agentruntime.TextDelta); isText {
-				require.Equal(t, want, td.Text)
-				return
-			}
-		case <-deadline:
-			t.Fatalf("timed out waiting for %q — the session's notifications never reached the connection that started it", want)
-		}
-	}
+	require.Eventually(t, func() bool { return strings.Contains(previews.joined(), want) },
+		5*time.Second, 5*time.Millisecond,
+		"timed out waiting for %q — the session's notifications never reached the connection that started it; got %q",
+		want, previews.joined())
 }
 
 // TestIntegration_SecondConnOfSameDeviceDoesNotStealSessionNotifications 回归(评审在真
@@ -1240,12 +1222,12 @@ func TestIntegration_SecondConnOfSameDeviceDoesNotStealSessionNotifications(t *t
 	})
 
 	events, _ := rig.startRun(t, 800)
-	awaitText(t, events, "before") // 会话确实在跑,且推送落在发起它的这条连接上
+	awaitText(t, rig.previews, "before") // 会话确实在跑,且推送落在发起它的这条连接上
 
 	rig.connectSameDevice(t) // 心跳连接接入并**留着**
 	close(gate)
 
-	awaitText(t, events, "after")
+	awaitText(t, rig.previews, "after")
 	_ = drainRuntimeEvents(t, events, 5*time.Second)
 }
 
@@ -1262,7 +1244,7 @@ func TestIntegration_SameDeviceConnClosingDoesNotSuspendRunningSession(t *testin
 	})
 
 	events, _ := rig.startRun(t, 801)
-	awaitText(t, events, "before")
+	awaitText(t, rig.previews, "before")
 
 	second := rig.connectSameDevice(t)
 	require.NoError(t, second.Close())
@@ -1276,7 +1258,7 @@ func TestIntegration_SameDeviceConnClosingDoesNotSuspendRunningSession(t *testin
 
 	close(gate)
 
-	awaitText(t, events, "after")
+	awaitText(t, rig.previews, "after")
 	_ = drainRuntimeEvents(t, events, 5*time.Second)
 }
 
@@ -1301,7 +1283,7 @@ func TestIntegration_RejectedRuntimeCallDoesNotSeizeSessionOwnership(t *testing.
 	})
 
 	events, _ := rig.startRun(t, 802)
-	awaitText(t, events, "before")
+	awaitText(t, rig.previews, "before")
 
 	second := rig.connectSameDevice(t)
 	var res map[string]any
@@ -1315,7 +1297,7 @@ func TestIntegration_RejectedRuntimeCallDoesNotSeizeSessionOwnership(t *testing.
 
 	close(gate)
 
-	awaitText(t, events, "after")
+	awaitText(t, rig.previews, "after")
 	_ = drainRuntimeEvents(t, events, 5*time.Second)
 }
 
@@ -1337,6 +1319,7 @@ func TestIntegration_SameDeviceHeartbeatDoesNotStealRuntimeHandler(t *testing.T)
 	rtConn := rig.connectSameDeviceProtobuf(t)
 	rt := remote.New(rtConn,
 		remote.WithConversationIDResolver(convID),
+		remote.WithPreviewSink(rig.previews),
 		remote.WithDaemonFingerprint(identity.DaemonFingerprint(rig.d.state.DaemonInstanceUUID)),
 		remote.WithReconnect(remote.ReconnectFunc(func(context.Context) (client.ProtobufConnection, string, error) {
 			return nil, "", errors.New("连接一直是活的,这条用例不该触发重连")
@@ -1345,7 +1328,7 @@ func TestIntegration_SameDeviceHeartbeatDoesNotStealRuntimeHandler(t *testing.T)
 	t.Cleanup(func() { _ = rt.Close() })
 
 	events, _ := rig.startRunOn(t, rt, 803)
-	awaitText(t, events, "before") // 会话确实在跑,推送落在发起它的这条连接上
+	awaitText(t, rig.previews, "before") // 会话确实在跑,推送落在发起它的这条连接上
 
 	// 设备监视心跳那条连接接入并留着；它的 bindConn 只改自己的私有 registry。
 	rig.connectSameDevice(t)
@@ -1364,7 +1347,7 @@ func TestIntegration_SameDeviceHeartbeatDoesNotStealRuntimeHandler(t *testing.T)
 
 	close(gate)
 
-	awaitText(t, events, "after")
+	awaitText(t, rig.previews, "after")
 	_ = drainRuntimeEvents(t, events, 5*time.Second)
 }
 
@@ -1533,8 +1516,8 @@ func TestIntegration_MCPReverseTunnel_NoTarget(t *testing.T) {
 		after:  []agentruntime.Event{agentruntime.TextDelta{Text: "after"}, agentruntime.Done{}},
 	})
 
-	events, _ := rig.startRun(t, 950)
-	awaitText(t, events, "before") // 会话确实在跑
+	_, _ = rig.startRun(t, 950)
+	awaitText(t, rig.previews, "before") // 会话确实在跑
 
 	base := rig.d.gateway.BaseURL()
 	require.NotEmpty(t, base)
@@ -2562,8 +2545,11 @@ func awaitEventOfType[E agentruntime.Event](t *testing.T, frames <-chan wire.Eve
 				continue
 			}
 			if _, ok := f.Event.(E); ok {
-				// 实时事件帧是预览帧:不带编号、显式标着 preview(决策 4)。
-				assert.True(t, f.Preview, "实时事件帧必须是预览帧")
+				if !f.Preview {
+					// 同一段内容的持久帧也会到这条连接上(宿主实时发布),但这里问的
+					// 是「实时那一条到没到」—— 它是预览帧。
+					continue
+				}
 				assert.Zero(t, f.Seq, "预览帧不带编号")
 				return
 			}
@@ -2786,8 +2772,8 @@ func TestIntegration_SessionCatchup_AttachRepointsTheLiveStream(t *testing.T) {
 		after:  []agentruntime.Event{agentruntime.TextDelta{Text: "after"}, agentruntime.Done{}},
 	})
 
-	events, _ := rig.startRun(t, 901)
-	awaitText(t, events, "before") // 推送此刻落在发起会话的那条连接上
+	_, _ = rig.startRun(t, 901)
+	awaitText(t, rig.previews, "before") // 推送此刻落在发起会话的那条连接上
 
 	// 「重连后的新连接」:同一台设备,自己订阅 runtime.event。
 	second := rig.connectSameDevice(t)
@@ -3047,7 +3033,7 @@ func TestIntegration_SessionCatchup_PendingWaitersNeverCrossPeers(t *testing.T) 
 
 	// 正主那条对话此刻正卡在一条工具审批上。
 	events, _ := rig.startRun(t, ownerSID)
-	awaitText(t, events, "blocked")
+	awaitText(t, rig.previews, "blocked")
 	require.Eventually(t, func() bool { return runner.waiterCount() == 1 },
 		5*time.Second, 20*time.Millisecond, "正主那条会话应当卡在审批上")
 
@@ -3291,13 +3277,16 @@ func (m *memCursor) SaveCursor(_ context.Context, sessionID int64, fp string, se
 
 // durableRunner 在 rig 上造一个**带重连能力**的 *remote.Runtime:记账客户端 +
 // 重连端口(重新 auth.connect 一条同设备连接,与真桌面端连接池重拨走的是同一条路)。
-func (r *pairedTestRig) durableRunner(t *testing.T, rec *notifyRecorder, gate <-chan struct{}, states *connStateLog) *remote.Runtime {
+func (r *pairedTestRig) durableRunner(
+	t *testing.T, rec *notifyRecorder, gate <-chan struct{}, states *connStateLog, previews *previewLog,
+) *remote.Runtime {
 	t.Helper()
 	fp := identity.DaemonFingerprint(r.d.state.DaemonInstanceUUID)
 	conn := r.connectSameDeviceProtobuf(t)
 	r.proto = conn
 	rt := remote.New(
 		newRecordingClient(t, conn, rec),
+		remote.WithPreviewSink(previews),
 		remote.WithConversationIDResolver(convID),
 		remote.WithDaemonFingerprint(fp),
 		remote.WithSessionCursor(newMemCursor(fp)),
@@ -3393,26 +3382,86 @@ func awaitCheckpointContains(t *testing.T, r *pairedTestRig, sessionID int64, su
 	}, 10*time.Second, 10*time.Millisecond, "daemon 应在断连期间照常落库")
 }
 
-// awaitTextCollecting 等下一条指定文本的 TextDelta,并把这期间收下的事件原样交回
-// (它们已经离开 channel,不收回来后面的逐条比对就会凭空少几条)。
-func awaitTextCollecting(t *testing.T, events <-chan agentruntime.Event, want string) []agentruntime.Event {
-	t.Helper()
+// collectAvailableEvents 把此刻已经到达的事件取空并原样交回(它们已经离开 channel,
+// 不收回来后面的逐条比对就会凭空少几条)。
+func collectAvailableEvents(events <-chan agentruntime.Event) []agentruntime.Event {
 	var got []agentruntime.Event
-	deadline := time.After(5 * time.Second)
 	for {
 		select {
 		case ev, ok := <-events:
 			if !ok {
-				t.Fatalf("events channel closed while waiting for %q", want)
-			}
-			got = append(got, ev)
-			if td, isText := ev.(agentruntime.TextDelta); isText && td.Text == want {
 				return got
 			}
-		case <-deadline:
-			t.Fatalf("timed out waiting for %q", want)
+			got = append(got, ev)
+		default:
+			return got
 		}
 	}
+}
+
+// previewLog 收集**预览帧**里的事件。预览帧只用于即时呈现,不进 Run 交回的那条事件
+// 流(那条流是消费方的转录来源),所以要看「逐 token 的文本确实实时到了」只能看这里
+// —— 硬不变量 2 与硬不变量 1 因此可以分别断言,而不是互相顶掉。
+type previewLog struct {
+	mu   sync.Mutex
+	got  []agentruntime.Event
+	wake chan struct{}
+}
+
+func newPreviewLog() *previewLog { return &previewLog{wake: make(chan struct{}, 1)} }
+
+func (p *previewLog) OnPreviewEvent(_ int64, ev agentruntime.Event) {
+	p.mu.Lock()
+	p.got = append(p.got, ev)
+	p.mu.Unlock()
+	select {
+	case p.wake <- struct{}{}:
+	default:
+	}
+}
+
+// events 交回此刻收到的全部预览事件(按到达顺序)。轮末那条终态帧与预览帧走同一条
+// 读循环、同一个顺序,所以 Run 的事件流一关闭,这一份就是完整的。
+func (p *previewLog) events() []agentruntime.Event {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]agentruntime.Event(nil), p.got...)
+}
+
+// joined 把收到的预览 TextDelta 按到达顺序拼起来。
+func (p *previewLog) joined() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var b strings.Builder
+	for _, ev := range p.got {
+		if td, ok := ev.(agentruntime.TextDelta); ok {
+			b.WriteString(td.Text)
+		}
+	}
+	return b.String()
+}
+
+// awaitPreviewOfType 等预览流里出现某个类型的事件并把它交回。
+func awaitPreviewOfType[E agentruntime.Event](t *testing.T, p *previewLog) E {
+	t.Helper()
+	var found E
+	require.Eventually(t, func() bool {
+		for _, ev := range p.events() {
+			if typed, ok := ev.(E); ok {
+				found = typed
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 5*time.Millisecond, "预览流里没等到 %T", found)
+	return found
+}
+
+// awaitText 等预览流里出现某个片段(逐 token 呈现的判据)。
+func (p *previewLog) awaitText(t *testing.T, want string) {
+	t.Helper()
+	require.Eventually(t, func() bool { return strings.Contains(p.joined(), want) },
+		5*time.Second, 5*time.Millisecond, "预览帧里没等到 %q,只有 %q", want, p.joined())
 }
 
 // connStateLog 收集会话级连接态。用例靠它知道「补齐已经落定、回到实时了」,
@@ -3474,6 +3523,7 @@ func TestIntegration_ReconnectCatchUp_MatchesUninterruptedRun(t *testing.T) {
 	}
 	phase3 := []agentruntime.Event{agentruntime.TextDelta{Text: "five"}, agentruntime.Done{}}
 
+	var baselineEvents []agentruntime.Event
 	var baselineTranscript []*transcript_entity.Message
 	var baselineResult agentruntime.RunResult
 
@@ -3485,12 +3535,15 @@ func TestIntegration_ReconnectCatchUp_MatchesUninterruptedRun(t *testing.T) {
 			{events: phase1}, {gate: g1, events: phase2}, {gate: g2, events: phase3},
 		}})
 		rec := &notifyRecorder{}
-		rt := rig.durableRunner(t, rec, nil, newConnStateLog())
+		previews := newPreviewLog()
+		rt := rig.durableRunner(t, rec, nil, newConnStateLog(), previews)
 		events, result := rig.startRunOn(t, rt, sid)
 
-		baselineEvents := drainRuntimeEvents(t, events, 10*time.Second)
+		baselineEvents = drainRuntimeEvents(t, events, 10*time.Second)
 		baselineResult = *result
 		require.NotEmpty(t, baselineEvents, "全程不断连也该收到事件")
+		assert.Equal(t, "onetwothreefourfive", previews.joined(),
+			"硬不变量 2:逐 token 的正文实时到达(它走呈现出口,不进转录)")
 		baselineTranscript = daemonMessages(t, rig.d, convID(sid))
 		require.Len(t, baselineTranscript, 2, "一轮该落下用户 + assistant 两条消息")
 	})
@@ -3504,12 +3557,14 @@ func TestIntegration_ReconnectCatchUp_MatchesUninterruptedRun(t *testing.T) {
 		rec := &notifyRecorder{}
 		states := newConnStateLog()
 		reconnectGate := make(chan struct{})
-		rt := rig.durableRunner(t, rec, reconnectGate, states)
+		previews := newPreviewLog()
+		rt := rig.durableRunner(t, rec, reconnectGate, states, previews)
 		events, result := rig.startRunOn(t, rt, sid)
 
-		// 掐断:第一阶段已经实时到达,第二阶段在断连期间产生。等到的那几条要收回
-		// 序列里,它们同样是这次运行交付出去的。
-		got := awaitTextCollecting(t, events, "one")
+		// 掐断:第一阶段已经实时到达(它是预览,只呈现、不进转录),第二阶段在断连
+		// 期间产生。这期间进了转录的那几条要收回序列里,它们同样是这次运行交付出去的。
+		previews.awaitText(t, "onetwo")
+		got := collectAvailableEvents(events)
 		require.NoError(t, rig.proto.Close())
 		close(disconnected)
 
@@ -3535,6 +3590,12 @@ func TestIntegration_ReconnectCatchUp_MatchesUninterruptedRun(t *testing.T) {
 		}
 		assert.Equal(t, baselineResult.StopErr, result.StopErr, "断连不得把终态污染成失败")
 
+		// 硬不变量 1 的判据本身:同一段执行,断连重连之后**交付给调用方的那条流**
+		// 必须与全程不断连逐条相等 —— 不多一条(补齐重发已经看过的内容)、不少一条
+		// (断连期间的内容补不回来)、不换序。
+		assert.Equal(t, withoutWallClock(baselineEvents), withoutWallClock(got),
+			"补齐后交付的事件流不得多一条、少一条或换序")
+
 		// 断连期间产生的工具往返只可能经 runtime.session.pull 到达:客户端那时没有
 		// 连接,不存在任何实时投递路径。这两条断言因此是本用例真正的判据 —— 补齐
 		// 若读不到真实转录(比如仍是空桩),客户端就永远不会知道这次工具调用发生过。
@@ -3558,6 +3619,24 @@ func TestIntegration_ReconnectCatchUp_MatchesUninterruptedRun(t *testing.T) {
 		}
 		assert.True(t, sawDone, "这一轮必须以 Done 收尾")
 	})
+}
+
+// withoutWallClock 把收口那一帧上的**墙上时间**抹平(耗时 / 首 token 毫秒数)。
+//
+// 它们是这台机器这一次跑出来的测量值,两次运行天然不同,与「交付了什么内容、几条、
+// 什么顺序」无关。除这两格之外的一切 —— 事件类型、每一格内容、条数、顺序 —— 都逐字
+// 比对,重复投递、漏投递、换序都会当场判红。
+func withoutWallClock(events []agentruntime.Event) []agentruntime.Event {
+	out := make([]agentruntime.Event, 0, len(events))
+	for _, ev := range events {
+		if done, ok := ev.(agentruntime.Done); ok {
+			done.DurationMs, done.FirstTokenMs, done.TokensPerSec = 0, 0, 0
+			out = append(out, done)
+			continue
+		}
+		out = append(out, ev)
+	}
+	return out
 }
 
 // joinTextDeltas 把一串事件里的 TextDelta 按到达顺序拼起来,供内容层面的比对——
@@ -3762,9 +3841,12 @@ func daemonFrameSeqRows(t *testing.T, d *Daemon, sessionID int64) int64 {
 //   - 报出的「最新 seq」就是持久编号计数器的末尾 —— 随后按它去 pull,拿回的最后
 //     一帧的号必须正好等于它,否则对端会把两者的差当成跳号;
 //   - 它**一行都不写**。规格明写清单无副作用(remote.Runtime.turnStartFloor 正是
-//     靠这一条在每代连接开轮前探一次高水位),而惰性补齐编号的时机是「第一次需要
-//     发布或被补齐」——「未被访问的对话不付出任何代价」(规格「帧编号」)。拿真去
-//     分配一次来回答高水位,会让一次只读探测替这个对端的每一条对话都补齐编号。
+//     靠这一条在每代连接开轮前探一次高水位),取号只发生在「真要发布或真被补齐」
+//     那一刻(规格「帧编号」)。拿真去分配一次来回答高水位,会让一次只读探测替这个
+//     对端的每一条对话都补齐编号。
+//
+// 跑完一轮之后台账里已经有号了:宿主实时发布持久帧时就取了(规格「两级帧与补齐」
+// 第 3 条)。所以判据不是「台账为空」,而是**清单前后一行不差**。
 func TestIntegration_SessionList_ReportsTheHighWaterWithoutNumberingAnything(t *testing.T) {
 	rig := bootRemoteRig(t, []agentruntime.Event{
 		agentruntime.TextDelta{Text: "hello"},
@@ -3776,28 +3858,30 @@ func TestIntegration_SessionList_ReportsTheHighWaterWithoutNumberingAnything(t *
 	sessionID := daemonSessionID(t, rig.d, convID(905))
 	require.NotZero(t, sessionID)
 	require.NotEmpty(t, daemonMessagesOfSession(t, rig.d, sessionID), "这一轮确实落了转录")
-	require.Zero(t, daemonFrameSeqRows(t, rig.d, sessionID),
-		"还没有人发布或补齐过它,台账此刻本来就该是空的")
+	numbered := daemonFrameSeqRows(t, rig.d, sessionID)
+	require.Positive(t, numbered, "这一轮的持久帧是实时发布出去的,发布那一刻就取了号")
 
 	var list wire.SessionListResult
 	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionList, nil, &list))
 	require.Len(t, list.Sessions, 1)
 	latest := list.Sessions[0].LatestSeq
 	require.Positive(t, latest, "有转录就有高水位")
-	assert.Zero(t, daemonFrameSeqRows(t, rig.d, sessionID),
-		"清单是只读探测:它不得给任何一条对话补齐编号")
+	assert.Equal(t, numbered, daemonFrameSeqRows(t, rig.d, sessionID),
+		"清单是只读探测:它不得给任何一条对话取一个号")
 
 	// 再问一次:读两遍报的是同一个数,而不是第二次因为第一次写过了才稳定下来。
 	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionList, nil, &list))
 	assert.Equal(t, latest, list.Sessions[0].LatestSeq, "只读探测必须可重复")
-	assert.Zero(t, daemonFrameSeqRows(t, rig.d, sessionID))
+	assert.Equal(t, numbered, daemonFrameSeqRows(t, rig.d, sessionID))
 
-	// 补齐才是编号落库的时刻,而它落出来的末尾号必须正是清单报过的那个。
+	// 补齐拿回的末尾号必须正是清单报过的那个,而且它同样不再多编一个号 ——
+	// 这一轮的帧全都在发布时编过了。
 	var page wire.SessionPullResult
 	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionPull,
 		wire.SessionPullParams{ConversationID: convID(905), Cursor: 0, Limit: 200}, &page))
 	require.NotEmpty(t, page.Notifications)
 	assert.Equal(t, latest, page.Notifications[len(page.Notifications)-1].Seq,
 		"清单报的高水位必须等于补齐拿回的最后一个号")
-	assert.Positive(t, daemonFrameSeqRows(t, rig.d, sessionID), "补齐这一刻才写台账")
+	assert.Equal(t, numbered, daemonFrameSeqRows(t, rig.d, sessionID),
+		"实时发布过的内容,补齐时沿用同一串号,不再重编")
 }

@@ -244,6 +244,10 @@ type chatSvc struct {
 	// activeTurnStreams: sessionID(int64) → 当前活跃 turn 的 per-turn 流名(string)。
 	// runTurn 起止维护;工具审批(BeginToolApproval)据此路由审批卡到正确的流。
 	activeTurnStreams sync.Map
+	// previewStreams: sessionID(int64) → 该会话此刻这一轮的预览帧通道
+	// (chan agentruntime.Event)。远端执行的预览帧从 *remote.Runtime 的读循环进来,
+	// 由本轮的 turnRun 消费(见 preview_stream.go)。
+	previewStreams sync.Map
 	// toolApprovals: 本会话进行中 turn 上挂起/已决的工具审批 block(org / hook 等内置
 	// 写工具共用),finalize 时 merge 进 assistant 消息;LoadSession 时 overlay 到投影。
 	toolApprovalsMu sync.Mutex
@@ -2613,6 +2617,13 @@ func (s *chatSvc) runTurn(
 		events:       prepared.events,
 		result:       prepared.result,
 		req:          prepared.req,
+	}
+	// 远端执行:实时那一路是**预览帧**,它不在 prepared.events 上(那条流是本轮的
+	// 转录来源),要另开一条通道接住并呈现,见 preview_stream.go。
+	if _, isRemote := prepared.runner.(*remote.Runtime); isRemote {
+		previews, unregister := s.registerPreviewStream(sess.ID)
+		defer unregister()
+		t.previews = previews
 	}
 	// 登记本 turn 的活跃流名,供工具审批(BeginToolApproval)把审批卡路由到此流。
 	// stream 在 SteerConsumed 分段时不变(同 turn 一个流名),Store 一次即可;收尾时清掉。

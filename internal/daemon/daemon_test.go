@@ -1376,7 +1376,7 @@ func seedSession(t *testing.T, ctx context.Context, store daemonSessionStore, pe
 // seedTranscriptTurn 落一轮最小转录(用户一行 + 一条 assistant 消息),用来在真库上
 // 观察写入本身的行为(WAL / 句柄隔离 / 库体量)。走的是生产那条 TranscriptPort。
 func seedTranscriptTurn(ctx context.Context, d *Daemon, conversationID, text string) error {
-	msg, err := d.transcript.StartTurn(ctx, conversationID, text)
+	_, msg, err := d.transcript.StartTurn(ctx, conversationID, text)
 	if err != nil || msg == nil {
 		return err
 	}

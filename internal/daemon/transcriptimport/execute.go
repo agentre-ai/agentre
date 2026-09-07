@@ -56,7 +56,7 @@ type SessionDeleter interface {
 // Transcript 落库这条对话的转录(同 handlers.TranscriptPort)。回放出的每一轮都从
 // 这里进库 —— 本包不另开第二条落块路径,块怎么攒出来同样归共用的那只累积器。
 type Transcript interface {
-	StartTurn(ctx context.Context, conversationID, userText string) (*transcript_entity.Message, error)
+	StartTurn(ctx context.Context, conversationID, userText string) (user, assistant *transcript_entity.Message, err error)
 	FinishTurn(ctx context.Context, m *transcript_entity.Message) error
 }
 
@@ -240,7 +240,7 @@ func (h *Handlers) rollbackFailedImport(ctx context.Context, peer, peerSessionID
 func (h *Handlers) importTurn(
 	ctx context.Context, peerSessionID string, t pkgimport.Turn, counters *replayCounters,
 ) error {
-	msg, err := h.transcript.StartTurn(ctx, peerSessionID, t.UserText)
+	_, msg, err := h.transcript.StartTurn(ctx, peerSessionID, t.UserText)
 	if err != nil {
 		return fmt.Errorf("transcriptimport: start turn: %w", err)
 	}

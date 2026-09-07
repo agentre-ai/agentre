@@ -19,6 +19,7 @@ import (
 	agent_backend_entity "github.com/agentre-hub/agentre/internal/model/entity/agent_backend_entity"
 	llm_provider_entity "github.com/agentre-hub/agentre/internal/model/entity/llm_provider_entity"
 	transcript_entity "github.com/agentre-hub/agentre/internal/model/entity/transcript_entity"
+	transcript "github.com/agentre-hub/agentre/internal/pkg/transcript"
 	agentrewire "github.com/agentre-hub/agentre/pkg/wire/agentrewire"
 	gomock "go.uber.org/mock/gomock"
 )
@@ -163,6 +164,21 @@ func (m *MockTranscriptPort) EXPECT() *MockTranscriptPortMockRecorder {
 	return m.recorder
 }
 
+// AllocateFrameSeqs mocks base method.
+func (m *MockTranscriptPort) AllocateFrameSeqs(ctx context.Context, sessionID int64, keys []transcript.FrameKey) ([]int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AllocateFrameSeqs", ctx, sessionID, keys)
+	ret0, _ := ret[0].([]int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// AllocateFrameSeqs indicates an expected call of AllocateFrameSeqs.
+func (mr *MockTranscriptPortMockRecorder) AllocateFrameSeqs(ctx, sessionID, keys any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AllocateFrameSeqs", reflect.TypeOf((*MockTranscriptPort)(nil).AllocateFrameSeqs), ctx, sessionID, keys)
+}
+
 // Checkpoint mocks base method.
 func (m_2 *MockTranscriptPort) Checkpoint(ctx context.Context, m *transcript_entity.Message, prevBlocksJSON string) error {
 	m_2.ctrl.T.Helper()
@@ -192,12 +208,13 @@ func (mr *MockTranscriptPortMockRecorder) FinishTurn(ctx, m any) *gomock.Call {
 }
 
 // StartTurn mocks base method.
-func (m *MockTranscriptPort) StartTurn(ctx context.Context, conversationID, userText string) (*transcript_entity.Message, error) {
+func (m *MockTranscriptPort) StartTurn(ctx context.Context, conversationID, userText string) (*transcript_entity.Message, *transcript_entity.Message, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "StartTurn", ctx, conversationID, userText)
 	ret0, _ := ret[0].(*transcript_entity.Message)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
+	ret1, _ := ret[1].(*transcript_entity.Message)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
 }
 
 // StartTurn indicates an expected call of StartTurn.

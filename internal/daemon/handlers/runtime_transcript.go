@@ -30,6 +30,15 @@ type turnTranscript struct {
 	acc        *turn.Accumulator
 	turnCtx    *turn.TurnContext
 	msg        *transcript_entity.Message
+	// conversationID 是这条对话的线上身份:投影出来的每一帧带的都是它。
+	conversationID string
+	// publish 把一条**持久帧**交给这一轮的推送出口。nil = 这一轮没有出口,内容照旧
+	// 落库,对端下次补齐时按同样的号拿到它。
+	publish func(frame wire.EventFrame)
+	// publisher 记着哪些位置已经发布过什么内容。它是两个宿主共用的那一份
+	// (transcript.FramePublisher):轮内哪些帧还不该发、哪一次原地修补要重发,
+	// agentred 与桌面端必须一字不差。
+	publisher *transcript.FramePublisher
 	// prevBlocksJSON 是上一次落库的那份正文,也就是下一次 checkpoint 差分的基准。
 	// 不留住它就只能整表替换,而 checkpoint 是每个 ToolResult 一次的高频调用
 	// (理由见 transcript_repo.syncBlocks 的注释:实测一条消息被 checkpoint 840 次)。
@@ -51,7 +60,7 @@ func (h *RuntimeHandlers) beginTranscript(em *sessionEmitter, userText string) *
 	if h.deps.Transcript == nil {
 		return nil
 	}
-	msg, err := h.deps.Transcript.StartTurn(em.ctx, em.conversationID, userText)
+	user, msg, err := h.deps.Transcript.StartTurn(em.ctx, em.conversationID, userText)
 	if err != nil {
 		logger.Ctx(em.ctx).Error("handlers.RuntimeHandlers.beginTranscript: start turn failed",
 			zap.String("conversationId", em.conversationID),
@@ -62,7 +71,7 @@ func (h *RuntimeHandlers) beginTranscript(em *sessionEmitter, userText string) *
 	if msg == nil {
 		return nil
 	}
-	return &turnTranscript{
+	t := &turnTranscript{
 		port:       h.deps.Transcript,
 		dispatcher: transcript.NewTurnDispatcher(transcript.Adapters{}),
 		acc:        turn.New(),
@@ -71,7 +80,57 @@ func (h *RuntimeHandlers) beginTranscript(em *sessionEmitter, userText string) *
 		turnCtx:        &turn.TurnContext{Waits: turn.NewWaitTracker()},
 		msg:            msg,
 		prevBlocksJSON: msg.BlocksJSON,
+		conversationID: em.conversationID,
+		publish: func(frame wire.EventFrame) {
+			em.emit(wire.NotifyEvent, &frame)
+		},
+		publisher: transcript.NewFramePublisher(),
 	}
+	// 用户那一行起手就定稿了:它现在就该以持久帧的身份出去,取到的号排在这一轮的
+	// 最前面。晚发(等到补齐才编号)会让它排到这一轮的正文之后 —— 对端的转录里
+	// 提问跑到回答后面去。
+	t.publishDurable(em.ctx, user, true)
+	return t
+}
+
+// publishDurable 把 msg 此刻可以定稿的持久帧取号发出去。
+//
+// 这是规格 2026-09-05「两级帧与补齐」的第 3 条:**宿主必须实时发布持久帧**,不得只在
+// 补齐时才交出。一条持续在线的对端若只收得到预览帧,它的游标永不前进,重连补齐就会
+// 从头重放它已经看过的内容 —— 那正是硬不变量 1 禁止的「重」。
+//
+// 取号与发布不可分:号从台账里取(一次事务),取到了才发 —— 取号失败就不发,否则对端
+// 会持有一个宿主认不回来的号(规格「帧编号」)。桌面端做宿主时走的是同一条路
+// (chat_svc.publishPeerMessageFrames)。
+func (t *turnTranscript) publishDurable(ctx context.Context, msg *transcript_entity.Message, final bool) {
+	if t == nil || msg == nil || t.publish == nil {
+		return
+	}
+	keyed, err := transcript.ProjectKeyedMessage(t.conversationID, msg)
+	if err != nil {
+		logger.Ctx(ctx).Warn("handlers.turnTranscript.publishDurable: project failed",
+			zap.Int64("messageId", msg.ID), zap.Error(err))
+		return
+	}
+	pending := t.publisher.Pending(keyed, final)
+	if len(pending) == 0 {
+		return
+	}
+	keys := make([]transcript.FrameKey, 0, len(pending))
+	for _, frame := range pending {
+		keys = append(keys, frame.Key)
+	}
+	seqs, err := t.port.AllocateFrameSeqs(ctx, msg.SessionID, keys)
+	if err != nil || len(seqs) != len(pending) {
+		logger.Ctx(ctx).Warn("handlers.turnTranscript.publishDurable: allocate failed; frames withheld",
+			zap.Int64("messageId", msg.ID), zap.Error(err))
+		return
+	}
+	for index := range pending {
+		pending[index].Frame.Seq = seqs[index]
+		t.publish(pending[index].Frame)
+	}
+	t.publisher.Commit(pending)
 }
 
 // observe 把一条事件累积进本轮的块,并在定稿时刻 checkpoint 一次。
@@ -107,7 +166,11 @@ func (t *turnTranscript) checkpoint(ctx context.Context) {
 		// 落库失败时把内存正文退回上一次落库的那份:留着没落库的新正文会让下一次
 		// checkpoint 拿一个库里并不存在的基准做差分,差出来的块行从此对不上。
 		t.msg.BlocksJSON = prev
+		return
 	}
+	// 块落了库才轮到取号(决策 3)。轮内只发已经定稿的那些帧 —— 结尾还会继续长的
+	// 正文块与消息级派生帧留给收口那一发。
+	t.publishDurable(ctx, t.msg, false)
 }
 
 // finish 收口本轮:正文定稿,并把这一轮的模型 / 用量 / 计时 / 错误写在同一行上。
@@ -137,5 +200,8 @@ func (t *turnTranscript) finish(ctx context.Context, frame wire.RunResultDoneFra
 	if err := t.port.FinishTurn(ctx, t.msg); err != nil {
 		logger.Ctx(ctx).Warn("handlers.turnTranscript.finish: persist failed",
 			zap.Int64("messageId", t.msg.ID), zap.Error(err))
+		return
 	}
+	// 收口:正文定稿,连同消息级派生帧(usage / done)一起发出去。
+	t.publishDurable(ctx, t.msg, true)
 }
