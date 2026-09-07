@@ -5,9 +5,9 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/agentre-hub/agentre/internal/daemon/protorpc"
 	"github.com/agentre-hub/agentre/pkg/agentred/protocol"
 	"github.com/agentre-hub/agentre/pkg/wire/agentrewire"
+	"github.com/agentre-hub/agentre/pkg/wire/protorpc"
 )
 
 // DaemonClient is the subset of internal/daemon/client.Client and

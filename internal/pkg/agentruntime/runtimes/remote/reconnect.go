@@ -20,11 +20,11 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/agentre-hub/agentre/internal/daemon/client"
-	"github.com/agentre-hub/agentre/internal/daemon/protorpc"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime/runtimes/remote/protowire"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 	"github.com/agentre-hub/agentre/pkg/wire/agentrewire"
+	"github.com/agentre-hub/agentre/pkg/wire/protorpc"
 )
 
 // ConnState 是一条远端会话此刻的**通道**状态。它是运行态之上的一层修饰,不是第五种

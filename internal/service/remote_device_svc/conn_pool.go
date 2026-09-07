@@ -14,10 +14,10 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/agentre-hub/agentre/internal/daemon/client"
-	"github.com/agentre-hub/agentre/internal/daemon/protorpc"
-	"github.com/agentre-hub/agentre/internal/pkg/rpcerror"
 	"github.com/agentre-hub/agentre/internal/repository/remote_device_repo"
 	"github.com/agentre-hub/agentre/pkg/wire/agentrewire"
+	"github.com/agentre-hub/agentre/pkg/wire/protorpc"
+	"github.com/agentre-hub/agentre/pkg/wire/rpcerror"
 )
 
 // ErrPoolClosed 在 Pool.Close 之后调 Borrow 返回。生产路径只在 bootstrap

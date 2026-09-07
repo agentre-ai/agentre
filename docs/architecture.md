@@ -13,8 +13,9 @@ internal/
                                 methods only do parse → svc.Xxx().Method(ctx, …) → return)
   bootstrap/                   (startup order: dataDir → cago memory config → logger → SQLite → migrations)
   cli/{claudecodecmd,ctlcmd}/  (subcommand implementations, compiled into the agrctl binary)
-  daemon/                      (agentred-side daemon: authentication, connection/relay transport, Protobuf RPC,
-                                handlers, persistence, sessions, engine snapshots, and remote workspaces)
+  daemon/                      (agentred-side daemon: authentication, connection/relay transport, method registration,
+                                handlers, persistence, sessions, engine snapshots, and remote workspaces.
+                                The RPC engine itself is no longer here — see pkg/wire/protorpc below)
   service/<domain>_svc/        (business logic; interface + singleton accessor + private implementation)
   repository/<domain>_repo/    (data access; interface + Register/accessor, uniformly going through db.Ctx(ctx))
     mock_<domain>_repo/        (mockgen output, injected into service unit tests)
@@ -23,7 +24,9 @@ internal/
                                 logging, credentials, filesystems, notifications, and other shared infrastructure)
   buildinfo/                   (CommitID ldflag target)
 migrations/                    (gormigrate sequential migrations, filename prefix YYYYMMDDNNNN)
-pkg/                           (externally reusable packages: agentred, claudecode, codex, piagent, and the shared wire module)
+pkg/                           (externally reusable packages: agentred, claudecode, codex, piagent, and the shared
+                                wire module — wire/agentrewire generated messages, wire/protorpc the RPC engine
+                                and wire/rpcerror its error shape, all consumed by agentre-server too)
 frontend/                      (React 19 + TS + Vite + Tailwind; wailsjs/ is wails-generated, gitignored)
   packages/agentre-ui/         (@agentre-hub/agentre-ui —— the shared frontend layer, also consumed by agentre-server;
                                 design tokens + transcript renderer + data contract. See below and frontend.md)

@@ -10,10 +10,10 @@ import (
 	"context"
 
 	"github.com/agentre-hub/agentre/internal/daemon/client"
-	"github.com/agentre-hub/agentre/internal/daemon/protorpc"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime/runtimes/remote/protowire"
 	"github.com/agentre-hub/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 	"github.com/agentre-hub/agentre/pkg/wire/agentrewire"
+	"github.com/agentre-hub/agentre/pkg/wire/protorpc"
 )
 
 // Outbound 是拨到另一台桌面端（或 agentred）的会话级客户端。调用方把

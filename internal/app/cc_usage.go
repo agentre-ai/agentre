@@ -10,11 +10,11 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"github.com/agentre-hub/agentre/internal/daemon/protorpc"
 	"github.com/agentre-hub/agentre/internal/pkg/ccoauth"
 	"github.com/agentre-hub/agentre/internal/service/cc_usage_svc"
 	"github.com/agentre-hub/agentre/internal/service/remote_device_svc"
 	"github.com/agentre-hub/agentre/pkg/wire/agentrewire"
+	"github.com/agentre-hub/agentre/pkg/wire/protorpc"
 )
 
 // GetCCUsage 给前端 hook 主动拉指定 device 的缓存状态。

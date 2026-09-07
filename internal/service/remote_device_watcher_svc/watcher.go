@@ -12,9 +12,9 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/agentre-hub/agentre/internal/daemon/client"
-	"github.com/agentre-hub/agentre/internal/daemon/protorpc"
 	"github.com/agentre-hub/agentre/internal/model/entity/paired_agentred_entity"
 	"github.com/agentre-hub/agentre/pkg/wire/agentrewire"
+	"github.com/agentre-hub/agentre/pkg/wire/protorpc"
 )
 
 // WatcherConfig 控制单 watcher 行为。

@@ -26,7 +26,6 @@ import (
 	"github.com/agentre-hub/agentre/internal/daemon/handlers"
 	daemonmigrations "github.com/agentre-hub/agentre/internal/daemon/migrations"
 	"github.com/agentre-hub/agentre/internal/daemon/pairing"
-	"github.com/agentre-hub/agentre/internal/daemon/protorpc"
 	"github.com/agentre-hub/agentre/internal/daemon/relaytransport"
 	"github.com/agentre-hub/agentre/internal/daemon/repository/session_repo"
 	"github.com/agentre-hub/agentre/internal/daemon/sessions"
@@ -43,6 +42,7 @@ import (
 	"github.com/agentre-hub/agentre/internal/pkg/transcript/turn"
 	"github.com/agentre-hub/agentre/internal/repository/transcript_repo"
 	"github.com/agentre-hub/agentre/pkg/wire/agentrewire"
+	"github.com/agentre-hub/agentre/pkg/wire/protorpc"
 )
 
 // dbFileName 是 agentred 自己的 SQLite 库文件名,位于 Options.DataDir(=
