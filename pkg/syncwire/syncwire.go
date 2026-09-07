@@ -53,9 +53,22 @@ const (
 	PushStatusRejected = "rejected"
 )
 
-// PushRejectReasonDeleted 是唯一的单条拒绝原因:该对象在 server 上已是墓碑。
-// 删除不会被复活,恢复动作因此明确失败。
-const PushRejectReasonDeleted = "deleted"
+// 单条拒绝的原因。
+//
+// **凡是能拒掉一条的理由,都只拒那一条。** 整批拒是一个永久性的堵:上行端整批失败时
+// 一行都不出队,下一轮再发同一批、再被同一条拒掉,那台机器的上行队列从此不动 —— 连
+// 删除也传不出去。校验不通过的行以 rejected 回报,上行端据此把它移出队列并记进
+// 「没能同步的改动」。
+const (
+	// PushRejectReasonDeleted 该对象在 server 上已是墓碑。删除不会被复活,恢复动作
+	// 因此明确失败;界面据此提供「按这份内容新建」—— 那是一个新的同步标识。
+	PushRejectReasonDeleted = "deleted"
+	// PushRejectReasonKind 对象类型不属于同步组、与该同步标识已有行的类型不符,
+	// 或缺少该类型必需的自然键。
+	PushRejectReasonKind = "kind_invalid"
+	// PushRejectReasonPayload 载荷过不了服务端 ValidatePayload 的守卫。
+	PushRejectReasonPayload = "payload_rejected"
+)
 
 // ── 业务码 ──────────────────────────────────────────────────────────────────
 

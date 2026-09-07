@@ -45,8 +45,13 @@ const (
 	PushStatusRejected = wire.PushStatusRejected
 )
 
-// PushRejectReasonDeleted 是唯一的单条拒绝原因:该对象在 server 上已是墓碑。
-const PushRejectReasonDeleted = wire.PushRejectReasonDeleted
+// 单条拒绝的三个原因。本端从前只认得 deleted 一个,另外两个走的是兜底分支 ——
+// 行为是对的,但契约里少了名字。
+const (
+	PushRejectReasonDeleted = wire.PushRejectReasonDeleted
+	PushRejectReasonKind    = wire.PushRejectReasonKind
+	PushRejectReasonPayload = wire.PushRejectReasonPayload
+)
 
 // CodeResyncRequired / CodeCursorUnknown 是 server 的两个业务码。
 const (
