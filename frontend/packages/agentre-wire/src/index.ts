@@ -26,5 +26,6 @@ export * from "./constants.gen";
 export * from "./codec.gen";
 export * from "./event-kinds.gen";
 export * from "./event-kind";
+export * from "./relay-envelope";
 export * from "./block-types.gen";
 export * from "./chat-block-types.gen";
