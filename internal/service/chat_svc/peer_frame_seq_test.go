@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -474,4 +475,69 @@ func TestAttachPeerSession_GivenFramesPublishedLiveThenHostRestart_ThenThePeerCu
 	for content, seq := range liveSeqs {
 		assert.Equal(t, seq, after[content], "实时发过的那一帧在重启后仍是同一个号: "+content)
 	}
+}
+
+// 对端在**轮中**挂上来:此刻在飞那条 assistant 结尾的正文块还在长。它不该在这一刻
+// 就取号 —— 编号是一次性的(分配与落库不可分),半截内容占掉一个号之后,收口时同一个
+// 位置的内容变了只能再取一个末尾号,对端于是把同一段话收两遍(硬不变量 1 的「重」)。
+//
+// agentred 的补齐读侧已经这么做;桌面端做宿主时是同一件事,必须由同一行代码判定
+// (transcript.WithoutUnsettledTail,spec「复用边界」)。
+func TestAttachPeerSession_GivenTurnStillRunning_ThenTheGrowingTailWaitsForSettlement(t *testing.T) {
+	deps := setupPeerSessionTest(t)
+	ctx := context.Background()
+	assistant := &chat_entity.Message{ID: 92, SessionID: 41, Role: "assistant", Seq: 2,
+		BlocksJSON: `[{"type":"text","data":{"text":"one"}}]`}
+	rows := []*chat_entity.Message{
+		{ID: 91, SessionID: 41, Role: "user", Seq: 1, BlocksJSON: `[{"type":"text","data":{"text":"hi"}}]`},
+		assistant,
+	}
+	deps.session.EXPECT().Find(ctx, int64(41)).Return(
+		&chat_entity.Session{ID: 41, AgentID: 7, AgentStatus: "running"}, nil).AnyTimes()
+	deps.agent.EXPECT().Find(ctx, int64(7)).Return(agentForPeerSession(), nil).AnyTimes()
+	deps.backend.EXPECT().Find(ctx, int64(11)).Return(nil, nil).AnyTimes()
+	deps.message.EXPECT().List(ctx, int64(41)).DoAndReturn(
+		func(context.Context, int64) ([]*chat_entity.Message, error) { return rows, nil }).AnyTimes()
+
+	subscriber := newRecordingPeerSubscriber()
+	_, err := deps.svc.AttachPeerSession(ctx, wire.SessionAttachParams{ConversationID: convID(41)}, subscriber)
+	require.NoError(t, err)
+	page, err := deps.svc.PullPeerSession(ctx, wire.SessionPullParams{ConversationID: convID(41), Limit: 100}, subscriber)
+	require.NoError(t, err)
+
+	// 这一轮收口:同一个位置的正文长完了。
+	assistant.BlocksJSON = `[{"type":"text","data":{"text":"onetwo"}}]`
+	deps.svc.publishPeerMessageFrames(ctx, 41, assistant, true)
+	// 对端这条转录 = 补齐拿回的前缀 + 随后实时收到的持久帧。
+	deliveredTexts := func() []string {
+		var texts []string
+		frames := make([]any, 0, len(page.Notifications))
+		for _, notification := range page.Notifications {
+			frames = append(frames, notification.Params)
+		}
+		for _, record := range subscriber.notifications() {
+			frames = append(frames, record.params)
+		}
+		for _, params := range frames {
+			var event agentruntime.Event
+			switch frame := params.(type) {
+			case wire.EventFrame:
+				event = frame.Event
+			case *wire.EventFrame:
+				event = frame.Event
+			default:
+				t.Fatalf("对端收到的不是事件帧:%T", params)
+			}
+			if delta, isText := event.(agentruntime.TextDelta); isText {
+				texts = append(texts, delta.Text)
+			}
+		}
+		return texts
+	}
+	require.Eventually(t, func() bool {
+		return slices.Contains(deliveredTexts(), "onetwo")
+	}, time.Second, time.Millisecond, "收口那一发要把定稿的正文交出去")
+
+	assert.Equal(t, []string{"onetwo"}, deliveredTexts(),
+		"同一个正文位置在对端的转录里只能出现一次 —— 在飞的半截不该先占一个号")
 }

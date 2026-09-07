@@ -258,7 +258,12 @@ func clampPeerPullLimit(limit int) int {
 	return limit
 }
 
-func (s *chatSvc) attachPeerTranscript(ctx context.Context, sessionID int64, conversationID string, subscriber PeerSessionSubscriber) (int64, func(), error) {
+// attachPeerTranscript 把一个对端挂到这条会话的通知宇宙上,并交回它的起始高水位。
+//
+// running 说的是「此刻这条会话还有一轮在飞」:在飞那条消息结尾还会继续长的正文块与
+// 它这一轮的消息级派生帧都还没定稿,不能在这一刻取号 —— 判据与实时发布那一侧、与
+// agentred 的补齐读侧都是同一行代码(transcript.WithoutUnsettledTail)。
+func (s *chatSvc) attachPeerTranscript(ctx context.Context, sessionID int64, conversationID string, running bool, subscriber PeerSessionSubscriber) (int64, func(), error) {
 	publication := s.peerPublication(sessionID, conversationID)
 	key := peerSubscriberKey(subscriber)
 	// Holding this lock across the initial repository read makes the synthesized
@@ -275,6 +280,9 @@ func (s *chatSvc) attachPeerTranscript(ctx context.Context, sessionID int64, con
 		if err != nil {
 			publication.mu.Unlock()
 			return 0, nil, fmt.Errorf("synthesize desktop peer history: %w", err)
+		}
+		if running && len(messages) > 0 {
+			keyed = transcript.WithoutUnsettledTail(keyed, messages[len(messages)-1].ID)
 		}
 		if err := numberPeerFramesLocked(ctx, publication, keyed); err != nil {
 			publication.mu.Unlock()

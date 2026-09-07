@@ -48,6 +48,7 @@ var guardedDeclarations = map[string]string{
 	// 抄第二份就等于让两台机器在不同的时刻给同一段内容取号。
 	"func (p *FramePublisher) Pending(": "internal/pkg/transcript/publish.go",
 	"func SettledFrames(":               "internal/pkg/transcript/publish.go",
+	"func WithoutUnsettledTail(":        "internal/pkg/transcript/publish.go",
 	"func isGrowingTextBlock(":          "internal/pkg/transcript/publish.go",
 }
 
