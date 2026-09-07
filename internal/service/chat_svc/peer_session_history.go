@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
-	"time"
 
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
@@ -413,12 +412,16 @@ func (s *chatSvc) publishPeerMessageFrames(ctx context.Context, sessionID int64,
 			zap.Int64("sessionId", sessionID), zap.Int64("messageId", msg.ID), zap.Error(err))
 		return
 	}
-	now := time.Now().UnixMilli()
 	publication.mu.Lock()
 	for index := range pending {
 		pending[index].Frame.Seq = seqs[index]
 		publication.history = append(publication.history, pending[index].Frame)
-		publication.createtimes = append(publication.createtimes, now)
+		// 时刻取投影器配给的那一个(= 所属消息的 createtime),不是「此刻」。这一格由
+		// PullPeerSession 交出去,而重启之后同一条转录是由 numberPeerFramesLocked 从
+		// 投影重建的 —— 那边取的就是投影器给的值。写「此刻」会让同一个 seq 在重启前后
+		// 报出两个时刻:一轮里消息建行与块定稿隔着整趟工具往返,对端那条转录的 HH:mm
+		// 会在重连之后整体跳回本轮起点。时刻的归属在 transcript.ProjectMessages 说死。
+		publication.createtimes = append(publication.createtimes, pending[index].Createtime)
 		publication.publisher.Commit(pending[index : index+1])
 		if seqs[index] > publication.nextSeq {
 			publication.nextSeq = seqs[index]

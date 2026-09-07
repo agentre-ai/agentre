@@ -541,3 +541,80 @@ func TestAttachPeerSession_GivenTurnStillRunning_ThenTheGrowingTailWaitsForSettl
 	assert.Equal(t, []string{"onetwo"}, deliveredTexts(),
 		"同一个正文位置在对端的转录里只能出现一次 —— 在飞的半截不该先占一个号")
 }
+
+// 一帧的**时刻**同样要活在内容里,不能是「发布的那一刻」:对端那条转录的 HH:mm 读的
+// 就是补齐带回来的这一格,而宿主重启之后同一条转录是从投影重建的(时刻的归属由
+// transcript.ProjectMessages 说死 —— 取所属消息的 createtime)。实时发布若写「此刻」,
+// 同一个 seq 在重启前后报出两个时刻:一轮里消息建行与块定稿隔着整趟工具往返,对端的
+// 转录会在重连之后整体跳回本轮起点。
+func TestPullPeerSession_GivenFramePublishedLive_ThenItsCreatetimeSurvivesHostRestart(t *testing.T) {
+	deps := setupPeerSessionTest(t)
+	ctx := context.Background()
+	rows := richPeerTranscript()
+	deps.session.EXPECT().Find(ctx, int64(41)).Return(&chat_entity.Session{ID: 41, AgentID: 7, AgentStatus: "idle"}, nil).AnyTimes()
+	deps.agent.EXPECT().Find(ctx, int64(7)).Return(agentForPeerSession(), nil).AnyTimes()
+	deps.backend.EXPECT().Find(ctx, int64(11)).Return(nil, nil).AnyTimes()
+	deps.message.EXPECT().List(ctx, int64(41)).DoAndReturn(
+		func(context.Context, int64) ([]*chat_entity.Message, error) { return rows, nil }).AnyTimes()
+
+	first := newRecordingPeerSubscriber()
+	_, err := deps.svc.AttachPeerSession(ctx, wire.SessionAttachParams{ConversationID: convID(41)}, first)
+	require.NoError(t, err)
+	_, err = deps.svc.PullPeerSession(ctx, wire.SessionPullParams{ConversationID: convID(41), Limit: 100}, first)
+	require.NoError(t, err)
+
+	// 本轮新落库的一条 assistant:它在这里实时发布,时刻应当是它这一行的 createtime。
+	const liveCreatetime = int64(3000)
+	live := &chat_entity.Message{ID: 93, SessionID: 41, Role: "assistant", Seq: 3,
+		Createtime: liveCreatetime, Model: "claude-opus-4-6",
+		BlocksJSON: `[{"type":"text","data":{"text":"看完了"}}]`}
+	rows = append(rows, live)
+	deps.svc.publishPeerMessageFrames(ctx, 41, live, true)
+	require.Eventually(t, func() bool {
+		return len(first.notifications()) == 2
+	}, time.Second, time.Millisecond)
+
+	// 断线重连(同一个进程):新订阅的高水位包含刚才那两帧,补齐从 publication 的日志读。
+	reconnected := newRecordingPeerSubscriber()
+	_, err = deps.svc.AttachPeerSession(ctx, wire.SessionAttachParams{ConversationID: convID(41)}, reconnected)
+	require.NoError(t, err)
+	livePage, err := deps.svc.PullPeerSession(ctx, wire.SessionPullParams{ConversationID: convID(41), Limit: 100}, reconnected)
+	require.NoError(t, err)
+
+	// 宿主重启:同一份库、同一批消息,换一个进程内的 chatSvc —— 这一份是从投影重建的。
+	restarted := NewChat(NoopEmitter{}).(*chatSvc)
+	restartedSub := newRecordingPeerSubscriber()
+	_, err = restarted.AttachPeerSession(ctx, wire.SessionAttachParams{ConversationID: convID(41)}, restartedSub)
+	require.NoError(t, err)
+	restartedPage, err := restarted.PullPeerSession(ctx, wire.SessionPullParams{ConversationID: convID(41), Limit: 100}, restartedSub)
+	require.NoError(t, err)
+
+	liveTimes := createtimeBySeq(t, livePage.Notifications)
+	restartedTimes := createtimeBySeq(t, restartedPage.Notifications)
+	require.NotEmpty(t, liveTimes)
+	assert.Equal(t, restartedTimes, liveTimes,
+		"每一个 seq 的时刻在重启前后必须一致 —— 重启那一份是从投影重建的")
+
+	// 而实时发布的那两帧带的正是它所属消息(93)的 createtime,不是发布的那一刻。
+	liveSeqs := make([]int64, 0, 2)
+	for _, record := range first.notifications() {
+		frame, ok := record.params.(wire.EventFrame)
+		require.True(t, ok)
+		liveSeqs = append(liveSeqs, frame.Seq)
+	}
+	require.Len(t, liveSeqs, 2)
+	for _, seq := range liveSeqs {
+		assert.Equal(t, liveCreatetime, liveTimes[seq],
+			"seq %d 的时刻取所属消息的 createtime", seq)
+	}
+}
+
+// createtimeBySeq 把一页补齐摊成「seq → 时刻」。
+func createtimeBySeq(t *testing.T, notifications []wire.JournaledNotification) map[int64]int64 {
+	t.Helper()
+	out := make(map[int64]int64, len(notifications))
+	for _, notification := range notifications {
+		out[notification.Seq] = notification.Createtime
+	}
+	return out
+}
